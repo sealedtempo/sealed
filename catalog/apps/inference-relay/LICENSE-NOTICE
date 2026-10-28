@@ -16,9 +16,12 @@ Images
                    ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.60.0. The
                    edgelesssys/privatemode-public repository carries a restrictive custom license
                    for most directories, but privatemode-proxy/, internal/oss/, sdk/ and chat/ are
-                   additionally licensed MIT (LICENSE.MIT). CI must confirm from the image SBOM that
-                   the binary links only MIT-licensed packages; if not, disable the provider by
-                   removing the service and its models.
+                   additionally licensed MIT (LICENSE.MIT). CI runs
+                   license/check-privatemode-proxy.mjs --image <ref@digest>, which reads the
+                   binary's own packages from its symbol table and fails if any lies outside those
+                   directories; third-party modules go through the SBOM license check of the
+                   catalog lint. If either fails, disable the provider by removing the service and
+                   its models.
                    Source: https://github.com/edgelesssys/privatemode-public
 
 Notable JavaScript dependencies (all on the allowlist)
