@@ -19,6 +19,8 @@ export interface AppDeps {
   // (default: the Node socket). See clients.ts.
   clients?: ClientPolicy;
   remoteAddress?: (c: Context) => string | undefined;
+  // The route's public origin (SEALED_PUBLIC_URL_SCRAPER); see security.ts.
+  publicOrigin?: string;
 }
 
 export function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {

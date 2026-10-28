@@ -13,7 +13,7 @@ export function createApp(deps: AppDeps): Hono {
 
   app.use('*', pageSecurity);
   app.use('*', clientGuard(deps.clients ?? parseAllowedClients(DEFAULT_ALLOWED_CLIENTS), deps.remoteAddress));
-  app.use('*', sameOriginGuard());
+  app.use('*', sameOriginGuard(deps.publicOrigin));
 
   app.get('/healthz', async (c) => {
     try {

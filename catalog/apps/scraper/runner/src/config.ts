@@ -10,6 +10,9 @@ export interface Config {
   host: string;
   port: number;
   allowedClients: ClientPolicy;
+  // The scraper route's public origin, from SEALED_PUBLIC_URL_SCRAPER (set by the composer,
+  // integration brief item 8). State-changing browser requests must come from exactly this origin.
+  publicOrigin: string | undefined;
   databaseUrl: string;
   dbPassword: string | undefined;
   // sealed-egress. Undefined only when SCRAPER_ALLOW_NO_PROXY=1 (local development).
@@ -51,6 +54,23 @@ function httpUrl(name: string, value: string): string {
     throw new ConfigError(`${name} must be an http or https URL`);
   }
   return value;
+}
+
+// SEALED_PUBLIC_URL_<ROUTE> is "https://<host>" with no path or trailing slash; plain http is
+// accepted for local development.
+export function publicOrigin(env: Env): string | undefined {
+  const raw = env.SEALED_PUBLIC_URL_SCRAPER;
+  if (raw === undefined || raw === '') return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ConfigError('SEALED_PUBLIC_URL_SCRAPER is not a valid URL');
+  }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.origin !== raw.replace(/\/$/, '') || url.username || url.password) {
+    throw new ConfigError('SEALED_PUBLIC_URL_SCRAPER must be a scheme and host with no path, for example https://scraper.example.com');
+  }
+  return url.origin;
 }
 
 export function resolveProxyUrl(env: Env): string | undefined {
@@ -104,6 +124,7 @@ export function loadConfig(env: Env = process.env, readFile = (p: string) => rea
     host: env.HOST ?? '0.0.0.0',
     port: int(env, 'PORT', 8080, 1, 65535),
     allowedClients,
+    publicOrigin: publicOrigin(env),
     databaseUrl,
     dbPassword: readPassword(env, readFile),
     proxyUrl,

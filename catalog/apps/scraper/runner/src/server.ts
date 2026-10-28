@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   });
   await manager.start();
 
-  const app = createApp({ store, runs: manager, crawlers, log, clients: config.allowedClients });
+  const app = createApp({ store, runs: manager, crawlers, log, clients: config.allowedClients, publicOrigin: config.publicOrigin });
   const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host });
   log.info('scraper-runner listening', {
     port: config.port,

@@ -118,6 +118,30 @@ describe('POST /api/v1/jobs', () => {
   });
 });
 
+describe('public origin (SEALED_PUBLIC_URL_SCRAPER)', () => {
+  const ORIGIN = 'https://scraper.34-1-2-3.sslip.io';
+  beforeEach(() => {
+    store = new MemoryRunStore();
+    runs = new FakeRuns(store);
+    peer = '172.30.0.4';
+    app = createApp({ store, runs, crawlers: ['cheerio'], remoteAddress: () => peer, publicOrigin: ORIGIN });
+  });
+
+  it('accepts browser requests only from exactly the route origin', async () => {
+    const host = 'scraper.34-1-2-3.sslip.io';
+    expect((await postJson('/api/v1/jobs', JOB, { origin: ORIGIN, host })).status).toBe(201);
+    // Same host name, another scheme or port, or a forged Host header: all refused.
+    for (const origin of ['http://scraper.34-1-2-3.sslip.io', 'https://scraper.34-1-2-3.sslip.io:8443', 'https://evil.example', 'null']) {
+      expect((await postJson('/api/v1/jobs', JOB, { origin, host: new URL(origin === 'null' ? ORIGIN : origin).host })).status, origin).toBe(403);
+    }
+    expect((await postJson('/api/v1/jobs', JOB, { 'sec-fetch-site': 'cross-site', origin: ORIGIN })).status).toBe(403);
+    // Scripts send no Origin and are unaffected; safe methods are never checked.
+    expect((await postJson('/api/v1/jobs', JOB)).status).toBe(201);
+    expect((await app.request('/api/v1/runs', { headers: { origin: 'https://evil.example' } })).status).toBe(200);
+    expect(runs.submitted).toHaveLength(2);
+  });
+});
+
 describe('client allowlist', () => {
   it('refuses every other container on the apps network, for the API and the UI', async () => {
     peer = '172.30.0.16';

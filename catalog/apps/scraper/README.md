@@ -13,7 +13,7 @@ bugs inside apps, or a cloud provider with physical access.
 
 | service | image | role |
 |---|---|---|
-| `scraper-runner` | `scraper-runner-playwright` (built from `images/scraper-runner-playwright`) | API, UI, crawlers; port 8080, route `scraper` behind the password gate |
+| `scraper-runner` | `scraper-runner-playwright` (built from `images/scraper-runner-playwright`) | API, UI, crawlers; port 8080, route `scraper` behind the Sealed gate |
 | `scraper-db` | `postgres:17.11-alpine` by digest | runs, items, events; volume `scraper-db-data` on the encrypted data disk |
 
 - Egress: none by default (`egress.yaml`). Add the sites you want to crawl to `egressAdditions.scraper`
@@ -21,9 +21,14 @@ bugs inside apps, or a cloud provider with physical access.
   goes through sealed-egress (`HTTP_PROXY`); the runner refuses to start without it.
 - Access: only Caddy may call the runner. It checks the socket peer against `SCRAPER_ALLOWED_CLIENTS`
   (the fragment sets `172.30.0.4`, Caddy's fixed apps-network address) and refuses everything else with
-  403, so another app on the apps network cannot skip the password gate, read results or use the scraper
-  to reach sites its own egress rules do not allow. `/healthz` stays open.
-- Secrets: `SCRAPER_DB_PASSWORD` (generated, `hex32`), used by both services. It never leaves the VM. The
+  403, so another app's primary service on the shared apps network cannot skip the gate, read results or
+  use the scraper to reach sites its own egress rules do not allow. `scraper-db` is only on the app's own
+  network `app-scraper` (D-041). `/healthz` stays open.
+- Gate: the route is behind Sealed's gate (Caddy `forward_auth` to sealed-agent, D-044). Log in once
+  with Basic auth (user `sealed`, the gate password), then send the `sealed_gate` cookie the gate sets:
+  `curl -c jar -u "sealed:$GATE_PASSWORD" https://scraper.<ip>.sslip.io/healthz`, then `curl -b jar ...`.
+- Secrets: `SCRAPER_DB_PASSWORD` (generated, `hex32`), listed by both services, each of which gets a
+  bind mount of exactly that file (D-042). It never leaves the VM. The
   runner removes it from its environment once read, and Firefox starts with an allowlisted environment
   (`HOME`, `PATH`, locale, `XDG_*`, `PLAYWRIGHT_BROWSERS_PATH`, fontconfig), so the browser never holds it.
 - Metering: unit `pages`, source `callback`. Each successful page (final status below 400, item stored)
@@ -91,7 +96,10 @@ scraped text as a formula (OWASP CSV injection). Exports stream from Postgres pa
 The UI at `/` has a job form, the run list, and a run page with items, events, export links and stop or
 delete buttons. It uses no JavaScript, is served with a CSP that forbids scripts and framing, and renders all
 scraped text escaped. State-changing requests that a browser marks cross-site, or whose `Origin` is not this
-host, are refused, because the gate's basic auth credentials travel with cross-site requests.
+host, are refused, because a browser keeps sending the gate's Basic credentials, also on requests
+another site starts. The composer sets `SEALED_PUBLIC_URL_SCRAPER` (`https://scraper.<ip>.sslip.io` or
+the custom domain); with it the runner requires exactly that `Origin`, scheme and port included, and
+without it (local development) the request's host.
 
 ## robots.txt
 
@@ -187,6 +195,12 @@ The Postgres tests start a throwaway PostgreSQL 17 cluster under the repository'
 binaries are not on the usual paths, or `SCRAPER_SKIP_PG=1` to skip them locally). On CI (`CI` set) or with
 `SCRAPER_REQUIRE_PG=1`, a missing PostgreSQL fails the run instead of skipping it. A shared store contract
 runs against both the in-memory store the API tests use and Postgres. `test/licenses.test.ts` checks the
-installed production tree against the license policy and `LICENSE-NOTICE`. Crawl tests serve the fixture site
+installed production tree against the license policy (rule 9, D-021, D-050) and `LICENSE-NOTICE`.
+`test/catalog.test.ts` has no copy of the catalog rules: it runs `go run ./runtime/composer/cmd/sealed-compose
+lint` and `compose` on this app (`test/helpers/composer.ts`; it moves to `catalog/tools/` once that exists),
+requires that lint reports only the unbuilt runner digest and missing SBOMs, and checks the composed route,
+the secrets each service exports and, with composer 1.2.0, the per-service secret mounts and
+`SEALED_PUBLIC_URL_SCRAPER`. Without Go those tests skip; with `CI` or `SEALED_REQUIRE_COMPOSER=1` they fail.
+Crawl tests serve the fixture site
 locally behind a small stand-in for sealed-egress that resolves `fixture.test` itself, so a page that arrives
 proves the request went through the proxy.

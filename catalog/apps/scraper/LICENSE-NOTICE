@@ -17,7 +17,9 @@ scraper-runner-playwright (shipped by the catalog release)
   - Node.js 24 (NodeSource build)         MIT          https://github.com/nodejs/node
   - tini 0.19.0                           MIT          https://github.com/krallin/tini
   - Ubuntu 24.04 base packages from       various OSI-approved licenses, treated as OS system
-    mcr.microsoft.com/playwright:v1.62.1-noble          components (D-021)
+    mcr.microsoft.com/playwright:v1.62.1-noble          components (D-021; the free distribution
+                                                        licenses D-050 lists are allowed for OS
+                                                        packages only)
   - npm dependencies (hono, @hono/node-server, pg, cheerio, got-scraping and their transitive
     dependencies, 176 packages in this variant). The SBOM in the release bundle
     (sbom/scraper-runner-playwright.spdx.json) lists every package. By license:
@@ -35,24 +37,24 @@ scraper-runner-playwright (shipped by the catalog release)
       (MIT OR CC0-1.0)         type-fest, used under MIT
       MIT OR Apache2           pause-stream (license list in package.json), used under MIT
       map-stream 0.1.0         MIT, from its LICENCE file (package.json declares no license)
-    Two licenses are outside rule 9 and the current D-021 additions and need an explicit
-    D-021 addition before release (proposed in docs/notes/build-apps-scraper.md):
+    Two licenses beyond rule 9 and D-021, both allowed by D-050:
       BlueOak-1.0.0            sax 1.6.1 (via @crawlee/utils). OSI-approved permissive license.
       CC-BY-4.0                caniuse-lite (via got-scraping -> header-generator ->
-                               browserslist). Browser usage data, not code; attribution:
-                               caniuse.com, Alexis Deveria, https://github.com/browserslist/caniuse-lite
+                               browserslist). Allowed for data-only packages: browser usage
+                               tables, no code; attribution: caniuse.com, Alexis Deveria,
+                               https://github.com/browserslist/caniuse-lite
 
 scraper-runner (Cheerio-only variant)
   - The same npm packages without the optional ones (@crawlee/playwright, playwright and what
     only they need), with the same license list, including sax (BlueOak-1.0.0) and caniuse-lite
     (CC-BY-4.0). Node.js 24.22.1 (MIT), tini 0.19.0 (MIT), and Debian 12 base packages from
-    node:24.22.1-bookworm-slim (OS system components, D-021).
+    node:24.22.1-bookworm-slim (OS system components, D-021 and D-050).
 
 runner/test/licenses.test.ts checks the installed production tree against this list.
 
 postgres (scraper-db)
   - PostgreSQL 17.11                      PostgreSQL License   https://www.postgresql.org/about/licence/
-  - Alpine Linux base packages            OS system components (D-021)
+  - Alpine Linux base packages            OS system components (D-021 and D-050)
 
 Not shipped
 -----------
