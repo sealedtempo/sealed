@@ -54,6 +54,8 @@ type harnessOpts struct {
 	customer    *[20]byte
 	chain       keybroker.Chain
 	bundles     keybroker.BundleSource
+	// edit changes the broker config.
+	edit func(c *keybroker.Config)
 }
 
 var (
@@ -75,7 +77,8 @@ func simVerifier(t testing.TB) *attest.Verifier {
 
 func newHarness(t testing.TB, w *kbtest.World, o harnessOpts) *harness {
 	t.Helper()
-	h := &harness{w: w, log: &keybroker.MemoryLog{}, clock: &clock{t: time.Unix(1_800_000_000, 0)}}
+	// The clock starts at the wall clock (whole seconds), since the head block of a real chain carries real time.
+	h := &harness{w: w, log: &keybroker.MemoryLog{}, clock: &clock{t: time.Now().Truncate(time.Second)}}
 	h.bundles = kbtest.NewBundleServer(t)
 	for _, b := range w.Bundles {
 		h.bundles.Put(t, b)
@@ -108,15 +111,30 @@ func newHarness(t testing.TB, w *kbtest.World, o harnessOpts) *harness {
 	if o.bundles != nil {
 		deps.Bundles = o.bundles
 	}
-	cfg := keybroker.Config{Customer: kbtest.Customer, ChainID: w.Reg.ChainID(), Contracts: w.Reg.Contracts(), AllowSimulated: !o.disallowSim}
+	cfg := keybroker.Config{Customer: kbtest.Customer, ChainID: w.Reg.ChainID(), Contracts: w.Reg.Contracts(), FeeSplitter: kbtest.FeeSplitter,
+		FeeToken: kbtest.FeeToken, AllowSimulated: !o.disallowSim}
 	if o.customer != nil {
 		cfg.Customer = *o.customer
+	}
+	if o.edit != nil {
+		o.edit(&cfg)
 	}
 	h.b, err = keybroker.New(cfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = h.b.Close(context.Background()) })
 	return h
+}
+
+// flush waits for the decisions the broker logs in the background.
+func (h *harness) flush(t testing.TB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.b.Flush(ctx); err != nil {
+		t.Fatalf("decision log not flushed: %v", err)
+	}
 }
 
 func (h *harness) nonce(t testing.TB) [32]byte {
@@ -139,9 +157,12 @@ func (h *harness) attempt(t testing.TB, s *kbtest.Stack) *kbtest.Attempt {
 	return kbtest.NewAttempt(t, s, h.nonce(t))
 }
 
+// release runs one request and waits until its decision is in the log.
 func (h *harness) release(t testing.TB, a *kbtest.Attempt) *keybroker.Outcome {
 	t.Helper()
-	return h.b.Release(context.Background(), a.Body(t), "203.0.113.7")
+	out := h.b.Release(context.Background(), a.Body(t), "203.0.113.7")
+	h.flush(t)
+	return out
 }
 
 // expectAllowed requires a 200 and returns the opened plaintext.

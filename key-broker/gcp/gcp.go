@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -209,3 +210,37 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 // crc32c returns the CRC32C checksum Google APIs use for payload integrity.
 func crc32c(b []byte) uint32 { return crc32.Checksum(b, castagnoli) }
+
+// MetadataRegion returns the region of this Cloud Run instance from the metadata server
+// (instance/region answers projects/<number>/regions/<region>). host empty means $GCE_METADATA_HOST or
+// metadata.google.internal.
+func MetadataRegion(ctx context.Context, host string, c *http.Client) (string, error) {
+	if host == "" {
+		host = os.Getenv("GCE_METADATA_HOST")
+	}
+	if host == "" {
+		host = "metadata.google.internal"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+host+"/computeMetadata/v1/instance/region", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := client(c).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("metadata region: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("metadata region: HTTP %d", resp.StatusCode)
+	}
+	v := strings.TrimSpace(string(body))
+	i := strings.LastIndex(v, "/regions/")
+	if i < 0 || !regionRe.MatchString(v[i+len("/regions/"):]) {
+		return "", errors.New("metadata region: malformed answer")
+	}
+	return v[i+len("/regions/"):], nil
+}
+
+var regionRe = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+$`)

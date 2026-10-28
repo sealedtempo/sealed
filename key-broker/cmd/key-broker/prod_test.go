@@ -25,14 +25,21 @@ import (
 // SEALED_DEV_SIM=1.
 func TestProductionBuildHasNoDevOptions(t *testing.T) {
 	for _, flag := range []string{"--dev-allow-simulated", "--dev-secrets-file=x", "--dev-kms-key-file=x", "--dev-decision-log=x"} {
-		_, err := loadConfig([]string{flag}, envMap(prodEnv(map[string]string{"SEALED_DEV_SIM": "1"})), io.Discard)
+		_, err := loadConfig([]string{flag}, prodEnv(map[string]string{"SEALED_DEV_SIM": "1"}), io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
 			t.Errorf("%s: %v", flag, err)
 		}
 	}
 	// The dev environment variable alone changes nothing: plain HTTP catalogs stay refused.
-	if _, err := loadConfig([]string{"--release-asset-base", "http://127.0.0.1/x"}, envMap(prodEnv(map[string]string{"SEALED_DEV_SIM": "1"})), io.Discard); err == nil {
+	if _, err := loadConfig([]string{"--release-asset-base", "http://127.0.0.1/x"}, prodEnv(map[string]string{"SEALED_DEV_SIM": "1"}), io.Discard); err == nil {
 		t.Fatal("http catalog accepted in the production build")
+	}
+	// Nor does it unlock other chains (D-060) or tolerate unknown settings.
+	if _, err := loadConfig(nil, prodEnv(map[string]string{"SEALED_DEV_SIM": "1", "TEMPO_CHAIN_ID": "31337"}), io.Discard); err == nil {
+		t.Fatal("a local chain accepted in the production build")
+	}
+	if _, err := loadConfig(nil, prodEnv(map[string]string{"SEALED_DEV_SIM": "1", "SEALED_CUSTOMER": "0x1"}), io.Discard); err == nil {
+		t.Fatal("an unknown variable accepted in the production build")
 	}
 }
 
@@ -50,9 +57,9 @@ func TestProductionWiringRefusesSimulatedQuotes(t *testing.T) {
 		"SEALED_SECRETMANAGER_ENDPOINT": f.URL,
 		"SEALED_KMS_ENDPOINT":           f.URL,
 		"SEALED_LOGGING_ENDPOINT":       f.URL,
-		"SEALED_TEMPO_RPC":              "http://127.0.0.1:1", // never reached: the quote check fails first
+		"TEMPO_RPC_URL":                 "http://127.0.0.1:1", // never reached: the quote check fails first
 	})
-	c, err := loadConfig(nil, envMap(env), io.Discard)
+	c, err := loadConfig(nil, env, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +97,9 @@ func TestProductionWiringRefusesSimulatedQuotes(t *testing.T) {
 		if resp.StatusCode != 403 || d.Reason != keybroker.ReasonQuoteInvalid {
 			t.Fatalf("noQuote=%v: %d %s", noQuote, resp.StatusCode, body)
 		}
+	}
+	if err := a.broker.Flush(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	es := f.Entries()
 	if len(es) != 2 {

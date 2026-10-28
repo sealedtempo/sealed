@@ -79,7 +79,7 @@ func TestCoreAgentReleasesFromGoBroker(t *testing.T) {
 		secrets["_gate"].(map[string]any)["GATE_PASSWORD_BCRYPT"] != w.GateHash {
 		t.Fatalf("secrets %v", secrets)
 	}
-	if res["diskKey"] != hmacKey(w.MACKey, keybroker.DiskKeyTag, dep) || !regexp.MustCompile(`^0x[0-9a-f]{40}$`).MatchString(res["signer"].(string)) {
+	if res["diskKey"] != hmacKey(w.MACKey, keybroker.DiskKeyTag, kbtest.Customer, stackSalt(s)) || !regexp.MustCompile(`^0x[0-9a-f]{40}$`).MatchString(res["signer"].(string)) {
 		t.Fatalf("keys %v", res)
 	}
 	if d := h.log.Last(); d == nil || d.Decision != keybroker.DecisionAllowed || !d.Simulated {

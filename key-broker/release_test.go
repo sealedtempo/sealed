@@ -26,19 +26,24 @@ import (
 	"github.com/sealed-dev/sealed/verifier/attest"
 )
 
+// allowedChecks is the pipeline order. customer and config_chain run before stack_recompute, so the cheap checks
+// come before the release reads, bundle fetches and the compose.
 var allowedChecks = []string{
 	keybroker.CheckNonce, keybroker.CheckRequest, keybroker.CheckQuote, keybroker.CheckReportData, keybroker.CheckChain, keybroker.CheckImage,
-	keybroker.CheckRTMR3, keybroker.CheckComposeHash, keybroker.CheckStackRecompute, keybroker.CheckCustomer,
-	keybroker.CheckConfigChain, keybroker.CheckStackApproved, keybroker.CheckApprovalReleases, keybroker.CheckSecrets,
-	keybroker.CheckKeys, keybroker.CheckSeal,
+	keybroker.CheckRTMR3, keybroker.CheckComposeHash, keybroker.CheckCustomer, keybroker.CheckConfigChain, keybroker.CheckStackRecompute,
+	keybroker.CheckStackApproved, keybroker.CheckApprovalReleases, keybroker.CheckSecrets, keybroker.CheckKeys, keybroker.CheckSeal,
 }
 
-func hmacKey(key []byte, tag string, id [32]byte) string {
+// hmacKey is HMAC(key, tag || customer || salt) (D-058).
+func hmacKey(key []byte, tag string, customer common.Address, salt string) string {
 	h := hmac.New(sha256.New, key)
 	h.Write([]byte(tag))
-	h.Write(id[:])
+	h.Write(customer[:])
+	h.Write(common.FromHex(salt))
 	return "0x" + hex.EncodeToString(h.Sum(nil))
 }
+
+func stackSalt(s *kbtest.Stack) string { return s.Config["salt"].(string) }
 
 // TestReleaseHappyPath boots a simulated stack against the registries (in memory and the real contracts on anvil)
 // and opens the release like sealed-agent does.
@@ -66,8 +71,9 @@ func TestReleaseHappyPath(t *testing.T) {
 			if !mapsEqual(pt.Secrets, want) {
 				t.Fatalf("secrets %v, want %v (SMTP_PASSWORD is optional and not stored)", pt.Secrets, want)
 			}
-			if pt.DiskKey != hmacKey(w.MACKey, "sealed/disk/v1", dep) || pt.SignerSeed != hmacKey(w.MACKey, "sealed/signer/v1", dep) {
-				t.Fatalf("derived keys differ from HMAC(key, tag || deploymentId)")
+			if pt.DiskKey != hmacKey(w.MACKey, "sealed/disk/v2", kbtest.Customer, stackSalt(notes)) ||
+				pt.SignerSeed != hmacKey(w.MACKey, "sealed/signer/v2", kbtest.Customer, stackSalt(notes)) {
+				t.Fatalf("derived keys differ from HMAC(key, tag || customer || salt)")
 			}
 			if w.Secrets.Reads("sealed-unrelated-NOT_IN_A_STACK") != 0 {
 				t.Fatal("a secret no manifest names was read")
@@ -91,7 +97,7 @@ func TestReleaseHappyPath(t *testing.T) {
 			hs := d.Hashes
 			if hs.StackHash != notes.Result.StackHash.Hex() || hs.ConfigHash != notes.Result.ConfigHash.Hex() || hs.DeploymentID != dep.Hex() ||
 				hs.ComposeHash != hs.StackHash || hs.Customer != strings.ToLower(kbtest.Customer.Hex()) || hs.QuoteHash == "" ||
-				hs.MeasurementsHash == "" || hs.RTMR3 == "" || hs.Nonce != "0x"+hex.EncodeToString(a.Nonce[:]) || hs.BlockNumber == 0 ||
+				hs.MeasurementsHash == "" || hs.RTMR3 == "" || hs.Nonce != "0x"+hex.EncodeToString(a.Nonce[:]) || hs.BlockNumber == 0 || hs.BlockTime == 0 ||
 				len(hs.ReleaseIDs) != 1 || hs.ImageID != "0x"+hex.EncodeToString(w.SimImage[:]) {
 				t.Fatalf("hashes %+v", hs)
 			}
@@ -113,16 +119,29 @@ func TestReleaseHappyPath(t *testing.T) {
 				t.Fatal("derived keys changed across boots")
 			}
 
-			// A two-app stack releases each app's secrets under its own name.
+			// A two-app stack releases each app's secrets under its own name. With the same salt it is an upgrade of the
+			// same deployment line: another stackHash and deploymentId, the same disk key and enclave signer (D-058).
 			both := w.Compose(t, kbtest.StackOptions{Apps: []string{"notes", "llm-gateway"}})
 			w.Approve(t, both)
 			a3 := h.attempt(t, both)
-			pt3 := expectAllowed(t, h.release(t, a3), a3)
+			out3 := h.release(t, a3)
+			pt3 := expectAllowed(t, out3, a3)
 			if pt3.Secrets["llm-gateway"]["MASTER_KEY"] != "sk-gateway-master" || pt3.Secrets["notes"]["APP_SECRET"] != "notes-app-secret" {
 				t.Fatalf("two-app secrets %v", pt3.Secrets)
 			}
-			if pt3.DiskKey == pt.DiskKey {
-				t.Fatal("two deployments share a disk key")
+			if out3.Body.(*keybroker.ReleaseResponse).DeploymentID == resp.DeploymentID {
+				t.Fatal("the upgraded stack has the same deploymentId")
+			}
+			if pt3.DiskKey != pt.DiskKey || pt3.SignerSeed != pt.SignerSeed {
+				t.Fatal("an upgrade with the same salt changed the disk key or the enclave signer")
+			}
+			// A new salt is a fresh deployment line: a fresh disk and signer.
+			fresh := w.Compose(t, kbtest.StackOptions{Edit: func(c *composer.Config) { c.Salt = "0x" + strings.Repeat("a5", 32) }})
+			w.Approve(t, fresh)
+			a4 := h.attempt(t, fresh)
+			pt4 := expectAllowed(t, h.release(t, a4), a4)
+			if pt4.DiskKey == pt.DiskKey || pt4.SignerSeed == pt.SignerSeed {
+				t.Fatal("two salts share a disk key or signer seed")
 			}
 			// Bundles are fetched once and then served from the content-addressed cache.
 			if n := h.bundles.Hits(t, "notes", w.Bundles["notes"].Version()); n != 1 {
@@ -286,6 +305,12 @@ func TestDenials(t *testing.T) {
 			}})
 			w.Approve(t, otherRegistry)
 			unpublishedStack := w.Compose(t, kbtest.StackOptions{Bundles: map[string]*composer.Bundle{"notes": unpublished}})
+			otherSplitter := w.Compose(t, kbtest.StackOptions{Edit: func(c *composer.Config) {
+				c.Contracts.FeeSplitter = "0x00000000000000000000000000000000000000f5"
+			}})
+			w.Approve(t, otherSplitter)
+			otherToken := w.Compose(t, kbtest.StackOptions{Edit: func(c *composer.Config) { c.FeeToken = "0x20c0000000000000000000000000000000000000" }})
+			w.Approve(t, otherToken)
 
 			gce, err := attest.TrimQuote(readTDXQuote(t, "v4_gce_cos113"))
 			if err != nil {
@@ -311,6 +336,7 @@ func TestDenials(t *testing.T) {
 				{name: "nonce never issued", status: s403, reason: keybroker.ReasonBadNonce, check: keybroker.CheckNonce,
 					build: func(t *testing.T, h *harness) *kbtest.Attempt { return kbtest.NewAttempt(t, base, randomNonce(t)) }},
 				{name: "nonce expired", status: s403, reason: keybroker.ReasonBadNonce, check: keybroker.CheckNonce,
+					opts: &harnessOpts{}, // its own clock: moving the shared one would make every later head look stale
 					build: func(t *testing.T, h *harness) *kbtest.Attempt {
 						a := h.attempt(t, base)
 						h.clock.advance(keybroker.NonceLifetime)
@@ -472,6 +498,11 @@ func TestDenials(t *testing.T) {
 				{name: "stack of another customer", status: s403, reason: keybroker.ReasonCustomerMismatch, check: keybroker.CheckCustomer, build: attempt(foreign)},
 				{name: "config names another chain", status: s403, reason: keybroker.ReasonStackNotApproved, check: keybroker.CheckConfigChain, build: attempt(otherChain)},
 				{name: "config names another DeploymentRegistry", status: s403, reason: keybroker.ReasonStackNotApproved, check: keybroker.CheckConfigChain, build: attempt(otherRegistry)},
+				{name: "config names another FeeSplitter", status: s403, reason: keybroker.ReasonStackNotApproved, check: keybroker.CheckConfigChain, build: attempt(otherSplitter)},
+				{name: "config names another fee token", status: s403, reason: keybroker.ReasonStackNotApproved, check: keybroker.CheckConfigChain, build: attempt(otherToken)},
+				{name: "image approved but not in the customer's allowlist", status: s403, reason: keybroker.ReasonImageNotApproved, check: keybroker.CheckImage,
+					opts:  &harnessOpts{edit: func(c *keybroker.Config) { c.AllowedImages = [][32]byte{otherImage} }},
+					build: attempt(base)},
 				// approval
 				{name: "never approved", status: s403, reason: keybroker.ReasonStackNotApproved, check: keybroker.CheckStackApproved, build: attempt(never)},
 				{name: "approval revoked", status: s403, reason: keybroker.ReasonStackNotApproved, check: keybroker.CheckStackApproved, build: attempt(revoked)},
@@ -500,6 +531,7 @@ func TestDenials(t *testing.T) {
 					var out *keybroker.Outcome
 					if tc.raw != nil {
 						out = h.b.Release(context.Background(), tc.raw, "")
+						h.flush(t)
 					} else {
 						out = h.release(t, tc.build(t, h))
 					}
@@ -645,16 +677,16 @@ func TestUnavailable(t *testing.T) {
 		expectDenied(t, out, s503, keybroker.ReasonUnavailable)
 	})
 	t.Run("RPC down", func(t *testing.T) {
-		mc := kbtest.NewMemChain(4217)
+		mc := kbtest.NewMemChain(kbtest.MemChainID)
 		mc.FailReads = errors.New("connection refused")
 		out := run(t, harnessOpts{chain: mc}, nil)
 		expectDenied(t, out, s503, keybroker.ReasonUnavailable)
 	})
 	t.Run("RPC serves another chain", func(t *testing.T) {
 		out := run(t, harnessOpts{chain: kbtest.NewMemChain(1)}, nil)
-		d := expectDenied(t, out, s503, keybroker.ReasonUnavailable)
-		if !strings.Contains(d.Detail, "chain 1") {
-			t.Fatalf("detail %q", d.Detail)
+		d := expectDenied(t, out, s503, keybroker.ReasonChainStale)
+		if !strings.Contains(d.Detail, "chain 1") || out.RetryAfter == 0 {
+			t.Fatalf("detail %q retry %d", d.Detail, out.RetryAfter)
 		}
 	})
 	t.Run("decision log down: an allowed release is withheld", func(t *testing.T) {
@@ -682,6 +714,7 @@ func TestReleaseDeadline(t *testing.T) {
 	defer cancel()
 	out := h.b.Release(ctx, h.attempt(t, s).Body(t), "")
 	expectDenied(t, out, http.StatusServiceUnavailable, keybroker.ReasonUnavailable)
+	h.flush(t)
 	if h.log.Last() == nil {
 		t.Fatal("decision not logged after the deadline")
 	}
@@ -706,16 +739,23 @@ func TestBrokerConfigValidation(t *testing.T) {
 	deps := keybroker.Deps{Nonces: keybroker.NewNonceStore(keybroker.NonceOptions{}), Quotes: simVerifier(t), Chain: w.Reg.Chain(),
 		Bundles: w.Source, Secrets: w.Secrets, MAC: failingMAC{}, Log: &keybroker.MemoryLog{}}
 	for name, mutate := range map[string]func(c *keybroker.Config, d *keybroker.Deps){
-		"no customer":  func(c *keybroker.Config, d *keybroker.Deps) { c.Customer = common.Address{} },
-		"no chain id":  func(c *keybroker.Config, d *keybroker.Deps) { c.ChainID = 0 },
-		"no registry":  func(c *keybroker.Config, d *keybroker.Deps) { c.Contracts.AppRegistry = common.Address{} },
-		"no log":       func(c *keybroker.Config, d *keybroker.Deps) { d.Log = nil },
-		"no nonces":    func(c *keybroker.Config, d *keybroker.Deps) { d.Nonces = nil },
-		"no verifier":  func(c *keybroker.Config, d *keybroker.Deps) { d.Quotes = nil },
-		"no KMS":       func(c *keybroker.Config, d *keybroker.Deps) { d.MAC = nil },
-		"no secrets":   func(c *keybroker.Config, d *keybroker.Deps) { d.Secrets = nil },
-		"no bundles":   func(c *keybroker.Config, d *keybroker.Deps) { d.Bundles = nil },
-		"no rpc chain": func(c *keybroker.Config, d *keybroker.Deps) { d.Chain = nil },
+		"no customer":     func(c *keybroker.Config, d *keybroker.Deps) { c.Customer = common.Address{} },
+		"no chain id":     func(c *keybroker.Config, d *keybroker.Deps) { c.ChainID = 0 },
+		"no registry":     func(c *keybroker.Config, d *keybroker.Deps) { c.Contracts.AppRegistry = common.Address{} },
+		"no log":          func(c *keybroker.Config, d *keybroker.Deps) { d.Log = nil },
+		"no nonces":       func(c *keybroker.Config, d *keybroker.Deps) { d.Nonces = nil },
+		"no verifier":     func(c *keybroker.Config, d *keybroker.Deps) { d.Quotes = nil },
+		"no KMS":          func(c *keybroker.Config, d *keybroker.Deps) { d.MAC = nil },
+		"no secrets":      func(c *keybroker.Config, d *keybroker.Deps) { d.Secrets = nil },
+		"no bundles":      func(c *keybroker.Config, d *keybroker.Deps) { d.Bundles = nil },
+		"no rpc chain":    func(c *keybroker.Config, d *keybroker.Deps) { d.Chain = nil },
+		"no fee splitter": func(c *keybroker.Config, d *keybroker.Deps) { c.FeeSplitter = common.Address{} },
+		"no fee token":    func(c *keybroker.Config, d *keybroker.Deps) { c.FeeToken = common.Address{} },
+		"simulated quotes on mainnet": func(c *keybroker.Config, d *keybroker.Deps) {
+			c.ChainID, c.AllowSimulated = keybroker.MainnetChainID, true
+		},
+		"head age over 5 minutes": func(c *keybroker.Config, d *keybroker.Deps) { c.MaxHeadAge = 301 * time.Second },
+		"negative head age":       func(c *keybroker.Config, d *keybroker.Deps) { c.MaxHeadAge = -time.Second },
 	} {
 		c, d := good, deps
 		mutate(&c, &d)

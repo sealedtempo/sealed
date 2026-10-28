@@ -37,8 +37,8 @@ func refStrings(refs []SecretRef) []string {
 func TestPlanSecretsSameAs(t *testing.T) {
 	bundles := map[string]*composer.Bundle{
 		"llm-gateway": fakeBundle("llm-gateway", `
-  - {name: MASTER_KEY, description: admin key, generate: sk-hex32}
-  - {name: ANTHROPIC_API_KEY, description: byok, generate: none, optional: true}
+  - {name: MASTER_KEY, description: admin key, generate: sk-hex32, share_with: [coding-agent]}
+  - {name: ANTHROPIC_API_KEY, description: byok, generate: none, optional: true, share_with: [crm, coding-agent]}
 `),
 		"coding-agent": fakeBundle("coding-agent", `
   - {name: SESSION_KEY, description: s, generate: hex32}
@@ -93,19 +93,61 @@ func TestPlanSecretsSameAs(t *testing.T) {
 	}
 }
 
+// TestPlanSecretsNeedsShareWith (D-059): a same_as reference resolves only when the referenced secret lists the
+// referencing app in share_with; listing another app, or nothing, is refused before any secret is read.
+func TestPlanSecretsNeedsShareWith(t *testing.T) {
+	ref := fakeBundle("coding-agent", "  - {name: LLM_KEY, description: k, generate: none, same_as: llm-gateway/APP_KEY_CODING_AGENT}\n")
+	for name, c := range map[string]struct {
+		gateway string
+		ok      bool
+	}{
+		"no share_with":            {"  - {name: APP_KEY_CODING_AGENT, description: k, generate: hex32}\n", false},
+		"empty share_with":         {"  - {name: APP_KEY_CODING_AGENT, description: k, generate: hex32, share_with: []}\n", false},
+		"shared with another app":  {"  - {name: APP_KEY_CODING_AGENT, description: k, generate: hex32, share_with: [scraper]}\n", false},
+		"shared with coding-agent": {"  - {name: APP_KEY_CODING_AGENT, description: k, generate: hex32, share_with: [coding-agent]}\n", true},
+	} {
+		refs, err := PlanSecrets([]string{"coding-agent", "llm-gateway"}, map[string]*composer.Bundle{
+			"coding-agent": ref, "llm-gateway": fakeBundle("llm-gateway", c.gateway)})
+		if c.ok {
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+				continue
+			}
+			if got := refStrings(refs); got[0] != "coding-agent/LLM_KEY<-sealed-llm-gateway-APP_KEY_CODING_AGENT" {
+				t.Errorf("%s: plan %v", name, got)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), "share_with") {
+			t.Errorf("%s: %v, want a share_with refusal", name, err)
+		}
+	}
+}
+
 func TestPlanSecretsRejectsBadReferences(t *testing.T) {
 	for name, c := range map[string]struct {
 		apps    []string
 		bundles map[string]*composer.Bundle
 	}{
+		"chain through a reference": {[]string{"a1", "b22", "c33"}, map[string]*composer.Bundle{
+			"a1":  fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: b22/K}\n"),
+			"b22": fakeBundle("b22", "  - {name: K, description: d, generate: none, same_as: c33/K, share_with: [a1]}\n"),
+			"c33": fakeBundle("c33", "  - {name: K, description: d, generate: none, share_with: [b22, a1]}\n")}},
+		"reference to its own app": {[]string{"a1"}, map[string]*composer.Bundle{
+			"a1": fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: a1/L}\n  - {name: L, description: d, generate: none, share_with: [a1]}\n")}},
+		"required refers to optional": {[]string{"a1", "b22"}, map[string]*composer.Bundle{
+			"a1":  fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: b22/K}\n"),
+			"b22": fakeBundle("b22", "  - {name: K, description: d, generate: none, optional: true, share_with: [a1]}\n")}},
+		"share_with entry is not an app id": {[]string{"a1"}, map[string]*composer.Bundle{
+			"a1": fakeBundle("a1", "  - {name: K, description: d, generate: none, share_with: [\"Not An App\"]}\n")}},
 		"app outside the stack": {[]string{"a1"}, map[string]*composer.Bundle{
 			"a1": fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: zz9/K}\n")}},
 		"undeclared secret": {[]string{"a1", "b22"}, map[string]*composer.Bundle{
 			"a1":  fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: b22/NOPE}\n"),
 			"b22": fakeBundle("b22", "  - {name: K, description: d, generate: none}\n")}},
 		"cycle": {[]string{"a1", "b22"}, map[string]*composer.Bundle{
-			"a1":  fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: b22/K}\n"),
-			"b22": fakeBundle("b22", "  - {name: K, description: d, generate: none, same_as: a1/K}\n")}},
+			"a1":  fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: b22/K, share_with: [b22]}\n"),
+			"b22": fakeBundle("b22", "  - {name: K, description: d, generate: none, same_as: a1/K, share_with: [a1]}\n")}},
 		"malformed same_as": {[]string{"a1"}, map[string]*composer.Bundle{
 			"a1": fakeBundle("a1", "  - {name: K, description: d, generate: none, same_as: K}\n")}},
 		"bad secret name": {[]string{"a1"}, map[string]*composer.Bundle{

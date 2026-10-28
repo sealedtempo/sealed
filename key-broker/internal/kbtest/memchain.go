@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -28,6 +29,8 @@ type MemChain struct {
 
 	// FailReads makes every registry read fail (an RPC outage).
 	FailReads error
+	// HeadLag makes the head block that much older than the wall clock (a lagging or stuck RPC, D-060).
+	HeadLag time.Duration
 }
 
 // NewMemChain returns an empty chain with the given id.
@@ -49,14 +52,22 @@ func (m *MemChain) ChainID(context.Context) (uint64, error) {
 	return m.id, nil
 }
 
-// Pin implements keybroker.Chain. Reads are not snapshotted; tests do not change state during a release.
-func (m *MemChain) Pin(context.Context) (keybroker.Registry, uint64, error) {
+// Pin implements keybroker.Chain. Reads are not snapshotted; tests do not change state during a release. The head's
+// timestamp is the wall clock minus HeadLag.
+func (m *MemChain) Pin(context.Context) (keybroker.Registry, keybroker.Head, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.FailReads != nil {
-		return nil, 0, m.FailReads
+		return nil, keybroker.Head{}, m.FailReads
 	}
-	return m, m.block, nil
+	return m, keybroker.Head{Number: m.block, Time: time.Now().Add(-m.HeadLag).Truncate(time.Second)}, nil
+}
+
+// SetHeadLag sets HeadLag.
+func (m *MemChain) SetHeadLag(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.HeadLag = d
 }
 
 func (m *MemChain) bump() { m.block++ }

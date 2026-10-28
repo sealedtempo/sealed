@@ -3,36 +3,64 @@ package keybroker
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
+// TestDeriveKeys pins the D-058 derivation: HMAC(tag || customer || salt) with the v2 tags, independent of the
+// stack (so upgrades keep the disk), separated by customer, salt and tag.
 func TestDeriveKeys(t *testing.T) {
-	m, err := NewLocalHMAC(bytes.Repeat([]byte{1}, 32))
+	key := bytes.Repeat([]byte{1}, 32)
+	m, err := NewLocalHMAC(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := DeriveKeys(context.Background(), m, [32]byte{1})
+	alice := common.HexToAddress("0x00000000000000000000000000000000000a11ce")
+	bob := common.HexToAddress("0x0000000000000000000000000000000000000b0b")
+	a, err := DeriveKeys(context.Background(), m, alice, [32]byte{1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := DeriveKeys(context.Background(), m, [32]byte{1})
-	c, _ := DeriveKeys(context.Background(), m, [32]byte{2})
+	b, _ := DeriveKeys(context.Background(), m, alice, [32]byte{1})
+	c, _ := DeriveKeys(context.Background(), m, alice, [32]byte{2})
+	d, _ := DeriveKeys(context.Background(), m, bob, [32]byte{1})
 	if a != b {
 		t.Fatal("not deterministic")
 	}
-	if a.DiskKey == c.DiskKey || a.SignerSeed == c.SignerSeed || a.DiskKey == a.SignerSeed {
-		t.Fatal("keys not separated by deploymentId and tag")
+	if a.DiskKey == c.DiskKey || a.SignerSeed == c.SignerSeed || a.DiskKey == d.DiskKey || a.SignerSeed == d.SignerSeed || a.DiskKey == a.SignerSeed {
+		t.Fatal("keys not separated by salt, customer and tag")
+	}
+	// The exact construction: tag || 20-byte customer || 32-byte salt.
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte("sealed/disk/v2"))
+	h.Write(alice[:])
+	h.Write(append([]byte{1}, make([]byte, 31)...))
+	if !bytes.Equal(a.DiskKey[:], h.Sum(nil)) {
+		t.Fatal("diskKey is not HMAC(sealed/disk/v2 || customer || salt)")
+	}
+	h = hmac.New(sha256.New, key)
+	h.Write([]byte("sealed/signer/v2"))
+	h.Write(alice[:])
+	h.Write(append([]byte{1}, make([]byte, 31)...))
+	if !bytes.Equal(a.SignerSeed[:], h.Sum(nil)) {
+		t.Fatal("signerSeed is not HMAC(sealed/signer/v2 || customer || salt)")
 	}
 	if _, err := NewLocalHMAC(make([]byte, 16)); err == nil {
 		t.Fatal("short key accepted")
 	}
-	if _, err := DeriveKeys(context.Background(), constMAC{}, [32]byte{}); err == nil {
+	if _, err := DeriveKeys(context.Background(), constMAC{}, alice, [32]byte{}); err == nil {
 		t.Fatal("a MAC that ignores its input was accepted")
+	}
+	if _, err := DeriveKeys(context.Background(), m, common.Address{}, [32]byte{1}); err == nil {
+		t.Fatal("derivation without a customer accepted")
 	}
 }
 

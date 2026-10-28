@@ -9,7 +9,7 @@ runs a stack the customer approved onchain. The platform has no access to it.
 | method | path | answer |
 |---|---|---|
 | GET | `/v1/nonce` | `{"nonce":"0x<32 bytes>","expiresAt":<unix>}`. Single use, 5 minute lifetime. |
-| POST | `/v1/release` | 200 `{"stackHash","deploymentId","enc","ciphertext"}`; 403 `{"decision":"denied","reason","detail"}`; see below |
+| POST | `/v1/release` | 200 `{"stackHash","deploymentId","enc","ciphertext"}`; 403 `{"decision":"denied","reason","detail"}`; 429 and 503 with `Retry-After`; see below |
 | GET | `/healthz` | `{"status":"ok"}` |
 
 Request body (strict JSON: unknown, duplicate or differently cased keys are refused):
@@ -30,67 +30,104 @@ every check with its data.
 |---|---|
 | `nonce`: issued here, unused, unexpired (consumed before anything else, so every attempt burns it) | `bad_nonce` |
 | `request`: well-formed, sizes bounded | `bad_request` (400) |
-| `quote`: TDX quote v4/v5 verified with Intel PCS collateral; no quote at all is refused | `quote_invalid` |
+| `slot`: a release slot is free (taken only now, after the body was read and validated) | 429 `rate_limited` |
+| `quote`: the PCK chain in the quote ends at the Intel SGX Root CA (checked before any collateral fetch) | `quote_invalid` |
+| `quote`: TDX quote v4/v5 verified with Intel PCS collateral; no quote at all is refused | `quote_invalid`; 503 `unavailable` when PCS cannot serve collateral |
 | `quote`: TCB status allowed (`UpToDate`, `SWHardeningNeeded` by default) | `tcb_status` |
 | `report_data`: `sha256("sealed/kb-release/v1" \|\| nonce \|\| ephemeralPub) \|\| 32 zero bytes` | `report_data_mismatch` |
-| `chain`: RPC serves the configured chain; every read below is pinned to one block | 503 |
+| `chain`: the RPC serves the configured chain, and its head block is at most 60 s from the broker's clock (D-060); every read below is pinned to that block | 503 `chain_stale` |
 | `image`: `getImage(imageId)` exists | `image_not_approved` |
-| `image`: `keccak256(mrtd \|\| rtmr0 \|\| rtmr1 \|\| rtmr2)` equals its measurementsHash | `measurements_mismatch` |
+| `image`: `keccak256(mrtd \|\| rtmr0 \|\| rtmr1 \|\| rtmr2)` equals its measurementsHash; MRCONFIGID and MROWNERCONFIG are zero | `measurements_mismatch` |
 | `image`: not a debug image, and the TD has no debug, migratable or reserved attribute bits | `image_debug` |
-| `image`: `isApprovedImage(imageId)` | `image_not_approved` |
+| `image`: `isApprovedImage(imageId)`, and in `--allowed-images` when that is set | `image_not_approved` |
 | `rtmr3`: the event log replays to the quote's RTMR3 with exactly the Sealed event sequence | `rtmr3_replay` |
 | `compose_hash`: the compose-hash event equals `sha256(appCompose)` | `compose_mismatch` |
-| `stack_recompute`: config parses for this composer version, `releaseIds` equal `config.apps[].releaseId`, each release is published for that app | `compose_mismatch` |
+| `customer`: the config parses for this composer version and `config.customer` is the bootstrap customer | `compose_mismatch`, `customer_mismatch` |
+| `config_chain`: `config.chainId`, `config.contracts` (registries and feeSplitter) and `config.feeToken` name this broker's chain and contracts | `stack_not_approved` |
+| `stack_recompute`: `releaseIds` equal `config.apps[].releaseId`, each release is published for that app | `compose_mismatch` |
 | `stack_recompute`: each bundle, fetched by the release asset URL rule, has the onchain bundleHash | `bundle_hash_mismatch` |
 | `stack_recompute`: the composer recomputes `appCompose` byte for byte | `compose_mismatch` |
-| `customer`: `config.customer` is the bootstrap customer | `customer_mismatch` |
-| `config_chain`: `config.chainId` and `config.contracts` name this broker's chain and registries | `stack_not_approved` |
 | `stack_approved`: `DeploymentRegistry.isStackApproved(customer, stackHash)` | `stack_not_approved` |
 | `approval_releases`: the approval's releaseIds equal the config's as a set, and its imageId equals `config.imageId` and the request's (D-014) | `stack_not_approved` |
 | `secrets`: every secret the stack's manifests name is stored (optional ones may be missing) | 503 `secret_missing` / `secret_invalid` |
 | `keys`: `diskKey` and `signerSeed` from the KMS HMAC key | 503 |
 | `seal`: HPKE to `ephemeralPub` | `bad_request` for an unusable key |
 
-Dependency failures (RPC, catalog, Secret Manager, KMS) answer 503 `unavailable`, so the agent retries. An allowed
-release is answered only after its decision was written to Cloud Logging; if that write fails the answer is 503
-`decision_log_unavailable` and nothing is released.
+Dependency failures (RPC, catalog, Intel PCS, Secret Manager, KMS) answer 503 `unavailable`, so the agent retries.
+A stale or foreign chain answers 503 `chain_stale` (recorded as a denial). An allowed release is answered only after
+its decision was written to Cloud Logging; if that write fails the answer is 503 `decision_log_unavailable` and
+nothing is released. Every other decision is written in the background.
+
+## Resource limits (D-066)
+
+- Per client address (the last `X-Forwarded-For` hop, which Cloud Run appends): 2 release requests per second with a
+  burst of 20, and four times that for nonces (`--client-rate`, negative turns it off). 429 `rate_limited` beyond.
+- The body is read before any slot is taken, with a 10 s deadline and a 2 MiB limit (413 beyond).
+- At most 4 bodies are parsed at a time; at most `--max-in-flight` (8) releases run their checks at a time.
+- Requests that fail before their nonce is accepted and their body validated are junk: answered at once, written to
+  the decision log in the background in truncated form (names, reasons and details of at most 200 bytes, flagged
+  `truncated`). The background queue is bounded; a full queue drops entries and the next written entry carries the
+  count in `suppressed`. Junk never takes a release slot.
+- The Go soft memory limit is 384 MiB unless `GOMEMLIMIT` is set.
+- Nonces: at most `--nonce-capacity` (100,000) live, oldest evicted first. `--nonce-journal <file>` keeps live and
+  consumed nonces across a restart; it helps only on durable storage (Cloud Run's own filesystem is memory).
 
 ## Secrets
 
 Only secrets named in the manifests of the stack's releases are read, from Secret Manager in the bootstrap project:
 `sealed-<appId>-<NAME>` for app secrets and `sealed-gate-password` for the bcrypt hash of the password gate (released
 as `_gate/GATE_PASSWORD_BCRYPT`; a value that is not a bcrypt hash is refused). A manifest secret with
-`same_as: "<appId>/<NAME>"` (D-043) is read from that app's secret and released under the referencing app's name;
-the referenced app must be in the stack and declare that secret.
+`same_as: "<appId>/<NAME>"` (D-043) is read from that app's secret and released under the referencing app's name.
+The referenced app must be another app of the stack, declare that secret itself (no chains) and list the
+referencing app in that secret's `share_with` (D-059); a required secret cannot refer to an optional one.
 
-`diskKey = HMAC("sealed/disk/v1" || deploymentId)` and `signerSeed = HMAC("sealed/signer/v1" || deploymentId)` with
-the bootstrap's Cloud KMS `HMAC_SHA256` key (`cryptoKeyVersions.macSign`), so the root key never leaves KMS and a
-rebooted deployment gets the same disk key and enclave signer. Never rotate or destroy that key version.
+`diskKey = HMAC("sealed/disk/v2" || customer || salt)` and `signerSeed = HMAC("sealed/signer/v2" || customer || salt)`
+(D-058; customer is the 20-byte address, salt the config's 32 bytes) with the bootstrap's Cloud KMS `HMAC_SHA256` key
+(`cryptoKeyVersions.macSign`), so the root key never leaves KMS. A rebooted deployment, and an upgraded stack that
+keeps its config salt (new releases, a new composer version), get the same disk key and enclave signer; a new salt
+gives a fresh disk. Never rotate or destroy that key version.
 
 ## Configuration (set by the customer at bootstrap)
 
-| flag | environment | default |
+The environment names are exactly the ones the bootstrap module sets (`infra/terraform/customer-bootstrap`,
+`key_broker.tf`; `TestBootstrapEnvContract` compares the two). The production build refuses to start with any other
+`SEALED_*` or `TEMPO_*` variable, including the names an earlier broker read (`SEALED_CUSTOMER`, `SEALED_TEMPO_RPC`,
+`SEALED_CHAIN_ID`, `SEALED_KMS_KEY`), so a renamed setting never falls back to a default. A dev build with
+`SEALED_DEV_SIM=1` only warns.
+
+| flag | environment (bootstrap) | default |
 |---|---|---|
-| `--customer` | `SEALED_CUSTOMER` | required |
-| `--tempo-rpc` | `SEALED_TEMPO_RPC` | `https://rpc.tempo.xyz` |
-| `--chain-id` | `SEALED_CHAIN_ID` | `4217` |
+| `--customer` | `SEALED_CUSTOMER_ADDRESS` | required |
+| `--tempo-rpc` | `TEMPO_RPC_URL` | `https://rpc.tempo.xyz` (https; plain http only to a loopback address) |
+| `--chain-id` | `TEMPO_CHAIN_ID` | `4217`; other chains only in a dev build with `SEALED_DEV_SIM=1` (D-060) |
 | `--platform-registry`, `--app-registry`, `--deployment-registry` | `SEALED_PLATFORM_REGISTRY`, `SEALED_APP_REGISTRY`, `SEALED_DEPLOYMENT_REGISTRY` | mainnet (`contracts/deployments/tempo-mainnet.json`) |
 | `--release-asset-base` | `SEALED_RELEASE_ASSET_BASE` | `https://github.com/sealedtempo/sealed/releases/download` (https only) |
 | `--project` | `SEALED_GCP_PROJECT` | required |
-| `--kms-key`, `--kms-key-version` | `SEALED_KMS_KEY`, `SEALED_KMS_KEY_VERSION` | required, version `1` |
-| `--region` | `SEALED_GCP_REGION` | `us-central1` (log resource only) |
+| `--project-number` | `SEALED_GCP_PROJECT_NUMBER` | recorded only |
+| | `SEALED_SECRET_PREFIX` | must be `sealed-` if set |
+| `--kms-key-version` | `SEALED_KMS_KEY_VERSION` | required: `projects/../locations/../keyRings/../cryptoKeys/../cryptoKeyVersions/N` |
+
+| flag | environment (optional) | default |
+|---|---|---|
+| `--fee-splitter`, `--fee-token` | `SEALED_FEE_SPLITTER`, `SEALED_FEE_TOKEN` | mainnet FeeSplitter and USDC.e |
+| `--region` | `SEALED_GCP_REGION` | the metadata server's region on Cloud Run, else `us-central1` (log resource only) |
 | `--decision-log-id` | `SEALED_DECISION_LOG_ID` | `sealed-key-broker-decisions` |
 | `--tcb-allowed`, `--tcb-advisories` | `SEALED_TCB_ALLOWED`, `SEALED_TCB_ADVISORIES` | `UpToDate,SWHardeningNeeded`, any |
 | `--max-in-flight`, `--nonce-capacity` | `SEALED_MAX_IN_FLIGHT`, `SEALED_NONCE_CAPACITY` | `8`, `100000` |
+| `--chain-max-head-age` | | `60s`, at most `5m` |
+| `--allowed-images` | | empty (every image PlatformRegistry approves) |
+| `--client-rate`, `--nonce-journal` | | `2`, none |
 | `--listen` | `PORT` | `:8080` |
 
-Optional API endpoint overrides (for example restricted VIPs): `SEALED_SECRETMANAGER_ENDPOINT`,
+Optional API endpoint overrides (for example restricted VIPs, https only): `SEALED_SECRETMANAGER_ENDPOINT`,
 `SEALED_KMS_ENDPOINT`, `SEALED_LOGGING_ENDPOINT`. Tokens come from the metadata server (`GCE_METADATA_HOST`).
 
 ## Cloud Run and IAM
 
 - One instance only (`--max-instances 1`): nonces live in memory, so a nonce issued by one instance is unknown to
   another. Ingress all and unauthenticated invocations: the attestation is the authentication.
+- Request timeout above the broker's 90 s release deadline (120 s or more); the broker bounds its own concurrency,
+  so the per-instance request concurrency can stay high (80 or more) without memory risk.
 - The broker's own service account: `roles/secretmanager.secretAccessor` on secrets named `sealed-*` (an IAM
   condition on the resource name), `roles/cloudkms.signerVerifier` on the one MAC key, `roles/logging.logWriter`.
 - The platform's deployer account gets nothing on the broker, its service account, the secrets or the key.
@@ -104,6 +141,8 @@ tags. A dev build (`-tags sealeddev`) adds `--dev-allow-simulated`, `--dev-secre
 ```sh
 make -C key-broker test       # production and dev builds; anvil tests need anvil, forge and contracts/dependencies
 make -C key-broker test-ci    # with -race; missing anvil, node or the core build fail instead of skipping
+# Local chains: anvil only mines on transactions, so its head goes stale after 60 s idle. Run it with
+# --block-time 2 (or similar) for a dev broker that stays up longer than a test.
 make -C key-broker build      # tmp/key-broker/key-broker
 make -C key-broker image      # needs a Docker daemon
 ```

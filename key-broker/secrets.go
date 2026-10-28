@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -57,12 +58,13 @@ type SecretRef struct {
 	Optional bool
 }
 
-// manifestSecret is the part of a manifest secrets[] entry the broker needs. same_as (D-043) is read from the raw
-// manifest so the broker does not depend on the composer's Manifest struct carrying it.
+// manifestSecret is the part of a manifest secrets[] entry the broker needs. same_as (D-043) and share_with (D-059) are
+// read from the raw manifest so the broker does not depend on the composer's Manifest struct carrying them.
 type manifestSecret struct {
-	Name     string `yaml:"name"`
-	Optional bool   `yaml:"optional"`
-	SameAs   string `yaml:"same_as"`
+	Name      string   `yaml:"name"`
+	Optional  bool     `yaml:"optional"`
+	SameAs    string   `yaml:"same_as"`
+	ShareWith []string `yaml:"share_with"`
 }
 
 func manifestSecrets(b *composer.Bundle) ([]manifestSecret, error) {
@@ -85,8 +87,10 @@ func manifestSecrets(b *composer.Bundle) ([]manifestSecret, error) {
 
 // PlanSecrets lists the values a release carries: every secret named in the manifests of the stack's apps (in
 // config.apps order), each under its own app, plus the gate hash. A same_as reference "<appId>/<NAME>" is read from
-// the referenced app's secret and returned under the referencing app's name (D-043); the referenced app must be in
-// the stack and declare that secret. Nothing outside the manifests is ever released.
+// the referenced app's secret and returned under the referencing app's name (D-043), but only when the referenced
+// secret opts in by listing the referencing app in its share_with (D-059). As in the composer and the CLI, the
+// referenced app must be another app of the stack that declares that secret itself (no chains), and a required
+// secret cannot refer to an optional one. Nothing outside the manifests is ever released.
 func PlanSecrets(apps []string, bundles map[string]*composer.Bundle) ([]SecretRef, error) {
 	declared := map[string]map[string]manifestSecret{}
 	for _, app := range apps {
@@ -106,22 +110,19 @@ func PlanSecrets(apps []string, bundles map[string]*composer.Bundle) ([]SecretRe
 			if _, dup := m[s.Name]; dup {
 				return nil, fmt.Errorf("%s: secret %s is declared twice", app, s.Name)
 			}
+			for _, w := range s.ShareWith {
+				if !appIDRe.MatchString(w) {
+					return nil, fmt.Errorf("%s: secret %s: share_with entry %q is not an app id", app, s.Name, w)
+				}
+			}
 			m[s.Name] = s
 		}
 		declared[app] = m
 	}
-	// resolve follows same_as chains to the secret that is actually stored.
-	var resolve func(app, name string, seen map[string]bool) (string, error)
-	resolve = func(app, name string, seen map[string]bool) (string, error) {
+	// resolve returns the Secret Manager id that holds app/name.
+	resolve := func(app, name string) (string, error) {
 		key := app + "/" + name
-		if seen[key] {
-			return "", fmt.Errorf("same_as cycle through %s", key)
-		}
-		seen[key] = true
-		s, ok := declared[app][name]
-		if !ok {
-			return "", fmt.Errorf("%s is not declared by app %s in this stack", key, app)
-		}
+		s := declared[app][name]
 		if s.SameAs == "" {
 			return SecretID(app, name), nil
 		}
@@ -129,10 +130,27 @@ func PlanSecrets(apps []string, bundles map[string]*composer.Bundle) ([]SecretRe
 		if m == nil {
 			return "", fmt.Errorf("%s: same_as %q is not <appId>/<NAME>", key, s.SameAs)
 		}
-		if _, ok := declared[m[1]]; !ok {
-			return "", fmt.Errorf("%s: same_as %s names app %s, which is not in the stack", key, s.SameAs, m[1])
+		refApp, refName := m[1], m[2]
+		if refApp == app {
+			return "", fmt.Errorf("%s: same_as %s must name another app", key, s.SameAs)
 		}
-		return resolve(m[1], m[2], seen)
+		if _, ok := declared[refApp]; !ok {
+			return "", fmt.Errorf("%s: same_as %s names app %s, which is not in the stack", key, s.SameAs, refApp)
+		}
+		ref, ok := declared[refApp][refName]
+		if !ok {
+			return "", fmt.Errorf("%s: same_as %s: app %s declares no secret %s", key, s.SameAs, refApp, refName)
+		}
+		if ref.SameAs != "" {
+			return "", fmt.Errorf("%s: same_as %s is itself a reference (same_as %s); point at the original secret", key, s.SameAs, ref.SameAs)
+		}
+		if !slices.Contains(ref.ShareWith, app) {
+			return "", fmt.Errorf("%s: same_as %s, but %s does not list %s in that secret's share_with (D-059)", key, s.SameAs, refApp, app)
+		}
+		if ref.Optional && !s.Optional {
+			return "", fmt.Errorf("%s: same_as %s is optional in %s, so the required secret %s could be missing", key, s.SameAs, refApp, name)
+		}
+		return SecretID(refApp, refName), nil
 	}
 	var refs []SecretRef
 	for _, app := range apps {
@@ -142,7 +160,7 @@ func PlanSecrets(apps []string, bundles map[string]*composer.Bundle) ([]SecretRe
 		}
 		sort.Strings(names)
 		for _, n := range names {
-			src, err := resolve(app, n, map[string]bool{})
+			src, err := resolve(app, n)
 			if err != nil {
 				return nil, err
 			}

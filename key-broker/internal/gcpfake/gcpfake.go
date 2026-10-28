@@ -41,13 +41,16 @@ type Server struct {
 	CorruptCRC  bool
 	TokenCalls  int
 	SecretCalls map[string]int
+	// Region is what the metadata server's instance/region answers (projects/<n>/regions/<Region>).
+	Region string
 }
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 // New starts the fake. keyVersion is the KMS cryptoKeyVersion name it serves.
 func New(t testing.TB, project, keyVersion string, macKey []byte) *Server {
-	s := &Server{Project: project, KeyVersion: keyVersion, MACKey: macKey, secrets: map[string][]byte{}, disabled: map[string]bool{}, SecretCalls: map[string]int{}}
+	s := &Server{Project: project, KeyVersion: keyVersion, MACKey: macKey, secrets: map[string][]byte{}, disabled: map[string]bool{}, SecretCalls: map[string]int{},
+		Region: "us-east5"}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
@@ -93,6 +96,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.TokenCalls++
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": Token, "expires_in": 3599, "token_type": "Bearer"})
+		return
+	}
+	if r.URL.Path == "/computeMetadata/v1/instance/region" {
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "missing Metadata-Flavor", http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte("projects/123456789/regions/" + s.Region))
 		return
 	}
 	if r.Header.Get("Authorization") != "Bearer "+Token {

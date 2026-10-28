@@ -26,15 +26,24 @@ import (
 
 func TestDevOptionsNeedDevSimEnv(t *testing.T) {
 	for _, flag := range []string{"--dev-allow-simulated", "--dev-secrets-file=x", "--dev-kms-key-file=x", "--dev-decision-log=x"} {
-		_, err := loadConfig([]string{flag}, envMap(prodEnv(nil)), io.Discard)
+		_, err := loadConfig([]string{flag}, prodEnv(nil), io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "SEALED_DEV_SIM=1") {
 			t.Errorf("%s without SEALED_DEV_SIM=1: %v", flag, err)
 		}
 	}
 	// The dev build without dev options behaves like production.
-	c, err := loadConfig(nil, envMap(prodEnv(map[string]string{"SEALED_DEV_SIM": "1"})), io.Discard)
+	c, err := loadConfig(nil, prodEnv(map[string]string{"SEALED_DEV_SIM": "1"}), io.Discard)
 	if err != nil || c.dev.any() {
 		t.Fatalf("%v %+v", err, c)
+	}
+	// A dev run tolerates unknown variables of the developer's shell (with a warning) and other chains.
+	c, err = loadConfig(nil, prodEnv(map[string]string{"SEALED_DEV_SIM": "1", "TEMPO_PUBLIC_RPC_URL": "https://x", "TEMPO_CHAIN_ID": "31337"}), io.Discard)
+	if err != nil || len(c.envWarnings) != 1 || c.ChainID != 31337 {
+		t.Fatalf("%v %+v", err, c)
+	}
+	// Without SEALED_DEV_SIM=1 a dev build is as strict as production.
+	if _, err := loadConfig(nil, prodEnv(map[string]string{"TEMPO_PUBLIC_RPC_URL": "https://x"}), io.Discard); err == nil {
+		t.Fatal("unknown variable accepted")
 	}
 }
 
@@ -62,11 +71,13 @@ func TestDevBinaryEndToEnd(t *testing.T) {
 	args := []string{
 		"--customer", kbtest.Customer.Hex(), "--tempo-rpc", reg.URL(), "--chain-id", strconv.FormatUint(reg.ChainID(), 10),
 		"--platform-registry", ct.PlatformRegistry.Hex(), "--app-registry", ct.AppRegistry.Hex(), "--deployment-registry", ct.DeploymentRegistry.Hex(),
+		"--fee-splitter", kbtest.FeeSplitter.Hex(), "--fee-token", kbtest.FeeToken.Hex(),
 		"--release-asset-base", bundles.Base(),
 		"--dev-allow-simulated", "--dev-secrets-file", secretsFile, "--dev-kms-key-file", keyFile, "--dev-decision-log", logFile,
 	}
-	env := envMap(map[string]string{"SEALED_DEV_SIM": "1"})
-	c, err := loadConfig(args, env, io.Discard)
+	envm := map[string]string{"SEALED_DEV_SIM": "1"}
+	env := envMap(envm)
+	c, err := loadConfig(args, envm, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,9 +124,10 @@ func TestDevBinaryEndToEnd(t *testing.T) {
 	key, _ := hex.DecodeString(strings.TrimSpace(string(keyHex)))
 	h := hmac.New(sha256.New, key)
 	h.Write([]byte(keybroker.DiskKeyTag))
-	h.Write(s.Result.DeploymentID[:])
+	h.Write(kbtest.Customer[:])
+	h.Write(common.FromHex(s.Config["salt"].(string)))
 	if pt.DiskKey != "0x"+hex.EncodeToString(h.Sum(nil)) {
-		t.Fatal("diskKey is not HMAC(dev key, sealed/disk/v1 || deploymentId)")
+		t.Fatal("diskKey is not HMAC(dev key, sealed/disk/v2 || customer || salt)")
 	}
 	logged, _ := os.ReadFile(logFile)
 	if !strings.Contains(string(logged), `"decision":"allowed"`) || !strings.Contains(string(logged), `"simulated":true`) ||

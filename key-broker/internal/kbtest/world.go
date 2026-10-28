@@ -26,6 +26,12 @@ var (
 	OtherCustomer = anvil.Addr(anvil.OtherCustomer)
 )
 
+// FeeSplitter and FeeToken are the fee contracts every test config names (Compose) and every test broker expects.
+var (
+	FeeSplitter = common.HexToAddress("0x00000000000000000000000000000000000000e4")
+	FeeToken    = common.HexToAddress("0x20c000000000000000000000b9537d11c60e8b50")
+)
+
 // GatePassword is the gate password of every test world; GateHash is its bcrypt hash as stored in Secret Manager.
 const GatePassword = "correct horse battery staple"
 
@@ -226,9 +232,9 @@ func (w *World) Compose(t testing.TB, o StackOptions) *Stack {
 			PlatformRegistry:   strings.ToLower(ct.PlatformRegistry.Hex()),
 			AppRegistry:        strings.ToLower(ct.AppRegistry.Hex()),
 			DeploymentRegistry: strings.ToLower(ct.DeploymentRegistry.Hex()),
-			FeeSplitter:        "0x00000000000000000000000000000000000000e4",
+			FeeSplitter:        strings.ToLower(FeeSplitter.Hex()),
 		},
-		FeeToken:   "0x20c000000000000000000000b9537d11c60e8b50",
+		FeeToken:   strings.ToLower(FeeToken.Hex()),
 		Settlement: composer.Settlement{Mode: "access-key", IntervalMinutes: 60, GracePeriodMinutes: 1440, SpendLimitPerDay: "2000000"},
 		RelayOwner: "0x00000000000000000000000000000000000000b1",
 	}

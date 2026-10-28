@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -35,20 +37,27 @@ type Outcome struct {
 	Status   int
 	Body     any // *ReleaseResponse or *Denial
 	Decision *Decision
+	// RetryAfter, when not zero, is sent as the Retry-After header (seconds).
+	RetryAfter int
 }
 
 // stop ends the pipeline.
 type stop struct {
-	status   int
-	decision string
-	reason   string
-	detail   string
+	status     int
+	decision   string
+	reason     string
+	detail     string
+	retryAfter int
 }
 
 type session struct {
-	b   *Broker
-	d   *Decision
-	req *releaseRequest
+	b     *Broker
+	d     *Decision
+	req   *releaseRequest
+	start time.Time
+	// junk marks a request that failed before its nonce was accepted and its body validated (D-066): its decision
+	// is logged truncated and in the background, and it never took a release slot.
+	junk bool
 
 	quote      *attest.Quote
 	reg        Registry
@@ -61,24 +70,111 @@ type session struct {
 	deployment [32]byte
 }
 
-// Release runs the whole pipeline for one POST /v1/release body. remote is recorded in the decision log only.
+// Release runs the whole pipeline for one POST /v1/release body. remote is recorded in the decision log only. The
+// HTTP handler runs the same phases with its limits in between: admit (no release slot), check and finish.
 func (b *Broker) Release(ctx context.Context, body []byte, remote string) *Outcome {
-	start := b.deps.Now()
-	s := &session{b: b, d: &Decision{Time: start.UTC(), RequestID: newRequestID(), Remote: remote, Checks: []Check{}}}
-	rctx, cancel := context.WithTimeout(ctx, b.cfg.ReleaseTimeout)
-	resp, st := s.run(rctx, body)
-	cancel()
+	s, st := b.admit(body, remote)
+	var resp *ReleaseResponse
+	if st == nil {
+		resp, st = s.check(ctx)
+	}
+	return b.finish(ctx, s, resp, st)
+}
 
+// admit parses the body, consumes its nonce and validates every field. It is cheap and bounded: no dependency is
+// called, so it runs before a release slot is taken (D-066).
+func (b *Broker) admit(body []byte, remote string) (*session, *stop) {
+	start := b.deps.Now()
+	s := &session{b: b, start: start, d: &Decision{Time: start.UTC(), RequestID: newRequestID(), Remote: remote, Checks: []Check{}}}
+	m, err := parseEnvelope(body)
+	if err != nil {
+		s.junk = true
+		return s, s.badRequest(CheckRequest, err.Error())
+	}
+	// The nonce is consumed before anything else is looked at, so every attempt burns it.
+	nonce, err := requestNonce(m)
+	if err != nil {
+		s.junk = true
+		return s, s.deny(CheckNonce, ReasonBadNonce, err.Error(), nil)
+	}
+	s.d.Hashes.Nonce = hex0x(nonce[:])
+	if err := b.deps.Nonces.Consume(nonce); err != nil {
+		if errors.Is(err, ErrNonceStore) {
+			return s, s.unavailable(CheckNonce, "", err.Error())
+		}
+		s.junk = true
+		return s, s.deny(CheckNonce, ReasonBadNonce, err.Error(), nil)
+	}
+	s.pass(CheckNonce, "issued by this broker, unused and unexpired; now consumed", nil)
+
+	req, err := parseRequest(m)
+	if err != nil {
+		s.junk = true
+		return s, s.badRequest(CheckRequest, err.Error())
+	}
+	s.req = req
+	h := &s.d.Hashes
+	h.EphemeralPub = hex0x(req.EphemeralPub[:])
+	if len(req.Quote) > 0 {
+		qh := sha256.Sum256(req.Quote)
+		h.QuoteHash = hex0x(qh[:])
+	}
+	elh := sha256.Sum256(req.EventLog)
+	h.EventLogHash = hex0x(elh[:])
+	h.ImageID = hex0x(req.ImageID[:])
+	for _, id := range req.ReleaseIDs {
+		h.ReleaseIDs = append(h.ReleaseIDs, hex0x(id[:]))
+	}
+	s.pass(CheckRequest, "well-formed", map[string]any{"quoteBytes": len(req.Quote), "appComposeBytes": len(req.AppCompose), "configBytes": len(req.Config)})
+	return s, nil
+}
+
+// shed answers an admitted request that found every release slot busy: 429, logged as junk (its nonce is spent).
+func (s *session) shed(detail string) *stop {
+	s.junk = true
+	s.d.Checks = append(s.d.Checks, Check{Name: CheckSlot, OK: false, Reason: ReasonRateLimited, Detail: detail})
+	return &stop{status: http.StatusTooManyRequests, decision: DecisionError, reason: ReasonRateLimited, detail: detail, retryAfter: 2}
+}
+
+// check runs every attestation and approval check, then releases.
+func (s *session) check(ctx context.Context) (*ReleaseResponse, *stop) {
+	rctx, cancel := context.WithTimeout(ctx, s.b.cfg.ReleaseTimeout)
+	defer cancel()
+	for _, step := range []func(context.Context) *stop{
+		s.checkQuote, s.checkReportData, s.pinChain, s.checkImage, s.checkRTMR3, s.checkComposeHash,
+		s.checkCustomer, s.checkConfigChain, s.checkRecompute, s.checkApproval,
+	} {
+		if st := step(rctx); st != nil {
+			return nil, st
+		}
+	}
+	return s.release(rctx)
+}
+
+// finish records the decision. An allowed release is answered only after its entry was written; every other
+// decision is written in the background, junk in truncated form (D-066).
+func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, st *stop) *Outcome {
 	out := &Outcome{Decision: s.d}
 	if st != nil {
 		s.d.Decision, s.d.Reason, s.d.Detail, s.d.HTTPStatus = st.decision, st.reason, st.detail, st.status
 		s.d.Released = nil
-		out.Status, out.Body = st.status, &Denial{Decision: st.decision, Reason: st.reason, Detail: st.detail}
+		out.Status, out.Body, out.RetryAfter = st.status, &Denial{Decision: st.decision, Reason: st.reason, Detail: st.detail}, st.retryAfter
 	} else {
 		s.d.Decision, s.d.HTTPStatus = DecisionAllowed, http.StatusOK
 		out.Status, out.Body = http.StatusOK, resp
 	}
-	s.d.DurationMS = b.deps.Now().Sub(start).Milliseconds()
+	s.d.DurationMS = b.deps.Now().Sub(s.start).Milliseconds()
+
+	if out.Status != http.StatusOK {
+		if s.junk {
+			s.d.truncate()
+		} else {
+			b.deps.OpLog.Info("release decision", "requestId", s.d.RequestID, "decision", s.d.Decision, "reason", s.d.Reason,
+				"stackHash", s.d.Hashes.StackHash, "simulated", s.d.Simulated, "durationMs", s.d.DurationMS)
+		}
+		b.logs.enqueue(s.d, s.junk)
+		return out
+	}
 
 	// The log write must happen even when the caller went away or the release deadline passed.
 	lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), b.cfg.LogTimeout)
@@ -87,12 +183,10 @@ func (b *Broker) Release(ctx context.Context, body []byte, remote string) *Outco
 	if err != nil {
 		b.deps.OpLog.Error("decision log write failed", "err", err, "requestId", s.d.RequestID, "decision", s.d.Decision,
 			"reason", s.d.Reason, "stackHash", s.d.Hashes.StackHash)
-		if out.Status == http.StatusOK {
-			// No secrets leave without an audit record.
-			detail := "the decision could not be written to the customer's log; nothing was released"
-			s.d.Decision, s.d.Reason, s.d.Detail, s.d.HTTPStatus, s.d.Released = DecisionError, ReasonLogFailed, detail, http.StatusServiceUnavailable, nil
-			out.Status, out.Body = http.StatusServiceUnavailable, &Denial{Decision: DecisionError, Reason: ReasonLogFailed, Detail: detail}
-		}
+		// No secrets leave without an audit record.
+		detail := "the decision could not be written to the customer's log; nothing was released"
+		s.d.Decision, s.d.Reason, s.d.Detail, s.d.HTTPStatus, s.d.Released = DecisionError, ReasonLogFailed, detail, http.StatusServiceUnavailable, nil
+		out.Status, out.Body = http.StatusServiceUnavailable, &Denial{Decision: DecisionError, Reason: ReasonLogFailed, Detail: detail}
 	}
 	b.deps.OpLog.Info("release decision", "requestId", s.d.RequestID, "decision", s.d.Decision, "reason", s.d.Reason,
 		"stackHash", s.d.Hashes.StackHash, "simulated", s.d.Simulated, "durationMs", s.d.DurationMS)
@@ -106,11 +200,17 @@ func (s *session) pass(name, detail string, data map[string]any) {
 // maxDetail bounds a detail string; details can quote request content and land in every log entry.
 const maxDetail = 2000
 
-func clip(detail string) string {
-	if len(detail) <= maxDetail {
+func clip(detail string) string { return clipTo(detail, maxDetail) }
+
+func clipTo(detail string, n int) string {
+	if len(detail) <= n {
 		return detail
 	}
-	return detail[:maxDetail] + "..."
+	cut := n
+	for cut > 0 && !utf8.RuneStart(detail[cut]) {
+		cut--
+	}
+	return detail[:cut] + "..."
 }
 
 func (s *session) deny(name, reason, detail string, data map[string]any) *stop {
@@ -135,71 +235,37 @@ func (s *session) unavailable(name, reason, detail string) *stop {
 	return &stop{status: http.StatusServiceUnavailable, decision: DecisionError, reason: reason, detail: detail}
 }
 
+// stale refuses to decide on a chain view that could predate a revocation (D-060): 503 chain_stale, so the agent
+// retries, recorded as a denial.
+func (s *session) stale(detail string, data map[string]any) *stop {
+	detail = clip(detail)
+	s.d.Checks = append(s.d.Checks, Check{Name: CheckChain, OK: false, Reason: ReasonChainStale, Detail: detail, Data: data})
+	return &stop{status: http.StatusServiceUnavailable, decision: DecisionDenied, reason: ReasonChainStale, detail: detail, retryAfter: 5}
+}
+
 func (s *session) internal(name, detail string) *stop {
 	s.d.Checks = append(s.d.Checks, Check{Name: name, OK: false, Reason: ReasonInternal, Detail: detail})
 	return &stop{status: http.StatusInternalServerError, decision: DecisionError, reason: ReasonInternal, detail: detail}
-}
-
-func (s *session) run(ctx context.Context, body []byte) (*ReleaseResponse, *stop) {
-	m, err := parseEnvelope(body)
-	if err != nil {
-		return nil, s.badRequest(CheckRequest, err.Error())
-	}
-	// The nonce is consumed before anything else is looked at, so every attempt burns it.
-	nonce, err := requestNonce(m)
-	if err != nil {
-		return nil, s.deny(CheckNonce, ReasonBadNonce, err.Error(), nil)
-	}
-	s.d.Hashes.Nonce = hex0x(nonce[:])
-	if err := s.b.deps.Nonces.Consume(nonce); err != nil {
-		return nil, s.deny(CheckNonce, ReasonBadNonce, err.Error(), nil)
-	}
-	s.pass(CheckNonce, "issued by this broker, unused and unexpired; now consumed", nil)
-
-	req, err := parseRequest(m)
-	if err != nil {
-		return nil, s.badRequest(CheckRequest, err.Error())
-	}
-	s.req = req
-	h := &s.d.Hashes
-	h.EphemeralPub = hex0x(req.EphemeralPub[:])
-	if len(req.Quote) > 0 {
-		qh := sha256.Sum256(req.Quote)
-		h.QuoteHash = hex0x(qh[:])
-	}
-	elh := sha256.Sum256(req.EventLog)
-	h.EventLogHash = hex0x(elh[:])
-	h.ImageID = hex0x(req.ImageID[:])
-	for _, id := range req.ReleaseIDs {
-		h.ReleaseIDs = append(h.ReleaseIDs, hex0x(id[:]))
-	}
-	s.pass(CheckRequest, "well-formed", map[string]any{"quoteBytes": len(req.Quote), "appComposeBytes": len(req.AppCompose), "configBytes": len(req.Config)})
-
-	for _, step := range []func(context.Context) *stop{
-		s.checkQuote, s.checkReportData, s.pinChain, s.checkImage, s.checkRTMR3, s.checkComposeHash,
-		s.checkRecompute, s.checkCustomer, s.checkConfigChain, s.checkApproval,
-	} {
-		if st := step(ctx); st != nil {
-			return nil, st
-		}
-	}
-	return s.release(ctx)
 }
 
 func (s *session) checkQuote(ctx context.Context) *stop {
 	if len(s.req.Quote) == 0 {
 		return s.deny(CheckQuote, ReasonQuoteInvalid, "no TDX quote: secrets are released only to Intel TDX confidential VMs", nil)
 	}
-	res, err := s.b.deps.Quotes.VerifyQuote(ctx, s.req.Quote)
+	pctx, probe := withCollateralProbe(ctx)
+	res, err := s.b.deps.Quotes.VerifyQuote(pctx, s.req.Quote)
 	if err != nil {
 		if ctx.Err() != nil {
 			return s.unavailable(CheckQuote, "", "quote verification did not finish: "+ctx.Err().Error())
 		}
-		reason := ReasonQuoteInvalid
 		if errors.Is(err, attest.ErrTCBStatus) {
-			reason = ReasonTCBStatus
+			return s.deny(CheckQuote, ReasonTCBStatus, err.Error(), nil)
 		}
-		return s.deny(CheckQuote, reason, err.Error(), nil)
+		if probe.failed() {
+			// Intel PCS (or its cache) could not serve the collateral: an outage, not a forged quote (F6).
+			return s.unavailable(CheckQuote, "", "Intel PCS collateral could not be fetched; the quote was not judged: "+err.Error())
+		}
+		return s.deny(CheckQuote, ReasonQuoteInvalid, err.Error(), nil)
 	}
 	if res.Simulated && !s.b.cfg.AllowSimulated {
 		return s.deny(CheckQuote, ReasonQuoteInvalid, "simulated quote refused: this key broker only accepts hardware TDX quotes", nil)
@@ -235,16 +301,32 @@ func (s *session) checkReportData(context.Context) *stop {
 }
 
 func (s *session) pinChain(ctx context.Context) *stop {
-	if err := s.b.CheckChain(ctx); err != nil {
-		return s.unavailable(CheckChain, "", err.Error())
+	cfg := s.b.cfg
+	id, err := s.b.deps.Chain.ChainID(ctx)
+	if err != nil {
+		return s.unavailable(CheckChain, "", "eth_chainId: "+err.Error())
 	}
-	reg, block, err := s.b.deps.Chain.Pin(ctx)
+	if id != cfg.ChainID {
+		return s.stale(fmt.Sprintf("the Tempo RPC serves chain %d, this key broker reads chain %d", id, cfg.ChainID), map[string]any{"rpcChainId": id})
+	}
+	reg, head, err := s.b.deps.Chain.Pin(ctx)
 	if err != nil {
 		return s.unavailable(CheckChain, "", err.Error())
 	}
+	s.d.Hashes.BlockNumber = head.Number
+	s.d.Hashes.BlockTime = head.Time.Unix()
+	age := s.b.deps.Now().Sub(head.Time)
+	data := map[string]any{"blockNumber": head.Number, "blockTime": head.Time.Unix(), "ageSeconds": int64(age.Round(time.Second) / time.Second),
+		"maxAgeSeconds": int64(cfg.MaxHeadAge / time.Second)}
+	switch {
+	case age > cfg.MaxHeadAge:
+		return s.stale(fmt.Sprintf("the Tempo RPC's head block %d is %s old, more than %s: its reads could predate a revocation",
+			head.Number, age.Round(time.Second), cfg.MaxHeadAge), data)
+	case age < -cfg.MaxHeadAge:
+		return s.stale(fmt.Sprintf("the Tempo RPC's head block %d is %s ahead of this key broker's clock", head.Number, (-age).Round(time.Second)), data)
+	}
 	s.reg = reg
-	s.d.Hashes.BlockNumber = block
-	s.pass(CheckChain, fmt.Sprintf("registry reads pinned to block %d of chain %d", block, s.b.cfg.ChainID), map[string]any{"blockNumber": block})
+	s.pass(CheckChain, fmt.Sprintf("registry reads pinned to block %d of chain %d, %s old", head.Number, cfg.ChainID, age.Round(time.Second)), data)
 	return nil
 }
 
@@ -271,12 +353,25 @@ func (s *session) checkImage(ctx context.Context) *stop {
 	if err := s.quote.CheckProductionAttributes(); err != nil {
 		return s.deny(CheckImage, ReasonImageDebug, err.Error(), data)
 	}
+	if !s.quote.Simulated {
+		td, err := readTDConfig(s.quote.Raw)
+		if err != nil {
+			return s.deny(CheckImage, ReasonMeasurementsMismatch, err.Error(), data)
+		}
+		data["xfam"], data["mrOwner"] = hex0x(td.XFAM), hex0x(td.MrOwner)
+		if err := td.check(); err != nil {
+			return s.deny(CheckImage, ReasonMeasurementsMismatch, err.Error(), data)
+		}
+	}
 	approved, err := s.reg.IsApprovedImage(ctx, id)
 	if err != nil {
 		return s.unavailable(CheckImage, "", "PlatformRegistry.isApprovedImage: "+err.Error())
 	}
 	if !approved {
 		return s.deny(CheckImage, ReasonImageNotApproved, fmt.Sprintf("image %s %s is not approved (status %d)", img.Name, img.Version, img.Status), data)
+	}
+	if len(s.b.cfg.AllowedImages) > 0 && !slices.Contains(s.b.cfg.AllowedImages, id) {
+		return s.deny(CheckImage, ReasonImageNotApproved, fmt.Sprintf("image %s %s is approved in PlatformRegistry but not in this key broker's allowlist", img.Name, img.Version), data)
 	}
 	s.pass(CheckImage, fmt.Sprintf("measurements match approved production image %s %s", img.Name, img.Version), data)
 	return nil
@@ -313,16 +408,7 @@ func (s *session) checkComposeHash(context.Context) *stop {
 }
 
 func (s *session) checkRecompute(ctx context.Context) *stop {
-	cfg, err := composer.ParseConfig(s.req.Config)
-	if err != nil {
-		return s.deny(CheckStackRecompute, ReasonComposeMismatch, err.Error(), nil)
-	}
-	s.cfg = cfg
-	s.customer = common.HexToAddress(cfg.Customer)
-	s.d.Hashes.Customer = strings.ToLower(s.customer.Hex())
-	if ch, err := cfg.Hash(); err == nil {
-		s.d.Hashes.ConfigHash = ch.Hex()
-	}
+	cfg := s.cfg
 	for _, a := range cfg.Apps {
 		id, err := composer.ParseHash(a.ReleaseID)
 		if err != nil {
@@ -394,7 +480,19 @@ func (s *session) checkRecompute(ctx context.Context) *stop {
 	return nil
 }
 
+// checkCustomer parses the config and compares its customer. It and checkConfigChain are cheap, so they run before
+// the stack recomputation (16 release reads, bundle fetches, a full compose).
 func (s *session) checkCustomer(context.Context) *stop {
+	cfg, err := composer.ParseConfig(s.req.Config)
+	if err != nil {
+		return s.deny(CheckStackRecompute, ReasonComposeMismatch, err.Error(), nil)
+	}
+	s.cfg = cfg
+	s.customer = common.HexToAddress(cfg.Customer)
+	s.d.Hashes.Customer = strings.ToLower(s.customer.Hex())
+	if ch, err := cfg.Hash(); err == nil {
+		s.d.Hashes.ConfigHash = ch.Hex()
+	}
 	data := map[string]any{"config": strings.ToLower(s.customer.Hex()), "broker": strings.ToLower(s.b.cfg.Customer.Hex())}
 	if s.customer != s.b.cfg.Customer {
 		return s.deny(CheckCustomer, ReasonCustomerMismatch, fmt.Sprintf("config.customer %s is not this key broker's customer %s",
@@ -423,10 +521,23 @@ func (s *session) checkConfigChain(context.Context) *stop {
 			problems = append(problems, fmt.Sprintf("config.contracts.%s %s, this key broker reads %s", c.name, c.got, strings.ToLower(c.want.Hex())))
 		}
 	}
+	// The contracts the enclave signer and the access key pay (F11).
+	for _, c := range []struct {
+		name string
+		got  string
+		want common.Address
+	}{
+		{"contracts.feeSplitter", s.cfg.Contracts.FeeSplitter, s.b.cfg.FeeSplitter},
+		{"feeToken", s.cfg.FeeToken, s.b.cfg.FeeToken},
+	} {
+		if !common.IsHexAddress(c.got) || common.HexToAddress(c.got) != c.want {
+			problems = append(problems, fmt.Sprintf("config.%s %s, this key broker expects %s", c.name, c.got, strings.ToLower(c.want.Hex())))
+		}
+	}
 	if len(problems) > 0 {
 		return s.deny(CheckConfigChain, ReasonStackNotApproved, strings.Join(problems, "; "), nil)
 	}
-	s.pass(CheckConfigChain, "config names this key broker's chain and registries", nil)
+	s.pass(CheckConfigChain, "config names this key broker's chain, registries, fee splitter and fee token", nil)
 	return nil
 }
 
@@ -487,11 +598,16 @@ func (s *session) release(ctx context.Context) (*ReleaseResponse, *stop) {
 	}
 	s.pass(CheckSecrets, fmt.Sprintf("%d secrets named by the stack's manifests", len(released)), map[string]any{"released": released})
 
-	keys, err := DeriveKeys(ctx, s.b.deps.MAC, s.deployment)
+	salt, err := composer.ParseHash(s.cfg.Salt)
+	if err != nil {
+		return nil, s.internal(CheckKeys, "config salt: "+err.Error())
+	}
+	keys, err := DeriveKeys(ctx, s.b.deps.MAC, s.b.cfg.Customer, [32]byte(salt))
 	if err != nil {
 		return nil, s.unavailable(CheckKeys, "", "KMS: "+err.Error())
 	}
-	s.pass(CheckKeys, "diskKey and signerSeed derived with the KMS HMAC key from the deploymentId", map[string]any{"deploymentId": hex0x(s.deployment[:])})
+	s.pass(CheckKeys, "diskKey and signerSeed derived with the KMS HMAC key from the customer and the config salt (D-058)",
+		map[string]any{"customer": strings.ToLower(s.b.cfg.Customer.Hex()), "salt": salt.Hex(), "deploymentId": hex0x(s.deployment[:])})
 
 	for _, a := range apps {
 		if vals[a] == nil {
