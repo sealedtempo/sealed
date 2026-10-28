@@ -59,7 +59,8 @@ func run(args []string, getenv func(string) string, log *slog.Logger) error {
 	log.Info("listening", "addr", c.Listen, "chainId", c.ChainID, "rpc", chain.RedactURL(c.RPCURL), "allowSimulated", c.AllowSimulated,
 		"addresses", c.AddrSource, "deploymentRegistry", c.Addrs.DeploymentRegistry.Hex(),
 		"composer", srv.Deps.Composer != nil, "releaseAssetBases", c.ReleaseAssetBases, "bundleCache", orMemory(c.BundleCacheDir),
-		"liveAllowedHosts", c.LiveHosts, "maxInFlight", c.MaxInFlight)
+		"liveAllowedHosts", c.LiveHosts, "liveFetch", c.LiveFetch, "allowedClients", c.AllowedClients,
+		"maxChainHeadAge", c.MaxChainHeadAge.String(), "maxInFlight", c.MaxInFlight)
 	select {
 	case err := <-errc:
 		return err
@@ -85,6 +86,9 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 	if c.LivePrivate {
 		log.Warn("DEV MODE: live verification may fetch loopback and private addresses", "env", devSimEnv)
 	}
+	if c.StackConfigFile != "" && len(c.AllowedClients) == 0 {
+		log.Warn("running as a stack sidecar without --allowed-clients: every container that reaches this API is served (D-061 expects the payer's address)")
+	}
 	reader, err := chain.Dial(ctx, c.RPCURL, c.Addrs)
 	if err != nil {
 		return nil, err
@@ -108,6 +112,7 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 	return &httpapi.Server{
 		Deps: deps, ChainID: c.ChainID, LiveInsecureTLS: c.InsecureLiveTLS, LiveTimeout: c.LiveTimeout,
 		LiveAllowedHosts: c.LiveHosts, LiveAllowPrivate: c.LivePrivate, MaxInFlight: c.MaxInFlight, Log: log,
+		AllowedClients: c.AllowedClients, DisableLiveFetch: !c.LiveFetch, MaxChainHeadAge: c.MaxChainHeadAge,
 	}, nil
 }
 

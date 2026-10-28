@@ -46,9 +46,9 @@ func (e *HTTPError) Unwrap() error {
 }
 
 // HTTPFetcher fetches over HTTP(S). GitHub release asset URLs redirect to GitHub's asset host, so redirects are
-// followed (at most 10, Go's default). Requests honor HTTPS_PROXY (sealed-egress inside the CVM).
+// followed (see CheckRedirect). Requests honor HTTPS_PROXY (sealed-egress inside the CVM).
 type HTTPFetcher struct {
-	// Client is the HTTP client; nil uses one with DefaultFetchTimeout and the environment's proxy.
+	// Client is the HTTP client; nil uses one with DefaultFetchTimeout, the environment's proxy and CheckRedirect.
 	Client *http.Client
 	// MaxBytes bounds the body; 0 means DefaultMaxBundleBytes.
 	MaxBytes int64
@@ -56,7 +56,19 @@ type HTTPFetcher struct {
 	UserAgent string
 }
 
-var defaultClient = &http.Client{Timeout: DefaultFetchTimeout}
+var defaultClient = &http.Client{Timeout: DefaultFetchTimeout, CheckRedirect: CheckRedirect}
+
+// CheckRedirect follows at most 10 redirects and never leaves https once a fetch started on https: bundle bytes
+// are hash-checked, but a downgrade would still send the request (and its proxy CONNECT) in clear text.
+func CheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("redirect from https to %s://%s refused", req.URL.Scheme, req.URL.Host)
+	}
+	return nil
+}
 
 // Fetch implements Fetcher.
 func (f HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {

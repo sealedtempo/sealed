@@ -59,7 +59,7 @@ func TestEndToEndAnvil(t *testing.T) {
 	r.RegisterDeployment(t, n, anviltest.Record(rec))
 
 	deps := verify.Deps{Quotes: devVerifier(t), Chain: client, Composer: fixture.Composer{}}
-	opts := verify.Options{ChainID: n.ChainID.Uint64(), RequireOnchainRecord: true, MaxEvidenceAge: 15 * time.Minute}
+	opts := verify.Options{ChainID: n.ChainID.Uint64(), RequireOnchainRecord: true, MaxEvidenceAge: 15 * time.Minute, AcceptSimulated: true}
 	check := func(t *testing.T, b *verify.Bundle, want ...string) *verify.Report {
 		t.Helper()
 		rep, err := verify.VerifyEvidence(context.Background(), b, deps, opts)

@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -160,4 +163,45 @@ func TestComposerRefusesMismatches(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// gatedFetcher fails the notes bundle at once and holds every other download until release is closed.
+type gatedFetcher struct {
+	release chan struct{}
+	done    atomic.Bool
+	inner   bundles.Fetcher
+}
+
+func (g *gatedFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	if strings.Contains(url, "/notes-") {
+		return nil, &bundles.HTTPError{URL: url, Status: http.StatusNotFound}
+	}
+	<-g.release
+	defer g.done.Store(true)
+	return g.inner.Fetch(ctx, url)
+}
+
+// One missing bundle does not abandon the other downloads: Compose returns only once every download it started has
+// ended, so none keeps writing into the cache after its caller left, or fails a later call that joins it.
+func TestComposeWaitsForEveryDownload(t *testing.T) {
+	s := newStack(t)
+	g := &gatedFetcher{release: make(chan struct{}), inner: bundles.HTTPFetcher{}}
+	comp := &bundles.Composer{Source: &bundles.Source{Rules: bundles.Rules([]string{s.srv.Base}), Fetcher: g}}
+	errc := make(chan error, 1)
+	go func() {
+		_, err := comp.Compose(context.Background(), s.in)
+		if !g.done.Load() {
+			err = errors.New("Compose returned while a download was still running")
+		}
+		errc <- err
+	}()
+	select {
+	case err := <-errc:
+		t.Fatalf("Compose returned before the held download ended: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(g.release)
+	if err := <-errc; !errors.Is(err, bundles.ErrUnavailable) || !strings.Contains(err.Error(), "notes") {
+		t.Fatalf("err %v", err)
+	}
 }

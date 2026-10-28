@@ -53,13 +53,32 @@ type RuntimeParams struct {
 	InstanceID  [20]byte
 }
 
-// ParseEventLog parses a dstack event log JSON array.
+// ParseEventLog parses a dstack event log JSON array. Digests and payloads must be in dstack's own spelling
+// (lowercase hex without 0x, a digest exactly 48 bytes), so that one quote admits fewer event logs and therefore
+// fewer eventLogHash values (review V-4); entries of imr 0 to 2 are not bound by RTMR3 and stay free otherwise.
 func ParseEventLog(raw []byte) ([]Event, error) {
 	var evs []Event
 	if err := strictjson.Unmarshal(raw, &evs); err != nil {
 		return nil, fmt.Errorf("%w: event log: %v", ErrRTMR3Replay, err)
 	}
+	for i, e := range evs {
+		if len(e.Digest) != 2*len(Measurement{}) || !isLowerHex(e.Digest) {
+			return nil, fmt.Errorf("%w: event %d (%q): digest must be %d lowercase hex characters without 0x", ErrRTMR3Replay, i, e.Event, 2*len(Measurement{}))
+		}
+		if len(e.EventPayload)%2 != 0 || !isLowerHex(e.EventPayload) {
+			return nil, fmt.Errorf("%w: event %d (%q): event_payload must be lowercase hex without 0x", ErrRTMR3Replay, i, e.Event)
+		}
+	}
 	return evs, nil
+}
+
+func isLowerHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // EventDigestV1 is sha384(le32(0x08000001) || ":" || name || ":" || payload), the dstack v1 event digest.

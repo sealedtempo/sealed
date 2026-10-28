@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -35,6 +36,34 @@ type ChainReader interface {
 // is pinned through BlockNumber and AtBlock without implementing it.
 type BlockPinner interface {
 	PinHead(ctx context.Context) (ChainReader, uint64, error)
+}
+
+// BlockTimer reads a block's timestamp (unix seconds). *chain.Client implements it. A verification reads the
+// timestamp of the head block its reads are pinned to and fails the chain check when that head is stale (D-060), so a
+// reader that cannot be pinned, or whose pinned reader is not a BlockTimer, fails the chain check.
+type BlockTimer interface {
+	BlockTime(ctx context.Context, n uint64) (uint64, error)
+}
+
+// WithHead wraps an in-memory reader that has no blocks (tests and tools) so verifications see the head block
+// number with the timestamp at() returns. Production verifications use *chain.Client, which reads the real head.
+func WithHead(r ChainReader, number uint64, at func() time.Time) ChainReader {
+	return &fixedHead{ChainReader: r, number: number, at: at}
+}
+
+type fixedHead struct {
+	ChainReader
+	number uint64
+	at     func() time.Time
+}
+
+func (f *fixedHead) PinHead(context.Context) (ChainReader, uint64, error) { return f, f.number, nil }
+
+func (f *fixedHead) BlockTime(_ context.Context, n uint64) (uint64, error) {
+	if n != f.number {
+		return 0, fmt.Errorf("block %d is not the head %d", n, f.number)
+	}
+	return uint64(f.at().Unix()), nil
 }
 
 // pinHead returns a reader pinned to the head block, and false when r cannot be pinned.
@@ -115,8 +144,17 @@ func (d Deps) validate() error {
 
 // Options tune a verification.
 type Options struct {
-	// ChainID, when non-zero, is the chain the bundle must be for (4217 for Tempo mainnet).
+	// ChainID is the chain the RPC, the bundle and the config must be on; 0 means Tempo mainnet (4217). Local runs
+	// set their own chain (D-060).
 	ChainID uint64
+	// MaxChainHeadAge bounds the age of the head block every chain read is pinned to (D-060): a stale or lagging RPC
+	// could otherwise hide a revocation, so an older head (or one further in the future) fails the chain check. Zero
+	// or negative means DefaultMaxChainHeadAge; values above MaxChainHeadAgeLimit are capped to it.
+	MaxChainHeadAge time.Duration
+	// AcceptSimulated lets a dev simulator quote pass, when the quote verifier allows simulated quotes at all
+	// (attest.VerifierOptions.AllowSimulated). Without it a simulated quote fails the quote check, so a consumer that
+	// only reads Report.OK never accepts one; dev use is an opt-in per verification.
+	AcceptSimulated bool
 	// RequireOnchainRecord fails when the deployment is not registered. The oracle verifies evidence before it
 	// registers, so it leaves this false; `sealed verify` sets it.
 	RequireOnchainRecord bool
@@ -138,6 +176,29 @@ type Options struct {
 
 // maxFutureSkew matches DeploymentRegistry.MAX_FUTURE_SKEW.
 const maxFutureSkew = 5 * time.Minute
+
+// Chain head freshness bounds (D-060).
+const (
+	DefaultMaxChainHeadAge = 60 * time.Second
+	MaxChainHeadAgeLimit   = 300 * time.Second
+)
+
+func (o Options) chainID() uint64 {
+	if o.ChainID == 0 {
+		return chain.MainnetChainID
+	}
+	return o.ChainID
+}
+
+func (o Options) maxChainHeadAge() time.Duration {
+	switch {
+	case o.MaxChainHeadAge <= 0:
+		return DefaultMaxChainHeadAge
+	case o.MaxChainHeadAge > MaxChainHeadAgeLimit:
+		return MaxChainHeadAgeLimit
+	}
+	return o.MaxChainHeadAge
+}
 
 // DeploymentID is keccak256(abi.encode(customer, stackHash, salt)) (INTERFACES.md section 2).
 func DeploymentID(customer common.Address, stackHash, salt [32]byte) [32]byte {

@@ -56,16 +56,28 @@ type env struct {
 
 func newEnv(t *testing.T, debug bool) *env {
 	t.Helper()
+	return newEnvWith(t, debug, nil)
+}
+
+// newEnvWith is newEnv with edit applied to the world before the bundle and the onchain state are built.
+func newEnvWith(t *testing.T, debug bool, edit func(w *fixture.World)) *env {
+	t.Helper()
 	w := fixture.NewWorld(4217, testAddrs, customer, enclave, fixture.SimImageID(debug))
 	w.Debug = debug
+	if edit != nil {
+		edit(w)
+	}
 	m := fixture.NewMemChain(4217, testAddrs)
 	b := w.Bundle(m.Now)
 	w.Populate(m, b, true)
-	return &env{
+	e := &env{
 		w: w, m: m, b: b,
 		deps: verify.Deps{Quotes: devVerifier(t), Chain: m, Composer: fixture.Composer{}, Now: func() time.Time { return time.Unix(int64(m.Now)+10, 0) }},
-		opts: verify.Options{ChainID: 4217, RequireOnchainRecord: true},
+		opts: verify.Options{ChainID: 4217, RequireOnchainRecord: true, AcceptSimulated: true},
 	}
+	// The head block is two seconds old on whatever clock the test sets (D-060 cases override this).
+	m.HeadAt = func() time.Time { return e.deps.Now().Add(-2 * time.Second) }
+	return e
 }
 
 func (e *env) run(t *testing.T) *verify.Report {

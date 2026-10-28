@@ -56,10 +56,13 @@ func (c *Composer) Compose(ctx context.Context, in verify.ComposeInput) (*verify
 	}
 
 	loaded := make([]*composer.Bundle, len(refs))
-	g, gctx := errgroup.WithContext(ctx)
+	// Not errgroup.WithContext: one failed bundle must not abandon the other downloads, which Source detaches from
+	// their callers. Compose returns only once every download it started has ended, so none outlives it (writing into
+	// the cache after the caller is gone, or failing a later call that joins it after the host recovered).
+	var g errgroup.Group
 	for i, ref := range refs {
 		g.Go(func() error {
-			raw, err := c.Source.Get(gctx, ref)
+			raw, err := c.Source.Get(ctx, ref)
 			if err != nil {
 				return err
 			}

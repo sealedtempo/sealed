@@ -55,7 +55,8 @@ func orNone(s string) string {
 }
 
 // checkChain requires the RPC, the bundle and the config to agree on the chain and on the registry addresses the
-// verifier is configured with (it never reads addresses from the bundle).
+// verifier is configured with (it never reads addresses from the bundle). Every later read is pinned to the head
+// block, whose timestamp must be within Options.MaxChainHeadAge of the verifier's clock (D-060).
 func (s *session) checkChain(claimedChainID uint64, claimed *BundleContracts) {
 	ctx, cancel := s.callCtx()
 	defer cancel()
@@ -66,17 +67,23 @@ func (s *session) checkChain(claimedChainID uint64, claimed *BundleContracts) {
 	}
 	data := map[string]any{"rpcChainId": rpcID}
 	var problems []string
-	if pinned, block, ok, err := pinHead(ctx, s.deps.Chain); ok {
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("eth_blockNumber: %v", err))
-		} else {
-			s.chain = pinned
-			s.rep.BlockNumber = block
-			data["blockNumber"] = block
+	var headLag int64
+	switch pinned, block, ok, err := pinHead(ctx, s.deps.Chain); {
+	case !ok:
+		problems = append(problems, "the chain reader cannot pin reads to a head block, so a stale RPC cannot be ruled out (D-060)")
+	case err != nil:
+		problems = append(problems, fmt.Sprintf("eth_blockNumber: %v", err))
+	default:
+		s.chain = pinned
+		s.rep.BlockNumber = block
+		data["blockNumber"] = block
+		var p string
+		if headLag, p = s.checkHeadAge(ctx, pinned, block, data); p != "" {
+			problems = append(problems, p)
 		}
 	}
-	if s.opts.ChainID != 0 && rpcID != s.opts.ChainID {
-		problems = append(problems, fmt.Sprintf("RPC is chain %d, verifier expects %d", rpcID, s.opts.ChainID))
+	if want := s.opts.chainID(); rpcID != want {
+		problems = append(problems, fmt.Sprintf("RPC is chain %d, verifier expects %d", rpcID, want))
 	}
 	if claimedChainID != 0 && claimedChainID != rpcID {
 		problems = append(problems, fmt.Sprintf("bundle is for chain %d, RPC is chain %d", claimedChainID, rpcID))
@@ -118,11 +125,35 @@ func (s *session) checkChain(claimedChainID uint64, claimed *BundleContracts) {
 		s.rep.fail(CheckChain, joinProblems(problems), data)
 		return
 	}
-	at := "latest block"
-	if s.rep.BlockNumber != 0 {
-		at = fmt.Sprintf("block %d", s.rep.BlockNumber)
+	s.rep.pass(CheckChain, fmt.Sprintf("chain %d, registries match, reads at block %d (%ds old)", rpcID, s.rep.BlockNumber, headLag), data)
+}
+
+// checkHeadAge reads the timestamp of the pinned head block and records the measured lag (seconds, negative when
+// the head is ahead of the verifier's clock) in data. It returns the lag, and the problem when the head is older
+// than Options.MaxChainHeadAge (chain_stale) or that far in the future.
+func (s *session) checkHeadAge(ctx context.Context, pinned ChainReader, block uint64, data map[string]any) (int64, string) {
+	bt, ok := pinned.(BlockTimer)
+	if !ok {
+		return 0, "the chain reader cannot read block timestamps, so a stale RPC cannot be ruled out (D-060)"
 	}
-	s.rep.pass(CheckChain, fmt.Sprintf("chain %d, registries match, reads at %s", rpcID, at), data)
+	ts, err := bt.BlockTime(ctx, block)
+	if err != nil {
+		return 0, fmt.Sprintf("timestamp of head block %d: %v", block, err)
+	}
+	limit := int64(s.opts.maxChainHeadAge() / time.Second)
+	lag := s.deps.now().Unix() - int64(ts)
+	data["headTimestamp"] = ts
+	data["headLagSeconds"] = lag
+	data["maxHeadLagSeconds"] = limit
+	switch {
+	case lag > limit:
+		data["reason"] = "chain_stale"
+		return lag, fmt.Sprintf("chain_stale: head block %d is %ds old, limit %ds; a stale or lagging RPC could hide a revocation", block, lag, limit)
+	case -lag > limit:
+		data["reason"] = "chain_clock_skew"
+		return lag, fmt.Sprintf("head block %d is %ds in the future, limit %ds; the verifier's clock or the RPC is wrong", block, -lag, limit)
+	}
+	return lag, ""
 }
 
 // checkQuote verifies the quote (signature chain, collateral, TCB policy) and its TD attributes.
@@ -139,7 +170,12 @@ func (s *session) checkQuote(raw []byte) {
 		data := map[string]any{"tcbStatus": res.TCBStatus, "qeTcbStatus": res.QETCBStatus, "simulated": res.Simulated}
 		if res.Simulated {
 			s.rep.Simulated = true
-			s.rep.pass(CheckQuote, "simulated quote accepted by a dev verifier (AllowSimulated); no hardware attestation", data)
+			if s.opts.AcceptSimulated {
+				s.rep.simulatedAccepted = true
+				s.rep.pass(CheckQuote, "simulated quote accepted by a dev verifier (AllowSimulated, AcceptSimulated); no hardware attestation", data)
+			} else {
+				s.rep.fail(CheckQuote, "simulated quote: a dev simulator quote proves nothing about hardware, and this verification did not opt in to accept one (AcceptSimulated)", data)
+			}
 		} else {
 			data["quoteVersion"] = res.Quote.Version
 			data["fmspc"] = res.FMSPC

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -58,7 +59,7 @@ type Check struct {
 
 // Report is the outcome of a verification. OK is true only when there is at least one check and every check
 // passed. Simulated is true whenever the quote came from the dev simulator; such a report never proves anything
-// about real hardware.
+// about real hardware, and it is OK only when the verification opted in (Options.AcceptSimulated).
 type Report struct {
 	OK           bool   `json:"ok"`
 	Simulated    bool   `json:"simulated"`
@@ -67,9 +68,15 @@ type Report struct {
 	StackHash    string `json:"stackHash,omitempty"`
 	RecordDigest string `json:"recordDigest,omitempty"`
 	// BlockNumber is the block every chain read of this verification ran against (0 when not pinned).
-	BlockNumber uint64  `json:"blockNumber,omitempty"`
-	VerifiedAt  int64   `json:"verifiedAt"`
-	Checks      []Check `json:"checks"`
+	BlockNumber uint64 `json:"blockNumber,omitempty"`
+	VerifiedAt  int64  `json:"verifiedAt"`
+	// Config summarizes what the customer approved in the public config beyond its hash: debug logging, the
+	// endpoints the stack trusts and the egress it may use (nil when the config did not parse).
+	Config *ConfigSummary `json:"config,omitempty"`
+	Checks []Check        `json:"checks"`
+
+	// simulatedAccepted records that the quote check accepted a simulated quote under Options.AcceptSimulated.
+	simulatedAccepted bool
 }
 
 func newReport(mode string, now time.Time) *Report {
@@ -88,9 +95,9 @@ func (r *Report) failf(name, format string, args ...any) {
 	r.fail(name, fmt.Sprintf(format, args...), nil)
 }
 
-// finish computes OK.
+// finish computes OK. A simulated report is never OK unless the quote check accepted it on the caller's opt-in.
 func (r *Report) finish() *Report {
-	r.OK = len(r.Checks) > 0
+	r.OK = len(r.Checks) > 0 && (!r.Simulated || r.simulatedAccepted)
 	for _, c := range r.Checks {
 		if !c.OK {
 			r.OK = false
@@ -146,6 +153,23 @@ func (r *Report) WriteText(w io.Writer) error {
 	if r.Simulated {
 		b.WriteString("  WARNING: the quote comes from the dev simulator. This is not a TDX attestation.\n")
 	}
+	if c := r.Config; c != nil {
+		if c.Endpoints.KeyBroker != "" {
+			fmt.Fprintf(&b, "  key broker  %s\n", printable(c.Endpoints.KeyBroker))
+		}
+		if c.Endpoints.Relay != "" {
+			fmt.Fprintf(&b, "  relay       %s\n", printable(c.Endpoints.Relay))
+		}
+		for _, app := range sortedKeys(c.EgressAdditions) {
+			fmt.Fprintf(&b, "  egress      %s may also reach %s\n", printable(app), printable(strings.Join(c.EgressAdditions[app], ", ")))
+		}
+		if len(c.AllowedVpcRanges) > 0 {
+			fmt.Fprintf(&b, "  vpc ranges  %s\n", printable(strings.Join(c.AllowedVpcRanges, ", ")))
+		}
+		if c.Debug {
+			b.WriteString("  NOTE: config.debug is on: containers keep their logs on the VM (local logging driver).\n")
+		}
+	}
 	b.WriteString("\n")
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	passed := 0
@@ -188,4 +212,13 @@ func (r *Report) Text() string {
 	var b strings.Builder
 	_ = r.WriteText(&b)
 	return b.String()
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

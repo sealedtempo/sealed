@@ -49,6 +49,8 @@ type World struct {
 	Debug         bool  // build a debug sim quote
 	Nonce2        [32]byte
 	InstanceID    [20]byte
+	// ConfigEdit, when set, edits the public config document before it is canonicalized.
+	ConfigEdit func(doc map[string]any)
 }
 
 // NewWorld returns a two-app world on chainID with the given registry addresses.
@@ -85,7 +87,7 @@ func (w *World) ConfigDoc() map[string]any {
 		id := a.ReleaseID()
 		apps[i] = map[string]any{"id": a.Slug, "releaseId": hexb.Enc(id[:])}
 	}
-	return map[string]any{
+	doc := map[string]any{
 		"schema":           verify.ConfigSchema,
 		"chainId":          w.ChainID,
 		"customer":         lower(w.Customer),
@@ -107,6 +109,10 @@ func (w *World) ConfigDoc() map[string]any {
 		"settlement": map[string]any{"mode": "access-key", "intervalMinutes": 60, "gracePeriodMinutes": 1440, "spendLimitPerDay": "2000000"},
 		"relayOwner": "0x0000000000000000000000000000000000000001",
 	}
+	if w.ConfigEdit != nil {
+		w.ConfigEdit(doc)
+	}
+	return doc
 }
 
 // ConfigJSON returns the canonical config bytes.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -39,6 +40,22 @@ func TestAnvilViews(t *testing.T) {
 	relID := r.PublishRelease(t, n, appID, "1.0.0", [32]byte{0xb1})
 	stack := [32]byte{0x5a}
 	r.ApproveStack(t, n, anviltest.Customer, stack, [][32]byte{relID}, imageID)
+
+	// D-060: the head's timestamp, read without decoding Tempo transactions, is the node's current time.
+	head0, err := c.BlockNumber(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts, err := c.BlockTime(ctx, head0)
+	if err != nil {
+		t.Fatalf("BlockTime(%d): %v", head0, err)
+	}
+	if lag := time.Since(time.Unix(int64(ts), 0)); lag < -time.Minute || lag > 5*time.Minute {
+		t.Fatalf("head %d timestamp %d is %s from now", head0, ts, lag)
+	}
+	if _, err := c.BlockTime(ctx, head0+1000); err == nil {
+		t.Fatal("a future block has a timestamp")
+	}
 
 	img, err := c.GetImage(ctx, imageID)
 	if err != nil || img.Name != "sealed-sim" || img.IsDebug || img.Status != ImageActive {
