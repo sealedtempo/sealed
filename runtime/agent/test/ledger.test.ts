@@ -12,7 +12,8 @@ import {
   usageReportFromJson,
 } from "@sealed/core";
 import { describe, expect, it } from "vitest";
-import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
+import { emptyLedgerState, Ledger, MAX_CUTS_PER_EVENT, TooManyReportsError } from "../src/metering/ledger.js";
+import { USAGE_LIMITS, UsageLimiter, UsageLimitError } from "../src/metering/limits.js";
 
 const defaults = parseDefaults(readFileSync(join(import.meta.dirname, "../../../config/defaults.yaml"), "utf8"), { testOverrides: false });
 const schedule = feeScheduleFromDefaults(defaults);
@@ -107,5 +108,52 @@ describe("usage ledger", () => {
     const r = await l.closePeriod(1100);
     expect(r!.report.items).toEqual([{ appId: appId("llm-gateway"), unit: 3, quantity: "60", fee: "0" }]);
     expect(r!.payments).toEqual({});
+  });
+
+  // Review finding: one event of 5e10 tokens cut and signed about 2000 reports in one call.
+  it("refuses an event that would cut more than a few reports, and records nothing of it", async () => {
+    const l = ledger(1_000_000n);
+    await l.record("llm-gateway", "tokens", 1000n, 1001);
+    const before = structuredClone(l.state);
+    const tooMuch = 5_000_000n * BigInt(MAX_CUTS_PER_EVENT + 1); // fee = 1 USD x (MAX + 1)
+    await expect(l.record("llm-gateway", "tokens", tooMuch, 1002)).rejects.toThrow(TooManyReportsError);
+    expect(l.state).toEqual(before);
+    const fits = await l.record("llm-gateway", "tokens", 5_000_000n * BigInt(MAX_CUTS_PER_EVENT), 1003);
+    expect(fits.length).toBeLessThanOrEqual(MAX_CUTS_PER_EVENT + 1);
+  });
+
+  // Review finding: closePeriod cleared the open period after awaiting the signature, which would
+  // drop usage recorded meanwhile once signing is asynchronous.
+  it("usage recorded while a period is being closed lands in the next period", async () => {
+    const l = ledger();
+    await l.record("llm-gateway", "tokens", 1_000_000n, 1001);
+    const closing = l.closePeriod(2000);
+    const late = l.record("llm-gateway", "tokens", 5n, 2000);
+    const r = await closing;
+    await late;
+    expect(r!.report.items[0]?.quantity).toBe("1000000");
+    expect(l.state.open["llm-gateway"]?.tokens).toBe("5");
+    expect(l.state.periodStart).toBe(2000);
+  });
+});
+
+describe("usage limits", () => {
+  it("caps each event and each app and unit per clock hour", () => {
+    const lim = new UsageLimiter();
+    expect(() => lim.admit("llm-gateway", "tokens", USAGE_LIMITS.tokens.perEvent + 1n, 0)).toThrow(UsageLimitError);
+    lim.admit("crm", "app_hour", 3600n, 7200);
+    lim.admit("crm", "app_hour", 3600n, 7300);
+    try {
+      lim.admit("crm", "app_hour", 1n, 7400);
+      expect.unreachable();
+    } catch (err) {
+      expect((err as UsageLimitError).status).toBe(429);
+    }
+    lim.admit("crm", "app_hour", 1n, 10_800); // the next hour starts fresh
+    lim.admit("other", "app_hour", 3600n, 7400); // per app
+    lim.admit("crm", "app_hour", 3600n, 10_801);
+    expect(() => lim.admit("crm", "app_hour", 3600n, 10_802)).toThrow(UsageLimitError);
+    lim.release("crm", "app_hour", 1n, 10_802);
+    lim.admit("crm", "app_hour", 3600n, 10_803);
   });
 });

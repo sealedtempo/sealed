@@ -73,6 +73,10 @@ export interface UnpaidEntry {
 }
 
 const MAX_EVENT_IDS = 5000;
+/** One usage event may cut at most this many reports (each fits one payFees call). */
+export const MAX_CUTS_PER_EVENT = 8;
+
+export class TooManyReportsError extends Error {}
 const KEEP_SETTLED_REPORTS = 50;
 
 export class Ledger {
@@ -96,8 +100,8 @@ export class Ledger {
     return false;
   }
 
-  private qty(app: string, unit: UsageUnitName): bigint {
-    return BigInt(this.state.open[app]?.[unit] ?? "0");
+  private qty(app: string, unit: UsageUnitName, open = this.state.open): bigint {
+    return BigInt(open[app]?.[unit] ?? "0");
   }
 
   private carryOf(app: string, unit: UsageUnitName): bigint {
@@ -115,14 +119,20 @@ export class Ledger {
 
   /**
    * Adds usage. Returns the reports that had to be cut because an app reached the per-payment cap.
+   * Rejects (recording nothing) an event that would cut more than `MAX_CUTS_PER_EVENT` reports.
    */
   async record(app: string, unit: UsageUnitName, quantity: bigint, now: number): Promise<StoredReport[]> {
     if (!this.hasApp(app)) throw new Error(`unknown app ${app}`);
     if (quantity < 0n) throw new Error("negative quantity");
+    const rule = priceRuleFor(this.deps.schedule, app, unit);
+    const cap0 = this.deps.perPaymentCap();
+    if (cap0 > 0n && priceQuantity(quantity, rule, 0n).fee > cap0 * BigInt(MAX_CUTS_PER_EVENT)) {
+      throw new TooManyReportsError(`one ${unit} event of ${quantity} would cut more than ${MAX_CUTS_PER_EVENT} reports`);
+    }
     const cut: StoredReport[] = [];
     let remaining = quantity;
-    const rule = priceRuleFor(this.deps.schedule, app, unit);
-    while (remaining > 0n) {
+    for (let rounds = 0; remaining > 0n; rounds++) {
+      if (rounds > MAX_CUTS_PER_EVENT + 2) throw new TooManyReportsError("usage does not fit the per-payment cap");
       const cap = this.deps.perPaymentCap();
       const current = this.qty(app, unit);
       const otherFees = this.openFee(app) - this.unitFee(app, unit);
@@ -150,46 +160,65 @@ export class Ledger {
     (this.state.open[app] as Partial<Record<UsageUnitName, string>>)[unit] = q.toString();
   }
 
-  private isOpenEmpty(): boolean {
-    return Object.values(this.state.open).every((units) => Object.values(units).every((q) => !q || q === "0"));
+  private isOpenEmpty(open = this.state.open): boolean {
+    return Object.values(open).every((units) => Object.values(units).every((q) => !q || q === "0"));
   }
 
-  /** Closes the open period into a signed report. Returns undefined when nothing was used. */
+  /**
+   * Closes the open period into a signed report. Returns undefined when nothing was used. The open
+   * quantities are taken and the next period started before signing, so usage recorded while the
+   * signature is computed lands in the next period instead of being lost.
+   */
   async closePeriod(now: number): Promise<StoredReport | undefined> {
-    if (this.isOpenEmpty()) return undefined;
+    const open = this.state.open;
+    if (this.isOpenEmpty(open)) return undefined;
+    const periodStart = this.state.periodStart;
+    const periodEnd = Math.max(now, periodStart + 1);
     const items: UsageItem[] = [];
     const payments: Record<string, AppPayment> = {};
+    const carryBefore: Record<string, string | undefined> = {};
     for (const app of this.deps.apps) {
       const appId = this.appIds.get(app) as Hex;
       let appFee = 0n;
       for (const unit of UNITS) {
-        const q = this.qty(app, unit);
+        const q = this.qty(app, unit, open);
         if (q === 0n) continue;
+        const key = `${app}:${unit}`;
         const priced = priceQuantity(q, priceRuleFor(this.deps.schedule, app, unit), this.carryOf(app, unit));
-        this.state.carry[`${app}:${unit}`] = priced.carry.toString();
+        carryBefore[key] = this.state.carry[key];
+        this.state.carry[key] = priced.carry.toString();
         items.push({ appId, unit: UsageUnit[unit], quantity: q, fee: priced.fee });
         appFee += priced.fee;
       }
       if (appFee > 0n) payments[app] = { appId, fee: appFee.toString(), status: "unpaid" };
     }
-    const periodEnd = Math.max(now, this.state.periodStart + 1);
-    const report: UsageReport = {
-      deploymentId: this.deps.deploymentId,
-      periodStart: BigInt(this.state.periodStart),
-      periodEnd: BigInt(periodEnd),
-      items,
-    };
+    this.state.open = {};
+    this.state.periodStart = periodEnd;
+    const report: UsageReport = { deploymentId: this.deps.deploymentId, periodStart: BigInt(periodStart), periodEnd: BigInt(periodEnd), items };
+    let signature: Hex;
+    try {
+      signature = await signUsageReport(report, this.deps.domain, this.deps.enclaveKey);
+    } catch (err) {
+      // Put the usage back into the open period.
+      for (const [app, units] of Object.entries(open)) {
+        for (const [unit, q] of Object.entries(units)) this.setQty(app, unit as UsageUnitName, this.qty(app, unit as UsageUnitName) + BigInt(q ?? "0"));
+      }
+      for (const [key, v] of Object.entries(carryBefore)) {
+        if (v === undefined) delete this.state.carry[key];
+        else this.state.carry[key] = v;
+      }
+      this.state.periodStart = Math.min(this.state.periodStart, periodStart);
+      throw err;
+    }
     const stored: StoredReport = {
       report: usageReportToJson(report),
-      signature: await signUsageReport(report, this.deps.domain, this.deps.enclaveKey),
+      signature,
       usageHash: usageReportDigest(report, this.deps.domain),
       createdAt: now,
       submitted: false,
       payments,
     };
     this.state.reports.push(stored);
-    this.state.open = {};
-    this.state.periodStart = periodEnd;
     this.prune();
     this.deps.onChange?.();
     return stored;
