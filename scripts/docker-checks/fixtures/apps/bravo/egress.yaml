@@ -1,0 +1,4 @@
+version: 1
+default_allow: []
+customer_additions_allowed: true
+notes: "Docker checks fixture: the allowlisted host must answer through sealed-egress"
