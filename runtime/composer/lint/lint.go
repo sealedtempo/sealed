@@ -80,9 +80,12 @@ type Options struct {
 	// (D-021), checked against SBOM packages in addition to each app's
 	// license_exclusions.
 	EnterprisePatterns []string
-	// RegistryPrefix is required for every resolved image ref in a bundle.
-	RegistryPrefix string
-	// RequireSBOM turns a missing SBOM into an error (release builds).
+	// Registry is catalog.registry. Every resolved image ref in a bundle must
+	// be exactly <Registry>/<name>@<digest>. Defaults to the registry of the
+	// composer's runtime images, which is the registry stacks pull from.
+	Registry string
+	// RequireSBOM turns a missing SBOM into an error and an unrecognized
+	// SBOM package license into an error (release builds).
 	RequireSBOM bool
 }
 
@@ -105,8 +108,10 @@ func (o Options) withDefaults() Options {
 	if o.EnterprisePatterns == nil {
 		o.EnterprisePatterns = DefaultEnterprisePatterns
 	}
-	if o.RegistryPrefix == "" {
-		o.RegistryPrefix = "ghcr.io/"
+	if o.Registry == "" {
+		if ri, err := composer.LoadRuntimeImages(); err == nil {
+			o.Registry = ri.Registry
+		}
 	}
 	return o
 }
@@ -296,8 +301,8 @@ func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, i
 		if frag != nil && !used[img.Name] {
 			c.add(Warning, composer.ManifestFile, field, CodeUnusedImage, "image %q is not used by any fragment service", img.Name)
 		}
-		if isBundle && !strings.HasPrefix(img.Ref, opts.RegistryPrefix) {
-			c.add(Error, composer.ManifestFile, field+".ref", CodeRegistry, "ref %q is not under %s; VMs pull only from the catalog registry", img.Ref, opts.RegistryPrefix)
+		if want := opts.Registry + "/" + img.Name + "@" + img.Digest; isBundle && img.Ref != want {
+			c.add(Error, composer.ManifestFile, field+".ref", CodeRegistry, "ref %q is not %q; VMs pull only from the catalog registry", img.Ref, want)
 		}
 		sbom, ok := sboms[img.Name]
 		switch {
@@ -306,13 +311,20 @@ func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, i
 		case !ok:
 			c.add(Warning, "sbom/"+img.Name+".spdx.json", "", CodeSBOMMissing, "image %q has no SBOM yet (CI generates it with syft)", img.Name)
 		default:
-			lintSBOM(c, img.Name, sbom, append(append([]string{}, m.LicenseExclusions...), opts.EnterprisePatterns...))
+			lintSBOM(c, img.Name, sbom, append(append([]string{}, m.LicenseExclusions...), opts.EnterprisePatterns...), isBundle || opts.RequireSBOM)
 		}
 	}
 
-	if len(m.TelemetryOffEnv) == 0 {
-		c.add(Warning, composer.ManifestFile, "telemetry_off_env", CodeTelemetry,
-			"empty: list the variables that disable telemetry and update checks, or note in notes that the app has none")
+	switch {
+	case len(m.TelemetryOffEnv) == 0 && m.TelemetryNone == "":
+		c.add(Error, composer.ManifestFile, "telemetry_off_env", CodeTelemetry,
+			"empty: list the variables that disable telemetry and update checks (spec 5.3, 6.8), or set telemetry_none_reason to say why the app needs none")
+	case len(m.TelemetryOffEnv) == 0 && len(strings.TrimSpace(m.TelemetryNone)) < 20:
+		c.add(Error, composer.ManifestFile, "telemetry_none_reason", CodeTelemetry,
+			"too short to review: say what was checked (upstream source, update checks, crash reporting)")
+	case len(m.TelemetryOffEnv) > 0 && m.TelemetryNone != "":
+		c.add(Warning, composer.ManifestFile, "telemetry_none_reason", CodeTelemetry,
+			"set together with telemetry_off_env; keep only one")
 	}
 	if isOpenCore(m.Upstream.Repo, opts.OpenCoreRepos) && len(m.LicenseExclusions) == 0 {
 		c.add(Error, composer.ManifestFile, "license_exclusions", CodeExclusions,
@@ -398,8 +410,11 @@ type spdxDoc struct {
 var osPackageTypes = []string{"pkg:deb/", "pkg:apk/", "pkg:rpm/", "pkg:alpm/"}
 
 // lintSBOM checks an SPDX JSON SBOM: package licenses against the policy
-// (OS packages may use system-only licenses) and excluded paths.
-func lintSBOM(c *collector, image string, raw []byte, exclusions []string) {
+// (OS packages may use system-only licenses) and excluded paths. An
+// unrecognized license (not on the allowlist, not an OSI-approved system
+// license, for example CC-BY-NC-4.0 or a LicenseRef) fails a release for
+// non-OS packages; OS packages get a warning until a decision covers them.
+func lintSBOM(c *collector, image string, raw []byte, exclusions []string, release bool) {
 	file := "sbom/" + image + ".spdx.json"
 	var doc spdxDoc
 	if err := json.Unmarshal(raw, &doc); err != nil || !strings.HasPrefix(doc.SPDXVersion, "SPDX-") {
@@ -437,8 +452,12 @@ func lintSBOM(c *collector, image string, raw []byte, exclusions []string) {
 			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is banned", expr)
 		case r.Status == SystemOnly && !isOS:
 			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is only acceptable for OS packages", expr)
+		case r.Status == Unknown && !isOS && release:
+			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is not on the allowlist (rule 9, D-021)", expr)
+		case r.Status == Unknown && isOS:
+			c.add(Warning, file, pkg, CodeSBOMLicense, "OS package license %q is not OSI-approved or not recognized; it needs a recorded decision (D-021)", expr)
 		case r.Status == Unknown:
-			c.add(Warning, file, pkg, CodeSBOMLicense, "license %q needs review", expr)
+			c.add(Warning, file, pkg, CodeSBOMLicense, "license %q needs review (an error in release builds)", expr)
 		}
 	}
 	for _, f := range doc.Files {

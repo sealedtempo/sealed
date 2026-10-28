@@ -101,7 +101,28 @@ func TestLintFindsProblems(t *testing.T) {
 		}, CodeExclusions, Error},
 		{"empty telemetry", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "manifest.yaml"), "telemetry_off_env:\n  NOTES_TELEMETRY: \"0\"\n  DO_NOT_TRACK: \"1\"", "telemetry_off_env: {}")
+		}, CodeTelemetry, Error},
+		{"telemetry reason too short", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "telemetry_off_env:\n  NOTES_TELEMETRY: \"0\"\n  DO_NOT_TRACK: \"1\"", "telemetry_off_env: {}\ntelemetry_none_reason: none")
+		}, CodeTelemetry, Error},
+		{"telemetry reason and env", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "telemetry_off_env:", "telemetry_none_reason: The upstream has no telemetry or update checks.\ntelemetry_off_env:")
 		}, CodeTelemetry, Warning},
+		{"public route", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "auth: gate", "auth: public")
+		}, CodeManifest, Error},
+		{"bearer route outside the gateway", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "auth: gate", "auth: bearer-passthrough")
+		}, CodeManifest, Error},
+		{"done file traversal", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_exclusions: []", "license_exclusions: []\nbootstrap: {service: notes-web, done_file: ../../../../etc/shadow}")
+		}, CodeManifest, Error},
+		{"tmpfs on the ready gate", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "compose.fragment.yaml"), "    shm_size: 128m", "    shm_size: 128m\n    tmpfs: [\"/run/sealed/ready\"]")
+		}, CodeFragment, Error},
+		{"metadata egress", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "egress.yaml"), `"api.example.com:443"`, `"api.example.com:443", "169.254.169.254:80"`)
+		}, CodeEgress, Error},
 		{"missing egress", func(t *testing.T, d string) { _ = os.Remove(filepath.Join(d, "egress.yaml")) }, CodeEgress, Error},
 		{"egress without notes", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "egress.yaml"), `notes: "api.example.com serves the notes sync API; customers may add mail hosts"`, "")
@@ -128,6 +149,15 @@ func TestLintFindsProblems(t *testing.T) {
 		{"banned sbom package", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"SSPL-1.0"`)
 		}, CodeSBOMLicense, Error},
+		{"unknown app package license", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"CC-BY-NC-4.0"`)
+		}, CodeSBOMLicense, Error},
+		{"source-available app package", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"LicenseRef-BSL"`)
+		}, CodeSBOMLicense, Error},
+		{"non-OSI OS package license", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "postgres.spdx.json"), `"licenseDeclared":"GPL-2.0-only"`, `"licenseDeclared":"GPL-2.0-only AND curl"`)
+		}, CodeSBOMLicense, Warning},
 		{"gpl2 app package", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"GPL-2.0-only"`)
 		}, CodeSBOMLicense, Error},
@@ -177,6 +207,34 @@ func TestLintBundle(t *testing.T) {
 	}
 	if codes(LintBundle(other, Options{}), Error)[CodeRegistry] != 2 {
 		t.Fatal("refs outside ghcr.io must be flagged")
+	}
+	// Any other owner on ghcr.io is just as foreign.
+	evil, err := composer.BuildBundle(composer.BuildInput{AppDir: filepath.Join(fixtures, "notes"), Registry: "ghcr.io/evil"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if codes(LintBundle(evil, Options{}), Error)[CodeRegistry] != 2 {
+		t.Fatal("refs under another ghcr.io owner must be flagged")
+	}
+	if fs := LintBundle(evil, Options{Registry: "ghcr.io/evil"}); codes(fs, Error)[CodeRegistry] != 0 {
+		t.Fatalf("explicit registry not honored: %v", fs)
+	}
+}
+
+func TestUnknownLicenseIsWarningOutsideRelease(t *testing.T) {
+	dir := copyApp(t, "notes")
+	edit(t, filepath.Join(dir, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"CC-BY-NC-4.0"`)
+	if fs := LintApp(dir, Options{}); codes(fs, Error)[CodeSBOMLicense] != 0 || codes(fs, Warning)[CodeSBOMLicense] != 1 {
+		t.Fatalf("%v", fs)
+	}
+}
+
+func TestTelemetryNoneReasonIsAccepted(t *testing.T) {
+	dir := copyApp(t, "notes")
+	edit(t, filepath.Join(dir, "manifest.yaml"), "telemetry_off_env:\n  NOTES_TELEMETRY: \"0\"\n  DO_NOT_TRACK: \"1\"",
+		"telemetry_off_env: {}\ntelemetry_none_reason: Checked v1.0.0 source; no telemetry, update checks or crash reporting.")
+	if fs := LintApp(dir, Options{RequireSBOM: true}); HasErrors(fs) || codes(fs, Warning)[CodeTelemetry] != 0 {
+		t.Fatalf("%v", fs)
 	}
 }
 

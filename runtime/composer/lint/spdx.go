@@ -50,13 +50,17 @@ var allowedLicenses = set(
 	"PostgreSQL", "Zlib", "0BSD", "Unlicense", "CC0-1.0", "PSF-2.0", "Python-2.0", "BSL-1.0",
 )
 
-// systemLicenses are OSI-approved licenses common in Debian, Alpine and
-// Ubuntu base images that are not on the allowlist for app code.
+// systemLicenses are licenses common in Debian, Alpine and Ubuntu base
+// images that are not on the allowlist for app code. D-021 allows OS
+// packages only under OSI-approved licenses, so every entry is OSI-approved
+// (SPDX isOsiApproved), except GPL-1.0-or-later, which can be used under
+// GPL-2.0 or GPL-3.0. Distro licenses that are free but not OSI-approved
+// (X11, BSD-4-Clause, OpenSSL, curl, IJG, Libpng, libtiff, FTL, bzip2,
+// GFDL, Ruby, Vim) evaluate as Unknown and need a recorded decision.
 var systemLicenses = set(
 	"GPL-2.0-only", "GPL-1.0-or-later", "Artistic-1.0-Perl", "Artistic-2.0", "MPL-1.1", "EPL-1.0", "EPL-2.0",
 	"Apache-1.1", "OFL-1.1", "NCSA", "Unicode-DFS-2016", "Unicode-3.0", "BSD-1-Clause", "ZPL-2.1", "OLDAP-2.8",
-	"MIT-0", "X11", "BSD-4-Clause", "OpenSSL", "curl", "IJG", "Libpng", "libtiff", "FTL", "bzip2-1.0.6",
-	"GFDL-1.2-or-later", "GFDL-1.3-or-later", "Sleepycat", "W3C", "HPND", "ICU", "PHP-3.01", "Ruby", "Vim",
+	"MIT-0", "Sleepycat", "W3C", "HPND", "ICU", "PHP-3.01",
 )
 
 // bannedLicenses are exact SPDX identifiers that always fail.

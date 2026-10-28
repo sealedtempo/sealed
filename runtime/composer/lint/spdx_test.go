@@ -48,6 +48,15 @@ func TestEvaluateLicense(t *testing.T) {
 		{"(MIT OR ISC) WITH X", Unknown, "", 0},
 		{"NOASSERTION", Unknown, "NOASSERTION", 0},
 		{"MIT;rm", Unknown, "", 0},
+		// D-021: OS packages only under OSI-approved licenses.
+		{"MIT-0", SystemOnly, "MIT-0", 0},
+		{"X11", Unknown, "X11", 0},
+		{"curl", Unknown, "curl", 0},
+		{"OpenSSL", Unknown, "OpenSSL", 0},
+		{"BSD-4-Clause", Unknown, "BSD-4-Clause", 0},
+		{"GFDL-1.3-or-later", Unknown, "GFDL-1.3-or-later", 0},
+		{"FTL OR GPL-2.0-or-later", Allowed, "GPL-2.0-or-later", 0},
+		{"CC-BY-NC-4.0", Unknown, "CC-BY-NC-4.0", 0},
 	}
 	for _, c := range cases {
 		r := EvaluateLicense(c.expr)
