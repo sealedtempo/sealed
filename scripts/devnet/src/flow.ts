@@ -285,7 +285,7 @@ export class Devnet {
     return { path, bytes };
   }
 
-  private baseConfig(o: { apps: readonly string[]; mode: "access-key" | "enclave-account"; imageId: Hex; salt: Hex }): Record<string, unknown> {
+  private baseConfig(o: { apps: readonly string[]; mode: "access-key" | "enclave-account"; imageId: Hex; salt: Hex; graceMinutes?: number }): Record<string, unknown> {
     return {
       schema: "sealed-config/v1",
       chainId: CHAIN_ID,
@@ -312,7 +312,7 @@ export class Devnet {
         feeSplitter: this.chain.c.feeSplitter,
       },
       feeToken: TOKENS.pathUsd,
-      settlement: { mode: o.mode, intervalMinutes: 1, gracePeriodMinutes: 5, spendLimitPerDay: "2000000" },
+      settlement: { mode: o.mode, intervalMinutes: 1, gracePeriodMinutes: o.graceMinutes ?? 5, spendLimitPerDay: "2000000" },
       relayOwner: ADDR.treasury,
       debug: false,
     };
@@ -873,9 +873,10 @@ export class Devnet {
   private async stepUsageEnclaveAccount(): Promise<void> {
     this.log.step("Usage and fees, enclave-account mode: a second deployment pays from the enclave signer's own balance");
     const apps = ["llm-gateway", "scraper"] as const;
-    const b = await this.compose("b", this.baseConfig({ apps, mode: "enclave-account", imageId: this.images.prod, salt: this.salt("b") }), apps);
+    // No grace period: the first failed settlement switches to the payment-needed page (A9 in seconds).
+    const b = await this.compose("b", this.baseConfig({ apps, mode: "enclave-account", imageId: this.images.prod, salt: this.salt("b"), graceMinutes: 0 }), apps);
     await this.approve(b);
-    this.log.ok(`stack b (llm-gateway, scraper, settlement enclave-account) composed and approved: ${b.stackHash}`);
+    this.log.ok(`stack b (llm-gateway, scraper, settlement enclave-account, grace period 0) composed and approved: ${b.stackHash}`);
     const sim = await this.startSim(b, "dstack-sim-b");
     const run = this.launchAgent(b, "agent-b", sim, agentPaths(this.path("agent-b")), this.port());
     const ready = await this.waitReady(run);
@@ -891,10 +892,36 @@ export class Devnet {
     const e1 = await this.chain.balance(TOKENS.pathUsd, ready.enclaveSigner);
     check(e0 - e1 >= total, "the enclave signer's balance paid");
     this.log.ok(`the enclave account paid ${total} in fees plus ${e0 - e1 - total} in network fees`);
+
+    // Over the balance: the settlement fails, so with grace 0 the routes switch to the payment-needed page; a top-up
+    // restores them (A9: grace period, payment-needed page, recovery).
+    const caddyLog = join(run.paths.out, "caddy.log");
+    const variants = () => (existsSync(caddyLog) ? readFileSync(caddyLog, "utf8").trim().split("\n").map((l) => l.split(" ")[1]) : []);
+    const llm = lower(computeAppId("llm-gateway"));
+    const paidFor = async () => (await this.feesPaid(b.deploymentId)).filter((e) => lower(e.args.appId) === llm).reduce((s, e) => s + e.args.amount, 0n);
+    const paidBefore = await paidFor();
+    const big = await this.postUsage(run, "llm-gateway", "tokens", 5_000_000, this.serviceIp(b, "llm-gateway"), "devnet-b-over-balance");
+    checkEq(big.status, 202, "usage over the balance accepted");
+    await waitFor("payment-needed after a failed settlement", () => variants().includes("payment-needed"), { proc: run.proc, timeoutMs: 30_000 });
+    checkEq(await paidFor(), paidBefore, "nothing paid while the balance is short");
+    const health = await waitFor(
+      "a health report saying payment needed",
+      async () => {
+        const body = await this.pg.psql(`SELECT body::text FROM health_reports WHERE deployment_id = '${b.deploymentId}'`);
+        return body.includes('"paymentNeeded": true') || body.includes('"paymentNeeded":true') ? body : undefined;
+      },
+      { timeoutMs: 30_000 },
+    );
+    check(health.includes("insufficient_balance"), "the health report names the content-free failure reason");
+    this.log.ok("5,000,000 more tokens (1.00 pathUSD) exceed the enclave balance: the settlement fails, Caddy switches to the payment-needed page, the signed health report says so");
+    await this.chain.transfer(KEYS.funder, TOKENS.pathUsd, ready.enclaveSigner, 2_000_000n);
+    await waitFor("recovery after the top-up", async () => (await paidFor()) === paidBefore + 1_000_000n && variants().at(-1) === "normal", { proc: run.proc, timeoutMs: 30_000 });
+    this.log.ok("after a 2.00 pathUSD top-up the next settlement pays the 1.00 leg and restores the normal Caddyfile");
+
     await this.chain.write(KEYS.customer, "DeploymentRegistry", "closeDeployment", [b.deploymentId]);
     checkEq(await this.deploymentStatus(b.deploymentId), 2, "deployment b Closed");
-    const caddyLog = join(run.paths.out, "caddy.log");
-    await waitFor("agent b switches Caddy to the payment-needed page", () => existsSync(caddyLog) && readFileSync(caddyLog, "utf8").includes("payment-needed"), { proc: run.proc, timeoutMs: 30_000 });
+    const switches = variants().length;
+    await waitFor("agent b switches Caddy to the payment-needed page", () => variants().length > switches && variants().at(-1) === "payment-needed", { proc: run.proc, timeoutMs: 30_000 });
     this.log.ok("customer closed deployment b onchain; at its next settlement the agent switched Caddy to the measured payment-needed Caddyfile");
     await run.proc.stop();
     this.log.ok("agent b stopped");
