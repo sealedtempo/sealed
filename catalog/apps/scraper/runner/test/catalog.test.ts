@@ -1,17 +1,19 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Ajv2020 } from 'ajv/dist/2020.js';
 import { load } from 'cheerio';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { extractFields } from '../src/extract.js';
 import { parseJobSpec } from '../src/job.js';
+import { caddySite, compose, envexecSecrets, findComposer, lint, secretMounts, type Composed, type Composer } from './helpers/composer.js';
 import { expected, FIXTURES, SITE } from './helpers/fixture.js';
 
-// Static checks of the catalog package against catalog/schema and the fragment rules in
-// docs/INTERFACES.md section 14, plus the Dockerfiles and the fixture site.
+// Checks of the catalog package. The catalog rules (manifest schema, the fragment rules of
+// docs/INTERFACES.md section 14, the egress policy, licenses) are checked only by the real
+// composer, so there is no copy of them here; these tests add what is specific to the scraper,
+// plus the Dockerfiles and the fixture site.
 
 const APP = resolve(import.meta.dirname, '../..');
 const REPO = resolve(APP, '../../..');
@@ -21,20 +23,7 @@ const fragment = parse(read('compose.fragment.yaml')) as { services: Record<stri
 const egress = parse(read('egress.yaml')) as Record<string, unknown>;
 const runnerPkg = JSON.parse(readFileSync(resolve(APP, 'runner/package.json'), 'utf8')) as Record<string, any>;
 
-const ALLOWED_SERVICE_KEYS = new Set([
-  'image', 'command', 'entrypoint', 'environment', 'healthcheck', 'depends_on', 'volumes', 'tmpfs', 'user',
-  'working_dir', 'read_only', 'stop_grace_period', 'shm_size', 'ulimits', 'mem_limit', 'cpus', 'labels',
-  'x-sealed-secrets',
-]);
-
 describe('manifest.yaml', () => {
-  it('validates against catalog/schema/manifest.schema.json', () => {
-    const schema = JSON.parse(readFileSync(resolve(REPO, 'catalog/schema/manifest.schema.json'), 'utf8'));
-    const ajv = new Ajv2020({ strict: false, validateFormats: false, allErrors: true });
-    const validate = ajv.compile(schema);
-    expect(validate(manifest), JSON.stringify(validate.errors, null, 2)).toBe(true);
-  });
-
   it('describes the scraper as spec 6.3 asks', () => {
     expect(manifest).toMatchObject({
       id: 'scraper',
@@ -65,37 +54,18 @@ describe('egress.yaml', () => {
   });
 });
 
-describe('compose.fragment.yaml (INTERFACES 14)', () => {
+describe('compose.fragment.yaml', () => {
   const services = Object.entries(fragment.services);
-  const imageNames = new Set(manifest.images.map((i: { name: string }) => i.name));
-  const secretNames = new Set(manifest.secrets.map((s: { name: string }) => s.name));
 
-  it('has only services and volumes, scraper-runner and scraper-db', () => {
-    expect(Object.keys(fragment).sort()).toEqual(['services', 'volumes']);
+  it('has scraper-runner and scraper-db', () => {
     expect(Object.keys(fragment.services).sort()).toEqual(['scraper-db', 'scraper-runner']);
   });
 
-  it('uses only allowed keys, prefixed names and manifest images', () => {
-    for (const [name, svc] of services) {
-      expect(name.startsWith('scraper-')).toBe(true);
-      for (const key of Object.keys(svc)) expect(ALLOWED_SERVICE_KEYS.has(key), `${name}.${key}`).toBe(true);
-      const m = /^\{\{image:([a-z][a-z0-9-]*)\}\}$/.exec(svc.image);
-      expect(m, `${name}.image`).not.toBeNull();
-      expect(imageNames.has(m![1]), `${name}.image`).toBe(true);
-      expect(Array.isArray(svc.entrypoint), `${name}.entrypoint`).toBe(true);
-    }
-  });
-
-  it('references only declared secrets, same-app dependencies and own named volumes', () => {
-    const own = new Set(Object.keys(fragment.volumes));
-    for (const [name, svc] of services) {
-      for (const s of svc['x-sealed-secrets'] ?? []) expect(secretNames.has(s), `${name} secret ${s}`).toBe(true);
-      for (const dep of Object.keys(svc.depends_on ?? {})) expect(fragment.services[dep], `${name} depends on ${dep}`).toBeDefined();
-      for (const v of svc.volumes ?? []) {
-        const source = String(v).split(':')[0]!;
-        expect(own.has(source), `${name} volume ${v}`).toBe(true);
-        expect(source.startsWith('scraper-')).toBe(true);
-      }
+  it('lists the database password for exactly the two services that read it, never in a URL', () => {
+    // Each service gets bind mounts of exactly the secret files it lists (integration brief item 5).
+    expect(fragment.services['scraper-runner']!['x-sealed-secrets']).toEqual(['SCRAPER_DB_PASSWORD']);
+    expect(fragment.services['scraper-db']!['x-sealed-secrets']).toEqual(['SCRAPER_DB_PASSWORD']);
+    for (const [, svc] of services) {
       for (const value of Object.values(svc.environment ?? {})) {
         expect(String(value)).not.toMatch(/password=|:[^@/]+@/i);
       }
@@ -113,18 +83,73 @@ describe('compose.fragment.yaml (INTERFACES 14)', () => {
     expect(fragment.services['scraper-db']!.environment.POSTGRES_PASSWORD_FILE).toBe('/run/sealed/secrets/scraper/SCRAPER_DB_PASSWORD');
   });
 
+});
+
+const composer = findComposer(REPO);
+const skip = 'skip' in composer ? composer.skip : false;
+describe.skipIf(skip)('the real composer (runtime/composer)', () => {
+  const c = composer as Composer;
+  const notBrief = 'skip' in composer || composer.brief ? false : `composer ${c.version} predates integration brief items 5 to 11`;
+  let out: string;
+  let stack: Composed;
+  beforeAll(() => {
+    out = mkdtempSync(join(tmpdir(), 'scraper-composed-'));
+    stack = compose(c, [APP], out, ['scraper']);
+  }, 600_000);
+  afterAll(() => rmSync(out, { recursive: true, force: true }));
+
+  it('sealed-compose lint blocks the release only on the unbuilt runner image (D-028)', () => {
+    const findings = lint(c, APP);
+    const unexpected = findings.filter(
+      (f) => !(f.severity === 'error' && f.code === 'unbuilt-image') && !(f.severity === 'warning' && f.code === 'sbom-missing'),
+    );
+    expect(unexpected).toEqual([]);
+    const unbuilt = manifest.images.filter((i: { digest: string }) => /^sha256:0{64}$/.test(i.digest)).length;
+    expect(findings.filter((f) => f.severity === 'error')).toHaveLength(unbuilt);
+  }, 600_000);
+
+  it('gates the scraper route and points it at the runner', () => {
+    const site = caddySite(stack.caddyfile, 'scraper.34-1-2-3.sslip.io');
+    expect(site).toContain('reverse_proxy scraper-runner:8080');
+    if (!notBrief) {
+      // Integration brief item 9: forward_auth to sealed-agent instead of Caddy basic_auth.
+      expect(site).toContain('forward_auth sealed-agent:7070');
+      expect(site).toContain('/v1/gate?route=scraper');
+      expect(site).not.toContain('basic_auth');
+    }
+  });
+
+  it('exports exactly the listed secrets to each service', () => {
+    for (const [name, svc] of Object.entries(fragment.services)) {
+      expect(envexecSecrets(stack.compose.services[name]!), name).toEqual([...(svc['x-sealed-secrets'] ?? [])].sort());
+    }
+  });
+
+  it.skipIf(notBrief)('mounts exactly the listed secret files into each service', () => {
+    for (const [name, svc] of Object.entries(fragment.services)) {
+      const want = (svc['x-sealed-secrets'] ?? []).map((s: string) => `/run/sealed/secrets/scraper/${s}`).sort();
+      expect(secretMounts(stack.compose.services[name]!, 'scraper'), name).toEqual(want);
+    }
+  });
+
+  it.skipIf(notBrief)('sets SEALED_PUBLIC_URL_SCRAPER, which the runner checks request origins against', () => {
+    for (const name of Object.keys(fragment.services)) {
+      expect(stack.compose.services[name]!.environment.SEALED_PUBLIC_URL_SCRAPER, name).toBe('https://scraper.34-1-2-3.sslip.io');
+    }
+  });
+
+  it.skipIf(notBrief)('keeps scraper-db off the shared apps network (D-041)', () => {
+    for (const name of Object.keys(fragment.services)) {
+      const networks = Object.keys(stack.compose.services[name]!.networks);
+      expect(networks, name).toContain('app-scraper');
+      expect(networks.includes('apps'), name).toBe(name === 'scraper-runner');
+    }
+  });
+
   const docker = spawnSync('docker', ['compose', 'version'], { encoding: 'utf8' });
-  it.runIf(docker.status === 0)('is valid docker compose once images are resolved', () => {
-    const resolved = read('compose.fragment.yaml').replace(/\{\{image:([a-z0-9-]+)\}\}/g, (_m, name: string) => {
-      const img = manifest.images.find((i: { name: string }) => i.name === name);
-      return `ghcr.io/sealed-dev/${name}@${img.digest}`;
-    });
-    const dir = mkdtempSync(join(tmpdir(), 'scraper-compose-'));
-    writeFileSync(join(dir, 'compose.yaml'), resolved);
-    const r = spawnSync('docker', ['compose', '-f', join(dir, 'compose.yaml'), 'config', '--format', 'json'], { encoding: 'utf8' });
+  it.runIf(docker.status === 0)('docker compose accepts the composed document', () => {
+    const r = spawnSync('docker', ['compose', '-p', 'sealed-scraper-check', '-f', stack.composePath, 'config', '--quiet'], { encoding: 'utf8' });
     expect(r.status, r.stderr).toBe(0);
-    const cfg = JSON.parse(r.stdout) as { services: Record<string, { image: string }> };
-    expect(cfg.services['scraper-runner']?.image).toContain('@sha256:');
   });
 });
 

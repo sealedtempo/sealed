@@ -1,15 +1,18 @@
 """Session-key gate in front of OpenCode in the same container (stdlib only; embedded verbatim
 in the OpenCode fallback fragment).
 
-Caddy's password gate consumes the Authorization header, so OpenCode's own HTTP Basic auth
-cannot be used through the code route, and the gate password must never be handed to the
-agent. This proxy runs OpenCode on loopback (argv after --) and serves its API on the
-container port:
-- every request needs X-Session-API-Key: <CODE_SESSION_API_KEY>, except GET or HEAD of
-  /global/health (healthchecks);
+The code route sits behind Sealed's gate (Caddy forward_auth to sealed-agent): a client sends
+Basic auth with user sealed and the gate password once, receives the sealed_gate cookie, and
+then sends the cookie. With the cookie, the client's own Authorization header passes the gate
+untouched. Neither the gate password nor the gate cookie may reach the agent, because the gate
+protects every app UI. This proxy runs OpenCode on loopback (argv after --) and serves its API
+on the container port:
+- every request needs the session key CODE_SESSION_API_KEY, as X-Session-API-Key: <key> or
+  Authorization: Bearer <key>, except GET or HEAD of /global/health (healthchecks);
 - requests reach OpenCode with Authorization: Basic <OPENCODE_SERVER_USERNAME>:
   <OPENCODE_SERVER_PASSWORD>, a password generated for OpenCode alone; any client
-  Authorization header is dropped;
+  Authorization header (a Bearer session key, or gate Basic credentials a browser keeps
+  sending) is dropped, and so is the sealed_gate cookie;
 - /global/upgrade (self-update) is refused, and so are WebSocket upgrades;
 - responses stream, so Server-Sent Events (/event) work.
 CODE_SESSION_API_KEY is removed from OpenCode's environment. Paths and bodies are never logged.
@@ -29,7 +32,8 @@ import threading
 SESSION_KEY_ENV = "CODE_SESSION_API_KEY"
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection",
               "te", "trailer", "trailers", "transfer-encoding", "upgrade"}
-DROP_FROM_CLIENT = HOP_BY_HOP | {"authorization", "x-session-api-key", "host", "content-length"}
+DROP_FROM_CLIENT = HOP_BY_HOP | {"authorization", "x-session-api-key", "host", "content-length", "cookie"}
+GATE_COOKIE = "sealed_gate"
 PUBLIC = {("GET", "/global/health"), ("HEAD", "/global/health")}
 DENIED_PREFIXES = ("/global/upgrade",)
 MAX_BODY = 64 * 1024 * 1024
@@ -44,6 +48,17 @@ class ProxyError(Exception):
 
 def log(message):
     print("authproxy: " + message, file=sys.stderr, flush=True)
+
+
+def without_gate_cookie(values):
+    """The Cookie header values joined, minus the gate's sealed_gate cookie ("" if none is left)."""
+    kept = []
+    for value in values:
+        for part in value.split(";"):
+            part = part.strip()
+            if part and part.split("=", 1)[0].strip() != GATE_COOKIE:
+                kept.append(part)
+    return "; ".join(kept)
 
 
 def host_port(text):
@@ -112,8 +127,14 @@ def make_handler(settings):
         def authorized(self, path):
             if (self.command, path) in PUBLIC:
                 return True
-            supplied = (self.headers.get("X-Session-API-Key") or "").encode("utf-8")
-            return hmac.compare_digest(supplied, settings.session_key)
+            candidates = [self.headers.get("X-Session-API-Key") or ""]
+            scheme, _, token = (self.headers.get("Authorization") or "").partition(" ")
+            if scheme.lower() == "bearer":
+                candidates.append(token.strip())
+            ok = False
+            for supplied in candidates:
+                ok = hmac.compare_digest(supplied.encode("utf-8"), settings.session_key) or ok
+            return ok
 
         def read_body(self):
             encoding = (self.headers.get("Transfer-Encoding") or "").strip().lower()
@@ -153,6 +174,9 @@ def make_handler(settings):
         def forward_headers(self, body):
             named = {t.strip().lower() for t in (self.headers.get("Connection") or "").split(",")}
             headers = {k: v for k, v in self.headers.items() if k.lower() not in DROP_FROM_CLIENT | named}
+            cookies = without_gate_cookie(self.headers.get_all("Cookie") or [])
+            if cookies:
+                headers["Cookie"] = cookies
             headers["Host"] = settings.upstream[0] + ":" + str(settings.upstream[1])
             headers["Authorization"] = settings.upstream_auth
             if body is not None:
@@ -165,7 +189,7 @@ def make_handler(settings):
                 return self.reply(400, "bad request target")
             path = self.path.split("?", 1)[0]
             if not self.authorized(path):
-                return self.reply(401, "missing or wrong X-Session-API-Key")
+                return self.reply(401, "missing or wrong session key (X-Session-API-Key or Authorization: Bearer)")
             if path.startswith(DENIED_PREFIXES):
                 return self.reply(403, "not allowed through the Sealed code route")
             if self.headers.get("Upgrade"):

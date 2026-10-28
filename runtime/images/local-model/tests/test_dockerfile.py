@@ -118,6 +118,9 @@ class LocalModelDockerfileTest(unittest.TestCase):
         self.assertEqual(self.final.all("USER"), [svc["user"]])
         upstream = svc["command"][svc["command"].index("-upstream") + 1]
         self.assertEqual(upstream, self.final.env()["OLLAMA_HOST"])
+        # The bearer key is on (per-service secret mounts, integration brief item 5).
+        self.assertEqual(svc["command"][svc["command"].index("-key-env") + 1], "OLLAMA_GATE_KEY")
+        self.assertEqual(svc["x-sealed-secrets"], ["OLLAMA_GATE_KEY"])
 
     def test_context_length_matches_gateway_config(self):
         import yaml

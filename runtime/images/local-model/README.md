@@ -27,8 +27,11 @@ the Ollama API on :11434:
   `POST /api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`, `/api/show`,
   `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, with canonical paths only;
 - with streaming (`FlushInterval: -1`), a 64 MiB request limit, and `Authorization` removed;
-- optionally with a bearer key (`-key-env NAME`), off in the fragment because a secret would mount
-  every llm-gateway secret into this container.
+- with a bearer key (`-key-env NAME`): the llm-gateway fragment runs it with
+  `-key-env OLLAMA_GATE_KEY`, a secret only `llm-gateway-litellm` and `llm-gateway-ollama` list. Per-service
+  secret mounts (integration brief item 5, D-042) mean this container sees that one file and nothing
+  else of llm-gateway's secrets. The gate removes the variable from Ollama's environment and checks
+  `Authorization: Bearer <key>` on every route except `/healthz`.
 
 Subcommands: `probe <url>` (healthcheck without proxies) and `verify-manifest` (build time, below).
 
@@ -62,4 +65,6 @@ The fallback model `qwen3:1.7b` (ID `8f68893c685c`, Apache-2.0) can be built by 
 Tests: `make -C runtime/images/local-model test` (static Dockerfile checks, no daemon, plus
 `go vet` and `go test` of the gate, which also runs the built gate binary as a supervising process).
 After a build, CI must run one generation on the stripped image (VERIFY-AT-BUILD in
-`docs/notes/litellm.md` section 10).
+`docs/notes/litellm.md` section 10). The default command runs the gate with
+`-key-env OLLAMA_GATE_KEY`, so such a run needs `-e OLLAMA_GATE_KEY=<16 or more characters>` and
+`Authorization: Bearer <that key>` on the request; without the variable the gate exits with code 2.

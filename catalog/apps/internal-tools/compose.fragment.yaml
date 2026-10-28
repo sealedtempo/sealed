@@ -6,10 +6,18 @@
 # so that compose interpolation leaves it alone. Telemetry switches come from the manifest's
 # telemetry_off_env, which the composer adds to every service.
 #
-# Route closed until the bootstrap is done: internal-tools-server listens on TOOLS_SETUP_PORT
-# (3001), which no Caddy route points at, until internal-tools-bootstrap writes
-# internal-tools-bootstrap/done.json. Only then does it restart ToolJet on PORT (3000), the port
-# of the tools route, so the first admin exists before anyone outside the VM reaches ToolJet.
+# Route closed until the bootstrap is done, twice over: sealed-agent's gate answers 503 starting
+# on the tools route until manifest bootstrap.done_file (internal-tools-bootstrap/done.json)
+# exists (integration brief item 9), and internal-tools-server listens on TOOLS_SETUP_PORT (3001),
+# which no Caddy route points at, until internal-tools-bootstrap writes that file. Only then does
+# it restart ToolJet on PORT (3000), the port of the tools route, so the first admin exists before
+# anyone outside the VM reaches ToolJet.
+#
+# Each service gets bind mounts of exactly the secret files it lists in x-sealed-secrets
+# (integration brief item 5). Nothing here works around volume ownership by starting as root:
+# internal-tools-bootstrap declares x-sealed-owner, so sealed-agent creates it owned by uid 1000,
+# the user of both services that use it. Postgres and Valkey keep their upstream entrypoints,
+# which start as root and hand their data directories to their own users.
 services:
   internal-tools-server:
     image: "{{image:tooljet}}"
@@ -472,4 +480,5 @@ services:
 volumes:
   internal-tools-db-data: {}
   internal-tools-valkey-data: {}
-  internal-tools-bootstrap: {}
+  internal-tools-bootstrap:
+    x-sealed-owner: "1000:1000"

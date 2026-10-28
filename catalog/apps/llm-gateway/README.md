@@ -13,17 +13,22 @@ logs, plus a local CPU model. Spec 6.2, D-024.
 | `llm-gateway-ollama` | `local-model` (built from `images/local-model`) | Ollama 0.40.12, CPU only, `qwen3:4b-instruct-2507-q4_K_M` baked in, behind `sealed-ollama-gate`; read-only rootfs, uid 10002 |
 | `llm-gateway-keys` | `litellm` | keys job: provisions the virtual keys of other catalog apps (below); listens on nothing; uid 65534 |
 
-The shared `apps` network has no per-app segmentation, so every app container can open a connection
-to every service above. Each one therefore authenticates on its own: LiteLLM by virtual key, Postgres
-by password, and Ollama through `sealed-ollama-gate` (Go standard library,
-`runtime/images/local-model/gate`). The gate runs Ollama on 127.0.0.1:11435 and answers on :11434
-only to the addresses of `llm-gateway-litellm` (resolved through Docker's DNS; service names and fixed
-IPs come only from the composer) and to loopback (healthcheck), and only for inference and read
-endpoints (`/api/chat`, `/api/generate`, `/api/embed(dings)`, `/api/show`, `/api/tags`, `/api/ps`,
-`/api/version`, `/v1/...`). Pull, push, create, copy, delete and blob uploads are refused. So the coding
-agent or any other app cannot run unmetered local inference or fill Ollama's queue. A bearer key on the
-gate (`-key-env`) is implemented but off, because today a secret for Ollama would mount every
-llm-gateway secret (the master key included) into the Ollama container.
+Every service is on the app's own network `app-llm-gateway` (D-041). Only `llm-gateway-litellm`, the
+primary service, is also on the shared `apps` network, where other apps reach it as `llm-gateway`, so
+other apps cannot open a connection to the database, Ollama or the keys job at all. Each service still
+authenticates on its own: LiteLLM by virtual key, Postgres by password, and Ollama through
+`sealed-ollama-gate` (Go standard library, `runtime/images/local-model/gate`). The gate runs Ollama on
+127.0.0.1:11435 and answers on :11434 only to the addresses of `llm-gateway-litellm` (resolved through
+Docker's DNS; service names and fixed IPs come only from the composer) and to loopback (healthcheck),
+only with the bearer key `OLLAMA_GATE_KEY` (`-key-env`, which every `local/` route sends as
+`api_key`), and only for inference and read endpoints (`/api/chat`, `/api/generate`, `/api/embed(dings)`,
+`/api/show`, `/api/tags`, `/api/ps`, `/api/version`, `/v1/...`). Pull, push, create, copy, delete and blob
+uploads are refused. So the coding agent or any other app cannot run unmetered local inference or fill
+Ollama's queue.
+
+Each service gets bind mounts of exactly the secret files it lists in `x-sealed-secrets` (D-042), so the
+Ollama container sees `OLLAMA_GATE_KEY` and nothing else, and only `llm-gateway-litellm` and
+`llm-gateway-keys` see the master key.
 
 `images/local-model` is a symlink to `runtime/images/local-model`, so `build:images/<dir>` always
 resolves relative to this app directory. Built images keep the zero digest until the image workflow
@@ -64,14 +69,16 @@ loader), `key_type: llm_api`, rpm/tpm/parallel limits. It looks keys up by sha25
 (`GET /key/info?key=<hash>`), creates them with `POST /key/generate {"key": <value>, ...}`, restores
 drifted scope with `/key/update`, leaves keys an admin blocked alone, and deletes the alias when the
 secret is unset. It repeats every 5 minutes, so a reset gateway database heals by itself, and its
-status file (no secrets) is its healthcheck. The consumer app stores the same value as its own secret
-(`LLM_GATEWAY_KEY` for coding-agent).
+status file (no secrets) is its healthcheck. The consumer app's secret refers to this one
+(`LLM_GATEWAY_KEY` of coding-agent has `same_as: llm-gateway/APP_KEY_CODING_AGENT`, D-043), so
+`sealed secrets` sets the value once and the key broker returns it to both apps.
 
 ## Boot
 
 `images/litellm/sealed_entrypoint.py` runs before LiteLLM (after `envexec` exported the secrets):
-it checks `LITELLM_MASTER_KEY` (must start with `sk-`, not a known default), `LITELLM_SALT_KEY` and
-`POSTGRES_PASSWORD`, builds `DATABASE_URL`, renders `/run/litellm/config.yaml` from `config.yaml`
+it checks `LITELLM_MASTER_KEY` (must start with `sk-`, not a known default), `LITELLM_SALT_KEY`,
+`POSTGRES_PASSWORD` and `OLLAMA_GATE_KEY` (at least 16 characters, and every `local/` route must send it),
+builds `DATABASE_URL`, renders `/run/litellm/config.yaml` from `config.yaml`
 and `providers.yaml`, removes env vars that must never reach LiteLLM (`LITELLM_LICENSE`,
 `OPENAI_API_KEY`, tracing exporters, the Postgres password), and execs `litellm --config ...`.
 The rendered file has no secret values, only `os.environ/<NAME>` references.
@@ -114,9 +121,12 @@ Health: `GET /health/liveliness` (liveness) and `GET /health/readiness` (DB conn
 
 `LITELLM_MASTER_KEY` (sk-hex32; only `llm-gateway-litellm` and `llm-gateway-keys` list it),
 `LITELLM_SALT_KEY` (sk-hex32, never change after first boot), `POSTGRES_PASSWORD` (hex32),
-`APP_KEY_CODING_AGENT` (sk-hex32, optional; copy the value into coding-agent's `LLM_GATEWAY_KEY`), and
-the optional provider keys with `BYOK_ROUTES_ENABLED` and `EXTERNAL_ROUTES_ENABLED`. Secret Manager
-names are `sealed-llm-gateway-<NAME>`.
+`OLLAMA_GATE_KEY` (hex32; only `llm-gateway-litellm` and `llm-gateway-ollama` list it),
+`APP_KEY_CODING_AGENT` (sk-hex32, generated; coding-agent's `LLM_GATEWAY_KEY` refers to it with
+`same_as`, and a required secret may only refer to a required one, so it always exists; without
+coding-agent the key lives only inside llm-gateway), and the optional provider keys with
+`BYOK_ROUTES_ENABLED` and `EXTERNAL_ROUTES_ENABLED`.
+Secret Manager names are `sealed-llm-gateway-<NAME>`.
 
 ## Never enable (enterprise only)
 
@@ -129,13 +139,18 @@ these keys.
 ## Tests
 
 ```sh
-python3 -m venv tmp/pyenv && tmp/pyenv/bin/pip install PyYAML==6.0.3 httpx==0.28.1 jsonschema==4.25.1
-tmp/pyenv/bin/python -m unittest discover -s catalog/apps/llm-gateway/tests -t catalog/apps/llm-gateway/tests
+python3 -m venv tmp/pyenv && tmp/pyenv/bin/pip install PyYAML==6.0.3 httpx==0.28.1
+make -C catalog/apps/llm-gateway test PYTHON="$PWD/tmp/pyenv/bin/python"   # needs Go for the composer
 ```
 
-`tests/test_packaging.py` checks the fragment against INTERFACES section 14, runs
-`docker compose config` on it with dummy digests, validates the manifest against
-`catalog/schema/manifest.schema.json`, and checks the Dockerfile pins and flattening.
+The catalog rules are checked only by the real composer: `tests/sealed_compose.py` runs
+`go run ./runtime/composer/cmd/sealed-compose lint` and `compose` on this app (there is no app-local
+copy of the rules any more; it moves to `catalog/tools/` once that exists). `tests/test_packaging.py`
+requires the lint to report nothing but the unbuilt `litellm` and `local-model` digests (and missing
+SBOMs), composes the app, checks that each service exports and (with composer 1.2.0) mounts exactly the
+secrets it lists, runs `docker compose config` on the composed document, and checks the Dockerfile pins
+and flattening. Without Go the composer tests skip; with `CI` or `SEALED_REQUIRE_COMPOSER=1` set they
+fail instead.
 `tests/test_sealed_keys.py` runs the keys job over real HTTP against `tests/fake_litellm.py` (custom
 key, alias and hash semantics from the LiteLLM 1.106.5 source). The image build re-checks the callback,
 the renderer and the keys config against the real LiteLLM with `--network=none`. The gate has Go tests:

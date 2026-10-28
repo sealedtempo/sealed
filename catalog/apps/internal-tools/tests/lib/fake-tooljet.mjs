@@ -2,12 +2,12 @@
 // It applies ToolJet's rules: setup-super-admin only while there are no users (403 after),
 // guards before body validation on sign-up (403 when DISABLE_SIGNUPS, else 400 for an empty
 // body), the tj_auth_token cookie plus tj-workspace-id header on app endpoints, and app name
-// and type validation. An optional basic-auth gate stands in for Caddy.
+// and type validation. The Sealed gate in front of it is tests/lib/fake-gate.mjs.
 
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
-export function createFakeToolJet({ unhealthyPolls = 0, signupsDisabled = true, gate } = {}) {
+export function createFakeToolJet({ unhealthyPolls = 0, signupsDisabled = true } = {}) {
   const state = {
     users: new Map(),
     organizations: new Map(),
@@ -87,11 +87,8 @@ export function createFakeToolJet({ unhealthyPolls = 0, signupsDisabled = true, 
     const raw = Buffer.concat(chunks).toString("utf8");
     const body = raw ? JSON.parse(raw) : undefined;
     state.calls.push(`${req.method} ${url.pathname}`);
+    state.headers = [...(state.headers ?? []), { path: url.pathname, authorization: req.headers.authorization, cookie: req.headers.cookie }];
 
-    if (gate && req.headers.authorization !== `Basic ${Buffer.from(gate).toString("base64")}`) {
-      res.writeHead(401, { "www-authenticate": 'Basic realm="sealed"' });
-      return res.end();
-    }
     if (req.method === "GET" && url.pathname === "/api/health") {
       state.healthPolls++;
       if (state.healthPolls <= unhealthyPolls) return send(res, 502, { message: "bad gateway" });

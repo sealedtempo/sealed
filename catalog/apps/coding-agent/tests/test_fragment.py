@@ -3,7 +3,9 @@
 The app directory holds either the OpenHands release (default) or, after
 fallback-opencode/switch.sh, the OpenCode variant. Each test class checks the variant it is
 about and skips itself when the app directory holds the other one, so the suite passes in
-both states (test_switch_script runs it on a switched copy).
+both states (test_switch_script runs it on a switched copy). The catalog rules are checked by
+the real composer (llm-gateway/tests/sealed_compose.py); these tests add what is specific to
+this app.
 """
 from __future__ import annotations
 
@@ -25,8 +27,8 @@ GATEWAY_DIR = os.path.normpath(os.path.join(APP_DIR, "..", "llm-gateway"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(GATEWAY_DIR, "tests"))
 
-import catalog_lint  # noqa: E402
 import dockerfile_lint  # noqa: E402
+import sealed_compose  # noqa: E402
 from fakes import FakeLiteLLM, FakeOpenHands  # noqa: E402
 
 AGENT_SERVER_DIGEST = "sha256:9e04bf35e5f44f987f2bd7bb82b8f967104def33183da85bd6e95c9eb34ddfb3"
@@ -68,23 +70,6 @@ class CommonChecks:
     DIR = APP_DIR
     VARIANT = False
 
-    def test_lint_clean(self):
-        self.assertEqual(catalog_lint.lint_app(self.DIR, variant=self.VARIANT), [])
-
-    def test_manifest_schema(self):
-        errors = catalog_lint.schema_errors(self.manifest)
-        if errors is None:
-            self.skipTest("jsonschema not installed")
-        self.assertEqual(errors, [])
-
-    def test_compose_config(self):
-        result = catalog_lint.compose_config(self.app["fragment_text"])
-        if result is None:
-            self.skipTest("docker CLI not installed")
-        self.assertEqual(result[0], 0, result[1])
-        parsed = yaml.safe_load(result[1])
-        self.assertEqual(sorted(parsed["services"]), sorted(self.services))
-
     def test_never_holds_the_gateway_master_key(self):
         names = {s["name"] for s in self.manifest["secrets"]}
         self.assertNotIn("LITELLM_MASTER_KEY", names)
@@ -94,6 +79,28 @@ class CommonChecks:
         self.assertIn(gateway_app_key()["secret"], key["description"])
         holders = [n for n, s in self.services.items() if "LLM_GATEWAY_KEY" in (s.get("x-sealed-secrets") or [])]
         self.assertTrue(holders)
+
+    def test_gateway_key_refers_to_the_gateway_secret(self):
+        """Integration brief item 6: sealed secrets copies the value instead of asking twice."""
+        key = {s["name"]: s for s in self.manifest["secrets"]}["LLM_GATEWAY_KEY"]
+        self.assertEqual(key["same_as"], "llm-gateway/" + gateway_app_key()["secret"])
+        gateway = {s["name"]: s for s in sealed_compose.load_yaml(os.path.join(GATEWAY_DIR, "manifest.yaml"))["secrets"]}
+        self.assertIn(gateway_app_key()["secret"], gateway)
+        self.assertEqual([s for s in self.manifest["secrets"] if "same_as" in s], [key])
+
+    def test_no_service_starts_as_root(self):
+        """Integration brief item 11: volume owners come from x-sealed-owner, not from a root start."""
+        owners = {name: (spec or {}).get("x-sealed-owner") for name, spec in (self.app["fragment"].get("volumes") or {}).items()}
+        for name, svc in self.services.items():
+            user = svc.get("user", "")
+            self.assertRegex(user, r"^[1-9][0-9]*:[1-9][0-9]*$", name)
+            for mount in svc.get("volumes") or []:
+                volume, target = mount.split(":")[:2]
+                read_only = mount.endswith(":ro")
+                if not read_only:
+                    self.assertEqual(owners[volume], user, f"{name} writes {volume} as {user}")
+        self.assertTrue(all(owners.values()), owners)
+        self.assertNotIn("dropuid", self.app["fragment_text"])
 
     def test_gateway_key_scope(self):
         entry = gateway_app_key()
@@ -120,7 +127,7 @@ class OpenHandsPackagingTest(CommonChecks, unittest.TestCase):
     def setUpClass(cls):
         if app_variant() != "openhands-agent-server":
             raise unittest.SkipTest("app directory holds the OpenCode variant")
-        cls.app = catalog_lint.load_app(APP_DIR)
+        cls.app = sealed_compose.load_app(APP_DIR)
         cls.manifest = cls.app["manifest"]
         cls.services = cls.app["fragment"]["services"]
         cls.server = cls.services["coding-agent-server"]
@@ -131,10 +138,11 @@ class OpenHandsPackagingTest(CommonChecks, unittest.TestCase):
 
     def test_scripts_embedded_verbatim(self):
         self.assertEqual(self.server["entrypoint"][:3], ["/usr/local/bin/python3", "-I", "-c"])
-        self.assertEqual(self.server["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "dropuid.py")))
-        self.assertEqual(self.boot["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "dropuid.py")))
-        self.assertEqual(self.boot["command"][:3], ["/usr/local/bin/python3", "-I", "-c"])
-        self.assertEqual(self.boot["command"][3], read(os.path.join(APP_DIR, "bootstrap", "seed.py")))
+        self.assertEqual(self.server["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "prepdirs.py")))
+        self.assertEqual(self.server["command"][:3], ["tini", "--", "/usr/local/bin/openhands-agent-server"])
+        self.assertEqual(self.boot["entrypoint"][:3], ["/usr/local/bin/python3", "-I", "-c"])
+        self.assertEqual(self.boot["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "seed.py")))
+        self.assertNotIn("command", self.boot)
 
     def test_image_pin(self):
         image = self.manifest["images"][0]
@@ -160,23 +168,31 @@ class OpenHandsPackagingTest(CommonChecks, unittest.TestCase):
             self.assertIn(env[key], owned, key)
         self.assertEqual(self.server["volumes"], ["coding-agent-workspace:/workspace"])
         self.assertEqual(owned[0], "/workspace")
+        self.assertEqual(env["SEALED_RUN_AS"], self.server["user"])
+        self.assertEqual(self.app["fragment"]["volumes"]["coding-agent-workspace"]["x-sealed-owner"], self.server["user"])
+        self.assertNotIn("working_dir", self.server)  # the image's is /, outside the volume
 
     def test_bootstrap_state_is_out_of_the_agents_reach(self):
         done = self.manifest["bootstrap"]["done_file"]
         self.assertEqual(self.manifest["bootstrap"]["service"], "coding-agent-bootstrap")
-        self.assertEqual(done, self.boot["environment"]["SEALED_DONE_FILE"])
-        self.assertIn(done, " ".join(self.boot["healthcheck"]["test"]))
+        # Integration brief item 10: <volume>/<path> relative to /mnt/sealed-data/coding-agent/.
+        self.assertEqual(done, "coding-agent-bootstrap/done")
+        volume, rest = done.split("/", 1)
+        self.assertEqual(self.boot["volumes"], [volume + ":/var/lib/sealed-bootstrap"])
+        self.assertEqual(self.boot["environment"]["SEALED_DONE_FILE"], "/var/lib/sealed-bootstrap/" + rest)
         # The done file is on a volume only the bootstrap job mounts (the composer keeps it on the
         # data disk), owned by a uid other than the agent's.
-        self.assertEqual(self.boot["volumes"], ["coding-agent-bootstrap:/var/lib/sealed-bootstrap"])
-        self.assertTrue(done.startswith("/var/lib/sealed-bootstrap/"))
         for name, svc in self.services.items():
             if name != "coding-agent-bootstrap":
-                self.assertFalse([v for v in svc.get("volumes") or [] if v.startswith("coding-agent-bootstrap:")])
-        self.assertEqual(self.boot["environment"]["SEALED_OWNED_DIRS"], "/var/lib/sealed-bootstrap")
-        self.assertNotEqual(self.boot["environment"]["SEALED_RUN_AS"], self.server["environment"]["SEALED_RUN_AS"])
+                self.assertFalse([v for v in svc.get("volumes") or [] if v.startswith(volume + ":")])
+        owners = self.app["fragment"]["volumes"]
+        self.assertEqual(owners[volume]["x-sealed-owner"], self.boot["user"])
+        self.assertNotEqual(self.boot["user"], self.server["user"])
         self.assertTrue(self.boot["read_only"])
         self.assertEqual(self.boot["depends_on"], {"coding-agent-server": {"condition": "service_healthy"}})
+        # It exits once done (the composer gives it restart: on-failure), so it has no healthcheck.
+        self.assertNotIn("healthcheck", self.boot)
+        self.assertNotIn("signal.pause", read(os.path.join(APP_DIR, "bootstrap", "seed.py")))
 
     def test_secrets(self):
         secrets = {s["name"]: s for s in self.manifest["secrets"]}
@@ -210,20 +226,21 @@ class OpenHandsPackagingTest(CommonChecks, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             done = os.path.join(tmp, "run", "bootstrap", "done")
             with FakeLiteLLM(master) as gw, FakeOpenHands(session, tmp) as oh:
-                gw.add_key(key, key_alias="coding-agent", models=["relay/*", "local/*"])
                 env = dict(self.boot["environment"])
                 env.update({
                     "SEALED_GATEWAY_URL": gw.url, "SEALED_AGENT_SERVER_URL": oh.url, "SEALED_DONE_FILE": done,
-                    "SEALED_BOOTSTRAP_IDLE": "0", "SEALED_POLL_INTERVAL_S": "0.05",
+                    "SEALED_POLL_INTERVAL_S": "0.05",
                     "LLM_GATEWAY_KEY": key, "OH_SESSION_API_KEYS_0": session, "PATH": os.environ["PATH"],
                     "HTTP_PROXY": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
                 })
-                proc = subprocess.run([sys.executable, *self.boot["command"][1:]], env=env,
+                # Exits by itself once done: restart on-failure must not see a running job forever.
+                proc = subprocess.run([sys.executable, *self.boot["entrypoint"][1:]], env=env,
                                       capture_output=True, text=True, timeout=60)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(oh.settings["agent_settings"]["llm"]["model"], "litellm_proxy/relay/default")
                 self.assertEqual(oh.settings["agent_settings"]["llm"]["api_key"], key)
                 self.assertNotIn(key, proc.stderr + proc.stdout)
+                self.assertEqual(gw.calls, [])  # the job is not on the network llm-gateway is on
             self.assertTrue(os.path.exists(done))
 
 
@@ -232,7 +249,7 @@ class OpenCodeChecks(CommonChecks):
 
     @classmethod
     def load(cls):
-        cls.app = catalog_lint.load_app(cls.DIR)
+        cls.app = sealed_compose.load_app(cls.DIR)
         cls.manifest = cls.app["manifest"]
         cls.services = cls.app["fragment"]["services"]
         cls.server = cls.services["coding-agent-server"]
@@ -246,7 +263,7 @@ class OpenCodeChecks(CommonChecks):
 
     def test_scripts_embedded(self):
         self.assertEqual(self.server["entrypoint"][:3], ["/usr/bin/python3", "-I", "-c"])
-        self.assertEqual(self.server["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "dropuid.py")))
+        self.assertEqual(self.server["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "prepdirs.py")))
         self.assertEqual(self.server["command"][:3], ["/usr/bin/python3", "-I", "-c"])
         self.assertEqual(self.server["command"][3], read(os.path.join(APP_DIR, "bootstrap", "authproxy.py")))
 
@@ -303,7 +320,13 @@ class OpenCodeChecks(CommonChecks):
                     "OPENCODE_DISABLE_DEFAULT_PLUGINS"):
             self.assertEqual(env[key], "1")
         owned = env["SEALED_OWNED_DIRS"].split(",")
-        self.assertIn(self.server["working_dir"], owned)
+        # Docker would create a missing working_dir as root inside the volume, so the container
+        # starts in the volume root and prepdirs.py changes to the project directory it created.
+        self.assertEqual(self.server["working_dir"], "/workspace")
+        self.assertEqual(owned[0], "/workspace")
+        self.assertEqual(env["SEALED_WORKDIR"], "/workspace/project")
+        self.assertIn(env["SEALED_WORKDIR"], owned)
+        self.assertEqual(env["SEALED_RUN_AS"], self.server["user"])
         for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"):
             self.assertTrue(env[key].startswith("/workspace/.opencode/"), key)
 
@@ -348,12 +371,13 @@ class OpenCodeFallbackTest(OpenCodeChecks, unittest.TestCase):
             shutil.copytree(APP_DIR, copy, ignore=ignore)
             shutil.copytree(GATEWAY_DIR, os.path.join(repo, "catalog", "apps", "llm-gateway"), ignore=ignore,
                             symlinks=True)
-            shutil.copytree(os.path.dirname(catalog_lint.SCHEMA_PATH), os.path.join(repo, "catalog", "schema"))
             script = os.path.join(copy, "fallback-opencode", "switch.sh")
-            env = dict(os.environ, PATH=os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"])
+            # The copy has no composer source; the nested suite runs this checkout's composer on it.
+            env = dict(os.environ, PATH=os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"],
+                       SEALED_COMPOSER_DIR=sealed_compose.Composer().root)
             proc = subprocess.run(["bash", script], capture_output=True, text=True, env=env, timeout=60)
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            switched = catalog_lint.load_app(copy)
+            switched = sealed_compose.load_app(copy)
             self.assertEqual(switched["manifest"]["images"][0]["name"], "opencode")
             self.assertEqual(switched["fragment_text"], self.app["fragment_text"])
             self.assertTrue(os.path.exists(os.path.join(copy, "images", "opencode", "Dockerfile")))
@@ -386,6 +410,128 @@ class OpenCodeActiveTest(OpenCodeChecks, unittest.TestCase):
     def test_same_files_as_the_fallback(self):
         for name in ("manifest.yaml", "compose.fragment.yaml", "egress.yaml", "waivers.yaml"):
             self.assertEqual(read(os.path.join(APP_DIR, name)), read(os.path.join(FALLBACK_DIR, name)), name)
+
+
+def envexec_secrets(service):
+    """Secret names a composed service's envexec entrypoint exports (--secret / --optional-secret)."""
+    entry = service["entrypoint"]
+    sep = entry.index("--")
+    return {entry[i + 1] for i in range(sep) if entry[i] in ("--secret", "--optional-secret")}
+
+
+class ComposerChecks:
+    """The real composer on a variant, composed together with llm-gateway (same_as needs it)."""
+
+    DIR = APP_DIR
+    WARNINGS = ("sbom-missing",)
+
+    @classmethod
+    def compose(cls):
+        cls.composer = sealed_compose.composer_for(cls)
+        cls.app = sealed_compose.load_app(cls.DIR)
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.stack = cls.composer.compose([GATEWAY_DIR, cls.DIR], os.path.join(cls.tmp.name, "out"))
+        cls.composed = cls.stack["compose"]["services"]
+        cls.info = next(a for a in cls.stack["stack"]["apps"] if a["id"] == "coding-agent")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_lint_findings(self):
+        findings = self.composer.lint([self.DIR])
+        self.assertEqual(sealed_compose.unexpected(findings, warnings=self.WARNINGS), [])
+        errors = [f for f in findings if f["severity"] == "error"]
+        self.assertEqual(len(errors), len(sealed_compose.unbuilt_images(self.app["manifest"])), errors)
+
+    def test_each_service_exports_only_its_declared_secrets(self):
+        for name, svc in self.app["fragment"]["services"].items():
+            self.assertEqual(envexec_secrets(self.composed[name]), set(svc.get("x-sealed-secrets") or []), name)
+
+    def test_services_run_as_their_fragment_users(self):
+        for name, svc in self.app["fragment"]["services"].items():
+            self.assertEqual(self.composed[name]["user"], svc["user"], name)
+
+    def test_code_route_is_gated(self):
+        site = sealed_compose.caddy_site(self.stack["caddyfile"], "code.34-1-2-3.sslip.io")
+        self.assertIsNotNone(site)
+        port = self.app["manifest"]["routes"][0]["internal_port"]
+        self.assertIn(f"reverse_proxy coding-agent-server:{port}", site)
+        if self.composer.brief:
+            # Integration brief item 9: forward_auth to sealed-agent, no basic_auth in Caddy.
+            self.assertIn("forward_auth sealed-agent:7070", site)
+            self.assertIn("/v1/gate?route=code", site)
+            self.assertNotIn("basic_auth", site)
+        else:
+            self.assertIn("basic_auth", site)
+
+    def test_docker_compose_accepts_the_composed_document(self):
+        result = sealed_compose.docker_compose_config(self.stack["compose_path"])
+        if result is None:
+            self.skipTest("docker CLI not installed")
+        self.assertEqual(result[0], 0, result[1])
+
+    def brief_only(self):
+        if not self.composer.brief:
+            self.skipTest(f"composer {self.composer.version} predates integration brief items 5 to 11 (1.2.0)")
+
+    def test_secret_files_are_mounted_per_service(self):
+        self.brief_only()
+        root = "/run/sealed/secrets/coding-agent"
+        for name, svc in self.app["fragment"]["services"].items():
+            want = {f"{root}/{s}" for s in svc.get("x-sealed-secrets") or []}
+            self.assertEqual(sealed_compose.secret_mounts(self.composed[name], "coding-agent"), want, name)
+
+    def test_volume_owners_are_recorded_for_the_agent(self):
+        self.brief_only()
+        for name, spec in self.app["fragment"]["volumes"].items():
+            entry = next(v for v in self.info["volumes"] if v["name"] == name)
+            self.assertIn(spec["x-sealed-owner"], json.dumps(entry), name)
+
+    def test_only_the_primary_service_reaches_other_apps(self):
+        """D-041: the bootstrap job cannot reach llm-gateway, which is why seed.py never calls it."""
+        self.brief_only()
+        primary = self.app["manifest"]["primary_service"]
+        for name in self.app["fragment"]["services"]:
+            networks = set(self.composed[name]["networks"])
+            self.assertIn("app-coding-agent", networks, name)
+            self.assertEqual("apps" in networks, name == primary, name)
+        self.assertIn("apps", self.composed["llm-gateway-litellm"]["networks"])
+
+    def test_same_as_needs_llm_gateway_in_the_stack(self):
+        self.brief_only()
+        alone = self.composer.compose([self.DIR], os.path.join(self.tmp.name, "alone"), expect_ok=False)
+        self.assertNotEqual(alone["status"], 0)
+        self.assertIn("llm-gateway", alone["stderr"])
+
+
+class OpenHandsComposerTest(ComposerChecks, unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if app_variant() != "openhands-agent-server":
+            raise unittest.SkipTest("app directory holds the OpenCode variant")
+        cls.compose()
+
+    def test_bootstrap_job(self):
+        boot = self.composed["coding-agent-bootstrap"]
+        self.assertEqual(boot["restart"], "on-failure")
+        self.assertEqual(self.info["bootstrap"]["service"], "coding-agent-bootstrap")
+        self.assertEqual(self.info["bootstrap"]["donePath"],
+                         "/mnt/sealed-data/coding-agent/coding-agent-bootstrap/done")
+        self.assertEqual(self.composed["coding-agent-server"]["restart"], "unless-stopped")
+
+
+class OpenCodeFallbackComposerTest(ComposerChecks, unittest.TestCase):
+    DIR = FALLBACK_DIR
+    # The variant directory is not a release directory; the app's LICENSE-NOTICE covers OpenCode.
+    WARNINGS = ("sbom-missing", "missing-file")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.compose()
+
+    def test_starts_in_the_volume_root(self):
+        self.assertEqual(self.composed["coding-agent-server"]["working_dir"], "/workspace")
 
 
 if __name__ == "__main__":

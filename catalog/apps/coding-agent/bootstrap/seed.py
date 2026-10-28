@@ -1,21 +1,24 @@
 """Sealed coding-agent bootstrap job (stdlib only; embedded verbatim in the compose fragment).
 
-Runs at every start of the job, so a changed key or a reset agent store is fixed by a restart.
-Its done file lives on the job's own volume, which the agent's container does not mount:
-1. waits for llm-gateway (GET /health/readiness) and for the agent server (GET /ready);
-2. waits until the gateway accepts this app's virtual key LLM_GATEWAY_KEY (GET /v1/models).
-   llm-gateway's keys job creates that key from its secret APP_KEY_CODING_AGENT, so a 401 is
-   retried until the wait timeout. This app never holds the gateway master key;
-3. stores {model, base_url, api_key} through PATCH /api/settings. A litellm_proxy/ model the
+Runs at every start of the stack (the composer gives the job restart: on-failure, so it is
+retried until it succeeds and then stays exited), so a changed key or a reset agent store is
+fixed by a restart. Its done file lives on the job's own volume, which the agent's container
+does not mount; manifest bootstrap.done_file names it, and sealed-agent keeps the code route
+closed (503 starting) until it exists:
+1. waits for the agent server (GET /ready);
+2. stores {model, base_url, api_key} through PATCH /api/settings. A litellm_proxy/ model the
    customer already chose on this gateway is kept; otherwise the default (relay/default) is
    used. When the relay fails, the gateway answers relay/default from the local model
    (router_settings.fallbacks), so no client-side fallback is needed;
-4. writes the done file (no secrets in it) and idles.
-Secret values are never printed.
+3. writes the done file (no secrets in it) and exits 0.
+The job never contacts llm-gateway itself: with per-app networks (D-041) only the primary
+service, coding-agent-server, is on the shared apps network where llm-gateway is, and the job
+is not. The key is LLM_GATEWAY_KEY, which refers to llm-gateway's APP_KEY_CODING_AGENT
+(same_as), so it is the value llm-gateway's keys job provisions; this app never holds the
+gateway master key. Secret values are never printed.
 """
 import json
 import os
-import signal
 import sys
 import time
 import urllib.error
@@ -41,7 +44,6 @@ class Config:
         self.done_file = env.get("SEALED_DONE_FILE", "/var/lib/sealed-bootstrap/done")
         self.wait_timeout = float(env.get("SEALED_WAIT_TIMEOUT_S", "900"))
         self.poll_interval = float(env.get("SEALED_POLL_INTERVAL_S", "3"))
-        self.idle = env.get("SEALED_BOOTSTRAP_IDLE", "1") == "1"
         self.llm_key = (env.get("LLM_GATEWAY_KEY") or "").strip()
         self.session_key = (env.get("OH_SESSION_API_KEYS_0") or "").strip()
         if not self.llm_key:
@@ -90,23 +92,6 @@ def wait_for(what, check, timeout, interval, sleep=time.sleep, clock=time.monoto
         if clock() >= deadline:
             raise BootstrapError("timed out waiting for " + what)
         sleep(interval)
-
-
-class Gateway:
-    def __init__(self, http, base_url, llm_key):
-        self.http = http
-        self.base = base_url
-        self.auth = {"Authorization": "Bearer " + llm_key}
-        self.last_status = None
-
-    def ready(self):
-        status, _ = self.http.call("GET", self.base + "/health/readiness")
-        return status == 200
-
-    def accepts_key(self):
-        status, _ = self.http.call("GET", self.base + "/v1/models", None, self.auth)
-        self.last_status = status
-        return status == 200
 
 
 class AgentServer:
@@ -162,18 +147,8 @@ def write_done(path, summary):
 def run(cfg, http, sleep=time.sleep, clock=time.monotonic):
     if os.path.exists(cfg.done_file):
         os.unlink(cfg.done_file)  # healthy only after this run succeeds
-    gateway = Gateway(http, cfg.gateway_url, cfg.llm_key)
     agent = AgentServer(http, cfg.agent_url, cfg.session_key)
-    log("waiting for llm-gateway at " + cfg.gateway_url)
-    wait_for("llm-gateway", gateway.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
-    try:
-        wait_for("llm-gateway to accept LLM_GATEWAY_KEY", gateway.accepts_key, cfg.wait_timeout,
-                 cfg.poll_interval, sleep, clock)
-    except BootstrapError:
-        if gateway.last_status in (401, 403):
-            raise BootstrapError("llm-gateway rejects LLM_GATEWAY_KEY (HTTP " + str(gateway.last_status) + "): "
-                                 "it must equal llm-gateway's secret APP_KEY_CODING_AGENT")
-        raise
+    log("waiting for the agent server at " + cfg.agent_url)
     wait_for("agent server", agent.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
 
     model = choose_model(cfg, agent.stored_llm())
@@ -184,12 +159,6 @@ def run(cfg, http, sleep=time.sleep, clock=time.monotonic):
     return summary
 
 
-def idle_forever():
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    while True:
-        signal.pause()
-
-
 def main(env=None):
     try:
         cfg = Config(dict(os.environ if env is None else env))
@@ -197,8 +166,6 @@ def main(env=None):
     except (BootstrapError, OSError) as err:
         log("error: " + str(err))
         return 1
-    if cfg.idle:
-        idle_forever()
     return 0
 
 

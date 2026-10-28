@@ -11,8 +11,13 @@ Requires `llm-gateway` in the same stack.
 
 | service | role |
 |---|---|
-| `coding-agent-server` (alias `coding-agent`) | agent-server on port 8000. Starts as root only to hand the workspace volume to uid 10001 (`bootstrap/dropuid.py`), then runs as 10001 with no_new_privs, so setuid binaries in the image cannot regain root. |
-| `coding-agent-bootstrap` | manifest bootstrap job (`bootstrap/seed.py`), run at every start: waits until llm-gateway accepts this app's virtual key `LLM_GATEWAY_KEY`, then stores `{model, base_url, api_key}` with `PATCH /api/settings`. It starts as root only to hand its own state volume to uid 10003, writes `/var/lib/sealed-bootstrap/done` there (that volume is not mounted into the agent's container, so the agent cannot forge or delete it), then idles. |
+| `coding-agent-server` (alias `coding-agent`) | agent-server on port 8000, uid 10001 from the start. `bootstrap/prepdirs.py` creates the workspace directories, checks no_new_privs (so setuid binaries in the image cannot regain root) and execs agent-server. |
+| `coding-agent-bootstrap` | manifest bootstrap job (`bootstrap/seed.py`, uid 10003, `restart: on-failure` from the composer), run at every start of the stack: stores `{model, base_url, api_key}` with `PATCH /api/settings` (the key is `LLM_GATEWAY_KEY`), writes `coding-agent-bootstrap/done` (manifest `bootstrap.done_file`; the volume is not mounted into the agent's container, so the agent cannot forge or delete it) and exits. sealed-agent keeps the code route closed (503 `starting`) until the file exists. |
+
+No service starts as root. Both volumes declare `x-sealed-owner` (`coding-agent-workspace` 10001:10001,
+`coding-agent-bootstrap` 10003:10003), and sealed-agent creates them with that owner before the ready gate
+opens (integration brief item 11). If a volume were not owned by the runtime user,
+`prepdirs.py` stops with an error naming it.
 
 Both scripts are embedded verbatim in `compose.fragment.yaml`, so they are part of the measured
 stack. Edit `bootstrap/*.py` or `compose.fragment.in.yaml`, then run `python3 tools/build_fragment.py`
@@ -28,10 +33,16 @@ This app never holds the gateway master key. llm-gateway's keys job (`llm-gatewa
 `catalog/apps/llm-gateway/images/litellm/app_keys.yaml`) creates the virtual key with the value of
 its secret `APP_KEY_CODING_AGENT`: alias `coding-agent`, models `relay/*` and `local/*` only (never
 `byok/*` or `external/*`), type `llm_api`, rpm/tpm/parallel limits. It restores that scope if it
-drifts and recreates the key after a gateway database reset. This app stores the same value as
-`LLM_GATEWAY_KEY`.
+drifts and recreates the key after a gateway database reset. This app's `LLM_GATEWAY_KEY` declares
+`same_as: llm-gateway/APP_KEY_CODING_AGENT` (D-043): the composer checks that llm-gateway is in the
+stack and declares that secret, `sealed secrets` sets the value once, and the key broker returns it
+under this app's name.
 
-agent-server V1 does not read `LLM_BASE_URL`. At every start the bootstrap job seeds:
+agent-server V1 does not read `LLM_BASE_URL`. At every start the bootstrap job seeds the settings
+below. It never contacts llm-gateway itself: every service is on the app network `app-coding-agent`,
+and only `coding-agent-server`, the primary service, also joins the shared `apps` network where
+llm-gateway is (D-041). `same_as` makes the key the value llm-gateway's keys job provisions, and the A6
+helper checks the whole path through the gateway.
 
 ```json
 {"agent_settings_diff": {"llm": {"model": "litellm_proxy/relay/default", "base_url": "http://llm-gateway:4000",
@@ -46,12 +57,17 @@ helper reads the stored settings with `X-Expose-Secrets: plaintext`.
 
 ## API
 
-The `code` route (`https://code.<ip-with-dashes>.sslip.io`) sits behind the password gate. Every
-`/api/*` call also needs `X-Session-API-Key: <OH_SESSION_API_KEYS_0>`. Swagger UI is at `/docs`,
-the schema at `/openapi.json`, readiness at `/ready`.
+The `code` route (`https://code.<ip-with-dashes>.sslip.io`) sits behind Sealed's gate (Caddy
+`forward_auth` to sealed-agent, D-044). Send Basic auth with user `sealed` and the gate password once; the
+gate sets the `sealed_gate` cookie (12 hours), and later calls send only the cookie. Until the bootstrap
+job is done the gate answers 503 `starting`. Every `/api/*` call also needs
+`X-Session-API-Key: <OH_SESSION_API_KEYS_0>`. Swagger UI is at `/docs`, the schema at `/openapi.json`,
+readiness at `/ready`.
 
 ```sh
-curl -u "sealed:$GATE_PASSWORD" -H "X-Session-API-Key: $KEY" https://code.<ip>.sslip.io/api/settings
+jar="$(mktemp)"
+curl -s -o /dev/null -c "$jar" -u "sealed:$GATE_PASSWORD" https://code.<ip>.sslip.io/ready   # gate login, once
+curl -s -b "$jar" -H "X-Session-API-Key: $KEY" https://code.<ip>.sslip.io/api/settings
 ```
 
 ## Secrets
@@ -60,12 +76,13 @@ curl -u "sealed:$GATE_PASSWORD" -H "X-Session-API-Key: $KEY" https://code.<ip>.s
 |---|---|---|
 | `OH_SESSION_API_KEYS_0` | hex32 | API key; also makes agent-server bind 0.0.0.0 |
 | `OH_SECRET_KEY` | hex32 | encrypts stored LLM key and secrets; never change it (or set `OH_PREVIOUS_SECRET_KEYS_0`) |
-| `LLM_GATEWAY_KEY` | none | this app's gateway virtual key; must equal llm-gateway's `APP_KEY_CODING_AGENT` |
+| `LLM_GATEWAY_KEY` | none, `same_as: llm-gateway/APP_KEY_CODING_AGENT` | this app's gateway virtual key, llm-gateway's `APP_KEY_CODING_AGENT` |
 
-The composer mounts the whole `/run/sealed/secrets/coding-agent` directory into every service of
-the app that has secrets, so the agent's shell can read all three. None of them grants more than the
-agent already has: its own scoped gateway key (rate limited, `relay/*` and `local/*` only) and access
-to itself.
+Each service gets bind mounts of exactly the secret files it lists (D-042): `coding-agent-server` sees
+`OH_SESSION_API_KEYS_0` and `OH_SECRET_KEY`, `coding-agent-bootstrap` sees `LLM_GATEWAY_KEY` and
+`OH_SESSION_API_KEYS_0`. The agent's shell runs in `coding-agent-server`, so the gateway key file is not
+in its container; the key reaches the agent only through its stored settings, and grants no more than
+the agent already has (its own scoped gateway key, rate limited, `relay/*` and `local/*` only).
 
 ## Egress
 
@@ -75,8 +92,11 @@ additions for `coding-agent`.
 
 ## Acceptance test A6
 
-`scripts/a6-coding-agent.sh` (Python standard library only) runs the headless flow: create a
-conversation that writes `calc.py` and `test_calc.py` and runs the test, poll until `finished`, then
+`scripts/a6-coding-agent.sh` (Python standard library only) runs the headless flow through the gate
+(with `SEALED_GATE_PASSWORD` it probes the route, sends Basic auth once if the gate asks for it, waits
+while the gate answers 503 `starting`, then uses only the `sealed_gate` cookie; a gate that sets no
+cookie gets Basic auth on every call): create a conversation that writes `calc.py` and `test_calc.py`
+and runs the test, poll until `finished`, then
 download `calc.py`, rerun the test through `/api/bash/execute_bash_command`, and check that the
 conversation recorded token usage. With `--gateway-admin-key` (the gateway master key, from your
 machine only) and `--gateway-check-url`, it also requires llm-gateway's spend logs to show tokens for
@@ -113,8 +133,14 @@ tmp/pyenv/bin/python -m unittest discover -s catalog/apps/coding-agent/tests -t 
 
 `test_seed.py` and `test_a6.py` run the bootstrap job and the A6 helper over real HTTP against fake
 LiteLLM (shared with llm-gateway), agent-server and OpenCode servers; one test provisions the key
-with llm-gateway's real keys job first. `test_authproxy.py` covers the OpenCode session-key proxy,
-including the exact embedded text as a supervising process. `test_fragment.py` checks both fragments
-against INTERFACES section 14, runs `docker compose config`, validates both manifests against the
-schema, runs the embedded bootstrap text with `python3 -I -c`, and runs `switch.sh` on a copy of the
-app followed by the whole suite on that copy.
+with llm-gateway's real keys job first. `tests/fake_gate.py` stands in for the gate (cookie set on the
+proxied response or on a redirect, the older Basic-only gate, 503 `starting`, a key rotation), and the
+A6 tests run through it. `test_authproxy.py` covers the OpenCode session-key proxy, including the exact
+embedded text as a supervising process. `test_prepdirs.py` covers the non-root directory setup.
+`test_fragment.py` runs the real composer (`go run ./runtime/composer/cmd/sealed-compose lint` and
+`compose`, through `llm-gateway/tests/sealed_compose.py`) on both variants together with llm-gateway,
+checks per-service secrets, users, volume owners, the bootstrap job and the gated route, runs
+`docker compose config` on the composed document, runs the embedded bootstrap text with `python3 -I -c`,
+and runs `switch.sh` on a copy of the app followed by the whole suite on that copy. Tests that need
+composer 1.2.0 (per-service mounts, recorded owners, `same_as` checks, the `forward_auth` route) skip
+with the reason on an older composer.

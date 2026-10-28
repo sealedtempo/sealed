@@ -19,10 +19,13 @@ export const pageSecurity = secureHeaders({
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-// The UI sits behind Caddy's basic_auth gate, and browsers attach basic auth credentials to
-// cross-site requests too. Refuse state-changing requests that a browser marks as cross-site or
-// whose Origin is not this host. Clients that send neither header (curl, scripts) are unaffected.
-export function sameOriginGuard(): MiddlewareHandler {
+// The UI sits behind Sealed's gate (Caddy forward_auth to sealed-agent). A browser that logged in
+// to the gate keeps sending its cached Basic credentials, also on requests another site starts, so
+// the gate alone does not stop cross-site form posts. Refuse state-changing requests that a browser
+// marks as cross-site or whose Origin is not this app's: exactly publicOrigin when it is known
+// (SEALED_PUBLIC_URL_SCRAPER), otherwise the request's host. Clients that send neither header
+// (curl, scripts) are unaffected.
+export function sameOriginGuard(publicOrigin?: string): MiddlewareHandler {
   return async (c, next) => {
     if (SAFE_METHODS.has(c.req.method)) return next();
     const site = c.req.header('sec-fetch-site');
@@ -30,7 +33,9 @@ export function sameOriginGuard(): MiddlewareHandler {
       return c.json({ error: { code: 'cross_site', message: 'cross-site request refused' } }, 403);
     }
     const origin = c.req.header('origin');
-    if (origin) {
+    if (origin && publicOrigin) {
+      if (origin !== publicOrigin) return c.json({ error: { code: 'cross_site', message: 'cross-site request refused' } }, 403);
+    } else if (origin) {
       const host = c.req.header('x-forwarded-host') ?? c.req.header('host');
       let originHost: string | null = null;
       try {

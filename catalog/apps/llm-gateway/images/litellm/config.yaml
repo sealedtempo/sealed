@@ -6,7 +6,8 @@
 # never contains secret values, only os.environ/<NAME> references.
 #
 # Route families:
-#   local/<model>   Ollama in this VM (CPU). Data stays in the VM.
+#   local/<model>   Ollama in this VM (CPU). Data stays in the VM. Every local/ route sends the
+#                   OLLAMA_GATE_KEY bearer key that sealed-ollama-gate requires.
 #   relay/<model>   sealed-mpp-payer -> platform inference relay in a confidential VM, paid per token.
 #   byok/...        TEE providers with the customer's key; opt-in (BYOK_ROUTES_ENABLED). Data leaves
 #                   your cloud and the provider's attestation is not verified by Sealed.
@@ -19,6 +20,8 @@ model_list:
     litellm_params:
       model: ollama_chat/qwen3:4b-instruct-2507-q4_K_M
       api_base: http://llm-gateway-ollama:11434
+      # sealed-ollama-gate requires this bearer key (ollama_chat sends it as Authorization).
+      api_key: os.environ/OLLAMA_GATE_KEY
       keep_alive: "-1"
     model_info:
       mode: chat
@@ -33,6 +36,7 @@ model_list:
     litellm_params:
       model: ollama_chat/*
       api_base: http://llm-gateway-ollama:11434
+      api_key: os.environ/OLLAMA_GATE_KEY
       keep_alive: "-1"
     model_info:
       mode: chat

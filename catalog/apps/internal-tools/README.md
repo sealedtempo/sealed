@@ -83,9 +83,16 @@ build on the same files, and on any `.so` with `redis` in its path.
 | `internal-tools-valkey` | Valkey with `noeviction` and append-only persistence, password protected. The password is written to a config file on tmpfs, never passed in argv, and the healthcheck passes it through `VALKEYCLI_AUTH`. |
 | `internal-tools-bootstrap` | one-shot Node job using the ToolJet image's Node 22 (script embedded from `bootstrap/bootstrap.mjs`) |
 
-`TOOLJET_HOST` comes from `SEALED_PUBLIC_URL_TOOLS`, which the composer is asked to set to
-`https://tools.<ip-with-dashes>.sslip.io` (or the custom domain); see interface change 1. Until
-it does, internal-tools-server and the bootstrap stop at their `:?` guard, on purpose.
+`TOOLJET_HOST` comes from `SEALED_PUBLIC_URL_TOOLS`, which the composer sets on every service of the
+app to `https://tools.<ip-with-dashes>.sslip.io` (or the custom domain), with no trailing slash
+(integration brief item 8). Without it, internal-tools-server and the bootstrap stop at their `:?`
+guard, on purpose.
+
+Each service gets bind mounts of exactly the secret files it lists in `x-sealed-secrets` (D-042), for
+example the Valkey healthcheck reads only `REDIS_PASSWORD`. The bootstrap volume declares
+`x-sealed-owner: "1000:1000"`, so sealed-agent creates it owned by the user of both services that use
+it, and neither has to start as root. Postgres and Valkey keep their upstream entrypoints, which start
+as root and hand their data directories to their own users.
 
 Hardening beyond upstream: every workspace gets a sample PostgreSQL data source. Upstream points
 it at the metadata server with the superuser password; here it uses the `tooljet_sample` role
@@ -112,7 +119,7 @@ open item.
 | `SAMPLE_DB_PASSWORD` | hex32 | `tooljet_sample` role |
 | `REDIS_PASSWORD` | hex32 | `internal-tools-valkey` |
 | `ADMIN_EMAIL` | supplied by the customer | first admin |
-| `ADMIN_PASSWORD` | supplied by the customer | first admin, 8 to 100 characters |
+| `ADMIN_PASSWORD` | `password` (24 letters and digits) unless the customer sets one | first admin, 8 to 100 characters |
 
 ## Bootstrap and sign-up
 
@@ -120,15 +127,18 @@ open item.
 only while the instance has no users: whoever calls it first owns the instance. Two things keep
 that first admin ours:
 
-1. The route stays closed until the bootstrap is done. internal-tools-server starts ToolJet on the
-   setup port 3001, which no Caddy route points at, and moves it to the route port 3000 only after
-   `internal-tools-bootstrap/done.json` appears on the bootstrap volume (mounted read-only into the
-   server). Until then the tools URL answers 502. The healthcheck accepts either port.
-2. The bootstrap fails closed if someone else got in first. Other containers on the shared apps
-   network can still reach the setup port (interface change 7 asks for per-app networks). If one
-   of them calls `setup-super-admin` first, the endpoint answers 403 to the bootstrap, the admin
-   cannot log in, the job fails and `done.json` is never written, so the route never opens onto
-   that instance. Delete the internal-tools data and deploy again.
+1. The route stays closed until the bootstrap is done, by two independent means. sealed-agent's
+   gate answers 503 `starting` on the tools route until manifest `bootstrap.done_file`
+   (`internal-tools-bootstrap/done.json`) exists (D-044). And internal-tools-server starts ToolJet on
+   the setup port 3001, which no Caddy route points at, and moves it to the route port 3000 only
+   after `done.json` appears on the bootstrap volume (mounted read-only into the server). The
+   healthcheck accepts either port.
+2. The bootstrap fails closed if someone else got in first. Only this app's own services can reach
+   the setup port: every service is on the app's own network `app-internal-tools`, and only
+   internal-tools-server is also on the shared `apps` network (D-041). If anything still calls
+   `setup-super-admin` first, the endpoint answers 403 to the bootstrap, the admin cannot log in, the
+   job fails and `done.json` is never written, so the route never opens onto that instance. Delete
+   the internal-tools data and deploy again.
 
 The `internal-tools-bootstrap` job (one-shot, `restart: on-failure`) creates the admin (or, on a
 re-run, logs in), checks that the admin session can list apps, checks that self sign-up is
@@ -139,7 +149,7 @@ re-opened from the UI. New users join by invitation; with no SMTP configured the
 invite link from the Users page.
 
 A residual race: two callers that reach `setup-super-admin` at the same moment could both pass
-ToolJet's first-user check. Only containers on the apps network can try that, and the bootstrap
+ToolJet's first-user check. Only this app's own containers can try that, and the bootstrap
 does not yet list the workspace's users to catch it (the response shape of
 `GET /api/organization-users` was not confirmed from source).
 
@@ -184,26 +194,37 @@ TOOLS_URL=https://tools.34-1-2-3.sslip.io ADMIN_EMAIL=... ADMIN_PASSWORD=... GAT
   catalog/apps/internal-tools/scripts/a6-internal-tools.sh
 ```
 
-ToolJet authenticates with a cookie, so HTTP basic auth for the gate (`GATE_BASIC`, user `sealed`
-and the gate password) works next to it. `A6_CLEANUP=1` deletes the app afterwards.
+The tools route sits behind Sealed's gate (Caddy `forward_auth` to sealed-agent, D-044). The helper
+probes `/api/health` without credentials; when the gate asks, it sends Basic auth from `GATE_BASIC`
+(user `sealed` and the gate password) once and then sends only the `sealed_gate` cookie, next to
+ToolJet's own `tj_auth_token` cookie. While the gate answers 503 `starting` it waits up to
+`A6_GATE_WAIT_S` (300) seconds. A gate that sets no cookie gets Basic auth on every request, and a URL
+without a gate never receives the gate password. `A6_CLEANUP=1` deletes the app afterwards.
 
 ## Development
 
 ```sh
 cd catalog/apps/internal-tools
 pnpm install --ignore-workspace --frozen-lockfile
-pnpm test        # embed check, schema, fragment rules, docker compose config, bootstrap, A6, image checks
+pnpm test        # embed check, the real composer (lint, compose), bootstrap, A6, image checks
 pnpm run embed   # after editing bootstrap/bootstrap.mjs
-SEALED_COMPOSER_DIR=<ws/composer checkout> pnpm test   # also runs the real composer
+SEALED_COMPOSER_DIR=<another checkout> pnpm test   # run that checkout's composer instead
 ```
 
 The tests run the bootstrap and A6 code against an in-memory ToolJet (`tests/lib/fake-tooljet.mjs`)
 that applies the same guards (first-user-only setup, sign-up guard before validation, cookie and
 workspace header). `tests/server-entrypoint.test.mjs` runs the server's entrypoint under every
 POSIX shell on the machine with a stand-in for ToolJet to check the setup-port switch, and
-`tests/db-init.test.mjs` runs the database init script on a throwaway local PostgreSQL. When the
-composer source is available, `sealed-compose lint` must report only the unbuilt tooljet digest
-(D-028), and a composed stack is checked for the Caddyfile, the read-only `done.json` mount and the
-healthcheck; a todo test tracks interface change 1. `tests/contract.test.mjs` builds the derived
+`tests/db-init.test.mjs` runs the database init script on a throwaway local PostgreSQL. There is no
+app-local copy of the catalog rules: `tests/lib/composer.mjs` runs
+`go run ./runtime/composer/cmd/sealed-compose lint` and `compose` (it moves to `catalog/tools/` once
+that exists). The lint must report only the unbuilt tooljet digest (D-028) and missing SBOMs, and a
+composed stack is checked for the gated route on port 3000, the read-only `done.json` mount, the
+bootstrap job's restart policy and done path, and the secrets each service exports. With composer
+1.2.0 the tests also check the `forward_auth` gate, per-service secret mounts, the recorded volume
+owner and `SEALED_PUBLIC_URL_TOOLS`; with an older composer those skip with the reason, and the
+composer is given a copy of the app without the 1.2.0 fields. Without Go the composer tests skip;
+with `CI` or `SEALED_REQUIRE_COMPOSER=1` they fail instead. `tests/lib/fake-gate.mjs` stands in for
+the gate in the A6 tests. `tests/contract.test.mjs` builds the derived
 image, checks its file list against `license_exclusions`, boots the stack and runs the bootstrap
 and A6 against the real ToolJet; it runs only with `SEALED_CONTRACT=1` and a Docker daemon.

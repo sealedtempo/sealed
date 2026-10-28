@@ -1,7 +1,9 @@
 """Boot entrypoint of the Sealed llm-gateway LiteLLM container.
 
-1. Reads secrets exported by envexec (or the files in /run/sealed/secrets/llm-gateway).
-2. Checks the master key, salt key and Postgres password, and builds DATABASE_URL.
+1. Reads secrets exported by envexec (or the files in /run/sealed/secrets/llm-gateway; each
+   service sees only the secret files it lists in x-sealed-secrets).
+2. Checks the master key, salt key, Postgres password and the local-model gate key, and builds
+   DATABASE_URL.
 3. Renders the LiteLLM config from config.yaml plus the optional provider routes in
    providers.yaml whose key secret exists and whose family is opted in
    (BYOK_ROUTES_ENABLED=true for byok, EXTERNAL_ROUTES_ENABLED=true for external).
@@ -33,6 +35,11 @@ BYOK_LABEL = "data leaves your cloud; provider TEE attestation not verified by S
 LABELS = {"byok": BYOK_LABEL, "external": EXTERNAL_LABEL}
 CALLBACK = "sealed_usage.usage_logger"
 WEAK_MASTER_KEYS = {"sk-1234", "sk-", ""}
+# Bearer key of sealed-ollama-gate (llm-gateway-ollama runs it with -key-env OLLAMA_GATE_KEY).
+# Every local/ route must send it, or Ollama answers 401 and relay/default has no fallback.
+OLLAMA_KEY = "OLLAMA_GATE_KEY"
+OLLAMA_KEY_REF = "os.environ/" + OLLAMA_KEY
+OLLAMA_KEY_MIN_LEN = 16  # the gate refuses shorter keys
 
 # Never passed to LiteLLM: license/enterprise switches, provider env vars that arm the
 # built-in pass-through routes, tracing exporters, and the Postgres password itself.
@@ -99,6 +106,11 @@ def check_master_key(value: str) -> None:
         raise ConfigError("LITELLM_MASTER_KEY must start with sk- and must not be a known default")
     if len(value) < 35 or re.search(r"\s", value):
         raise ConfigError("LITELLM_MASTER_KEY must be at least 32 characters after sk- with no whitespace")
+
+
+def check_ollama_key(value: str) -> None:
+    if len(value) < OLLAMA_KEY_MIN_LEN or re.search(r"\s", value):
+        raise ConfigError(f"{OLLAMA_KEY} must be at least {OLLAMA_KEY_MIN_LEN} characters with no whitespace")
 
 
 def database_url(password: str, env: Mapping[str, str]) -> str:
@@ -173,7 +185,17 @@ def render(base: Mapping[str, Any], selected: list[tuple[str, dict[str, Any]]]) 
     if CALLBACK not in callbacks:
         raise ConfigError(f"base config must register the {CALLBACK} callback")
     check_fallbacks(config, names)
+    check_local_routes(config)
     return config
+
+
+def check_local_routes(config: Mapping[str, Any]) -> None:
+    """Every local/ route goes to the gated Ollama with the gate's bearer key."""
+    for entry in config.get("model_list") or []:
+        if str(entry.get("model_name", "")).startswith("local/"):
+            params = entry.get("litellm_params") or {}
+            if params.get("api_key") != OLLAMA_KEY_REF:
+                raise ConfigError(f"route {entry.get('model_name')} must set api_key: {OLLAMA_KEY_REF}")
 
 
 def check_fallbacks(config: Mapping[str, Any], names: set[Any]) -> None:
@@ -205,6 +227,7 @@ def child_env(
         out.pop(name, None)
     out["LITELLM_MASTER_KEY"] = require(secrets, "LITELLM_MASTER_KEY")
     out["LITELLM_SALT_KEY"] = require(secrets, "LITELLM_SALT_KEY")
+    out[OLLAMA_KEY] = require(secrets, OLLAMA_KEY)
     out["DATABASE_URL"] = db_url
     if out.get("LITELLM_LOG", "").upper() == "DEBUG":
         out["LITELLM_LOG"] = "ERROR"  # DEBUG logs request bodies
@@ -246,6 +269,7 @@ def prepare(env: Mapping[str, str], args: list[str]) -> tuple[list[str], dict[st
 
     check_master_key(require(secrets, "LITELLM_MASTER_KEY"))
     require(secrets, "LITELLM_SALT_KEY")
+    check_ollama_key(require(secrets, OLLAMA_KEY))
     db_url = database_url(require(secrets, "POSTGRES_PASSWORD"), env)
 
     base = load_yaml(os.path.join(conf_dir, "config.yaml"))

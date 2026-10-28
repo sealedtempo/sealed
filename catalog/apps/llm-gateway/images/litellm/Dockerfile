@@ -34,9 +34,10 @@ RUN --network=none set -eux; \
     printf 'sk-%s' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$d/secrets/LITELLM_MASTER_KEY"; \
     printf 'sk-%s' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$d/secrets/LITELLM_SALT_KEY"; \
     printf 'build-check' > "$d/secrets/POSTGRES_PASSWORD"; \
+    printf '%s' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$d/secrets/OLLAMA_GATE_KEY"; \
     SEALED_SECRETS_DIR="$d/secrets" SEALED_LITELLM_RENDER_DIR="$d/out" \
       /app/.venv/bin/python -I /etc/litellm/sealed_entrypoint.py --render-only --port 4000; \
-    /app/.venv/bin/python -I -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1])); assert c['litellm_settings']['callbacks'] == ['sealed_usage.usage_logger']; assert c['router_settings']['fallbacks'] == [{'relay/default': ['local/qwen3-4b']}]" "$d/out/config.yaml"; \
+    /app/.venv/bin/python -I -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1])); assert c['litellm_settings']['callbacks'] == ['sealed_usage.usage_logger']; assert c['router_settings']['fallbacks'] == [{'relay/default': ['local/qwen3-4b']}]; assert all(m['litellm_params']['api_key'] == 'os.environ/OLLAMA_GATE_KEY' for m in c['model_list'] if m['model_name'].startswith('local/'))" "$d/out/config.yaml"; \
     /app/.venv/bin/python -I -c "import os, subprocess, sys; os.setgroups([]); os.setgid(65534); os.setuid(65534); sys.exit(subprocess.call(['/app/.venv/bin/python', '-I', '/etc/litellm/sealed_keys.py', '--check-config']))"; \
     rm -rf "$d" /etc/litellm/__pycache__ /root/.cache
 

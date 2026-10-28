@@ -11,8 +11,6 @@ import json
 import os
 import sys
 import tempfile
-import threading
-import time
 import unittest
 from contextlib import redirect_stderr
 from unittest import mock
@@ -59,7 +57,6 @@ class SeedTest(unittest.TestCase):
             "SEALED_DONE_FILE": self.done,
             "SEALED_POLL_INTERVAL_S": "0.01",
             "SEALED_WAIT_TIMEOUT_S": "5",
-            "SEALED_BOOTSTRAP_IDLE": "0",
             "LLM_GATEWAY_KEY": APP_KEY,
             "OH_SESSION_API_KEYS_0": SESSION,
             # The bootstrap must ignore proxy env: these would break every call.
@@ -76,7 +73,7 @@ class SeedTest(unittest.TestCase):
         return code, err.getvalue()
 
     def test_seeds_relay_default_with_the_app_key(self):
-        with FakeLiteLLM(MASTER, not_ready_polls=3) as gw, FakeOpenHands(SESSION, self.tmp.name, not_ready_polls=2) as oh:
+        with FakeLiteLLM(MASTER) as gw, FakeOpenHands(SESSION, self.tmp.name, not_ready_polls=2) as oh:
             self.provision(gw)
             code, err = self.run_main(self.env(gw, oh))
             self.assertEqual(code, 0, err)
@@ -85,10 +82,8 @@ class SeedTest(unittest.TestCase):
                                    "api_key": APP_KEY, "usage_id": "coding-agent"})
             patch = [c for c in oh.calls if c[0] == "PATCH"][0]
             self.assertEqual(patch[3]["x-session-api-key"], SESSION)
-            models_call = [c for c in gw.calls if c[1] == "/v1/models"][-1]
-            self.assertEqual(models_call[3]["authorization"], "Bearer " + APP_KEY)
-            # The bootstrap never calls an admin endpoint: it has no master key to call them with.
-            self.assertFalse([p for p in gw.paths() if p.startswith(("/key/", "/spend/"))])
+            # The job is not on the shared apps network (D-041): it never calls the gateway at all.
+            self.assertEqual(gw.calls, [])
         with open(self.done) as handle:
             done = json.load(handle)
         self.assertEqual(done["model"], "litellm_proxy/relay/default")
@@ -96,27 +91,15 @@ class SeedTest(unittest.TestCase):
         for secret in (APP_KEY, SESSION):
             self.assertNotIn(secret, err)
 
-    def test_waits_for_the_gateway_to_provision_the_key(self):
-        with FakeLiteLLM(MASTER) as gw, FakeOpenHands(SESSION, self.tmp.name) as oh:
-            timer = threading.Timer(0.3, self.provision, args=(gw,))
-            timer.start()
-            try:
-                code, err = self.run_main(self.env(gw, oh))
-            finally:
-                timer.cancel()
+    def test_does_not_need_the_gateway_to_be_reachable(self):
+        with FakeOpenHands(SESSION, self.tmp.name) as oh:
+            env = {"SEALED_GATEWAY_URL": "http://llm-gateway:4000", "SEALED_AGENT_SERVER_URL": oh.url,
+                   "SEALED_DONE_FILE": self.done, "SEALED_POLL_INTERVAL_S": "0.01", "SEALED_WAIT_TIMEOUT_S": "5",
+                   "LLM_GATEWAY_KEY": APP_KEY, "OH_SESSION_API_KEYS_0": SESSION}
+            code, err = self.run_main(env)
             self.assertEqual(code, 0, err)
-            self.assertGreater(len([p for p in gw.paths() if p == "/v1/models"]), 1)
-            self.assertEqual(oh.settings["agent_settings"]["llm"]["api_key"], APP_KEY)
-
-    def test_key_never_provisioned_is_reported(self):
-        with FakeLiteLLM(MASTER) as gw, FakeOpenHands(SESSION, self.tmp.name) as oh:
-            code, err = self.run_main(self.env(gw, oh, SEALED_WAIT_TIMEOUT_S="0.2"))
-            self.assertEqual(code, 1)
-            self.assertIn("rejects LLM_GATEWAY_KEY (HTTP 401)", err)
-            self.assertIn("APP_KEY_CODING_AGENT", err)
-            self.assertNotIn(APP_KEY, err)
-            self.assertFalse(os.path.exists(self.done))
-            self.assertEqual(oh.paths("PATCH"), [])
+            self.assertEqual(oh.settings["agent_settings"]["llm"]["base_url"], "http://llm-gateway:4000")
+        self.assertTrue(os.path.exists(self.done))
 
     def test_keeps_a_gateway_model_the_customer_chose(self):
         with FakeLiteLLM(MASTER) as gw, FakeOpenHands(SESSION, self.tmp.name) as oh:
@@ -161,25 +144,29 @@ class SeedTest(unittest.TestCase):
             self.assertIn("different OH_SECRET_KEY", err)
         self.assertFalse(os.path.exists(self.done))
 
-    def test_gateway_timeout(self):
-        with FakeLiteLLM(MASTER, not_ready_polls=10_000) as gw, FakeOpenHands(SESSION, self.tmp.name) as oh:
-            code, err = self.run_main(self.env(gw, oh, SEALED_WAIT_TIMEOUT_S="0.2"))
-            self.assertEqual(code, 1)
-            self.assertIn("timed out waiting for llm-gateway", err)
+    def test_agent_server_timeout(self):
+        with FakeOpenHands(SESSION, self.tmp.name, not_ready_polls=10_000) as oh:
+            env = {"SEALED_AGENT_SERVER_URL": oh.url, "SEALED_WAIT_TIMEOUT_S": "0.2",
+                   "SEALED_POLL_INTERVAL_S": "0.01", "SEALED_DONE_FILE": self.done,
+                   "LLM_GATEWAY_KEY": APP_KEY, "OH_SESSION_API_KEYS_0": SESSION}
+            code, err = self.run_main(env)
+        self.assertEqual(code, 1)
+        self.assertIn("timed out waiting for agent server", err)
+        self.assertFalse(os.path.exists(self.done))
 
-    def test_unreachable_gateway_times_out_cleanly(self):
-        env = {"SEALED_GATEWAY_URL": "http://127.0.0.1:9", "SEALED_WAIT_TIMEOUT_S": "0.1",
-               "SEALED_POLL_INTERVAL_S": "0.01", "SEALED_DONE_FILE": self.done, "SEALED_BOOTSTRAP_IDLE": "0",
+    def test_unreachable_agent_server_times_out_cleanly(self):
+        env = {"SEALED_AGENT_SERVER_URL": "http://127.0.0.1:9", "SEALED_WAIT_TIMEOUT_S": "0.1",
+               "SEALED_POLL_INTERVAL_S": "0.01", "SEALED_DONE_FILE": self.done,
                "LLM_GATEWAY_KEY": APP_KEY, "OH_SESSION_API_KEYS_0": SESSION}
         code, err = self.run_main(env)
         self.assertEqual(code, 1)
         self.assertIn("timed out", err)
 
     def test_missing_secrets(self):
-        code, err = self.run_main({"SEALED_BOOTSTRAP_IDLE": "0"})
+        code, err = self.run_main({})
         self.assertEqual(code, 1)
         self.assertIn("LLM_GATEWAY_KEY", err)
-        code, err = self.run_main({"LLM_GATEWAY_KEY": APP_KEY, "SEALED_BOOTSTRAP_IDLE": "0"})
+        code, err = self.run_main({"LLM_GATEWAY_KEY": APP_KEY})
         self.assertEqual(code, 1)
         self.assertIn("OH_SESSION_API_KEYS_0", err)
         with open(SEED_PATH) as handle:
@@ -206,9 +193,9 @@ class SeedTest(unittest.TestCase):
 
 
 class GatewayProvisioningEndToEndTest(unittest.TestCase):
-    """llm-gateway's keys job creates the key; coding-agent's bootstrap uses it; the master key stays put."""
+    """llm-gateway's keys job creates the key; coding-agent's bootstrap seeds it; the master key stays put."""
 
-    def test_keys_job_then_bootstrap(self):
+    def test_keys_job_and_bootstrap(self):
         with tempfile.TemporaryDirectory() as tmp, FakeLiteLLM(MASTER) as gw, FakeOpenHands(SESSION, tmp) as oh:
             gateway_env = {
                 "SEALED_GATEWAY_URL": gw.url, "SEALED_SECRETS_DIR": os.path.join(tmp, "none"),
@@ -216,28 +203,27 @@ class GatewayProvisioningEndToEndTest(unittest.TestCase):
                 "SEALED_APP_KEYS_FILE": os.path.join(GATEWAY_DIR, "images", "litellm", "app_keys.yaml"),
                 "LITELLM_MASTER_KEY": MASTER, "APP_KEY_CODING_AGENT": APP_KEY, "SEALED_KEYS_POLL_S": "0.01",
             }
+            # same_as: the key broker hands coding-agent the value of llm-gateway's APP_KEY_CODING_AGENT.
             agent_env = {
                 "SEALED_GATEWAY_URL": gw.url, "SEALED_AGENT_SERVER_URL": oh.url,
                 "SEALED_DONE_FILE": os.path.join(tmp, "done"), "SEALED_POLL_INTERVAL_S": "0.02",
-                "SEALED_WAIT_TIMEOUT_S": "10", "SEALED_BOOTSTRAP_IDLE": "0",
+                "SEALED_WAIT_TIMEOUT_S": "10",
                 "LLM_GATEWAY_KEY": APP_KEY, "OH_SESSION_API_KEYS_0": SESSION,
             }
             err = io.StringIO()
-            results: list[int] = []
             with redirect_stderr(err):
-                agent = threading.Thread(target=lambda: results.append(seed.main(agent_env)))
-                agent.start()
-                time.sleep(0.2)  # the agent's bootstrap starts first and waits for its key
+                self.assertEqual(seed.main(agent_env), 0)
                 self.assertEqual(sealed_keys.main(["--once"], env=gateway_env), 0)
-                agent.join(15)
-            self.assertEqual(results, [0], err.getvalue())
-            self.assertEqual(oh.settings["agent_settings"]["llm"]["api_key"], APP_KEY)
+            seeded = oh.settings["agent_settings"]["llm"]
+            self.assertEqual(seeded["api_key"], APP_KEY)
             key = gw.by_alias("coding-agent")
             self.assertEqual((key["models"], key["key_type"]), (["relay/*", "local/*"], "llm_api"))
+            # What coding-agent-server does with the seeded settings: the gateway accepts the key.
+            status, _ = seed.Http().call("GET", seeded["base_url"] + "/v1/models", None,
+                                         {"Authorization": "Bearer " + seeded["api_key"]})
+            self.assertEqual(status, 200)
             admin_calls = [c for c in gw.calls if c[3].get("authorization") == "Bearer " + MASTER]
             self.assertTrue(admin_calls)
-            agent_calls = [c for c in gw.calls if c[3].get("authorization") == "Bearer " + APP_KEY]
-            self.assertEqual({c[1].split("?")[0] for c in agent_calls}, {"/v1/models"})
             self.assertNotIn(MASTER, err.getvalue())
             self.assertNotIn(APP_KEY, err.getvalue())
 

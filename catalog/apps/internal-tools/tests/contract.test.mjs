@@ -21,7 +21,7 @@ import {
   dockerDaemonAvailable,
   loadApp,
   waitForExit,
-} from "./lib/catalog-lint.mjs";
+} from "./lib/app.mjs";
 
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = loadApp(appDir);

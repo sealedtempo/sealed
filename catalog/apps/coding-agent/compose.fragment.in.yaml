@@ -1,25 +1,29 @@
 # coding-agent compose fragment (INTERFACES section 14): OpenHands agent-server, local runtime.
 # The composer adds networks, fixed IPs, DNS, proxy env (NO_PROXY covers llm-gateway),
-# telemetry_off_env, envexec, secret mounts, restart and logging.
+# telemetry_off_env, envexec, per-service secret mounts, restart and logging.
 #
-# coding-agent-server starts as root only to hand the workspace volume to uid 10001
-# (bootstrap/dropuid.py, embedded below), then runs agent-server as 10001 with no_new_privs.
-# coding-agent-bootstrap (manifest bootstrap job) checks that llm-gateway accepts this app's
-# virtual key LLM_GATEWAY_KEY and seeds the agent's LLM settings (bootstrap/seed.py, embedded
-# below), then idles. It starts as root only to hand its own state volume to uid 10003
-# (dropuid.py again); that volume holds the done file and is not mounted into the agent's
-# container, so the agent cannot forge or delete it. No service of this app holds the gateway
-# master key (llm-gateway provisions LLM_GATEWAY_KEY).
+# Nothing here starts as root. sealed-agent creates each volume with its x-sealed-owner
+# (integration brief item 11) before the ready gate opens, so coding-agent-server runs as
+# uid 10001 from the start: bootstrap/prepdirs.py (embedded below) creates the workspace
+# directories, checks no_new_privs and execs agent-server. coding-agent-bootstrap (manifest
+# bootstrap job, restart on-failure) runs as uid 10003, seeds the agent's LLM settings with
+# this app's virtual key LLM_GATEWAY_KEY (bootstrap/seed.py, embedded below), writes
+# coding-agent-bootstrap/done and exits. It talks only to coding-agent-server: it is on this
+# app's network alone, and only coding-agent-server (the primary service) also joins the shared
+# apps network where llm-gateway is (D-041). Its volume is not mounted into
+# the agent's container, so the agent cannot forge or delete the done file. Each service sees
+# only the secret files it lists; no service of this app holds the gateway master key
+# (llm-gateway provisions LLM_GATEWAY_KEY, which refers to its APP_KEY_CODING_AGENT).
 services:
   coding-agent-server:
     image: "{{image:openhands-agent-server}}"
-    user: "0:0"
+    user: "10001:10001"
     entrypoint:
       - /usr/local/bin/python3
       - -I
       - -c
       - |
-        @@include bootstrap/dropuid.py@@
+        @@include bootstrap/prepdirs.py@@
     command: ["tini", "--", "/usr/local/bin/openhands-agent-server", "--host", "0.0.0.0", "--port", "8000"]
     x-sealed-secrets:
       - OH_SESSION_API_KEYS_0
@@ -60,14 +64,8 @@ services:
 
   coding-agent-bootstrap:
     image: "{{image:openhands-agent-server}}"
-    user: "0:0"
+    user: "10003:10003"
     entrypoint:
-      - /usr/local/bin/python3
-      - -I
-      - -c
-      - |
-        @@include bootstrap/dropuid.py@@
-    command:
       - /usr/local/bin/python3
       - -I
       - -c
@@ -78,8 +76,6 @@ services:
       - LLM_GATEWAY_KEY
       - OH_SESSION_API_KEYS_0
     environment:
-      SEALED_RUN_AS: "10003:10003"
-      SEALED_OWNED_DIRS: /var/lib/sealed-bootstrap
       SEALED_GATEWAY_URL: http://llm-gateway:4000
       SEALED_AGENT_SERVER_URL: http://coding-agent-server:8000
       SEALED_MODEL_DEFAULT: relay/default
@@ -92,15 +88,11 @@ services:
       - coding-agent-bootstrap:/var/lib/sealed-bootstrap
     tmpfs:
       - /tmp:size=16m,mode=1777
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/var/lib/sealed-bootstrap/done') else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 90
-      start_period: 900s
     mem_limit: 256m
     stop_grace_period: 5s
 
 volumes:
-  coding-agent-workspace: {}
-  coding-agent-bootstrap: {}
+  coding-agent-workspace:
+    x-sealed-owner: "10001:10001"
+  coding-agent-bootstrap:
+    x-sealed-owner: "10003:10003"

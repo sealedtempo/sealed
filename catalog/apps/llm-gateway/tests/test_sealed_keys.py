@@ -224,7 +224,12 @@ class SpecsTest(unittest.TestCase):
         secrets = {s["name"]: s for s in manifest["secrets"]}
         for s in specs:
             self.assertEqual(secrets[s.secret]["generate"], "sk-hex32")
-            self.assertTrue(secrets[s.secret]["optional"])
+            # The consumer app's required secret refers to this one (same_as), so it is required too.
+            self.assertFalse(secrets[s.secret].get("optional", False))
+            consumer = load(os.path.join(APP_DIR, "..", s.app, "manifest.yaml"))
+            refs = [c for c in consumer["secrets"] if c.get("same_as") == f"llm-gateway/{s.secret}"]
+            self.assertEqual(len(refs), 1, s.app)
+            self.assertFalse(refs[0].get("optional", False))
         self.assertEqual(keys.main(["--check-config"], env={"SEALED_APP_KEYS_FILE": SPECS}), 0)
 
     def test_rejects_routes_that_leave_the_vm(self):

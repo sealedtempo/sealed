@@ -69,6 +69,17 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...base, SCRAPER_ALLOWED_CLIENTS: 'caddy' })).toThrow(/SCRAPER_ALLOWED_CLIENTS caddy is not an IP/);
   });
 
+  it('reads the public origin of the scraper route (SEALED_PUBLIC_URL_SCRAPER)', () => {
+    expect(loadConfig(base).publicOrigin).toBeUndefined();
+    expect(loadConfig({ ...base, SEALED_PUBLIC_URL_SCRAPER: 'https://scraper.34-1-2-3.sslip.io' }).publicOrigin).toBe(
+      'https://scraper.34-1-2-3.sslip.io',
+    );
+    expect(loadConfig({ ...base, SEALED_PUBLIC_URL_SCRAPER: 'https://scraper.example.com/' }).publicOrigin).toBe('https://scraper.example.com');
+    for (const bad of ['scraper.example.com', 'ftp://scraper.example.com', 'https://scraper.example.com/ui', 'https://u:p@scraper.example.com', 'https://Scraper.example.com']) {
+      expect(() => loadConfig({ ...base, SEALED_PUBLIC_URL_SCRAPER: bad }), bad).toThrow(/SEALED_PUBLIC_URL_SCRAPER/);
+    }
+  });
+
   it('can restrict crawlers', () => {
     expect(loadConfig({ ...base, SCRAPER_CRAWLERS: 'cheerio, playwright' }).crawlers).toEqual(['cheerio', 'playwright']);
   });

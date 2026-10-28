@@ -1,33 +1,39 @@
 # GENERATED from compose.fragment.in.yaml by tools/build_fragment.py. Edit the template or bootstrap/*.py, then rerun the tool.
 # coding-agent compose fragment (INTERFACES section 14): OpenHands agent-server, local runtime.
 # The composer adds networks, fixed IPs, DNS, proxy env (NO_PROXY covers llm-gateway),
-# telemetry_off_env, envexec, secret mounts, restart and logging.
+# telemetry_off_env, envexec, per-service secret mounts, restart and logging.
 #
-# coding-agent-server starts as root only to hand the workspace volume to uid 10001
-# (bootstrap/dropuid.py, embedded below), then runs agent-server as 10001 with no_new_privs.
-# coding-agent-bootstrap (manifest bootstrap job) checks that llm-gateway accepts this app's
-# virtual key LLM_GATEWAY_KEY and seeds the agent's LLM settings (bootstrap/seed.py, embedded
-# below), then idles. It starts as root only to hand its own state volume to uid 10003
-# (dropuid.py again); that volume holds the done file and is not mounted into the agent's
-# container, so the agent cannot forge or delete it. No service of this app holds the gateway
-# master key (llm-gateway provisions LLM_GATEWAY_KEY).
+# Nothing here starts as root. sealed-agent creates each volume with its x-sealed-owner
+# (integration brief item 11) before the ready gate opens, so coding-agent-server runs as
+# uid 10001 from the start: bootstrap/prepdirs.py (embedded below) creates the workspace
+# directories, checks no_new_privs and execs agent-server. coding-agent-bootstrap (manifest
+# bootstrap job, restart on-failure) runs as uid 10003, seeds the agent's LLM settings with
+# this app's virtual key LLM_GATEWAY_KEY (bootstrap/seed.py, embedded below), writes
+# coding-agent-bootstrap/done and exits. It talks only to coding-agent-server: it is on this
+# app's network alone, and only coding-agent-server (the primary service) also joins the shared
+# apps network where llm-gateway is (D-041). Its volume is not mounted into
+# the agent's container, so the agent cannot forge or delete the done file. Each service sees
+# only the secret files it lists; no service of this app holds the gateway master key
+# (llm-gateway provisions LLM_GATEWAY_KEY, which refers to its APP_KEY_CODING_AGENT).
 services:
   coding-agent-server:
     image: "{{image:openhands-agent-server}}"
-    user: "0:0"
+    user: "10001:10001"
     entrypoint:
       - /usr/local/bin/python3
       - -I
       - -c
       - |
-        """Prepare the coding-agent data directories as root, drop to the runtime user, exec the command.
+        """Create the coding-agent data directories as the runtime user, then exec the command.
 
-        The composer turns named volumes into bind mounts that start out owned by root, while the
-        agent runs as uid 10001. This runs first (as root, after envexec), creates the directories
-        in SEALED_OWNED_DIRS, hands them to SEALED_RUN_AS, drops every privilege, sets
-        no_new_privs (so setuid binaries in the image cannot regain root) and execs argv.
-        Symlinks planted inside the volume are removed, never followed. Embedded verbatim in the
-        compose fragment.
+        Nothing here runs as root. The workspace volume already belongs to the runtime user when the
+        container starts: the fragment declares x-sealed-owner on it, and sealed-agent creates
+        /mnt/sealed-data/coding-agent/<volume> with that owner before it releases the ready gate
+        (integration brief item 11). This creates the directories in SEALED_OWNED_DIRS that do not exist
+        yet (a symlink planted there is removed, never followed), refuses directories owned by another
+        user (so a missing x-sealed-owner fails loudly), sets no_new_privs (the composer also sets
+        no-new-privileges; this checks it), changes to SEALED_WORKDIR when set, and execs argv. Embedded
+        verbatim in the compose fragment.
         """
         import ctypes
         import os
@@ -39,7 +45,7 @@ services:
         PR_GET_NO_NEW_PRIVS = 39
 
 
-        class DropError(Exception):
+        class PrepError(Exception):
             pass
 
 
@@ -48,9 +54,9 @@ services:
                 uid_text, gid_text = spec.split(":", 1)
                 uid, gid = int(uid_text), int(gid_text)
             except ValueError:
-                raise DropError("SEALED_RUN_AS must be uid:gid, got " + repr(spec))
+                raise PrepError("SEALED_RUN_AS must be uid:gid, got " + repr(spec))
             if uid <= 0 or gid <= 0:
-                raise DropError("SEALED_RUN_AS must name a non-root uid and gid")
+                raise PrepError("SEALED_RUN_AS must name a non-root uid and gid")
             return uid, gid
 
 
@@ -58,11 +64,12 @@ services:
             dirs = [d.strip() for d in value.split(",") if d.strip()]
             for d in dirs:
                 if not os.path.isabs(d) or ".." in d.split("/"):
-                    raise DropError("SEALED_OWNED_DIRS entries must be absolute paths: " + repr(d))
+                    raise PrepError("SEALED_OWNED_DIRS entries must be absolute paths: " + repr(d))
             return dirs
 
 
-        def prepare(dirs, uid, gid):
+        def prepare(dirs, uid):
+            """Create missing directories as the current user; every directory must be ours."""
             for path in dirs:
                 try:
                     st = os.lstat(path)
@@ -72,34 +79,24 @@ services:
                     os.unlink(path)
                     st = None
                 if st is not None and not stat.S_ISDIR(st.st_mode):
-                    raise DropError(path + " exists and is not a directory")
+                    raise PrepError(path + " exists and is not a directory")
                 if st is None:
                     os.mkdir(path, 0o755)
-                os.chown(path, uid, gid, follow_symlinks=False)
-
-
-        def drop(uid, gid):
-            os.setgroups([])
-            os.setgid(gid)
-            os.setuid(uid)
-            if os.getuid() != uid or os.geteuid() != uid or os.getgid() != gid:
-                raise DropError("privilege drop did not take effect")
-            try:
-                os.setuid(0)
-            except PermissionError:
-                return
-            raise DropError("could regain root after the drop")
+                    st = os.lstat(path)
+                if st.st_uid != uid:
+                    raise PrepError(path + " is owned by uid " + str(st.st_uid) + ", not " + str(uid)
+                                    + " (is x-sealed-owner applied to the volume?)")
 
 
         def set_no_new_privs():
             """prctl(PR_SET_NO_NEW_PRIVS, 1): exec can no longer grant privileges (setuid, file caps)."""
             if not sys.platform.startswith("linux"):
-                raise DropError("no_new_privs needs Linux")
+                raise PrepError("no_new_privs needs Linux")
             libc = ctypes.CDLL(None, use_errno=True)
             if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
-                raise DropError("prctl(PR_SET_NO_NEW_PRIVS) failed: errno " + str(ctypes.get_errno()))
+                raise PrepError("prctl(PR_SET_NO_NEW_PRIVS) failed: errno " + str(ctypes.get_errno()))
             if libc.prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1:
-                raise DropError("no_new_privs did not take effect")
+                raise PrepError("no_new_privs did not take effect")
 
 
         def home_of(uid):
@@ -109,24 +106,38 @@ services:
                 return "/tmp"
 
 
-        def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid, no_new_privs=set_no_new_privs):
+        def workdir(env, dirs):
+            path = env.get("SEALED_WORKDIR", "")
+            if not path:
+                return None
+            if path not in dirs:
+                raise PrepError("SEALED_WORKDIR must be one of SEALED_OWNED_DIRS, got " + repr(path))
+            return path
+
+
+        def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid, getgid=os.getgid,
+                 no_new_privs=set_no_new_privs, chdir=os.chdir):
             argv = list(sys.argv if argv is None else argv)
             env = os.environ if env is None else env
             if len(argv) < 2:
-                print("dropuid: usage: dropuid <command> [args...]", file=sys.stderr)
+                print("prepdirs: usage: prepdirs <command> [args...]", file=sys.stderr)
                 return 2
             try:
                 uid, gid = parse_ids(env.get("SEALED_RUN_AS", "10001:10001"))
                 dirs = owned_dirs(env.get("SEALED_OWNED_DIRS", ""))
-                current = getuid()
-                if current == 0:
-                    prepare(dirs, uid, gid)
-                    drop(uid, gid)
-                elif current != uid:
-                    raise DropError("started as uid " + str(current) + "; expected root or " + str(uid))
+                target = workdir(env, dirs)
+                current = (getuid(), getgid())
+                if current[0] == 0:
+                    raise PrepError("runs as root; the fragment must set user to " + str(uid) + ":" + str(gid))
+                if current != (uid, gid):
+                    raise PrepError("started as " + str(current[0]) + ":" + str(current[1]) + "; expected "
+                                    + str(uid) + ":" + str(gid))
+                prepare(dirs, uid)
                 no_new_privs()
-            except (DropError, OSError, AttributeError) as err:
-                print("dropuid: " + str(err), file=sys.stderr)
+                if target:
+                    chdir(target)
+            except (PrepError, OSError, AttributeError) as err:
+                print("prepdirs: " + str(err), file=sys.stderr)
                 return 1
             env["HOME"] = home_of(uid)
             sys.stderr.flush()
@@ -176,151 +187,33 @@ services:
 
   coding-agent-bootstrap:
     image: "{{image:openhands-agent-server}}"
-    user: "0:0"
+    user: "10003:10003"
     entrypoint:
-      - /usr/local/bin/python3
-      - -I
-      - -c
-      - |
-        """Prepare the coding-agent data directories as root, drop to the runtime user, exec the command.
-
-        The composer turns named volumes into bind mounts that start out owned by root, while the
-        agent runs as uid 10001. This runs first (as root, after envexec), creates the directories
-        in SEALED_OWNED_DIRS, hands them to SEALED_RUN_AS, drops every privilege, sets
-        no_new_privs (so setuid binaries in the image cannot regain root) and execs argv.
-        Symlinks planted inside the volume are removed, never followed. Embedded verbatim in the
-        compose fragment.
-        """
-        import ctypes
-        import os
-        import pwd
-        import stat
-        import sys
-
-        PR_SET_NO_NEW_PRIVS = 38
-        PR_GET_NO_NEW_PRIVS = 39
-
-
-        class DropError(Exception):
-            pass
-
-
-        def parse_ids(spec):
-            try:
-                uid_text, gid_text = spec.split(":", 1)
-                uid, gid = int(uid_text), int(gid_text)
-            except ValueError:
-                raise DropError("SEALED_RUN_AS must be uid:gid, got " + repr(spec))
-            if uid <= 0 or gid <= 0:
-                raise DropError("SEALED_RUN_AS must name a non-root uid and gid")
-            return uid, gid
-
-
-        def owned_dirs(value):
-            dirs = [d.strip() for d in value.split(",") if d.strip()]
-            for d in dirs:
-                if not os.path.isabs(d) or ".." in d.split("/"):
-                    raise DropError("SEALED_OWNED_DIRS entries must be absolute paths: " + repr(d))
-            return dirs
-
-
-        def prepare(dirs, uid, gid):
-            for path in dirs:
-                try:
-                    st = os.lstat(path)
-                except FileNotFoundError:
-                    st = None
-                if st is not None and stat.S_ISLNK(st.st_mode):
-                    os.unlink(path)
-                    st = None
-                if st is not None and not stat.S_ISDIR(st.st_mode):
-                    raise DropError(path + " exists and is not a directory")
-                if st is None:
-                    os.mkdir(path, 0o755)
-                os.chown(path, uid, gid, follow_symlinks=False)
-
-
-        def drop(uid, gid):
-            os.setgroups([])
-            os.setgid(gid)
-            os.setuid(uid)
-            if os.getuid() != uid or os.geteuid() != uid or os.getgid() != gid:
-                raise DropError("privilege drop did not take effect")
-            try:
-                os.setuid(0)
-            except PermissionError:
-                return
-            raise DropError("could regain root after the drop")
-
-
-        def set_no_new_privs():
-            """prctl(PR_SET_NO_NEW_PRIVS, 1): exec can no longer grant privileges (setuid, file caps)."""
-            if not sys.platform.startswith("linux"):
-                raise DropError("no_new_privs needs Linux")
-            libc = ctypes.CDLL(None, use_errno=True)
-            if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
-                raise DropError("prctl(PR_SET_NO_NEW_PRIVS) failed: errno " + str(ctypes.get_errno()))
-            if libc.prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1:
-                raise DropError("no_new_privs did not take effect")
-
-
-        def home_of(uid):
-            try:
-                return pwd.getpwuid(uid).pw_dir
-            except KeyError:
-                return "/tmp"
-
-
-        def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid, no_new_privs=set_no_new_privs):
-            argv = list(sys.argv if argv is None else argv)
-            env = os.environ if env is None else env
-            if len(argv) < 2:
-                print("dropuid: usage: dropuid <command> [args...]", file=sys.stderr)
-                return 2
-            try:
-                uid, gid = parse_ids(env.get("SEALED_RUN_AS", "10001:10001"))
-                dirs = owned_dirs(env.get("SEALED_OWNED_DIRS", ""))
-                current = getuid()
-                if current == 0:
-                    prepare(dirs, uid, gid)
-                    drop(uid, gid)
-                elif current != uid:
-                    raise DropError("started as uid " + str(current) + "; expected root or " + str(uid))
-                no_new_privs()
-            except (DropError, OSError, AttributeError) as err:
-                print("dropuid: " + str(err), file=sys.stderr)
-                return 1
-            env["HOME"] = home_of(uid)
-            sys.stderr.flush()
-            execvp(argv[1], argv[1:])
-            return 0
-
-
-        if __name__ == "__main__":
-            sys.exit(main())
-    command:
       - /usr/local/bin/python3
       - -I
       - -c
       - |
         """Sealed coding-agent bootstrap job (stdlib only; embedded verbatim in the compose fragment).
 
-        Runs at every start of the job, so a changed key or a reset agent store is fixed by a restart.
-        Its done file lives on the job's own volume, which the agent's container does not mount:
-        1. waits for llm-gateway (GET /health/readiness) and for the agent server (GET /ready);
-        2. waits until the gateway accepts this app's virtual key LLM_GATEWAY_KEY (GET /v1/models).
-           llm-gateway's keys job creates that key from its secret APP_KEY_CODING_AGENT, so a 401 is
-           retried until the wait timeout. This app never holds the gateway master key;
-        3. stores {model, base_url, api_key} through PATCH /api/settings. A litellm_proxy/ model the
+        Runs at every start of the stack (the composer gives the job restart: on-failure, so it is
+        retried until it succeeds and then stays exited), so a changed key or a reset agent store is
+        fixed by a restart. Its done file lives on the job's own volume, which the agent's container
+        does not mount; manifest bootstrap.done_file names it, and sealed-agent keeps the code route
+        closed (503 starting) until it exists:
+        1. waits for the agent server (GET /ready);
+        2. stores {model, base_url, api_key} through PATCH /api/settings. A litellm_proxy/ model the
            customer already chose on this gateway is kept; otherwise the default (relay/default) is
            used. When the relay fails, the gateway answers relay/default from the local model
            (router_settings.fallbacks), so no client-side fallback is needed;
-        4. writes the done file (no secrets in it) and idles.
-        Secret values are never printed.
+        3. writes the done file (no secrets in it) and exits 0.
+        The job never contacts llm-gateway itself: with per-app networks (D-041) only the primary
+        service, coding-agent-server, is on the shared apps network where llm-gateway is, and the job
+        is not. The key is LLM_GATEWAY_KEY, which refers to llm-gateway's APP_KEY_CODING_AGENT
+        (same_as), so it is the value llm-gateway's keys job provisions; this app never holds the
+        gateway master key. Secret values are never printed.
         """
         import json
         import os
-        import signal
         import sys
         import time
         import urllib.error
@@ -346,7 +239,6 @@ services:
                 self.done_file = env.get("SEALED_DONE_FILE", "/var/lib/sealed-bootstrap/done")
                 self.wait_timeout = float(env.get("SEALED_WAIT_TIMEOUT_S", "900"))
                 self.poll_interval = float(env.get("SEALED_POLL_INTERVAL_S", "3"))
-                self.idle = env.get("SEALED_BOOTSTRAP_IDLE", "1") == "1"
                 self.llm_key = (env.get("LLM_GATEWAY_KEY") or "").strip()
                 self.session_key = (env.get("OH_SESSION_API_KEYS_0") or "").strip()
                 if not self.llm_key:
@@ -395,23 +287,6 @@ services:
                 if clock() >= deadline:
                     raise BootstrapError("timed out waiting for " + what)
                 sleep(interval)
-
-
-        class Gateway:
-            def __init__(self, http, base_url, llm_key):
-                self.http = http
-                self.base = base_url
-                self.auth = {"Authorization": "Bearer " + llm_key}
-                self.last_status = None
-
-            def ready(self):
-                status, _ = self.http.call("GET", self.base + "/health/readiness")
-                return status == 200
-
-            def accepts_key(self):
-                status, _ = self.http.call("GET", self.base + "/v1/models", None, self.auth)
-                self.last_status = status
-                return status == 200
 
 
         class AgentServer:
@@ -467,18 +342,8 @@ services:
         def run(cfg, http, sleep=time.sleep, clock=time.monotonic):
             if os.path.exists(cfg.done_file):
                 os.unlink(cfg.done_file)  # healthy only after this run succeeds
-            gateway = Gateway(http, cfg.gateway_url, cfg.llm_key)
             agent = AgentServer(http, cfg.agent_url, cfg.session_key)
-            log("waiting for llm-gateway at " + cfg.gateway_url)
-            wait_for("llm-gateway", gateway.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
-            try:
-                wait_for("llm-gateway to accept LLM_GATEWAY_KEY", gateway.accepts_key, cfg.wait_timeout,
-                         cfg.poll_interval, sleep, clock)
-            except BootstrapError:
-                if gateway.last_status in (401, 403):
-                    raise BootstrapError("llm-gateway rejects LLM_GATEWAY_KEY (HTTP " + str(gateway.last_status) + "): "
-                                         "it must equal llm-gateway's secret APP_KEY_CODING_AGENT")
-                raise
+            log("waiting for the agent server at " + cfg.agent_url)
             wait_for("agent server", agent.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
 
             model = choose_model(cfg, agent.stored_llm())
@@ -489,12 +354,6 @@ services:
             return summary
 
 
-        def idle_forever():
-            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-            while True:
-                signal.pause()
-
-
         def main(env=None):
             try:
                 cfg = Config(dict(os.environ if env is None else env))
@@ -502,8 +361,6 @@ services:
             except (BootstrapError, OSError) as err:
                 log("error: " + str(err))
                 return 1
-            if cfg.idle:
-                idle_forever()
             return 0
 
 
@@ -514,8 +371,6 @@ services:
       - LLM_GATEWAY_KEY
       - OH_SESSION_API_KEYS_0
     environment:
-      SEALED_RUN_AS: "10003:10003"
-      SEALED_OWNED_DIRS: /var/lib/sealed-bootstrap
       SEALED_GATEWAY_URL: http://llm-gateway:4000
       SEALED_AGENT_SERVER_URL: http://coding-agent-server:8000
       SEALED_MODEL_DEFAULT: relay/default
@@ -528,15 +383,11 @@ services:
       - coding-agent-bootstrap:/var/lib/sealed-bootstrap
     tmpfs:
       - /tmp:size=16m,mode=1777
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/var/lib/sealed-bootstrap/done') else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 90
-      start_period: 900s
     mem_limit: 256m
     stop_grace_period: 5s
 
 volumes:
-  coding-agent-workspace: {}
-  coding-agent-bootstrap: {}
+  coding-agent-workspace:
+    x-sealed-owner: "10001:10001"
+  coding-agent-bootstrap:
+    x-sealed-owner: "10003:10003"
