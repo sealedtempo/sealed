@@ -32,7 +32,7 @@ contract FeeSplitterTest is SealedTest {
         uint256 amount,
         uint256 newBalance
     );
-    event Withdrawn(address indexed account, address indexed token, address indexed to, uint256 amount);
+    event Withdrawn(address indexed account, address indexed token, uint256 amount);
     event Swept(address indexed token, address indexed treasury, uint256 amount);
     event TokenConfigured(address indexed token, bool allowed, uint256 perPaymentCap, uint256 perDeploymentDailyCap);
     event TreasurySet(address indexed previousTreasury, address indexed newTreasury);
@@ -360,13 +360,13 @@ contract FeeSplitterTest is SealedTest {
     }
 
     // ------------------------------------------------------------------------------------------------------
-    // withdraw / withdrawTo
+    // withdraw
     // ------------------------------------------------------------------------------------------------------
 
     function test_withdraw() public {
         _pay(customer, appA, 1_000_000, USAGE);
         vm.expectEmit(address(splitter));
-        emit Withdrawn(maintainer, address(token), maintainer, 200_000);
+        emit Withdrawn(maintainer, address(token), 200_000);
         vm.prank(maintainer);
         splitter.withdraw(address(token));
         assertEq(token.balanceOf(maintainer), 200_000);
@@ -412,24 +412,6 @@ contract FeeSplitterTest is SealedTest {
         vm.prank(treasury);
         splitter.withdraw(address(token));
         assertEq(token.balanceOf(treasury), 800_000);
-    }
-
-    function test_withdrawTo() public {
-        _pay(customer, appA, 1_000_000, USAGE);
-        address cold = makeAddr("cold");
-        vm.expectEmit(address(splitter));
-        emit Withdrawn(treasury, address(token), cold, 800_000);
-        vm.prank(treasury);
-        splitter.withdrawTo(address(token), cold);
-        assertEq(token.balanceOf(cold), 800_000);
-        assertEq(token.balanceOf(treasury), 0);
-        _assertInvariant(address(token));
-    }
-
-    function test_withdrawTo_revertsOnZero() public {
-        vm.prank(treasury);
-        vm.expectRevert(FeeSplitter.ZeroAddress.selector);
-        splitter.withdrawTo(address(token), address(0));
     }
 
     function test_withdraw_blocksReentrancy() public {

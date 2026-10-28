@@ -91,10 +91,9 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         uint256 newBalance
     );
 
-    /// @notice Emitted by withdraw / withdrawTo.
-    /// @param account The account whose credit was withdrawn.
-    /// @param to The receiver of the tokens.
-    event Withdrawn(address indexed account, address indexed token, address indexed to, uint256 amount);
+    /// @notice Emitted by withdraw.
+    /// @param account The account whose full credit was paid out to itself.
+    event Withdrawn(address indexed account, address indexed token, uint256 amount);
 
     /// @notice Emitted by sweepUnaccounted.
     event Swept(address indexed token, address indexed treasury, uint256 amount);
@@ -193,18 +192,16 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     }
 
     /// @notice Withdraws the caller's full credited balance of a token to the caller. Works while paused.
+    /// @dev Pays only msg.sender, never a third address: an account that the token's TIP-403 policy blocks from
+    ///      receiving cannot move its credit elsewhere.
     /// @param token The token.
     function withdraw(address token) external nonReentrant {
-        _withdraw(token, msg.sender);
-    }
-
-    /// @notice Withdraws the caller's full credited balance of a token to another address (for example when the
-    ///         caller cannot receive under the token's transfer policy). Works while paused.
-    /// @param token The token.
-    /// @param to The receiver (non-zero).
-    function withdrawTo(address token, address to) external nonReentrant {
-        if (to == address(0)) revert ZeroAddress();
-        _withdraw(token, to);
+        uint256 amount = credited[token][msg.sender];
+        if (amount == 0) revert NothingToWithdraw(token);
+        credited[token][msg.sender] = 0;
+        totalCredited[token] -= amount;
+        emit Withdrawn(msg.sender, token, amount);
+        IERC20(token).safeTransfer(msg.sender, amount);
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -362,14 +359,5 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         credited[token][recipient] = newBalance;
         totalCredited[token] += amount;
         emit Credited(recipient, token, appId, kind, amount, newBalance);
-    }
-
-    function _withdraw(address token, address to) private {
-        uint256 amount = credited[token][msg.sender];
-        if (amount == 0) revert NothingToWithdraw(token);
-        credited[token][msg.sender] = 0;
-        totalCredited[token] -= amount;
-        emit Withdrawn(msg.sender, token, to, amount);
-        IERC20(token).safeTransfer(to, amount);
     }
 }

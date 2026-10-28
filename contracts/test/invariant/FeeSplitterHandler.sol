@@ -35,6 +35,7 @@ contract FeeSplitterHandler is Test {
     uint256 public usageNonce;
     bool public capViolated;
     bool public unexpectedRevert;
+    bool public withdrawMismatch;
     mapping(string name => uint256) public calls;
 
     constructor(
@@ -139,17 +140,15 @@ contract FeeSplitterHandler is Test {
         calls["payFeesOverDailyCap"]++;
     }
 
-    function withdraw(uint256 accountSeed, uint256 tokenSeed, bool toOther) external {
+    function withdraw(uint256 accountSeed, uint256 tokenSeed) external {
         address account = accounts[accountSeed % accounts.length];
         MockERC20 token = tokens[tokenSeed % tokens.length];
         uint256 credit = splitter.credited(address(token), account);
         if (credit == 0) return;
+        uint256 before = token.balanceOf(account);
         vm.prank(account);
-        if (toOther) {
-            splitter.withdrawTo(address(token), address(uint160(uint256(keccak256(abi.encode(account, credit))))));
-        } else {
-            splitter.withdraw(address(token));
-        }
+        splitter.withdraw(address(token));
+        if (token.balanceOf(account) != before + credit) withdrawMismatch = true;
         ghostWithdrawn[address(token)] += credit;
         calls["withdraw"]++;
     }

@@ -97,6 +97,10 @@ contract FeeSplitterInvariantTest is SealedTest {
         }
     }
 
+    function invariant_withdrawPaysExactCredit() public view {
+        assertFalse(handler.withdrawMismatch(), "withdraw paid a different amount than the credit");
+    }
+
     function invariant_dailyCapNeverExceeded() public view {
         assertFalse(handler.capViolated(), "payment above the daily cap was accepted");
         assertFalse(handler.unexpectedRevert(), "over-cap payment failed for another reason");
