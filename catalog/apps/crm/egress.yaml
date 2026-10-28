@@ -1,0 +1,12 @@
+version: 1
+default_allow: []
+customer_additions_allowed: true
+notes: >-
+  Twenty needs no outbound host to run. Calls found in source (telemetry, twenty-icons.com,
+  the Docker Hub version check, the npm marketplace sync, twenty.com enterprise endpoints) are
+  switched off by env or fail closed here and show up as blocked counts; expect one blocked
+  attempt to twenty-icons.com when the bootstrap creates the workspace. Customers who later
+  enable email or calendar sync add their provider hosts, for example gmail.googleapis.com:443,
+  www.googleapis.com:443, oauth2.googleapis.com:443, graph.microsoft.com:443 and
+  login.microsoftonline.com:443, or their IMAP, SMTP and CalDAV hosts. Twenty's SMTP and IMAP
+  clients do not use HTTP proxies, so raw IMAP and SMTP need more than an allowlist entry.

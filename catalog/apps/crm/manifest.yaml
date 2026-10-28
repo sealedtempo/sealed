@@ -1,0 +1,96 @@
+schema: sealed-manifest/v1
+id: crm
+name: CRM (Twenty)
+category: crm
+description: >-
+  Twenty, an open-source CRM for companies, people and opportunities, with a REST and GraphQL
+  API. Single workspace, sign-up closed after the first admin, email and calendar sync off,
+  telemetry off, enterprise features never enabled.
+upstream:
+  repo: https://github.com/twentyhq/twenty
+  version: v2.52.0
+  license_spdx: AGPL-3.0-only
+  source_url: https://github.com/twentyhq/twenty/tree/twenty/v2.52.0
+maintainer:
+  name: Sealed
+  payout_address: "${MAINTAINER_DEFAULT_ADDRESS}"
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: crm-server
+images:
+  # Index digests (multi-arch). linux/amd64 manifests: twenty
+  # sha256:356a3d5c39bdf452cf5260f28fd47fcc499d13c70a9dd6e2a4fd47b9a3ea16fd, postgres
+  # sha256:b95b87e93ceb7594715d5c71fb6e09f6fc878851ab537735d617325eb9ba8b1b, valkey
+  # sha256:be4238e32d835947409227c1527aa372783df8bbbfa1f7f7c842f084896e5ec9.
+  - name: twenty
+    source: docker.io/twentycrm/twenty:v2.52.0
+    digest: sha256:20b1010a975c42954d9f90698564795daf106da964bc95028836b09a8f424839
+    platform: linux/amd64
+    license_spdx: AGPL-3.0-only
+  - name: postgres
+    source: docker.io/library/postgres:16.15
+    digest: sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+    platform: linux/amd64
+    license_spdx: PostgreSQL
+  - name: valkey
+    source: docker.io/valkey/valkey:9.0.7
+    digest: sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d
+    platform: linux/amd64
+    license_spdx: BSD-3-Clause
+resources:
+  cpu: 2
+  memory_gb: 4
+  disk_gb: 10
+routes:
+  - name: crm
+    service: crm-server
+    internal_port: 3000
+    path_or_host: crm
+    auth: gate
+healthcheck:
+  service: crm-server
+  http: /healthz
+  port: 3000
+  start_period_s: 300
+metering:
+  unit: app_hour
+  source: heartbeat
+secrets:
+  - name: ENCRYPTION_KEY
+    description: >-
+      Twenty ENCRYPTION_KEY (32 random bytes, base64). Encrypts OAuth tokens, signing keys and
+      TOTP secrets in the database. Never rotate it without FALLBACK_ENCRYPTION_KEY.
+    generate: base64-32
+  - name: PG_DATABASE_PASSWORD
+    description: Password of the postgres user of crm-db (hex only, it is placed unencoded in the connection URL).
+    generate: hex32
+  - name: VALKEY_PASSWORD
+    description: Password of crm-valkey, which holds the BullMQ job queues.
+    generate: hex32
+  - name: ADMIN_EMAIL
+    description: Email of the first CRM admin, created by the bootstrap job.
+    generate: none
+  - name: ADMIN_PASSWORD
+    description: Password of the first CRM admin, 8 to 50 characters.
+    generate: none
+telemetry_off_env:
+  TELEMETRY_ENABLED: "false"
+  ANALYTICS_ENABLED: "false"
+  ALLOW_REQUESTS_TO_TWENTY_ICONS: "false"
+  MARKETPLACE_CATALOG_SYNC_CRON_ENABLED: "false"
+  ENTERPRISE_API_URL: ""
+  SUPPORT_DRIVER: "NONE"
+  IS_BILLING_ENABLED: "false"
+  IS_CONFIG_VARIABLES_IN_DB_ENABLED: "false"
+license_exclusions: []
+bootstrap:
+  service: crm-bootstrap
+  done_file: crm-bootstrap/done.json
+notes: >-
+  D-019: Twenty has no enterprise directory. Files marked "@license Enterprise" are compiled into
+  the official AGPL image; they are present but never enabled: no ENTERPRISE_KEY or
+  ENTERPRISE_VALIDITY_TOKEN, ENTERPRISE_API_URL empty, billing off, config variables in the
+  database off so no key can be stored from the admin panel. license_exclusions is empty because
+  there is no separable path to exclude; a stripped fork is a follow-up. Redis is replaced by
+  Valkey (D-020).
