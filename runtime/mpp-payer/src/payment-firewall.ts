@@ -3,7 +3,8 @@ import { decodeFunctionData, isAddressEqual } from 'viem'
 import { Transaction } from 'viem/tempo'
 import { ESCROW_PRECOMPILE } from './config.js'
 import { wasNotSent } from './relay-transport.js'
-import { PaymentPolicyError, type SpendGuard } from './spend-guard.js'
+import type { SharedReservation, SpendBudget } from './shared-budget.js'
+import { type DebitKind, PaymentPolicyError, type SpendGuard } from './spend-guard.js'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -62,7 +63,10 @@ export type FirewallPolicy = {
   expectedPayee: () => `0x${string}` | undefined
 }
 
-type Debit = { kind: 'charge' | 'deposit' | 'topUp'; amount: bigint; channelId?: string }
+type Debit = { kind: DebitKind; amount: bigint; channelId?: string }
+
+/** Attodollars per gas to FEE_TOKEN base units (6 decimals): fee = gas x price / 10^12 (Tempo fee units). */
+const ATTO_PER_BASE_UNIT = 10n ** 12n
 
 type Decoded = { credential: Credential.Credential<Record<string, unknown>>; debits: Debit[] }
 
@@ -93,6 +97,9 @@ function parseTx(serialized: unknown, policy: FirewallPolicy, chainId: number) {
     chainId?: number
     calls?: { to?: string; data?: `0x${string}`; value?: bigint }[]
     from?: string
+    gas?: bigint
+    maxFeePerGas?: bigint
+    feePayerSignature?: unknown
   }
   if (tx.chainId !== chainId) throw new PaymentPolicyError(`transaction chain ${tx.chainId} differs from challenge chain ${chainId}`)
   if (tx.from && !isAddressEqual(tx.from as `0x${string}`, policy.payerAddress))
@@ -100,7 +107,25 @@ function parseTx(serialized: unknown, policy: FirewallPolicy, chainId: number) {
   const calls = tx.calls ?? []
   if (calls.length === 0) throw new PaymentPolicyError('transaction has no calls')
   for (const call of calls) if (call.value && call.value !== 0n) throw new PaymentPolicyError('transaction carries native value')
-  return calls
+  return { calls, fee: feeCap(tx) }
+}
+
+/**
+ * The most this transaction can cost the payer's account in network fees, in FEE_TOKEN base
+ * units: gas x maxFeePerGas / 10^12, rounded up. Fees an account pays itself count against its
+ * access-key spending limit, so they are budgeted like any other debit. A transaction that
+ * names a fee payer (sponsored) costs the payer nothing.
+ */
+export function feeCap(tx: { gas?: bigint; maxFeePerGas?: bigint; feePayerSignature?: unknown }): bigint {
+  if (tx.feePayerSignature !== undefined) return 0n
+  const gas = tx.gas ?? 0n
+  const price = tx.maxFeePerGas ?? 0n
+  if (gas <= 0n || price <= 0n) return 0n
+  return (gas * price + ATTO_PER_BASE_UNIT - 1n) / ATTO_PER_BASE_UNIT
+}
+
+function withFee(debits: Debit[], fee: bigint): Debit[] {
+  return fee > 0n ? [...debits, { kind: 'fee', amount: fee }] : debits
 }
 
 /**
@@ -128,7 +153,7 @@ export function inspectCredential(header: string, policy: FirewallPolicy, deposi
   const payload = credential.payload
   if (challenge.intent === 'charge') {
     if (payload.type !== 'transaction') throw new PaymentPolicyError(`charge payload ${String(payload.type)} is not allowed (pull mode only)`)
-    const calls = parseTx(payload.signature, policy, chainId)
+    const { calls, fee } = parseTx(payload.signature, policy, chainId)
     let total = 0n
     for (const call of calls) {
       if (lower(call.to) !== policy.currency) throw new PaymentPolicyError('charge calls a contract other than the currency')
@@ -139,7 +164,7 @@ export function inspectCredential(header: string, policy: FirewallPolicy, deposi
     }
     if (String(total) !== String(request.amount)) throw new PaymentPolicyError('charge amount differs from the challenge')
     if (total > policy.maxCharge) throw new PaymentPolicyError(`charge ${total} exceeds the per-request cap ${policy.maxCharge}`)
-    return { credential, debits: [{ kind: 'charge', amount: total }] }
+    return { credential, debits: withFee([{ kind: 'charge', amount: total }], fee) }
   }
 
   if (challenge.intent !== 'session') throw new PaymentPolicyError(`intent ${challenge.intent} is not allowed`)
@@ -148,7 +173,7 @@ export function inspectCredential(header: string, policy: FirewallPolicy, deposi
   const channelId = lower(payload.channelId)
   const action = payload.action
   if (action === 'open' || action === 'topUp') {
-    const calls = parseTx(payload.transaction, policy, chainId)
+    const { calls, fee } = parseTx(payload.transaction, policy, chainId)
     let debit: Debit | undefined
     for (const call of calls) {
       if (lower(call.to) !== ESCROW_PRECOMPILE) throw new PaymentPolicyError('session transaction calls a contract other than the escrow')
@@ -169,7 +194,7 @@ export function inspectCredential(header: string, policy: FirewallPolicy, deposi
     if (!debit) throw new PaymentPolicyError('session transaction has no escrow call')
     const after = (deposits.get(channelId) ?? 0n) + debit.amount
     if (after > policy.maxDeposit) throw new PaymentPolicyError(`channel deposit ${after} would exceed the cap ${policy.maxDeposit}`)
-    return { credential, debits: [debit] }
+    return { credential, debits: withFee([debit], fee) }
   }
   if (action === 'voucher' || action === 'close') {
     const cumulative = BigInt(String(payload.cumulativeAmount ?? '0'))
@@ -182,32 +207,50 @@ export function inspectCredential(header: string, policy: FirewallPolicy, deposi
 }
 
 /**
- * A fetch for mppx clients that inspects every outgoing Payment credential, reserves the
- * debit in the spend guard before the credential leaves, and releases it if the relay
- * answers 402 (payment not accepted) or the request provably never left (pinned transport
- * refusal). `inner` is the TLS-pinned relay transport in production.
+ * A fetch for mppx clients that inspects every outgoing Payment credential and reserves what it
+ * would debit before the credential leaves: first in the local spend guard (the second cap),
+ * then in sealed-agent's shared daily budget (D-048). Both are given back if the relay answers
+ * 402 (payment not accepted) or the request provably never left (pinned transport refusal);
+ * otherwise the shared reservation is released as fully used. `inner` is the TLS-pinned relay
+ * transport in production. Without `budget` only the local guard applies (tests and tools).
  */
-export function paymentFirewall(inner: FetchLike, policy: FirewallPolicy, guard: SpendGuard): FetchLike {
+export function paymentFirewall(inner: FetchLike, policy: FirewallPolicy, guard: SpendGuard, budget?: SpendBudget): FetchLike {
   const deposits = new Map<string, bigint>()
   return async (input, init) => {
     const request = new Request(input, init)
     const header = paymentHeader(request.headers)
     if (!header) return inner(request)
     const { credential, debits } = inspectCredential(header, policy, deposits)
-    const releases = debits.map((d) => guard.reserve(d.amount, d.kind))
+    const total = debits.reduce((sum, d) => sum + d.amount, 0n)
+    const releaseLocal = debits.length > 0 ? guard.reserveAll(debits) : () => {}
+    let shared: SharedReservation | undefined
+    if (budget && total > 0n) {
+      try {
+        shared = await budget.reserve(total)
+      } catch (error) {
+        releaseLocal()
+        throw error
+      }
+    }
+    const refused = async () => {
+      releaseLocal()
+      if (shared) await budget!.release(shared, 0n)
+    }
     let response: Response
     try {
       response = await inner(request)
     } catch (error) {
       // Refused before sending (for example a relay key that is not the attested one): nothing was spent.
-      // Any other failure may have delivered the credential, so its reservation is kept.
-      if (wasNotSent(error)) for (const release of releases) release()
+      // Any other failure may have delivered the credential, so the debit counts as spent.
+      if (wasNotSent(error)) await refused()
+      else if (shared) await budget!.release(shared, total)
       throw error
     }
     if (response.status === 402) {
-      for (const release of releases) release()
+      await refused()
       return response
     }
+    if (shared) await budget!.release(shared, total)
     const payload = credential.payload
     const channelId = lower(payload.channelId)
     for (const d of debits) if (d.channelId) deposits.set(d.channelId, (deposits.get(d.channelId) ?? 0n) + d.amount)
@@ -216,6 +259,8 @@ export function paymentFirewall(inner: FetchLike, policy: FirewallPolicy, guard:
     if (credential.challenge.intent === 'session' && payload.action === 'close' && response.ok) {
       const deposit = deposits.get(channelId) ?? 0n
       const captured = BigInt(String(payload.cumulativeAmount ?? '0'))
+      // Local budget only: the refund returns to the account, not to its access-key limit, so
+      // the shared budget keeps the deposit counted as used.
       if (deposit > captured) guard.refund(deposit - captured)
       deposits.delete(channelId)
       guard.forgetChannel(channelId)

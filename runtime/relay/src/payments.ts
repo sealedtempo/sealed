@@ -4,7 +4,7 @@ import type { Account, Client } from 'viem'
 import { formatUnits } from './prices.js'
 
 /**
- * Session pricing unit: one FEE_TOKEN base unit (0.000001 pathUSD). Per-token relay prices are
+ * Session pricing unit: one FEE_TOKEN base unit (0.000001 USD). Per-token relay prices are
  * fractions of a base unit, so the meter charges explicit raw amounts against this unit and the
  * per-model prices are published on GET /v1/models instead of in the challenge.
  */

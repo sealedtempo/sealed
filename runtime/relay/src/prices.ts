@@ -5,7 +5,7 @@ export type ProviderId = (typeof PROVIDERS)[number]
 
 /**
  * One relay model. Prices are provider list prices in FEE_TOKEN base units
- * (pathUSD, 6 decimals) per 1,000,000 tokens, so $0.90 per 1M tokens is 900000.
+ * (USDC.e on mainnet, D-035; 6 decimals) per 1,000,000 tokens, so $0.90 per 1M tokens is 900000.
  */
 export type ModelPrice = {
   id: string
@@ -65,7 +65,7 @@ export function relayPricePer1M(listPer1M: bigint, markupBps: number): string {
   return `${whole}.${frac.toString().padStart(4, '0').replace(/0+$/, '')}`
 }
 
-/** Formats base units as a decimal string in token units (6 decimals for pathUSD). */
+/** Formats base units as a decimal string in token units (6 decimals for FEE_TOKEN). */
 export function formatUnits(value: bigint, decimals: number): string {
   const negative = value < 0n
   const abs = negative ? -value : value
@@ -97,7 +97,7 @@ export function parsePriceTable(json: unknown, markupBps: number): PriceTable {
   if (typeof currency !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(currency))
     throw new Error('price table: currency must be an address')
   const decimals = raw.decimals
-  if (decimals !== 6) throw new Error('price table: decimals must be 6 (pathUSD)')
+  if (decimals !== 6) throw new Error('price table: decimals must be 6 (FEE_TOKEN: USDC.e or pathUSD)')
   const defaultMaxTokens = raw.default_max_tokens ?? 1024
   if (typeof defaultMaxTokens !== 'number' || !Number.isSafeInteger(defaultMaxTokens) || defaultMaxTokens <= 0)
     throw new Error('price table: default_max_tokens must be a positive integer')

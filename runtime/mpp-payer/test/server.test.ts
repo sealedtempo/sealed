@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { RelayAttestationGate } from '../src/attestation-gate.js'
 import type { RelayResult } from '../src/relay-client.js'
 import { createPayerApp } from '../src/server.js'
+import { BudgetUnavailableError } from '../src/shared-budget.js'
 import { SpendLimitError } from '../src/spend-guard.js'
 import { fakeAttest, fakeVerifierd } from './helpers/fake-relay-attest.js'
 
@@ -94,6 +95,25 @@ describe('payer OpenAI passthrough', () => {
     expect(res.status).toBe(429)
     expect((await res.json()).error.type).toBe('spend_limit_exceeded')
     expect(pokes()).toBeGreaterThan(0)
+  })
+
+  it('maps an unavailable shared budget to 503, also when a top-up fails mid-stream', async () => {
+    const { app } = setup(async () => Promise.reject(new BudgetUnavailableError('sealed-agent spend budget unreachable')))
+    const res = await app.request('/v1/chat/completions', post(ask))
+    expect(res.status).toBe(503)
+    expect((await res.json()).error.type).toBe('spend_budget_unavailable')
+    const midStream = setup(async () => ({
+      kind: 'session',
+      events: (async function* () {
+        yield JSON.stringify({ id: 'c1', choices: [{ index: 0, delta: { content: 'a' } }] })
+        throw new BudgetUnavailableError('sealed-agent spend budget answered HTTP 503')
+      })(),
+    }))
+    const streamed = await (await midStream.app.request('/v1/chat/completions', post({ ...ask, stream: true }))).text()
+    expect(streamed).toContain('"type":"spend_budget_unavailable"')
+    expect(streamed.trimEnd().endsWith('data: [DONE]')).toBe(true)
+    const folded = await midStream.app.request('/v1/chat/completions', post(ask))
+    expect(folded.status).toBe(503)
   })
 
   it('rejects callers other than the llm-gateway and malformed bodies', async () => {

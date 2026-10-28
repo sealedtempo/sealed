@@ -3,6 +3,7 @@ import { Mppx, tempo } from 'mppx/client'
 import type { Account, Client } from 'viem'
 import { ESCROW_PRECOMPILE } from './config.js'
 import { RelayChannelError } from './relay-transport.js'
+import { BudgetUnavailableError } from './shared-budget.js'
 import { PaymentPolicyError, SpendLimitError } from './spend-guard.js'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -47,11 +48,19 @@ function formatUnits(value: bigint, decimals: number): string {
   return `${value / base}${frac ? `.${frac}` : ''}`
 }
 
-/** The first SpendLimitError, PaymentPolicyError or RelayChannelError in an error's cause chain. */
-export function rootPolicyError(error: unknown): SpendLimitError | PaymentPolicyError | RelayChannelError | undefined {
+type PolicyError = SpendLimitError | PaymentPolicyError | RelayChannelError | BudgetUnavailableError
+
+/** The first SpendLimitError, PaymentPolicyError, RelayChannelError or BudgetUnavailableError in an error's cause chain. */
+export function rootPolicyError(error: unknown): PolicyError | undefined {
   let current: unknown = error
   for (let depth = 0; current && depth < 8; depth++) {
-    if (current instanceof SpendLimitError || current instanceof PaymentPolicyError || current instanceof RelayChannelError) return current
+    if (
+      current instanceof SpendLimitError ||
+      current instanceof PaymentPolicyError ||
+      current instanceof RelayChannelError ||
+      current instanceof BudgetUnavailableError
+    )
+      return current
     current = (current as { cause?: unknown }).cause
   }
   return undefined
@@ -60,8 +69,8 @@ export function rootPolicyError(error: unknown): SpendLimitError | PaymentPolicy
 /**
  * Pays the relay with mppx: per-token MPP sessions over SSE first, per-request charges as the
  * fallback when a session cannot be opened or used (no session offer, escrow unavailable,
- * remaining budget below one deposit). Payment policy violations and refusals of the pinned
- * relay channel never fall back. `deps.fetch` is the payment firewall over the TLS-pinned
+ * remaining budget below one deposit). Payment policy violations, refusals of the pinned relay
+ * channel and an unavailable shared budget never fall back. `deps.fetch` is the payment firewall over the TLS-pinned
  * relay transport, so mppx can only reach the attested relay key.
  */
 export class RelayClient {
@@ -112,8 +121,9 @@ export class RelayClient {
         return { kind: 'session', events }
       } catch (error) {
         const policy = rootPolicyError(error)
-        // A policy violation or an unattested relay channel never falls back to another payment path.
-        if (policy instanceof PaymentPolicyError || policy instanceof RelayChannelError) throw policy
+        // A policy violation, an unattested relay channel or an unavailable shared budget never
+        // falls back to another payment path.
+        if (policy instanceof PaymentPolicyError || policy instanceof RelayChannelError || policy instanceof BudgetUnavailableError) throw policy
         const refusal = this.refusals.get(requestId)
         if (refusal) return { kind: 'response', intent: 'refused', response: refusal }
         this.sessionsDisabledUntil = this.now() + (this.deps.sessionRetrySeconds ?? 300)

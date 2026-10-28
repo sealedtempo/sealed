@@ -14,6 +14,7 @@ import { paymentFirewall } from '../src/payment-firewall.js'
 import { RelayClient } from '../src/relay-client.js'
 import { createPayerApp } from '../src/server.js'
 import { SpendGuard } from '../src/spend-guard.js'
+import { fakeAgentBudget } from './helpers/fake-agent-budget.js'
 import { fakeAttest, fakeVerifierd, relayAppCompose } from './helpers/fake-relay-attest.js'
 
 const prices = parsePriceTable(
@@ -51,7 +52,9 @@ describe.skipIf(!anvilAvailable())('payer -> relay -> LiteLLM, paid with mppx on
   }, 60_000)
   afterAll(() => node?.stop())
 
-  function stack(options: { sessions: boolean; limit: bigint; verifierOk?: boolean }) {
+  /** The payer draws from sealed-agent's shared budget (first cap) and its local guard (second cap). */
+  function stack(options: { sessions: boolean; limit: bigint; verifierOk?: boolean; agent?: ReturnType<typeof fakeAgentBudget> }) {
+    const agent = options.agent ?? fakeAgentBudget({ budget: 2_000_000n })
     const llm = fakeLiteLLM({ words: ['Paid', ' and', ' delivered'] })
     const relayApp = createRelayApp({
       prices,
@@ -87,6 +90,7 @@ describe.skipIf(!anvilAvailable())('payer -> relay -> LiteLLM, paid with mppx on
       relayFetch,
       { payerAddress: payerAccount.address, currency: PATHUSD, allowedChainIds: [4217], maxCharge: 50_000n, maxDeposit: 200_000n, expectedPayee: () => gate.payee() },
       guard,
+      agent.budget,
     )
     const relay = new RelayClient({
       relayUrl: 'https://relay.sealed.test',
@@ -107,14 +111,14 @@ describe.skipIf(!anvilAvailable())('payer -> relay -> LiteLLM, paid with mppx on
       callers: { allows: () => true },
       remoteAddress: () => '172.30.0.16',
     })
-    return { payer, llm, guard, relay, verifier }
+    return { payer, llm, guard, relay, verifier, agent }
   }
 
   const body = { model: 'tinfoil/gpt-oss-120b', messages: [{ role: 'user', content: 'pay me' }], max_tokens: 32 }
   const post = (b: unknown) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) })
 
   it('pays a per-request charge from the customer account via the access key and returns the completion', async () => {
-    const { payer, llm, guard } = stack({ sessions: false, limit: 2_000_000n })
+    const { payer, llm, guard, agent } = stack({ sessions: false, limit: 2_000_000n })
     const before = await balanceOf(node.client, treasury)
     const res = await payer.request('/v1/chat/completions', post(body))
     expect(res.status).toBe(200)
@@ -123,6 +127,45 @@ describe.skipIf(!anvilAvailable())('payer -> relay -> LiteLLM, paid with mppx on
     expect((await balanceOf(node.client, treasury)) - before).toBe(quoted)
     expect(llm.calls.length).toBe(1)
     expect(guard.counters()).toMatchObject({ charges: 1, chargeAmount: quoted.toString() })
+    // The shared budget saw one reservation for the charge plus its network fee cap, released as
+    // used; the unpaid first attempt (402) never reserved anything.
+    const fee = BigInt(guard.counters().debited) - quoted
+    expect(fee).toBeGreaterThan(0n)
+    expect(agent.calls.map((c) => c.path)).toEqual(['/v1/spend/reserve', '/v1/spend/release'])
+    expect(agent.calls[0]!.body.amount).toBe((quoted + fee).toString())
+    expect(agent.state.used).toBe(quoted + fee)
+    expect(agent.state.reservations.size).toBe(0)
+  })
+
+  it('refuses before paying when fee settlement holds the shared budget, though the local guard allows it', async () => {
+    // The agent keeps the next settlement's estimated fees: the payer may reserve only 100 base units.
+    const agent = fakeAgentBudget({ budget: 2_000_000n, reservedForFees: 1_999_900n })
+    const { payer, llm, guard } = stack({ sessions: false, limit: 2_000_000n, agent })
+    const before = await balanceOf(node.client, treasury)
+    const res = await payer.request('/v1/chat/completions', post(body))
+    expect(res.status).toBe(429)
+    const error = (await res.json()).error
+    expect(error.type).toBe('spend_limit_exceeded')
+    expect(error.message).toMatch(/fee settlement has priority/)
+    expect(await balanceOf(node.client, treasury)).toBe(before)
+    expect(llm.calls.length).toBe(0)
+    expect(guard.counters()).toMatchObject({ debited: '0', charges: 0 })
+    expect(agent.state.used).toBe(0n)
+  })
+
+  it('answers 503 and pays nothing while the shared budget is unavailable', async () => {
+    const agent = fakeAgentBudget({ budget: 2_000_000n })
+    agent.state.down = true
+    const { payer, llm, guard } = stack({ sessions: true, limit: 2_000_000n, agent })
+    const before = await balanceOf(node.client, treasury)
+    const res = await payer.request('/v1/chat/completions', post(body))
+    expect(res.status).toBe(503)
+    expect((await res.json()).error.type).toBe('spend_budget_unavailable')
+    expect(await balanceOf(node.client, treasury)).toBe(before)
+    expect(llm.calls.length).toBe(0)
+    expect(guard.counters().debited).toBe('0')
+    agent.state.down = false
+    expect((await payer.request('/v1/chat/completions', post(body))).status).toBe(200)
   })
 
   it('streams through the charge path when the client asked for a stream', async () => {

@@ -9,6 +9,7 @@ import { paymentFirewall } from './payment-firewall.js'
 import { RelayClient } from './relay-client.js'
 import { PinnedRelayTransport } from './relay-transport.js'
 import { createPayerApp } from './server.js'
+import { AgentSpendBudget } from './shared-budget.js'
 import { FileSpendStore, SpendGuard } from './spend-guard.js'
 import { SpendReporter } from './spend-reporter.js'
 
@@ -44,8 +45,10 @@ function main(): void {
     pin: () => gate.pin(),
     repin: () => gate.recheckAfterKeyMismatch(),
   })
+  // First cap: the daily budget shared with the agent's fee settlement, which has priority (D-048).
+  const budget = new AgentSpendBudget({ agentUrl: config.agentUrl, log })
+  // Second cap: the local guard, the whole daily limit, persisted across restarts.
   const guard = new SpendGuard(config.spendLimitPerDay, Date.now, {
-    shareBps: config.relaySpendShareBps,
     store: new FileSpendStore(config.spendStateFile, (e) => log({ event: 'spend_state_unsaved', detail: e.message })),
   })
   const firewalled = paymentFirewall(
@@ -59,6 +62,7 @@ function main(): void {
       expectedPayee: () => gate.payee(),
     },
     guard,
+    budget,
   )
   const relay = new RelayClient({
     relayUrl: config.relayUrl,
@@ -112,6 +116,7 @@ function main(): void {
     callers.stop()
     reporter.stop()
     await relay.close()
+    budget.stop()
     await transport.close()
     await reporter.send()
     server.close()

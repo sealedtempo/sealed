@@ -16,6 +16,7 @@ import { paymentFirewall } from '../src/payment-firewall.js'
 import { RelayClient } from '../src/relay-client.js'
 import { createPayerApp } from '../src/server.js'
 import { SpendGuard } from '../src/spend-guard.js'
+import { fakeAgentBudget } from './helpers/fake-agent-budget.js'
 import { fakeAttest, fakeVerifierd, relayAppCompose } from './helpers/fake-relay-attest.js'
 
 /**
@@ -104,10 +105,12 @@ describe.skipIf(!anvilAvailable())('MPP session over SSE with real mppx client a
       fetchVerifier: fakeVerifierd().fetchVerifier,
     })
     const guard = new SpendGuard(2_000_000n)
+    const agent = fakeAgentBudget({ budget: 2_000_000n })
     const firewalled = paymentFirewall(
       relayFetch,
       { payerAddress: account.address, currency: PATHUSD, allowedChainIds: [4217], maxCharge: 50_000n, maxDeposit: 200_000n, expectedPayee: () => gate.payee() },
       guard,
+      agent.budget,
     )
     const relay = new RelayClient({
       relayUrl: 'https://relay.sealed.test',
@@ -128,14 +131,14 @@ describe.skipIf(!anvilAvailable())('MPP session over SSE with real mppx client a
       callers: { allows: () => true },
       remoteAddress: () => '172.30.0.16',
     })
-    return { payer, relay, guard, llm, wire, credited, store }
+    return { payer, relay, guard, llm, wire, credited, store, agent }
   }
 
   const post = (b: unknown) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) })
   const body = { model: 'nearai/z-ai/glm-5.3', messages: [{ role: 'user', content: 'meter me' }], max_tokens: 64 }
 
   it('opens a channel, streams with vouchers posted through the firewall, then closes cooperatively', async () => {
-    const { payer, relay, guard, llm, wire, credited } = stack()
+    const { payer, relay, guard, llm, wire, credited, agent } = stack()
     const res = await payer.request('/v1/chat/completions', post({ ...body, stream: true }))
     expect(res.status).toBe(200)
     const text = await res.text()
@@ -157,9 +160,14 @@ describe.skipIf(!anvilAvailable())('MPP session over SSE with real mppx client a
     expect(channel.descriptor.payer.toLowerCase()).toBe(payerAccount.address.toLowerCase())
     expect(chain.events.map((e) => e.name)).toContain('ChannelOpened')
 
-    // The firewall reserved exactly the deposit, and saw the vouchers.
+    // The firewall reserved exactly the deposit (plus the open transaction's fee cap), and saw the vouchers.
     const counters = guard.counters()
     expect(counters).toMatchObject({ deposits: 1, depositAmount: channel.deposit.toString(), charges: 0 })
+    const openFee = BigInt(counters.debited) - channel.deposit
+    expect(openFee).toBeGreaterThan(0n)
+    // The shared budget: one reservation for the open, released as used; vouchers reserve nothing.
+    expect(agent.calls.map((c) => c.path)).toEqual(['/v1/spend/reserve', '/v1/spend/release'])
+    expect(agent.state.used).toBe(channel.deposit + openFee)
     expect(BigInt(counters.sessionAuthorized)).toBeGreaterThan(0n)
     const actions = wire.filter((w) => w.intent === 'session').map((w) => w.action)
     expect(actions[0]).toBe('open')
@@ -193,6 +201,10 @@ describe.skipIf(!anvilAvailable())('MPP session over SSE with real mppx client a
     expect(BigInt(final.refunded)).toBe(channel.deposit - close.cumulative!)
     expect(BigInt(final.refunded)).toBeLessThanOrEqual(refunded)
     expect(final.sessionAuthorized).toBe('0')
+    // The refund returns to the account but not to its access-key limit, so the shared budget
+    // keeps the deposit counted; the close itself (sent by the relay's settler) reserves nothing.
+    expect(agent.state.used).toBe(channel.deposit + openFee)
+    expect(agent.calls.filter((c) => c.path === '/v1/spend/reserve')).toHaveLength(1)
   }, 120_000)
 
   it('pays from the customer account through an access key (the production signer mode)', async () => {
