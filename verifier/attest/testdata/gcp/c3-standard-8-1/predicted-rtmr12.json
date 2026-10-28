@@ -1,0 +1,10 @@
+{
+  "rtmr1": "fea84c84e8093e0444d63d0ae25e35e4324f84c643f00340d06f2522876f2ae579f5dfefd3fe389c033b7ee0d96fbcf3",
+  "rtmr2": "961f79aaacd74ebcb350f909e5165e13186c4c405af0df5a5504221a43f32c159eeebd675eb46dc370aa0803a714239c",
+  "uki_sha256": "807b6d7c3678ed71f84df0e4d0c14e8c3fbe7d2c37fc5bef55528354414d2c5d",
+  "uki_authenticode_sha384": "b519bf4ac4ef63b307e862cb61c900b584fb05ee933b265f80338f58136063046a24ca4dbff48287a14454fa22b12cfc",
+  "rtmr1_event_digests_match_log": true,
+  "rtmr1_matches_quote": true,
+  "rtmr2_event_digests_match_log": true,
+  "rtmr2_matches_quote": true
+}

@@ -1,0 +1,10 @@
+{
+  "url": "https://certificates.trustedservices.intel.com/IntelSGXRootCA.der",
+  "fetchedAt": 1793213671,
+  "header": {
+    "Content-Type": [
+      "binary/octet-stream"
+    ]
+  },
+  "body": "MIIBIjCByAIBATAKBggqhkjOPQQDAjBoMRowGAYDVQQDDBFJbnRlbCBTR1ggUm9vdCBDQTEaMBgGA1UECgwRSW50ZWwgQ29ycG9yYXRpb24xFDASBgNVBAcMC1NhbnRhIENsYXJhMQswCQYDVQQIDAJDQTELMAkGA1UEBhMCVVMXDTI2MDIyNjEzMDQwMFoXDTI3MDIyNjEzMDQwMFqgLzAtMAoGA1UdFAQDAgEBMB8GA1UdIwQYMBaAFCJlDNZanTSJ84O0lVK/UBs5JwasMAoGCCqGSM49BAMCA0kAMEYCIQDCUu1Zx5W6KxFJakqZdYu4y8OAoeu7CGW+afLEs4u2QAIhAJp9iwNgKp7i1iMi11kWbWkz0k2d+gGrP95FIGkdcVvX"
+}

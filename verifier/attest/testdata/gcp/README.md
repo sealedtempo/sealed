@@ -39,6 +39,7 @@ ZFS has a different UKI, so it has a different RTMR1/RTMR2 and measurementsHash.
 | `expected.json` | the values `TestRealGCPGolden` asserts: the four captures with their capture times (UTC), the signed and GetQuote lengths, the TCB result, quoteHash and eventLogHash of `quote.dat` / `eventlog.json`, measurementsHash, RTMR3, compose hash, app-id, instance-id, TD_ATTRIBUTES and XFAM. The test verifies at the collateral recording time from `pcs/recorded.json` (18:06:45Z, 4 to 9 minutes after the captures), because the collateral cache only serves entries fetched no more than a minute after "now" |
 | `pcs/` | Intel PCS collateral for `quote.dat` (TCB info, QE identity, PCK CRL, root CA CRL; the boot 2 quotes need the same four URLs), recorded with `go run ./verifier/internal/tools/pcsrecord -out verifier/attest/testdata/gcp/pcs verifier/attest/testdata/gcp/quote.dat` |
 | `captures/` | every raw response: `boot{1,2}-getquote{1,2}.json` (full GetQuote JSON: quote, event_log, report_data, vm_config), `boot{1,2}-info.json`, and the nonce and report_data of each quote |
+| `c3-standard-4-2/`, `c3-standard-8-1/` | follow-up captures of two more VMs, see "Other VMs and machine types" below |
 | `tools/` | the scripts used: `server.py` (the in-CVM proxy, embedded verbatim in app-compose.json), `make_shared.py` (writes app-compose.json and the other shared-disk files), `capture.py` (nonces, report_data, the HTTP calls), `check_capture.py` (offline Python checks of one capture), `predict_rtmr12.py` (computes RTMR1 and RTMR2 from `disk.raw` alone and compares them with a capture) |
 
 ## Values
@@ -54,7 +55,7 @@ ZFS has a different UKI, so it has a different RTMR1/RTMR2 and measurementsHash.
 | TD_ATTRIBUTES | `0000001000000000` (u64 LE `0x10000000`: only SEPT_VE_DISABLE, bit 28; DEBUG = 0) |
 | XFAM | `e702060000000000` (u64 LE `0x602e7`: bits 0,1,2,5,6,7,9,17,18 = x87, SSE, AVX, AVX-512 (3 bits), PKRU, AMX TILECFG/TILEDATA) |
 | MRSIGNERSEAM, SEAM attributes, MRCONFIGID, MROWNERCONFIG | all zero |
-| MROWNER | `1b203465ce7e175b86bcc5554b34c6a792e92c225cfe4f25f97a035a0728e529ab75b12b44621d02bc97ecb728fd8098` (set by Google, stable across the reboot; not known whether it varies per VM or project) |
+| MROWNER | `1b203465ce7e175b86bcc5554b34c6a792e92c225cfe4f25f97a035a0728e529ab75b12b44621d02bc97ecb728fd8098` (set by Google, stable across the reboot, different on every other VM: per instance, see `c3-standard-4-2/`) |
 | MRSEAM | `ab62561a173acbd18ee50ff37750db44184c6cf5e886df74247cc575e163b04c34b9e18374757c235affa614d4127f6b`, TEE_TCB_SVN `0f010a00000000000000000000000000` |
 | app-id / instance-id | `e21d29755b5a37c7dea8fd81d302ac0d8219e693` (compose hash prefix; `.instance_info` had no app_id) / `8a7611f1c2c7db0d907ad426f8a0df2de9137908` |
 
@@ -98,3 +99,28 @@ LUKS data disk and brought the same container back.
    fresh nonces and one `/Info` call; then the VM was stopped, started, and captured again the same way.
 5. `tools/check_capture.py` checked each capture (header, TD body, padding, RTMR0-3 replay, event sequence,
    compose hash, report_data, `/Info` consistency); `pcsrecord` recorded the collateral; the VM was deleted.
+
+## Other VMs and machine types
+
+This directory is VM 1 of machine type `c3-standard-4`. Two more VMs were captured on 2026-10-28, each in its own
+directory named `<machine type>-<n>` with its own `expected.json`, `captures/`, `quote.dat`, `pcs/` and README.
+Both booted the same image with the same shared and data disk images as this capture (the same
+`app-compose.json` and `instance_id_seed`). `TestRealGCPMachineTypes` verifies them and pins the comparison:
+
+| | VM 1 (here) | `c3-standard-4-2/` | `c3-standard-8-1/` |
+|---|---|---|---|
+| machine type | c3-standard-4 | c3-standard-4 | c3-standard-8 |
+| physical platform (PCK PPID) | `d7ec7f1e...` (boot 1), `2968b9c5...` (boot 2) | `77bad2a9...` | `77bad2a9...` (same host as VM 2) |
+| MRTD | `f21e6b48...` | same | same |
+| RTMR0 | `4b08605d...` | same | `20746152...` |
+| RTMR1, RTMR2 | `fea84c84...`, `961f79aa...` | same | same |
+| measurementsHash | `0xd63f2a83...` | same | `0x85fdf600...` |
+| TD_ATTRIBUTES, XFAM, MRSEAM, TEE_TCB_SVN | as above | same | same |
+| MROWNER | `1b203465...` | `78b43b6b...` | `f6b381de...` |
+| instance-id | `8a7611f1...` | `cf68f16c...` | `22b77580...` |
+
+- RTMR1 and RTMR2 depend only on the image (`tools/predict_rtmr12.py` reproduces them for all three).
+- MRTD did not change across three platforms and two machine types.
+- RTMR0 depends on the machine type, and was the same on three platforms for c3-standard-4. On c3-standard-8 the TD
+  HOB entry and the three ACPI entries change.
+- MROWNER and instance-id are per instance. RTMR3 differs only through instance-id.
