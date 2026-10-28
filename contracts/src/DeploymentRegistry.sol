@@ -18,6 +18,11 @@ import {OwnableNoRenounce} from "./utils/OwnableNoRenounce.sol";
 ///      EIP-712 domain: name "Sealed DeploymentRegistry", version "1", chainId, verifyingContract = this.
 ///      Attestation methods: 1 = ORACLE_SIG_V1 (set at deploy), 2 = ZK_DCAP_V1 (reserved, unset). New methods are
 ///      plugged in with setVerifier and need no other change.
+///      Approval content (contract review): stackHash is the measured compose, which commits to the config's
+///      releaseIds and imageId, so one (customer, stackHash) has exactly one release set and image. The first
+///      approveStack fixes them; a re-approval must repeat them and may only change the expiry (and clear a
+///      revocation). A revoked release therefore stays a kill switch for every deployment of the stack, and
+///      appInDeployment always answers for the release set the deployment was registered with.
 contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable, EIP712 {
     /// @notice Contract version.
     string public constant VERSION = "1.0.0";
@@ -70,8 +75,8 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     /// @notice Number of deployments ever registered.
     uint256 public deploymentCount;
 
-    /// @notice Emitted by approveStack, including re-approvals (which overwrite the release set, image and expiry,
-    ///         and clear a previous revocation).
+    /// @notice Emitted by approveStack, including re-approvals (which repeat the release set and image, set a new
+    ///         expiry and clear a previous revocation).
     /// @param expiry 0 for no expiry, otherwise the unix time at which the approval stops being valid.
     event StackApproved(
         address indexed customer,
@@ -115,8 +120,11 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     error InvalidReleaseCount(uint256 count);
     /// @notice The same release appears twice.
     error DuplicateRelease(bytes32 releaseId);
-    /// @notice The release is not Active (approveStack needs isApprovableRelease).
+    /// @notice A first approval names a release that is not Active (isApprovableRelease), or a re-approval names one
+    ///         that is no longer Active or Deprecated (isActiveRelease).
     error ReleaseNotApprovable(bytes32 releaseId);
+    /// @notice A re-approval names a different release list than the existing approval of the stack.
+    error ReleasesChanged(address customer, bytes32 stackHash);
     /// @notice The image is not approved.
     error ImageNotApproved(bytes32 imageId);
     /// @notice expiry is non-zero and not in the future.
@@ -135,8 +143,12 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     error DeploymentNotActive(bytes32 deploymentId);
     /// @notice isStackApproved(customer, stackHash) is false.
     error StackNotApproved(address customer, bytes32 stackHash);
-    /// @notice The record's image differs from the approval's image.
+    /// @notice The record's (or a re-approval's) image differs from the approval's image.
     error ImageMismatch(bytes32 imageId, bytes32 approvedImageId);
+    /// @notice The record was attested before the current approval of its stack (minus MAX_FUTURE_SKEW).
+    error AttestedBeforeApproval(uint64 attestedAt, uint64 approvedAt);
+    /// @notice A heartbeat repeats the deployment's current quoteHash.
+    error QuoteReused(bytes32 quoteHash);
     /// @notice method is 0 (invalid).
     error InvalidMethod(uint8 method);
     /// @notice No verifier is set for the method.
@@ -174,10 +186,14 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     // Stack approvals (customer)
     // ---------------------------------------------------------------------------------------------------------
 
-    /// @notice Approves a stack for the caller (the customer). Re-approving the same stackHash overwrites the
-    ///         previous approval and clears a revocation.
+    /// @notice Approves a stack for the caller (the customer). The first approval of a stackHash fixes its release
+    ///         list and image. Re-approving the same stackHash must name the same releases (same order) and image,
+    ///         sets the new expiry and clears a revocation.
+    /// @dev First approval: 1..16 distinct releases, each Active (isApprovableRelease). Re-approval: the stored list,
+    ///      each release still Active or Deprecated (isActiveRelease, D-013), so a stack that uses a since-deprecated
+    ///      release can still be extended or restored after revokeStack. Either way the image must be approved.
     /// @param stackHash The stack (compose) hash, non-zero.
-    /// @param releaseIds 1..16 distinct releases, each Active (isApprovableRelease).
+    /// @param releaseIds 1..16 distinct releases.
     /// @param imageId An approved platform image.
     /// @param expiry 0 for no expiry, or a unix time in the future.
     function approveStack(bytes32 stackHash, bytes32[] calldata releaseIds, bytes32 imageId, uint64 expiry) external {
@@ -188,26 +204,38 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
         // forge-lint: disable-next-line(block-timestamp)
         if (expiry != 0 && expiry <= block.timestamp) revert InvalidExpiry(expiry);
         if (!platformRegistry.isApprovedImage(imageId)) revert ImageNotApproved(imageId);
-        for (uint256 i; i < count; ++i) {
-            bytes32 releaseId = releaseIds[i];
-            for (uint256 j; j < i; ++j) {
-                if (releaseIds[j] == releaseId) revert DuplicateRelease(releaseId);
-            }
-            if (!appRegistry.isApprovableRelease(releaseId)) revert ReleaseNotApprovable(releaseId);
-        }
 
         StackApproval storage a = _approvals[msg.sender][stackHash];
-        a.imageId = imageId;
+        if (a.approvedAt == 0) {
+            for (uint256 i; i < count; ++i) {
+                bytes32 releaseId = releaseIds[i];
+                for (uint256 j; j < i; ++j) {
+                    if (releaseIds[j] == releaseId) revert DuplicateRelease(releaseId);
+                }
+                if (!appRegistry.isApprovableRelease(releaseId)) revert ReleaseNotApprovable(releaseId);
+            }
+            a.imageId = imageId;
+            a.releaseIds = releaseIds;
+        } else {
+            if (imageId != a.imageId) revert ImageMismatch(imageId, a.imageId);
+            bytes32[] storage stored = a.releaseIds;
+            if (count != stored.length) revert ReleasesChanged(msg.sender, stackHash);
+            for (uint256 i; i < count; ++i) {
+                bytes32 releaseId = releaseIds[i];
+                if (releaseId != stored[i]) revert ReleasesChanged(msg.sender, stackHash);
+                if (!appRegistry.isActiveRelease(releaseId)) revert ReleaseNotApprovable(releaseId);
+            }
+        }
         a.expiry = expiry;
         a.approvedAt = uint64(block.timestamp);
         a.revoked = false;
-        a.releaseIds = releaseIds;
 
         emit StackApproved(msg.sender, stackHash, imageId, releaseIds, expiry);
     }
 
     /// @notice Revokes the caller's approval of a stack. Registered deployments of the stack can no longer
-    ///         heartbeat, and no new deployment of it can be registered.
+    ///         heartbeat, and no new deployment of it can be registered. A later re-approval restores both for
+    ///         every deployment of the stack that was not closed: use closeDeployment to stop one for good.
     /// @param stackHash The stack hash.
     function revokeStack(bytes32 stackHash) external {
         StackApproval storage a = _approvals[msg.sender][stackHash];
@@ -243,7 +271,8 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     /// @return imageId The approved image.
     /// @return expiry 0 for no expiry, else the expiry time.
     /// @return revoked Whether the approval was revoked.
-    /// @return approvedAt Time of the latest approveStack call (0 when none).
+    /// @return approvedAt Time of the latest approveStack call (0 when none). Records attested more than
+    ///         MAX_FUTURE_SKEW before it cannot be registered.
     function getStackApproval(address customer, bytes32 stackHash)
         external
         view
@@ -258,7 +287,8 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     // ---------------------------------------------------------------------------------------------------------
 
     /// @notice Registers an attested deployment. Anyone may submit (the ops key does); the attestation is what
-    ///         authorizes it.
+    ///         authorizes it. The record must be attested after the latest approveStack of its stack (with
+    ///         MAX_FUTURE_SKEW of tolerance), so a record signed before a revoke and re-approval cannot be used.
     /// @param r The record. deploymentId = keccak256(abi.encode(customer, stackHash, salt)) is computed offchain.
     /// @param method Attestation method id (1 = oracle signature).
     /// @param evidence Method-specific evidence over recordDigest(r).
@@ -270,9 +300,12 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
         }
         if (r.customer == address(0) || r.enclaveSigner == address(0)) revert ZeroAddress();
         if (!isStackApproved(r.customer, r.stackHash)) revert StackNotApproved(r.customer, r.stackHash);
-        bytes32 approvedImageId = _approvals[r.customer][r.stackHash].imageId;
-        if (r.imageId != approvedImageId) revert ImageMismatch(r.imageId, approvedImageId);
+        StackApproval storage a = _approvals[r.customer][r.stackHash];
+        if (r.imageId != a.imageId) revert ImageMismatch(r.imageId, a.imageId);
         _checkFreshness(r.attestedAt);
+        if (uint256(r.attestedAt) + MAX_FUTURE_SKEW < a.approvedAt) {
+            revert AttestedBeforeApproval(r.attestedAt, a.approvedAt);
+        }
         _verify(method, _recordDigest(r), evidence);
 
         Deployment storage d = _deployments[deploymentId];
@@ -298,8 +331,9 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     }
 
     /// @notice Records a fresh attestation of an Active deployment. Anyone may submit.
-    /// @dev Requires the stack to still be approved, the approval to still name the deployment's image, a fresh
-    ///      attestedAt strictly after the previous one, and valid evidence over heartbeatDigest(...).
+    /// @dev Requires the stack to still be approved, a fresh attestedAt strictly after the previous one, a quoteHash
+    ///      different from the current one, and valid evidence over heartbeatDigest(...). The approval's image and
+    ///      releases cannot change after registration, so they need no check here.
     /// @param deploymentId The deployment id.
     /// @param quoteHash sha256 of the new TDX quote.
     /// @param attestedAt Time of the new attestation.
@@ -317,9 +351,8 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
         address customer = d.customer;
         bytes32 stackHash = d.stackHash;
         if (!isStackApproved(customer, stackHash)) revert StackNotApproved(customer, stackHash);
-        bytes32 approvedImageId = _approvals[customer][stackHash].imageId;
-        if (d.imageId != approvedImageId) revert ImageMismatch(d.imageId, approvedImageId);
         if (attestedAt <= d.lastAttestedAt) revert StaleHeartbeat(attestedAt, d.lastAttestedAt);
+        if (quoteHash == d.quoteHash) revert QuoteReused(quoteHash);
         _checkFreshness(attestedAt);
         _verify(method, heartbeatDigest(deploymentId, quoteHash, attestedAt), evidence);
 

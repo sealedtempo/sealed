@@ -43,6 +43,13 @@ contract DeploymentRegistryTest is SealedTest {
         ids[0] = id;
     }
 
+    /// @dev Approves the default stack, then moves time forward, so records attested up to 3 days back are still
+    ///      after the approval (registerDeployment rejects records attested before it).
+    function _approveDefaultEarly() internal {
+        _approveDefault();
+        vm.warp(block.timestamp + 3 days);
+    }
+
     function _manyReleases(uint256 n) internal returns (bytes32[] memory ids) {
         ids = new bytes32[](n);
         for (uint256 i; i < n; ++i) {
@@ -216,28 +223,105 @@ contract DeploymentRegistryTest is SealedTest {
         vm.stopPrank();
     }
 
-    function test_approveStack_reapprovalOverwritesAndUnrevokes() public {
+    function test_approveStack_reapprovalSetsExpiryAndUnrevokes() public {
         _approveDefault();
         vm.prank(customer);
         registry.revokeStack(stackHash);
         assertFalse(registry.isStackApproved(customer, stackHash));
 
-        bytes32 imageB = _addImage("sealed-os", "1.1.0", false);
         uint64 expiry = uint64(block.timestamp + 1 days);
         vm.warp(block.timestamp + 10);
         vm.expectEmit(address(registry));
-        emit StackApproved(customer, stackHash, imageB, _one(releaseB), expiry);
-        _approve(customer, stackHash, _one(releaseB), imageB, expiry);
+        emit StackApproved(customer, stackHash, imageId, _releases2(), expiry);
+        _approve(customer, stackHash, _releases2(), imageId, expiry);
 
         (bytes32[] memory got, bytes32 img, uint64 exp, bool revoked, uint64 approvedAt) =
             registry.getStackApproval(customer, stackHash);
-        assertEq(got.length, 1);
-        assertEq(got[0], releaseB);
-        assertEq(img, imageB);
+        assertEq(got.length, 2);
+        assertEq(got[0], releaseA);
+        assertEq(got[1], releaseB);
+        assertEq(img, imageId);
         assertEq(exp, expiry);
         assertFalse(revoked);
         assertEq(approvedAt, block.timestamp);
         assertTrue(registry.isStackApproved(customer, stackHash));
+    }
+
+    /// @dev Review fix (logic-F2 / funds-F-03 / crypto-SEAL-01): the release list is fixed by the first approval.
+    function test_approveStack_reapprovalRevertsOnOtherReleases() public {
+        _approveDefault();
+        bytes32[] memory swapped = new bytes32[](2);
+        swapped[0] = releaseB;
+        swapped[1] = releaseA;
+        bytes32[] memory longer = new bytes32[](3);
+        longer[0] = releaseA;
+        longer[1] = releaseB;
+        longer[2] = _publish(appA, "1.0.1");
+        vm.startPrank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleasesChanged.selector, customer, stackHash));
+        registry.approveStack(stackHash, _one(releaseA), imageId, 0);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleasesChanged.selector, customer, stackHash));
+        registry.approveStack(stackHash, swapped, imageId, 0);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleasesChanged.selector, customer, stackHash));
+        registry.approveStack(stackHash, longer, imageId, 0);
+        vm.stopPrank();
+        (bytes32[] memory got,,,,) = registry.getStackApproval(customer, stackHash);
+        assertEq(got.length, 2);
+        assertEq(got[0], releaseA);
+    }
+
+    /// @dev Review fix (logic-F4): the image is fixed by the first approval, so a re-approval cannot strand the
+    ///      stack's running deployments on an image the approval no longer names.
+    function test_approveStack_reapprovalRevertsOnOtherImage() public {
+        _approveDefault();
+        bytes32 imageB = _addImage("sealed-os", "1.1.0", false);
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ImageMismatch.selector, imageB, imageId));
+        registry.approveStack(stackHash, _releases2(), imageB, 0);
+    }
+
+    /// @dev Review fix (logic-F6 / crypto-SEAL-06): D-013, a since-deprecated release keeps a stack re-approvable.
+    function test_approveStack_reapprovalAcceptsDeprecatedRelease() public {
+        _approve(customer, stackHash, _releases2(), imageId, uint64(block.timestamp + 1 days));
+        vm.prank(owner);
+        apps.deprecateRelease(releaseA);
+        vm.prank(customer);
+        registry.revokeStack(stackHash);
+        _approve(customer, stackHash, _releases2(), imageId, uint64(block.timestamp + 30 days));
+        vm.warp(block.timestamp + 2 days);
+        assertTrue(registry.isStackApproved(customer, stackHash));
+        // A first approval of another stack still needs approvable releases.
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleaseNotApprovable.selector, releaseA));
+        registry.approveStack(keccak256("stack-2"), _releases2(), imageId, 0);
+    }
+
+    function test_approveStack_reapprovalRevertsOnRevokedRelease() public {
+        _approveDefault();
+        vm.prank(owner);
+        apps.revokeRelease(releaseB, "CVE");
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleaseNotApprovable.selector, releaseB));
+        registry.approveStack(stackHash, _releases2(), imageId, 0);
+    }
+
+    function test_approveStack_reapprovalRevertsOnDeprecatedImage() public {
+        _approveDefault();
+        vm.prank(owner);
+        platform.deprecateImage(imageId);
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ImageNotApproved.selector, imageId));
+        registry.approveStack(stackHash, _releases2(), imageId, 0);
+    }
+
+    function test_approveStack_approvalsArePerCustomer() public {
+        _approveDefault();
+        // Another customer's approval of the same stackHash is independent and may name other content.
+        _approve(stranger, stackHash, _one(releaseB), imageId, 0);
+        (bytes32[] memory got,,,,) = registry.getStackApproval(stranger, stackHash);
+        assertEq(got.length, 1);
+        (got,,,,) = registry.getStackApproval(customer, stackHash);
+        assertEq(got.length, 2);
     }
 
     function test_getStackApproval_emptyWhenNone() public view {
@@ -460,6 +544,31 @@ contract DeploymentRegistryTest is SealedTest {
         registry.registerDeployment(r, 1, evidence);
     }
 
+    /// @dev Review fix (crypto-SEAL-05 / logic-F8): a record attested before the current approval cannot be used.
+    function test_registerDeployment_revertsWhenAttestedBeforeApproval() public {
+        _approveDefault();
+        IDeploymentRegistry.Record memory r = _record(SALT);
+        bytes memory evidence = _oracleEvidence(r);
+        vm.prank(customer);
+        registry.revokeStack(stackHash);
+        vm.warp(block.timestamp + 5 minutes + 1);
+        _approveDefault();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeploymentRegistry.AttestedBeforeApproval.selector, r.attestedAt, uint64(block.timestamp)
+            )
+        );
+        registry.registerDeployment(r, 1, evidence);
+    }
+
+    function test_registerDeployment_acceptsAttestationWithinSkewBeforeApproval() public {
+        IDeploymentRegistry.Record memory r = _record(SALT);
+        vm.warp(block.timestamp + 5 minutes);
+        _approveDefault();
+        _register(r);
+        assertEq(registry.getDeployment(r.deploymentId).attestedAt, r.attestedAt);
+    }
+
     function test_registerDeployment_acceptsMaxFutureSkew() public {
         _approveDefault();
         IDeploymentRegistry.Record memory r = _record(SALT);
@@ -480,14 +589,14 @@ contract DeploymentRegistryTest is SealedTest {
     }
 
     function test_registerDeployment_acceptsExactlyMaxAge() public {
-        _approveDefault();
+        _approveDefaultEarly();
         IDeploymentRegistry.Record memory r = _record(SALT);
         r.attestedAt = uint64(block.timestamp - 1 days);
         _register(r);
     }
 
     function test_registerDeployment_revertsWhenTooOld() public {
-        _approveDefault();
+        _approveDefaultEarly();
         IDeploymentRegistry.Record memory r = _record(SALT);
         r.attestedAt = uint64(block.timestamp - 1 days - 1);
         bytes memory evidence = _oracleEvidence(r);
@@ -665,16 +774,64 @@ contract DeploymentRegistryTest is SealedTest {
         registry.heartbeat(r.deploymentId, bytes32(0), uint64(block.timestamp), 1, evidence);
     }
 
-    function test_heartbeat_revertsWhenApprovalNowNamesOtherImage() public {
+    /// @dev Review fix (crypto-SEAL-03 d): a heartbeat must carry a new quote.
+    function test_heartbeat_revertsOnQuoteReuse() public {
+        IDeploymentRegistry.Record memory r = _record(SALT);
         bytes32 id = _deployDefault();
-        bytes32 imageB = _addImage("sealed-os", "1.1.0", false);
-        _approve(customer, stackHash, _releases2(), imageB, 0);
+        assertEq(id, r.deploymentId);
+        vm.warp(block.timestamp + 60);
+        uint64 t = uint64(block.timestamp);
+        bytes memory evidence = _heartbeatEvidence(id, r.quoteHash, t);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.QuoteReused.selector, r.quoteHash));
+        registry.heartbeat(id, r.quoteHash, t, 1, evidence);
+
+        bytes32 q2 = keccak256("q2");
+        _beat(id, q2, t);
+        vm.warp(block.timestamp + 60);
+        uint64 t2 = uint64(block.timestamp);
+        evidence = _heartbeatEvidence(id, q2, t2);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.QuoteReused.selector, q2));
+        registry.heartbeat(id, q2, t2, 1, evidence);
+    }
+
+    /// @dev Review fix (logic-F2): after a release revocation the running deployment stays unapproved, because the
+    ///      approval cannot be rewritten without the revoked release.
+    function test_heartbeat_releaseRevocationCannotBeUndone() public {
+        bytes32 id = _deployDefault();
         vm.prank(owner);
-        platform.revokeImage(imageId, "CVE");
-        vm.warp(block.timestamp + 1);
-        bytes memory evidence = _heartbeatEvidence(id, bytes32(0), uint64(block.timestamp));
-        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ImageMismatch.selector, imageId, imageB));
-        registry.heartbeat(id, bytes32(0), uint64(block.timestamp), 1, evidence);
+        apps.revokeRelease(releaseA, "CVE");
+        bytes32 releaseA2 = _publish(appA, "1.0.1");
+        bytes32[] memory ids = new bytes32[](2);
+        ids[0] = releaseA2;
+        ids[1] = releaseB;
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleasesChanged.selector, customer, stackHash));
+        registry.approveStack(stackHash, ids, imageId, 0);
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleaseNotApprovable.selector, releaseA));
+        registry.approveStack(stackHash, _releases2(), imageId, 0);
+        vm.warp(block.timestamp + 60);
+        bytes memory evidence = _heartbeatEvidence(id, keccak256("q2"), uint64(block.timestamp));
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.StackNotApproved.selector, customer, stackHash));
+        registry.heartbeat(id, keccak256("q2"), uint64(block.timestamp), 1, evidence);
+    }
+
+    /// @dev Documented semantics (logic-F4, acknowledged): re-approving after revokeStack restores heartbeats of the
+    ///      stack's deployments that were not closed. closeDeployment is the per-deployment kill.
+    function test_heartbeat_resumesAfterReapprovalUnlessClosed() public {
+        bytes32 id1 = _deployDefault();
+        IDeploymentRegistry.Record memory r2 = _record(bytes32(uint256(2)));
+        _register(r2);
+        vm.startPrank(customer);
+        registry.revokeStack(stackHash);
+        registry.closeDeployment(r2.deploymentId);
+        vm.stopPrank();
+        _approveDefault();
+        vm.warp(block.timestamp + 60);
+        _beat(id1, keccak256("q2"), uint64(block.timestamp));
+        bytes memory evidence = _heartbeatEvidence(r2.deploymentId, keccak256("q2"), uint64(block.timestamp));
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.DeploymentNotActive.selector, r2.deploymentId));
+        registry.heartbeat(r2.deploymentId, keccak256("q2"), uint64(block.timestamp), 1, evidence);
     }
 
     function test_heartbeat_revertsWhenNotAfterLast() public {
@@ -837,11 +994,15 @@ contract DeploymentRegistryTest is SealedTest {
         assertTrue(registry.appInDeployment(id, appA), "deployment still exists");
     }
 
-    function test_appInDeployment_followsReapproval() public {
+    /// @dev Review fix (logic-F2 / funds-F-03): a re-approval cannot change the deployment's app set.
+    function test_appInDeployment_unchangedByReapproval() public {
         bytes32 id = _deployDefault();
-        _approve(customer, stackHash, _one(releaseA), imageId, 0);
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ReleasesChanged.selector, customer, stackHash));
+        registry.approveStack(stackHash, _one(releaseA), imageId, 0);
+        _approve(customer, stackHash, _releases2(), imageId, uint64(block.timestamp + 1 days));
         assertTrue(registry.appInDeployment(id, appA));
-        assertFalse(registry.appInDeployment(id, appB));
+        assertTrue(registry.appInDeployment(id, appB));
     }
 
     function test_getDeployment_revertsWhenUnknown() public {
@@ -947,7 +1108,7 @@ contract DeploymentRegistryTest is SealedTest {
     }
 
     function test_setMaxAttestationAge_appliesToRegistration() public {
-        _approveDefault();
+        _approveDefaultEarly();
         vm.prank(owner);
         registry.setMaxAttestationAge(1 hours);
         IDeploymentRegistry.Record memory r = _record(SALT);
@@ -1003,7 +1164,7 @@ contract DeploymentRegistryTest is SealedTest {
     // ------------------------------------------------------------------------------------------------------
 
     function testFuzz_freshnessWindow(uint64 offset, bool future) public {
-        _approveDefault();
+        _approveDefaultEarly();
         IDeploymentRegistry.Record memory r = _record(SALT);
         offset = uint64(bound(offset, 0, 3 days));
         r.attestedAt = future ? uint64(block.timestamp + offset) : uint64(block.timestamp - offset);
@@ -1015,6 +1176,23 @@ contract DeploymentRegistryTest is SealedTest {
         } else if (!future && offset > 1 days) {
             vm.expectRevert(
                 abi.encodeWithSelector(DeploymentRegistry.AttestationTooOld.selector, r.attestedAt, block.timestamp)
+            );
+        }
+        registry.registerDeployment(r, 1, evidence);
+    }
+
+    /// @dev Review fix (crypto-SEAL-05): records attested more than MAX_FUTURE_SKEW before the approval are rejected.
+    function testFuzz_attestedBeforeApproval(uint64 offset) public {
+        offset = uint64(bound(offset, 0, 1 days));
+        IDeploymentRegistry.Record memory r = _record(SALT);
+        vm.warp(block.timestamp + offset);
+        _approveDefault();
+        bytes memory evidence = _oracleEvidence(r);
+        if (offset > 5 minutes) {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    DeploymentRegistry.AttestedBeforeApproval.selector, r.attestedAt, uint64(block.timestamp)
+                )
             );
         }
         registry.registerDeployment(r, 1, evidence);

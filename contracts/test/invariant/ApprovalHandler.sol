@@ -77,6 +77,9 @@ contract ApprovalHandler is Test {
         }
         for (uint256 i; i < 3; ++i) {
             customers.push(makeAddr(string.concat("approval-customer-", vm.toString(i))));
+        }
+        // Approval content is fixed per (customer, stack), so more stacks keep first approvals frequent.
+        for (uint256 i; i < 6; ++i) {
             stacks.push(keccak256(abi.encode("approval-stack", i)));
         }
     }
@@ -120,8 +123,10 @@ contract ApprovalHandler is Test {
     // Actions
     // ------------------------------------------------------------------------------------------------------
 
-    /// @param pickValid When true, only currently approvable releases and an approved image are chosen (if any
-    ///        exist), so successful approvals stay frequent even after many revocations.
+    /// @param pickValid When true, a re-approval repeats the stored content (the only content it may name), and a
+    ///        first approval picks only currently approvable releases and an approved image (if any exist), so
+    ///        successful approvals stay frequent even after many revocations. When false the content is random,
+    ///        which exercises the ReleasesChanged / ImageMismatch rejections of re-approvals.
     function approve(
         uint256 cSeed,
         uint256 sSeed,
@@ -132,7 +137,68 @@ contract ApprovalHandler is Test {
     ) external {
         address c = customers[cSeed % customers.length];
         bytes32 s = stacks[sSeed % stacks.length];
-        bytes32 imageId = images[imageSeed % images.length];
+        GhostApproval storage g = _ghost[c][s];
+        bytes32 imageId;
+        bytes32[] memory ids;
+        if (g.exists && pickValid) {
+            imageId = g.imageId;
+            ids = g.releaseIds;
+        } else {
+            (imageId, ids) = _pickContent(releaseMask, imageSeed, pickValid);
+        }
+        uint64 expiry = expirySeed % 3 == 0 ? 0 : uint64(block.timestamp + bound(expirySeed, 1, 3 days));
+        bool shouldSucceed = _approvalShouldSucceed(g, imageId, ids);
+
+        bool reapproval = g.exists;
+        vm.prank(c);
+        try registry.approveStack(s, ids, imageId, expiry) {
+            if (!shouldSucceed) unexpectedOutcome = true;
+            if (!reapproval) {
+                g.exists = true;
+                g.imageId = imageId;
+                g.releaseIds = ids;
+            }
+            g.revoked = false;
+            g.expiry = expiry;
+            calls["approve"]++;
+            if (reapproval) calls["reapprove"]++;
+        } catch {
+            if (shouldSucceed) unexpectedOutcome = true;
+            calls["approveRejected"]++;
+        }
+    }
+
+    /// @dev Model of approveStack: a first approval needs approvable (Active) releases, a re-approval needs the
+    ///      stored releases (same order) and image, each release still Active or Deprecated. Both need an approved
+    ///      image.
+    function _approvalShouldSucceed(GhostApproval storage g, bytes32 imageId, bytes32[] memory ids)
+        internal
+        view
+        returns (bool)
+    {
+        if (ids.length == 0 || ids.length > 16) return false;
+        if (imageStatus[imageId] != S.Active || imageDebug[imageId]) return false;
+        if (!g.exists) {
+            for (uint256 i; i < ids.length; ++i) {
+                if (releaseStatus[ids[i]] != S.Active) return false;
+            }
+            return true;
+        }
+        if (imageId != g.imageId || ids.length != g.releaseIds.length) return false;
+        for (uint256 i; i < ids.length; ++i) {
+            if (ids[i] != g.releaseIds[i]) return false;
+            S st = releaseStatus[ids[i]];
+            if (st != S.Active && st != S.Deprecated) return false;
+        }
+        return true;
+    }
+
+    function _pickContent(uint256 releaseMask, uint256 imageSeed, bool pickValid)
+        internal
+        view
+        returns (bytes32 imageId, bytes32[] memory ids)
+    {
+        imageId = images[imageSeed % images.length];
         releaseMask = bound(releaseMask, 1, 2 ** releases.length - 1);
         if (pickValid) {
             uint256 validMask;
@@ -153,32 +219,10 @@ contract ApprovalHandler is Test {
         for (uint256 i; i < releases.length; ++i) {
             if (releaseMask & 2 ** i != 0) ++n;
         }
-        bytes32[] memory ids = new bytes32[](n);
+        ids = new bytes32[](n);
         uint256 k;
-        bool approvable = true;
         for (uint256 i; i < releases.length; ++i) {
-            if (releaseMask & 2 ** i != 0) {
-                ids[k++] = releases[i];
-                if (releaseStatus[releases[i]] != S.Active) approvable = false;
-            }
-        }
-        uint64 expiry = expirySeed % 3 == 0 ? 0 : uint64(block.timestamp + bound(expirySeed, 1, 3 days));
-        bool imageOk = imageStatus[imageId] == S.Active && !imageDebug[imageId];
-        bool shouldSucceed = approvable && imageOk && n <= 16;
-
-        vm.prank(c);
-        try registry.approveStack(s, ids, imageId, expiry) {
-            if (!shouldSucceed) unexpectedOutcome = true;
-            GhostApproval storage g = _ghost[c][s];
-            g.exists = true;
-            g.revoked = false;
-            g.expiry = expiry;
-            g.imageId = imageId;
-            g.releaseIds = ids;
-            calls["approve"]++;
-        } catch {
-            if (shouldSucceed) unexpectedOutcome = true;
-            calls["approveRejected"]++;
+            if (releaseMask & 2 ** i != 0) ids[k++] = releases[i];
         }
     }
 
@@ -247,7 +291,10 @@ contract ApprovalHandler is Test {
     function addImage(bool isDebug) external {
         if (images.length >= 6) return;
         bytes32 id = keccak256(abi.encode("inv-image", ++_nonce));
-        bytes memory m = new bytes(48);
+        // Unique measurements per image: PlatformRegistry registers each measurement set once.
+        // Truncating to bytes16 is intended: 32 + 16 = 48 bytes, one TDX register.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        bytes memory m = abi.encodePacked(id, bytes16(id));
         vm.prank(owner);
         platform.addImage(id, "inv", vm.toString(_nonce), m, m, m, m, isDebug, "");
         images.push(id);

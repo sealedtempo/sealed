@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.38;
 
+import {IAppRegistry} from "./IAppRegistry.sol";
+
 /// @title IDeploymentRegistry
 /// @notice Read interface of the deployment registry, used by FeeSplitter and offchain components.
 interface IDeploymentRegistry {
@@ -57,8 +59,14 @@ interface IDeploymentRegistry {
         view
         returns (DeploymentStatus status, address customer, address enclaveSigner);
 
-    /// @notice True when the deployment exists and the approval of its (customer, stackHash) lists a release of
-    ///         `appId`.
+    /// @notice The AppRegistry the registry resolves releases with (FeeSplitter checks it uses the same one).
+    /// @return The AppRegistry.
+    function appRegistry() external view returns (IAppRegistry);
+
+    /// @notice True when the deployment exists (Active or Closed) and the approval of its (customer, stackHash)
+    ///         lists a release of `appId`. The approval's release set cannot change after the first approval, so
+    ///         this is the set the deployment was registered with. Release, image and approval status are not
+    ///         checked.
     /// @param deploymentId The deployment id.
     /// @param appId The app id.
     /// @return included Whether the app is part of the deployment's approved stack.

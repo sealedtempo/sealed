@@ -130,6 +130,7 @@ contract ApprovalInvariantTest is SealedTest {
             }
         }
         assertGt(handler.calls("approve"), 20, "successful approvals");
+        assertGt(handler.calls("reapprove"), 0, "successful re-approvals of a stored approval");
         assertGt(handler.calls("approveRejected"), 0, "rejected approvals");
         assertGt(approvedSeen, 50, "approved states observed");
     }
