@@ -111,6 +111,8 @@ describe("password gate (/v1/gate)", () => {
     g.setHash(HASH.replace(/^\$2a\$05\$/, "$2a$25$"));
     expect(g.configured).toBe(false);
     g.setHash(undefined);
+    // Once the keys are released, a missing hash is a configuration problem, not a start-up state.
+    expect(await g.check({ route: "crm", authorization: basic("sealed", PASSWORD), client: "c" })).toEqual({ status: 503, reason: "not_configured" });
     expect(problems).toEqual([
       "the released gate password is not a bcrypt hash",
       "the gate password hash has cost 25, above 20",

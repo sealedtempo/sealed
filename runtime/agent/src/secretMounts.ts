@@ -18,6 +18,7 @@ const NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 
 export interface SecretMount {
   service: string;
+  /** The owner directory, or "*" for a mount of /run/sealed/secrets itself (only the agent may have one). */
   owner: string;
   /** The single file mounted; undefined when the owner's whole directory is mounted. */
   name?: string;
@@ -64,8 +65,12 @@ export function secretMountsFromAppCompose(appCompose: string): SecretMount[] {
     for (const raw of svc.volumes ?? []) {
       const v = typeof raw === "string" ? shortSyntax(raw) : raw;
       if (typeof v.target !== "string") continue;
-      const target = posix.normalize(v.target);
-      if (target !== SECRETS_ROOT && !target.startsWith(`${SECRETS_ROOT}/`)) continue;
+      const target = posix.normalize(v.target).replace(/\/$/, "");
+      if (target === SECRETS_ROOT) {
+        out.push({ service, owner: "*", readOnly: v.read_only === true });
+        continue;
+      }
+      if (!target.startsWith(`${SECRETS_ROOT}/`)) continue;
       const parts = target.slice(SECRETS_ROOT.length + 1).split("/");
       const [owner, name, ...rest] = parts;
       const where = `${service} mounts ${v.target}`;
@@ -114,6 +119,7 @@ export function checkSecretMounts(mounts: SecretMount[], stack: StackInfo): void
   ownerOf.set(PAYER_SERVICE, PAYER_SERVICE);
   for (const m of mounts) {
     if (m.service === AGENT_SERVICE) continue;
+    if (m.owner === "*") throw new Error(`compose: service ${m.service} mounts every owner's secrets (${SECRETS_ROOT})`);
     const allowed = ownerOf.get(m.service);
     if (allowed !== m.owner) {
       throw new Error(`compose: service ${m.service} mounts the secrets of ${m.owner}${allowed ? `, but it belongs to ${allowed}` : ""}`);
@@ -140,7 +146,18 @@ export function visibleSecrets(mounts: SecretMount[], service: string, written: 
   for (const m of mounts) {
     if (m.service !== service) continue;
     if (m.name !== undefined) seen.add(`${m.owner}/${m.name}`);
+    else if (m.owner === "*") for (const [o, names] of Object.entries(written)) for (const n of names) seen.add(`${o}/${n}`);
     else for (const n of written[m.owner] ?? []) seen.add(`${m.owner}/${n}`);
   }
   return [...seen].sort();
+}
+
+/**
+ * Owners whose secrets directory the compose mounts into the agent, or undefined when the agent
+ * mounts /run/sealed/secrets as a whole (then every released owner is written).
+ */
+export function agentSecretOwners(mounts: SecretMount[]): Set<string> | undefined {
+  const mine = mounts.filter((m) => m.service === AGENT_SERVICE && m.name === undefined);
+  if (mine.some((m) => m.owner === "*")) return undefined;
+  return new Set(mine.map((m) => m.owner));
 }

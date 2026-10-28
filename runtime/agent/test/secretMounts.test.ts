@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { canonicalize } from "@sealed/core";
 import { describe, expect, it } from "vitest";
 import {
+  agentSecretOwners,
   checkSecretMounts,
   declaredSecretsFromAppCompose,
   filesMountedIndividually,
@@ -50,6 +51,20 @@ describe("secret mounts in the measured compose", () => {
     ]);
     expect(() => checkSecretMounts(mounts, goldenStack)).not.toThrow();
     expect(filesMountedIndividually(mounts).size).toBe(0);
+    expect([...(agentSecretOwners(mounts) ?? [])]).toEqual(["_gate", "llm-gateway", "notes", "sealed-mpp-payer"]);
+  });
+
+  it("lets only the agent mount the whole secrets root", () => {
+    const agentRoot = perFileVariant((svcs) => {
+      svcs["sealed-agent"]?.volumes.push({ type: "volume", source: "sealed-secrets", target: "/run/sealed/secrets" });
+    });
+    const mounts = secretMountsFromAppCompose(agentRoot);
+    expect(agentSecretOwners(mounts)).toBeUndefined();
+    expect(() => checkSecretMounts(mounts, goldenStack)).not.toThrow();
+    const appRoot = perFileVariant((svcs) => {
+      svcs["notes-web"]?.volumes.push({ type: "volume", source: "sealed-secrets", target: "/run/sealed/secrets/", read_only: true });
+    });
+    expect(() => checkSecretMounts(secretMountsFromAppCompose(appRoot), goldenStack)).toThrow("notes-web mounts every owner's secrets");
   });
 
   it("reads the declared secrets from the envexec flags", () => {

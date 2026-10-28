@@ -38,7 +38,7 @@ import { liveAttestation } from "./attest.js";
 import { dropPrivileges, parseRunAs } from "./privileges.js";
 import { every } from "./scheduler.js";
 import {
-  AGENT_SERVICE,
+  agentSecretOwners,
   checkSecretMounts,
   declaredSecretsFromAppCompose,
   filesMountedIndividually,
@@ -197,7 +197,7 @@ export class Agent {
     const written = await writeSecrets(layout, keys.secrets, new Set(["_gate", ...ctx.apps.map((a) => a.id)]), {
       individually: filesMountedIndividually(secretMounts),
       isOptional: (owner, name) => optional.get(owner)?.has(name) ?? false,
-      onDisk: new Set(secretMounts.filter((m) => m.service === AGENT_SERVICE && m.name === undefined).map((m) => m.owner)),
+      onDisk: agentSecretOwners(secretMounts),
     });
     for (const d of declaredSecretsFromAppCompose(appCompose)) {
       if (!d.optional && keys.secrets[d.app]?.[d.name] === undefined) {

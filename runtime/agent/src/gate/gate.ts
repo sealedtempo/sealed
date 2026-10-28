@@ -125,6 +125,8 @@ export class Gate {
   private readonly cache = new Map<string, number>();
   private hash?: string;
   private hashProblem?: string;
+  /** setHash ran: from then on a missing hash means "not configured", not "starting". */
+  private released = false;
 
   constructor(private readonly o: GateOptions) {
     this.key = o.key ?? randomBytes(32);
@@ -135,6 +137,7 @@ export class Gate {
 
   /** The released bcrypt hash (`_gate/GATE_PASSWORD_BCRYPT`). Until it is set the gate answers 503 `starting`. */
   setHash(hash: string | undefined): void {
+    this.released = true;
     this.cache.clear();
     this.hash = hash?.trim();
     this.hashProblem = undefined;
@@ -226,8 +229,8 @@ export class Gate {
   async check(req: GateRequest): Promise<GateDecision> {
     const route = this.o.routes.get(req.route);
     if (!route) return { status: 403, reason: "not a gated route" };
-    if (this.hash === undefined) return { status: 503, reason: "starting" };
-    if (!this.configured) return { status: 503, reason: "not_configured" };
+    if (!this.released) return { status: 503, reason: "starting" };
+    if (!this.configured || this.hash === undefined) return { status: 503, reason: "not_configured" };
     if (!(await this.o.bootstrapDone(route.app))) return { status: 503, reason: "starting" };
 
     const basic = parseBasic(req.authorization);
@@ -247,14 +250,16 @@ export class Gate {
     }
     if (!stripAuthorization || basic.password.length > BCRYPT_MAX_PASSWORD_BYTES) return { status: 401 };
     let ok: boolean;
+    const password = new Uint8Array(basic.password);
     try {
-      ok = await this.o.verify(new Uint8Array(basic.password), this.hash);
+      ok = await this.o.verify(password, this.hash);
     } catch (err) {
       client.give();
       this.global.give();
       if (err instanceof GateBusyError) return { status: 429, retryAfterSec: 1 };
       throw err;
     } finally {
+      password.fill(0);
       basic.password.fill(0);
     }
     if (!ok) return { status: 401 };
