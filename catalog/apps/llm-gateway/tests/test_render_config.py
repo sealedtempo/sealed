@@ -246,6 +246,57 @@ class RenderTest(unittest.TestCase):
             with self.assertRaises(ep.ConfigError, msg=change):
                 ep.render(config, [])
 
+    def test_relay_routes_are_never_retried(self):
+        """D-067: a retried paid request is a new payment, so relay/ routes go out exactly once."""
+        self.e.prepare()
+        config = yaml.safe_load(self.e.rendered())
+        relay = [m for m in config["model_list"] if m["model_name"].startswith("relay/")]
+        self.assertEqual([m["model_name"] for m in relay], ["relay/default", "relay/*"])
+        for entry in relay:
+            params = entry["litellm_params"]
+            self.assertIn("sealed-mpp-payer", params["api_base"])
+            self.assertIs(type(params["max_retries"]), int, entry["model_name"])
+            self.assertIs(type(params["num_retries"]), int, entry["model_name"])
+            self.assertEqual((params["max_retries"], params["num_retries"]), (0, 0), entry["model_name"])
+        for entry in config["model_list"]:
+            if "sealed-mpp-payer" in entry["litellm_params"].get("api_base", ""):
+                self.assertTrue(entry["model_name"].startswith("relay/"), entry["model_name"])
+        self.assertFalse({"retry_policy", "model_group_retry_policy"} & set(config.get("router_settings") or {}))
+
+    def test_relay_retry_rules_are_enforced(self):
+        base = ep.load_yaml(os.path.join(IMAGE_DIR, "config.yaml"))
+        index = {m["model_name"]: i for i, m in enumerate(base["model_list"])}
+        cases = []
+        for route in ("relay/default", "relay/*"):
+            for field in ("max_retries", "num_retries"):
+                # Missing, a retry count, a string LiteLLM would read as 2 retries, and booleans
+                # (LiteLLM ignores a boolean num_retries and uses the router default of 2).
+                for value in (None, 2, "2", False, True, "0"):
+                    cases.append((route, field, value))
+        for route, field, value in cases:
+            config = yaml.safe_load(yaml.safe_dump(base))
+            params = config["model_list"][index[route]]["litellm_params"]
+            if value is None:
+                params.pop(field)
+            else:
+                params[field] = value
+            with self.assertRaises(ep.ConfigError, msg=(route, field, value)):
+                ep.render(config, [])
+        # A route to the payer must be a relay/ route, so the rule above covers it.
+        config = yaml.safe_load(yaml.safe_dump(base))
+        config["model_list"].append({"model_name": "paid/x", "litellm_params": {
+            "model": "openai/x", "api_base": "http://sealed-mpp-payer:8090/v1", "api_key": "sealed-mpp-payer",
+            "max_retries": 0, "num_retries": 0}})
+        with self.assertRaisesRegex(ep.ConfigError, "not a relay/ route"):
+            ep.render(config, [])
+        # Router retry policies override a deployment's num_retries.
+        for field in ("retry_policy", "model_group_retry_policy"):
+            config = yaml.safe_load(yaml.safe_dump(base))
+            config["router_settings"][field] = {"InternalServerErrorRetries": 3}
+            with self.assertRaisesRegex(ep.ConfigError, field):
+                ep.render(config, [])
+        ep.render(yaml.safe_load(yaml.safe_dump(base)), [])  # the shipped config passes
+
     def test_fallback_rules_are_enforced(self):
         base = ep.load_yaml(os.path.join(IMAGE_DIR, "config.yaml"))
         for bad in ([{"relay/default": ["external/openai/gpt-4o"]}], [{"relay/default": ["local/missing"]}],

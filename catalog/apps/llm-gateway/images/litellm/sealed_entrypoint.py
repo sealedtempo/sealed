@@ -6,7 +6,8 @@
    DATABASE_URL.
 3. Renders the LiteLLM config from config.yaml plus the optional provider routes in
    providers.yaml whose key secret exists and whose family is opted in
-   (BYOK_ROUTES_ENABLED=true for byok, EXTERNAL_ROUTES_ENABLED=true for external).
+   (BYOK_ROUTES_ENABLED=true for byok, EXTERNAL_ROUTES_ENABLED=true for external), and
+   refuses a config whose paid relay/ routes could be retried (D-067).
 4. Strips env vars that must never reach LiteLLM, then execs `litellm --config ...`.
 
 The rendered config holds no secret values, only os.environ/<NAME> references.
@@ -40,6 +41,13 @@ WEAK_MASTER_KEYS = {"sk-1234", "sk-", ""}
 OLLAMA_KEY = "OLLAMA_GATE_KEY"
 OLLAMA_KEY_REF = "os.environ/" + OLLAMA_KEY
 OLLAMA_KEY_MIN_LEN = 16  # the gate refuses shorter keys
+# relay/ routes go to sealed-mpp-payer, which pays the platform relay for every request it
+# sends, so each one is sent exactly once (D-067): no router retries, no OpenAI SDK retries.
+RELAY_PREFIX = "relay/"
+PAYER_HOST = "sealed-mpp-payer"
+NO_RETRY_PARAMS = ("max_retries", "num_retries")
+# Router retry policies win over a deployment's num_retries in LiteLLM 1.106.5, so none is allowed.
+FORBIDDEN_ROUTER_SETTINGS = ("retry_policy", "model_group_retry_policy")
 
 # Never passed to LiteLLM: license/enterprise switches, provider env vars that arm the
 # built-in pass-through routes, tracing exporters, and the Postgres password itself.
@@ -186,6 +194,7 @@ def render(base: Mapping[str, Any], selected: list[tuple[str, dict[str, Any]]]) 
         raise ConfigError(f"base config must register the {CALLBACK} callback")
     check_fallbacks(config, names)
     check_local_routes(config)
+    check_relay_routes(config)
     return config
 
 
@@ -196,6 +205,30 @@ def check_local_routes(config: Mapping[str, Any]) -> None:
             params = entry.get("litellm_params") or {}
             if params.get("api_key") != OLLAMA_KEY_REF:
                 raise ConfigError(f"route {entry.get('model_name')} must set api_key: {OLLAMA_KEY_REF}")
+
+
+def check_relay_routes(config: Mapping[str, Any]) -> None:
+    """Every route to the payer is a relay/ route, and every relay/ route is sent exactly once.
+
+    A retried paid request is a new payment (D-067). LiteLLM ignores a boolean num_retries and
+    falls back to the router's default of 2, so only the integer 0 passes.
+    """
+    for entry in config.get("model_list") or []:
+        name = str(entry.get("model_name", ""))
+        params = entry.get("litellm_params") or {}
+        to_payer = PAYER_HOST in str(params.get("api_base", ""))
+        if not (name.startswith(RELAY_PREFIX) or to_payer):
+            continue
+        if not name.startswith(RELAY_PREFIX):
+            raise ConfigError(f"route {name} goes to {PAYER_HOST} but is not a {RELAY_PREFIX} route")
+        for field in NO_RETRY_PARAMS:
+            value = params.get(field)
+            if isinstance(value, bool) or value != 0:
+                raise ConfigError(f"route {name} must set {field}: 0 (a retried relay request is paid again)")
+    router = config.get("router_settings") or {}
+    for field in FORBIDDEN_ROUTER_SETTINGS:
+        if field in router:
+            raise ConfigError(f"router_settings.{field} is not allowed: it would retry paid relay requests")
 
 
 def check_fallbacks(config: Mapping[str, Any], names: set[Any]) -> None:

@@ -17,9 +17,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import dockerfile_lint  # noqa: E402
+import license_texts  # noqa: E402
 import sealed_compose  # noqa: E402
 
 APP_DIR = os.path.normpath(os.path.join(HERE, ".."))
+CATALOG_DIR = os.path.normpath(os.path.join(APP_DIR, ".."))
 IMAGE_DIR = os.path.join(APP_DIR, "images", "litellm")
 LITELLM_BASE = ("ghcr.io/berriai/litellm-database:v1.106.5"
                 "@sha256:0d10536ce596ef74bf5bbd3244310bb11c2cadd8f92d2f22d587cc0b9fc16e01")
@@ -78,6 +80,37 @@ class PackagingTest(unittest.TestCase):
         self.assertIn("same_as", secrets["APP_KEY_CODING_AGENT"]["description"])
         self.assertEqual(secrets["APP_KEY_CODING_AGENT"]["generate"], "sk-hex32")
         self.assertFalse(secrets["APP_KEY_CODING_AGENT"].get("optional", False))
+
+    def test_only_app_keys_are_shared_and_only_with_their_app(self):
+        """D-059: a secret can be referenced (same_as) only by the apps its share_with lists."""
+        secrets = {s["name"]: s for s in self.manifest["secrets"]}
+        self.assertEqual(secrets["APP_KEY_CODING_AGENT"]["share_with"], ["coding-agent"])
+        app_keys = yaml.safe_load(read(os.path.join(IMAGE_DIR, "app_keys.yaml")))["apps"]
+        shared = {name: s["share_with"] for name, s in secrets.items() if "share_with" in s}
+        # Each virtual key the keys job provisions is shared with exactly the app it is for.
+        self.assertEqual(shared, {e["secret"]: [e["app"]] for e in app_keys})
+        for name in ("LITELLM_MASTER_KEY", "LITELLM_SALT_KEY", "POSTGRES_PASSWORD", "OLLAMA_GATE_KEY"):
+            self.assertNotIn("share_with", secrets[name])
+        self.assertIn("share_with", secrets["APP_KEY_CODING_AGENT"]["description"])
+
+    def test_every_catalog_reference_to_this_app_is_opted_in(self):
+        """Every same_as in the catalog that points here names a secret shared with that app."""
+        secrets = {s["name"]: s for s in self.manifest["secrets"]}
+        found = []
+        for root, _dirs, files in os.walk(CATALOG_DIR):
+            if "manifest.yaml" not in files or "node_modules" in root:
+                continue
+            manifest = yaml.safe_load(read(os.path.join(root, "manifest.yaml")))
+            for secret in manifest.get("secrets") or []:
+                ref = secret.get("same_as", "")
+                if not ref.startswith("llm-gateway/"):
+                    continue
+                target = secrets.get(ref.split("/", 1)[1])
+                found.append((manifest["id"], ref))
+                self.assertIsNotNone(target, ref)
+                self.assertIn(manifest["id"], target.get("share_with") or [], (root, ref))
+        # coding-agent and its OpenCode variant both refer to APP_KEY_CODING_AGENT.
+        self.assertEqual(sorted(found), [("coding-agent", "llm-gateway/APP_KEY_CODING_AGENT")] * 2)
 
     def test_provider_secrets_match_manifest_and_fragment(self):
         secrets = {s["name"]: s for s in self.manifest["secrets"]}
@@ -184,6 +217,68 @@ def envexec_secrets(service):
     return {entry[i + 1] for i in range(sep) if entry[i] in ("--secret", "--optional-secret")}
 
 
+class LicenseTextsTest(unittest.TestCase):
+    """License audit F10: LICENSES/ holds the upstream texts byte for byte, as LICENSE-NOTICE says."""
+
+    EXPECTED = {
+        "litellm-v1.106.5-LICENSE": ("BerriAI/litellm", "v1.106.5", "LICENSE"),
+        "ollama-v0.40.12-LICENSE": ("ollama/ollama", "v0.40.12", "LICENSE"),
+        "go-1.27.3-LICENSE": ("golang/go", "go1.27.3", "LICENSE"),
+        "go-1.27.3-PATENTS": ("golang/go", "go1.27.3", "PATENTS"),
+        "postgresql-16.15-COPYRIGHT": ("postgres/postgres", "REL_16_15", "COPYRIGHT"),
+    }
+
+    def test_texts_match_upstream(self):
+        self.assertEqual(license_texts.problems(APP_DIR), [])
+
+    def test_the_expected_texts_are_shipped(self):
+        texts = license_texts.notice_texts(read(os.path.join(APP_DIR, "LICENSE-NOTICE")))
+        self.assertEqual({t.file: (t.repo, t.ref, t.path) for t in texts}, self.EXPECTED)
+        manifest = yaml.safe_load(read(os.path.join(APP_DIR, "manifest.yaml")))
+        litellm = next(t for t in texts if t.repo == "BerriAI/litellm")
+        self.assertEqual("https://github.com/" + litellm.repo, manifest["upstream"]["repo"])
+        self.assertEqual(litellm.ref, manifest["upstream"]["version"])
+        self.assertIn("enterprise/", read(os.path.join(APP_DIR, "LICENSES", litellm.file)))
+        # The Go texts are those of the toolchain that builds sealed-ollama-gate.
+        gate = read(os.path.join(APP_DIR, "images", "local-model", "Dockerfile"))
+        self.assertIn("ARG GO_BASE=golang:1.27.3-", gate)
+
+    def test_the_check_catches_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = os.path.join(tmp, "app")
+            os.makedirs(os.path.join(app, "LICENSES"))
+            for name in ("LICENSE-NOTICE",):
+                with open(os.path.join(app, name), "w", encoding="utf-8") as handle:
+                    handle.write(read(os.path.join(APP_DIR, name)))
+            for name in self.EXPECTED:
+                with open(os.path.join(APP_DIR, "LICENSES", name), "rb") as src, \
+                        open(os.path.join(app, "LICENSES", name), "wb") as dst:
+                    dst.write(src.read())
+            self.assertEqual(license_texts.problems(app), [])
+            # One changed byte (a CRLF line ending counts), an unlisted file, a missing file.
+            path = os.path.join(app, "LICENSES", "ollama-v0.40.12-LICENSE")
+            with open(path, "rb") as handle:
+                data = handle.read()
+            with open(path, "wb") as handle:
+                handle.write(data.replace(b"\n", b"\r\n", 1))
+            with open(os.path.join(app, "LICENSES", "extra-LICENSE"), "w") as handle:
+                handle.write("x")
+            os.remove(os.path.join(app, "LICENSES", "go-1.27.3-PATENTS"))
+            found = "\n".join(license_texts.problems(app))
+            self.assertIn("ollama-v0.40.12-LICENSE: git blob", found)
+            self.assertIn("extra-LICENSE is not named", found)
+            self.assertIn("go-1.27.3-PATENTS is missing", found)
+
+    def test_git_blob_hash_matches_git(self):
+        with tempfile.NamedTemporaryFile("wb", delete=False) as handle:
+            handle.write(b"hello\n")
+        try:
+            # `printf 'hello\n' | git hash-object --stdin`
+            self.assertEqual(license_texts.git_blob_hash(handle.name), "ce013625030ba8dba906f756967f9e9ca394464a")
+        finally:
+            os.unlink(handle.name)
+
+
 class ComposerTest(unittest.TestCase):
     """The real composer on this app: lint findings and the composed stack."""
 
@@ -287,6 +382,13 @@ class LitellmDockerfileTest(unittest.TestCase):
         fragment = yaml.safe_load(read(os.path.join(APP_DIR, "compose.fragment.yaml")))
         svc = fragment["services"]["llm-gateway-litellm"]
         self.assertEqual(self.final.exec_form("ENTRYPOINT"), svc["entrypoint"])
+
+    def test_build_checks_the_relay_retry_guard(self):
+        """D-067: the build checks the rendered relay/ routes and the pre-call hook against real LiteLLM."""
+        run = " ".join(self.stages[0].all("RUN"))
+        self.assertIn("p['max_retries'] == 0 and p['num_retries'] == 0", run)
+        self.assertIn("cls.async_pre_call_hook is not CustomLogger.async_pre_call_hook", run)
+        self.assertIn("inspect.signature(cls.async_pre_call_hook)", run)
 
     def test_build_context_files_exist(self):
         for arg in self.stages[0].all("COPY"):

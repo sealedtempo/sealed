@@ -11,6 +11,11 @@ older composer in the tree, `inputs()` hands the composer a copy of each app wit
 fields removed, so every other rule still runs; tests that need 1.2.0 behaviour check
 `Composer.brief` and skip with the reason otherwise.
 
+`secrets[].share_with` (D-059: the source secret's opt-in for `same_as`) is newer than 1.2.0. It
+is detected from the composer's own manifest schema, not from the version: a composer whose
+schema does not declare it gets a copy without it, and tests of its enforcement check
+`Composer.share_with`.
+
 The composer is looked up in SEALED_COMPOSER_DIR, then in this checkout. Without Go or the
 composer source the tests skip, unless CI or SEALED_REQUIRE_COMPOSER=1 is set; then they fail.
 Requires PyYAML.
@@ -92,16 +97,29 @@ class Composer:
         """True when the composer implements integration brief items 5 to 11 (composer 1.2.0)."""
         return parse_version(self.version) >= BRIEF_VERSION
 
+    @property
+    def share_with(self) -> bool:
+        """True when the composer's manifest schema declares secrets[].share_with (D-059)."""
+        path = os.path.join(self.root, "catalog", "schema", "manifest.schema.json")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                schema = json.load(handle)
+        except (OSError, ValueError):
+            return False
+        secret = (((schema.get("properties") or {}).get("secrets") or {}).get("items") or {})
+        return "share_with" in (secret.get("properties") or {})
+
     def run(self, args: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
         return subprocess.run([self.go, "run", CLI, *args], cwd=self.root, capture_output=True, text=True,
                               timeout=timeout)
 
     def inputs(self, app_dirs: list[str], scratch: str) -> list[str]:
-        """The directories to hand to the composer: the apps themselves with composer 1.2.0 or later,
-        otherwise copies without the brief-only fields (see brief_compatible_copy)."""
-        if self.brief:
+        """The directories to hand to the composer: the apps themselves when the composer knows every
+        field they use, otherwise copies without the fields it does not know (brief_compatible_copy)."""
+        if self.brief and self.share_with:
             return [os.path.abspath(d) for d in app_dirs]
-        return [brief_compatible_copy(d, scratch) for d in app_dirs]
+        return [brief_compatible_copy(d, scratch, brief=not self.brief, share_with=not self.share_with)
+                for d in app_dirs]
 
     def lint(self, app_dirs: list[str]) -> list[dict[str, Any]]:
         """`sealed-compose lint --json` findings for the apps, whatever the exit code."""
@@ -158,12 +176,13 @@ def composer_for(test: Any) -> Composer:
     return composer
 
 
-def brief_compatible_copy(app_dir: str, dest_root: str) -> str:
-    """Copy the composer's input files of an app, without the brief-only fields.
+def brief_compatible_copy(app_dir: str, dest_root: str, brief: bool = True, share_with: bool = True) -> str:
+    """Copy the composer's input files of an app, without the fields an older composer rejects.
 
-    Removed: manifest `secrets[].same_as` and fragment `volumes.<name>.x-sealed-owner`;
-    `generate: password` becomes `generate: none`. Nothing else changes, so the older
-    composer still checks every other rule on the real content.
+    With brief: manifest `secrets[].same_as` and fragment `volumes.<name>.x-sealed-owner` are
+    removed and `generate: password` becomes `generate: none` (composer 1.2.0 fields). With
+    share_with: manifest `secrets[].share_with` is removed (D-059). Nothing else changes, so the
+    older composer still checks every other rule on the real content.
     """
     manifest = load_yaml(os.path.join(app_dir, "manifest.yaml"))
     fragment = load_yaml(os.path.join(app_dir, "compose.fragment.yaml"))
@@ -173,17 +192,23 @@ def brief_compatible_copy(app_dir: str, dest_root: str) -> str:
         dest = os.path.join(dest, manifest["id"])
     os.makedirs(dest)
     for secret in manifest.get("secrets") or []:
-        secret.pop("same_as", None)
-        if secret.get("generate") == "password":
-            secret["generate"] = "none"
+        if share_with:
+            secret.pop("share_with", None)
+        if brief:
+            secret.pop("same_as", None)
+            if secret.get("generate") == "password":
+                secret["generate"] = "none"
     for name, spec in list((fragment.get("volumes") or {}).items()):
-        if isinstance(spec, dict):
+        if brief and isinstance(spec, dict):
             spec.pop("x-sealed-owner", None)
             fragment["volumes"][name] = spec or {}
     with open(os.path.join(dest, "manifest.yaml"), "w", encoding="utf-8") as handle:
         yaml.safe_dump(manifest, handle, sort_keys=False, allow_unicode=True)
-    with open(os.path.join(dest, "compose.fragment.yaml"), "w", encoding="utf-8") as handle:
-        yaml.safe_dump(fragment, handle, sort_keys=False, allow_unicode=True, width=1 << 20)
+    if brief:
+        with open(os.path.join(dest, "compose.fragment.yaml"), "w", encoding="utf-8") as handle:
+            yaml.safe_dump(fragment, handle, sort_keys=False, allow_unicode=True, width=1 << 20)
+    else:  # nothing to remove from the fragment: keep it byte for byte
+        shutil.copyfile(os.path.join(app_dir, "compose.fragment.yaml"), os.path.join(dest, "compose.fragment.yaml"))
     for name in BUNDLE_FILES[2:]:
         if os.path.exists(os.path.join(app_dir, name)):
             shutil.copyfile(os.path.join(app_dir, name), os.path.join(dest, name))

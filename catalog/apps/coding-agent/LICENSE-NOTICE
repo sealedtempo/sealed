@@ -4,8 +4,14 @@ coding-agent: third-party license notice
 Sealed's own files in this directory (bootstrap scripts, tools, A6 helper, tests, Dockerfile) are
 Apache-2.0 like the rest of this repository.
 
+The upstream license texts are in LICENSES/, byte for byte as they are at the pinned tag. Each
+entry below names the file, then the upstream repository, ref, path and git blob hash it was
+taken from (tests/test_fragment.py checks the hashes).
+
 1. OpenHands agent-server (image "openhands-agent-server", default release)
    License: MIT (OpenHands/software-agent-sdk LICENSE, "Copyright (c) 2026 OpenHands contributors")
+   Text:    LICENSES/openhands-software-agent-sdk-v1.58.2-LICENSE
+            (OpenHands/software-agent-sdk v1.58.2 LICENSE, git blob b0bd86a6335a564bd3766666bebbf014fd6a8013)
    Source:  https://github.com/OpenHands/software-agent-sdk/tree/v1.58.2
             commit d2ee0cdea60825608c2f8906eb54e1d4d264fb42
    Image:   ghcr.io/openhands/agent-server:1.58.2-python-minimal
@@ -25,6 +31,8 @@ Apache-2.0 like the rest of this repository.
 
 2. OpenCode (image "opencode", fallback-opencode/ only, not in the default release)
    License: MIT ("Copyright (c) 2025 opencode")
+   Text:    LICENSES/opencode-v1.19.5-LICENSE
+            (anomalyco/opencode v1.19.5 LICENSE, git blob 6439474beed8e0271df9862eff97ffd70ec2464c)
    Source:  https://github.com/anomalyco/opencode/tree/v1.19.5
             commit 810c0eba1a7348036f8bdf61e6632d0c36c6876c
    Base:    ghcr.io/anomalyco/opencode:1.19.5
