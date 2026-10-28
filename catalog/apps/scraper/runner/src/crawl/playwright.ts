@@ -5,6 +5,7 @@ import type { JobSpec } from '../job.js';
 import type { RobotsPolicy } from '../robots.js';
 import { jobConfiguration, newRunState, pageHandler, robotsPolicy, runWithAbort, sharedOptions } from './common.js';
 import { EGRESS_HEADER, egressVerdictFromHeader } from '../egress.js';
+import { assertDeclaredSize, DEFAULT_MAX_PAGE_BYTES } from './size-cap.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
 
 // Playwright's Firefox (MPL-2.0), never Chromium: since Playwright 1.57 its Linux Chromium is Google's
@@ -89,6 +90,8 @@ export function playwrightOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSin
       },
     ],
     requestHandler: async (ctx) => {
+      // Firefox has already loaded the page; this keeps a huge one from being parsed a second time.
+      assertDeclaredSize(ctx.request, ctx.response?.headers()['content-length'], deps.maxPageBytes ?? DEFAULT_MAX_PAGE_BYTES);
       const $ = await ctx.parseWithCheerio();
       const response = {
         statusCode: ctx.response?.status() ?? null,

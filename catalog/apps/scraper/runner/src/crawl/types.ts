@@ -23,6 +23,8 @@ export interface CrawlDeps {
   userAgent: string;
   robotsUserAgent: string;
   memoryMbytes: number;
+  // Response body cap (default DEFAULT_MAX_PAGE_BYTES, see size-cap.ts).
+  maxPageBytes?: number;
   robotsFetcher?: RobotsFetcher;
 }
 

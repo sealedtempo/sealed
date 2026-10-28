@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { ClientListError, DEFAULT_ALLOWED_CLIENTS, parseAllowedClients, type ClientPolicy } from './client-policy.js';
+import { DEFAULT_MAX_PAGE_BYTES } from './limits.js';
 import type { LogLevel } from './log.js';
 
 export const ROBOTS_PRODUCT_TOKEN = 'SealedScraper';
@@ -20,6 +21,7 @@ export interface Config {
   userAgent: string;
   robotsUserAgent: string;
   memoryMbytes: number;
+  maxPageBytes: number;
   crawlers: string[] | undefined;
   logLevel: LogLevel;
 }
@@ -112,6 +114,7 @@ export function loadConfig(env: Env = process.env, readFile = (p: string) => rea
     userAgent: env.SCRAPER_USER_AGENT || DEFAULT_USER_AGENT,
     robotsUserAgent: ROBOTS_PRODUCT_TOKEN,
     memoryMbytes: int(env, 'CRAWLEE_MEMORY_MBYTES', 2048, 256, 65536),
+    maxPageBytes: int(env, 'SCRAPER_MAX_PAGE_BYTES', DEFAULT_MAX_PAGE_BYTES, 64 * 1024, 256 * 1024 * 1024),
     crawlers,
     logLevel,
   };

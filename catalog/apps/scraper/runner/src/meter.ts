@@ -1,15 +1,24 @@
+import { randomUUID } from 'node:crypto';
 import { errorMessage, silentLogger, type Logger } from './log.js';
 
 // Counts successful pages and reports them to sealed-agent (INTERFACES 11) in batches:
-// one POST {"app":"scraper","unit":"pages","quantity":N} per flush instead of one per page.
-// Unsent counts stay pending and are retried with backoff, so a slow or restarting agent never
-// loses pages that were already crawled.
+// one POST {"app":"scraper","unit":"pages","quantity":N,"id":"<uuid>"} per batch instead of one per
+// page. A batch that fails is retried with backoff, as the same batch with the same id, so a slow
+// or restarting agent never loses pages, and an agent that accepted a batch whose answer was lost
+// (a timeout) counts it once: sealed-agent treats `id` as an idempotency key. Pages counted while a
+// batch is outstanding go into the next batch.
 
 export const USAGE_EVENTS_PATH = '/v1/usage-events';
 
 export interface UsageEvent {
   app: 'scraper';
   unit: 'pages';
+  quantity: number;
+  id: string;
+}
+
+interface Batch {
+  id: string;
   quantity: number;
 }
 
@@ -22,6 +31,7 @@ export interface MeterOptions {
   maxBackoffMs?: number;
   requestTimeoutMs?: number;
   now?: () => number;
+  newId?: () => string;
 }
 
 export interface Meter {
@@ -40,6 +50,7 @@ export const noopMeter: Meter = {
 
 export class UsageMeter implements Meter {
   private pending = 0;
+  private unsent: Batch | null = null;
   private sent = 0;
   private failures = 0;
   private nextAttemptAt = 0;
@@ -51,6 +62,7 @@ export class UsageMeter implements Meter {
   private readonly maxBackoffMs: number;
   private readonly requestTimeoutMs: number;
   private readonly now: () => number;
+  private readonly newId: () => string;
 
   constructor(private readonly options: MeterOptions) {
     this.url = new URL(USAGE_EVENTS_PATH, options.agentUrl).toString();
@@ -59,10 +71,12 @@ export class UsageMeter implements Meter {
     this.maxBackoffMs = options.maxBackoffMs ?? 60_000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
     this.now = options.now ?? Date.now;
+    this.newId = options.newId ?? randomUUID;
   }
 
+  // Pages counted but not yet accepted by the agent.
   get pendingPages(): number {
-    return this.pending;
+    return this.pending + (this.unsent?.quantity ?? 0);
   }
 
   get sentPages(): number {
@@ -87,35 +101,45 @@ export class UsageMeter implements Meter {
     if (this.inFlight) await this.inFlight;
     this.nextAttemptAt = 0;
     await this.flush();
-    if (this.pending > 0) this.log.warn('usage not delivered before shutdown', { pages: this.pending });
+    if (this.pendingPages > 0) this.log.warn('usage not delivered before shutdown', { pages: this.pendingPages });
   }
 
+  // Sends batches until nothing is left or a report fails (then waits out the backoff).
   flush(): Promise<void> {
     if (this.inFlight) return this.inFlight;
-    if (this.pending === 0 || this.now() < this.nextAttemptAt) return Promise.resolve();
-    const quantity = this.pending;
-    this.pending = 0;
-    this.inFlight = this.post(quantity)
-      .then(() => {
-        this.sent += quantity;
-        this.failures = 0;
-        this.nextAttemptAt = 0;
-      })
-      .catch((err: unknown) => {
-        this.pending += quantity;
-        this.failures += 1;
-        const backoff = Math.min(this.maxBackoffMs, this.options.flushMs * 2 ** (this.failures - 1));
-        this.nextAttemptAt = this.now() + backoff;
-        this.log.warn('usage report failed, will retry', { pages: this.pending, retryInMs: backoff, error: errorMessage(err) });
-      })
-      .finally(() => {
-        this.inFlight = null;
-      });
+    if (this.pendingPages === 0 || this.now() < this.nextAttemptAt) return Promise.resolve();
+    this.inFlight = this.drain().finally(() => {
+      this.inFlight = null;
+    });
     return this.inFlight;
   }
 
-  private async post(quantity: number): Promise<void> {
-    const event: UsageEvent = { app: 'scraper', unit: 'pages', quantity };
+  private async drain(): Promise<void> {
+    for (;;) {
+      if (!this.unsent) {
+        if (this.pending === 0) return;
+        this.unsent = { id: this.newId(), quantity: this.pending };
+        this.pending = 0;
+      }
+      const batch = this.unsent;
+      try {
+        await this.post(batch);
+      } catch (err) {
+        this.failures += 1;
+        const backoff = Math.min(this.maxBackoffMs, this.options.flushMs * 2 ** (this.failures - 1));
+        this.nextAttemptAt = this.now() + backoff;
+        this.log.warn('usage report failed, will retry', { pages: this.pendingPages, retryInMs: backoff, error: errorMessage(err) });
+        return;
+      }
+      this.unsent = null;
+      this.sent += batch.quantity;
+      this.failures = 0;
+      this.nextAttemptAt = 0;
+    }
+  }
+
+  private async post(batch: Batch): Promise<void> {
+    const event: UsageEvent = { app: 'scraper', unit: 'pages', quantity: batch.quantity, id: batch.id };
     const res = await this.fetchImpl(this.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -115,6 +115,7 @@ describe.runIf(hasPostgres)('end to end: job -> crawl -> Postgres -> CSV export 
     expect(usage.every((u) => u.app === 'scraper' && u.unit === 'pages')).toBe(true);
     expect(usage.reduce((n, u) => n + u.quantity, 0)).toBe(10);
     expect(usage.length).toBeLessThan(10);
+    expect(new Set(usage.map((u) => u.id)).size).toBe(usage.length);
 
     const page = await (await fetch(`${base}/runs/${run.id}`)).text();
     expect(page).toContain('Wood screw &quot;No. 8&quot;');

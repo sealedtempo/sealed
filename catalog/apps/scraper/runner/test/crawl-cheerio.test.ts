@@ -5,6 +5,7 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from 'n
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { log } from '@crawlee/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cheerioOptions, runCheerio } from '../src/crawl/cheerio.js';
@@ -16,6 +17,7 @@ import { startTestProxy, type TestProxy } from './helpers/test-proxy.js';
 log.setLevel(log.LEVELS.OFF);
 
 const never = new AbortController().signal;
+const MB = 1024 * 1024;
 const pathOf = (url: string) => new URL(url).pathname;
 
 describe('Cheerio crawl of the fixture site through the egress proxy', () => {
@@ -36,6 +38,18 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
       '/404': status(404),
       '/429': status(429),
       '/500': status(500),
+      '/huge-declared': (_req, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(3 * MB) }).end(Buffer.alloc(3 * MB, 'a')),
+      '/huge-chunked': (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        for (let i = 0; i < 3; i++) res.write(Buffer.alloc(MB, 'a'));
+        res.end();
+      },
+      // About 3 KiB on the wire, 3 MiB once decompressed.
+      '/gzip-bomb': (_req, res) => {
+        const body = gzipSync(Buffer.alloc(3 * MB, 'a'));
+        res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip', 'content-length': String(body.length) }).end(body);
+      },
+      '/fits': (_req, res) => res.writeHead(200, { 'content-type': 'text/html' }).end(`<h1 class="product-name">${'x'.repeat(MB / 2)}</h1>`),
     });
     // apex.test sends everything to www.apex.test, as many sites do.
     apex = createServer((req, res) => res.writeHead(301, { location: `http://www.apex.test${req.url}` }).end());
@@ -68,6 +82,22 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
     expect(out.items).toEqual([]);
     const failed = Object.fromEntries(out.failed.map((f) => [pathOf(f.url), f.error]));
     expect(failed).toEqual({ '/401': 'HTTP 401', '/403': 'HTTP 403', '/404': 'HTTP 404', '/429': 'HTTP 429', '/500': 'HTTP 500' });
+  });
+
+  it('fails pages larger than maxPageBytes once, declared, chunked or compressed', async () => {
+    const out = memorySink();
+    const paths = ['/huge-declared', '/huge-chunked', '/gzip-bomb', '/fits'];
+    await runCheerio(
+      a6Job({ start_urls: paths.map((p) => `http://codes.test${p}`), respect_robots: false }),
+      { ...testDeps(proxy.url), maxPageBytes: MB },
+      out.sink,
+      never,
+    );
+    const failed = Object.fromEntries(out.failed.map((f) => [pathOf(f.url), f.error]));
+    const tooLarge = `response larger than ${MB} bytes`;
+    expect(failed).toEqual({ '/huge-declared': tooLarge, '/huge-chunked': tooLarge, '/gzip-bomb': tooLarge });
+    expect(out.items.map((i) => pathOf(i.url))).toEqual(['/fits']);
+    for (const p of ['/huge-declared', '/huge-chunked', '/gzip-bomb']) expect(codes.hits.filter((h) => h === p), p).toHaveLength(1);
   });
 
   it('does not retry destinations sealed-egress refuses, for https and http targets', async () => {

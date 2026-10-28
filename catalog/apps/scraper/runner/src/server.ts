@@ -40,6 +40,7 @@ async function main(): Promise<void> {
       userAgent: config.userAgent,
       robotsUserAgent: config.robotsUserAgent,
       memoryMbytes: config.memoryMbytes,
+      maxPageBytes: config.maxPageBytes,
     }),
   });
   await manager.start();

@@ -18,6 +18,7 @@ describe('loadConfig', () => {
       userAgent: DEFAULT_USER_AGENT,
       robotsUserAgent: 'SealedScraper',
       dbPassword: undefined,
+      maxPageBytes: 8 * 1024 * 1024,
     });
   });
 
@@ -51,6 +52,8 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...base, PORT: '0' })).toThrow(/PORT/);
     expect(() => loadConfig({ ...base, SCRAPER_MAX_RUNS: '9' })).toThrow(/SCRAPER_MAX_RUNS/);
     expect(loadConfig({ ...base, SCRAPER_MAX_RUNS: '4' }).maxRuns).toBe(4);
+    expect(loadConfig({ ...base, SCRAPER_MAX_PAGE_BYTES: '1048576' }).maxPageBytes).toBe(1048576);
+    expect(() => loadConfig({ ...base, SCRAPER_MAX_PAGE_BYTES: '1000' })).toThrow(/SCRAPER_MAX_PAGE_BYTES/);
   });
 
   it('can turn metering off for local development', () => {
