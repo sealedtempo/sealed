@@ -27,10 +27,10 @@ chain:
   name: tempo-mainnet
   chain_id: 4217
   public_rpc_url: https://rpc.tempo.xyz
-  explorer_url: https://explore.mainnet.tempo.xyz
+  explorer_url: https://explore.tempo.xyz
   verifier_url: https://contracts.tempo.xyz
-  fee_token: "0x20c0000000000000000000000000000000000000"
-  fee_token_symbol: pathUSD
+  fee_token: "0x20c000000000000000000000b9537d11c60e8b50"
+  fee_token_symbol: USDC.e
   fee_token_decimals: 6
   confirmations: 1
   deployments_file: contracts/deployments/tempo-mainnet.json
@@ -52,7 +52,7 @@ network:
   allowed_ports: [443, 80]
 
 # Catalog image registry. Images are mirrored here with identical digests
-# (spec 5.3). Rewritten to ghcr.io/<public repo owner> once GITHUB_PUBLIC_REPO is set.
+# (spec 5.3), under the public repo's owner (sealedtempo/sealed).
 catalog:
-  registry: ghcr.io/sealed-dev
-  release_asset_base: https://github.com/sealed-dev/sealed/releases/download
+  registry: ghcr.io/sealedtempo
+  release_asset_base: https://github.com/sealedtempo/sealed/releases/download
