@@ -1,6 +1,7 @@
 """Static checks for runtime/images/local-model/Dockerfile (no docker daemon needed)."""
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import unittest
@@ -62,6 +63,32 @@ class LocalModelDockerfileTest(unittest.TestCase):
                 for line in imports.split():
                     self.assertNotIn(".", line.strip('"').split("/")[0], f"{name}: non-stdlib import {line}")
 
+    def test_gate_ships_the_go_license_texts(self):
+        """License audit F3: a binary built with the Go standard library carries Go's LICENSE and PATENTS."""
+        stage = self.by_name["gate"]
+        declared = dict(arg.split("=", 1) for arg in stage.all("ARG"))
+        texts = os.path.join(REPO, "catalog", "apps", "llm-gateway", "LICENSES")
+        for arg, name in (("GO_LICENSE_SHA256", "go-1.27.3-LICENSE"), ("GO_PATENTS_SHA256", "go-1.27.3-PATENTS")):
+            with open(os.path.join(texts, name), "rb") as handle:
+                self.assertEqual(declared[arg], hashlib.sha256(handle.read()).hexdigest(), name)
+        run = " ".join(" ".join(stage.all("RUN")).split())
+        self.assertIn('echo "$GO_LICENSE_SHA256 $goroot/LICENSE" | sha256sum -c -', run)
+        self.assertIn('echo "$GO_PATENTS_SHA256 $goroot/PATENTS" | sha256sum -c -', run)
+        self.assertIn('cp "$goroot/LICENSE" /out/licenses/go-1.27.3-LICENSE', run)
+        self.assertIn('cp "$goroot/PATENTS" /out/licenses/go-1.27.3-PATENTS', run)
+        self.assertIn("> /out/licenses/README", run)
+        # The texts match the toolchain: the builder is Go 1.27.3, checked in the build.
+        self.assertTrue(GO_BASE.startswith("golang:1.27.3-"))
+        self.assertIn('test "$(go version)" = "go version go1.27.3 linux/amd64"', run)
+
+    def test_gate_build_fails_on_non_stdlib_imports(self):
+        run = " ".join(" ".join(self.by_name["gate"].all("RUN")).split())
+        self.assertIn("go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' . | grep .)", run)
+        self.assertIn('test "$nonstd" = "sealed.local/ollama-gate"', run)
+        # The check runs before the build and after the test files are gone.
+        self.assertLess(run.index("rm -f ./*_test.go"), run.index("go list -deps"))
+        self.assertLess(run.index("go list -deps"), run.index("go build"))
+
     def test_gpu_runtimes_removed(self):
         run = " ".join(self.by_name["cpu"].all("RUN"))
         for name in GPU_DIRS:
@@ -91,6 +118,7 @@ class LocalModelDockerfileTest(unittest.TestCase):
         self.assertEqual(self.final.all("COPY"), [
             "--from=cpu / /", "--from=models /models /models",
             "--from=gate /out/sealed-ollama-gate /usr/local/bin/sealed-ollama-gate",
+            "--from=gate /out/licenses /licenses/sealed-ollama-gate",
         ])
         self.assertEqual(self.final.all("RUN"), [])
         self.assertEqual(self.final.all("USER"), ["10002:10002"])
