@@ -117,6 +117,39 @@ variable "release_asset_base" {
   }
 }
 
+variable "fee_splitter" {
+  type        = string
+  description = "FeeSplitter address the key broker requires in every config (SEALED_FEE_SPLITTER). Empty: mainnet's. sealed bootstrap sets it from its deployments file when the registries are not mainnet's."
+  default     = ""
+
+  validation {
+    condition     = var.fee_splitter == "" || can(regex("^0x[0-9a-fA-F]{40}$", var.fee_splitter))
+    error_message = "fee_splitter must be empty or an address."
+  }
+}
+
+variable "fee_token" {
+  type        = string
+  description = "Fee token the key broker requires in every config (SEALED_FEE_TOKEN). Empty: mainnet's USDC.e. sealed bootstrap sets it from its deployments file when it is not mainnet's."
+  default     = ""
+
+  validation {
+    condition     = var.fee_token == "" || can(regex("^0x[0-9a-fA-F]{40}$", var.fee_token))
+    error_message = "fee_token must be empty or an address."
+  }
+}
+
+variable "key_broker_allowed_images" {
+  type        = list(string)
+  description = "The customer's own allowlist of imageIds the key broker releases to, on top of PlatformRegistry approval (SEALED_ALLOWED_IMAGES). Empty: every approved image."
+  default     = []
+
+  validation {
+    condition     = alltrue([for i in var.key_broker_allowed_images : can(regex("^0x[0-9a-fA-F]{64}$", i))])
+    error_message = "key_broker_allowed_images must be 0x-prefixed 32-byte imageIds."
+  }
+}
+
 variable "subnet_cidr" {
   type        = string
   description = "IPv4 range of the sealed subnet."

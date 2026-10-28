@@ -9,7 +9,9 @@
 # chain, their key) with the broker's mainnet default, so the contract test
 # runs the broker's own config parser on this map and fails on any variable it
 # does not read and on any choice that does not reach its effective config.
-# key_broker.tf lists the names literally (the broker's own test parses it).
+# key_broker.tf lists the names literally (the broker's own test parses it):
+# a literal env block for each variable it always sets, and a dynamic env block
+# for each optional one (set only when the customer chose a value).
 
 terraform {
   required_version = ">= 1.7.0"
@@ -65,6 +67,24 @@ variable "kms_crypto_key" {
   description = "The HMAC key: projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>."
 }
 
+variable "fee_splitter" {
+  type        = string
+  description = "FeeSplitter address the broker requires in config.contracts.feeSplitter. Empty: mainnet's."
+  default     = ""
+}
+
+variable "fee_token" {
+  type        = string
+  description = "Fee token the broker requires in config.feeToken. Empty: mainnet's USDC.e."
+  default     = ""
+}
+
+variable "allowed_images" {
+  type        = list(string)
+  description = "The customer's own imageId allowlist on top of PlatformRegistry approval. Empty: every approved image."
+  default     = []
+}
+
 locals {
   # Cloud Run sends requests to this port and sets PORT to it.
   container_port = 8080
@@ -91,6 +111,16 @@ locals {
     SEALED_KMS_KEY_VERSION     = "${var.kms_crypto_key}/cryptoKeyVersions/${local.kms_key_version}"
   }
 
+  # Set only when the customer chose a value; the broker's defaults are
+  # mainnet's FeeSplitter and fee token and no allowlist of its own. These
+  # depend on inputs only, so key_broker.tf can decide its dynamic env blocks
+  # at plan time.
+  optional_env = merge(
+    var.fee_splitter == "" ? {} : { SEALED_FEE_SPLITTER = lower(var.fee_splitter) },
+    var.fee_token == "" ? {} : { SEALED_FEE_TOKEN = lower(var.fee_token) },
+    length(var.allowed_images) == 0 ? {} : { SEALED_ALLOWED_IMAGES = join(",", [for i in var.allowed_images : lower(i)]) },
+  )
+
   # Go runtime settings, not broker configuration: a soft heap limit below the
   # container memory limit, so the garbage collector works harder before the
   # instance is killed (review F1).
@@ -101,8 +131,13 @@ locals {
 }
 
 output "env" {
-  description = "Broker configuration variables, by name."
-  value       = local.env
+  description = "Broker configuration variables, by name (the optional ones included when set)."
+  value       = merge(local.env, local.optional_env)
+}
+
+output "optional_env" {
+  description = "The optional broker variables the customer set (SEALED_FEE_SPLITTER, SEALED_FEE_TOKEN, SEALED_ALLOWED_IMAGES)."
+  value       = local.optional_env
 }
 
 output "runtime_env" {

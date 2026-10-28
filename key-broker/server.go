@@ -22,6 +22,13 @@ const (
 	DefaultMaxParsing = 4
 	// DefaultBodyReadTimeout bounds reading one body; a slow sender holds only its own connection, never a slot.
 	DefaultBodyReadTimeout = 10 * time.Second
+	// DefaultReleaseTimeout bounds the checks of one release (it covers the bundle fetches of a cold start).
+	DefaultReleaseTimeout = 90 * time.Second
+	// DefaultLogTimeout bounds writing one decision; an allowed release waits for its entry.
+	DefaultLogTimeout = 15 * time.Second
+	// MaxRequestDuration is the longest one release request takes: its body read, its checks and its log entry.
+	// The Cloud Run request timeout of the bootstrap must be at least this (TestBootstrapCloudRunLimits).
+	MaxRequestDuration = DefaultBodyReadTimeout + DefaultReleaseTimeout + DefaultLogTimeout
 	// DefaultClientRate and DefaultClientBurst bound release requests per client address; nonce requests get four
 	// times as much. A booting agent needs one nonce and one release per attempt and retries after a second or more.
 	DefaultClientRate  = 2.0

@@ -46,6 +46,13 @@ type Params struct {
 	EnableAPIs       bool
 	// EnableDebugLogging creates sealed-debug-logs, the log writer identity debug VMs get (spec 5.8).
 	EnableDebugLogging bool
+	// FeeSplitter and FeeToken, when set, are what the key broker requires in every config (SEALED_FEE_SPLITTER,
+	// SEALED_FEE_TOKEN); empty leaves the broker's mainnet defaults. Set for registries other than mainnet's.
+	FeeSplitter string
+	FeeToken    string
+	// AllowedImages, when set, are the only imageIds the key broker releases to, on top of PlatformRegistry
+	// approval (SEALED_ALLOWED_IMAGES).
+	AllowedImages []string
 }
 
 var (
@@ -53,7 +60,19 @@ var (
 	regionRe  = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+$`)
 	saRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$`)
 	imageRe   = regexp.MustCompile(`^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+@sha256:[0-9a-f]{64}$`)
+	imageIDRe = regexp.MustCompile(`^0x[0-9a-fA-F]{64}$`)
 )
+
+// ParseImageIDs splits a comma-separated imageId list (--allowed-images, SEALED_ALLOWED_IMAGES).
+func ParseImageIDs(list string) []string {
+	var out []string
+	for _, p := range strings.Split(list, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // Validate checks the parameters before Terraform sees them, with plain messages.
 func (p *Params) Validate() error {
@@ -86,6 +105,21 @@ func (p *Params) Validate() error {
 	if err := p.Registries.Validate(); err != nil {
 		errs = append(errs, err.Error())
 	}
+	for _, a := range []struct{ flag, v string }{{"--fee-splitter (SEALED_FEE_SPLITTER)", p.FeeSplitter}, {"--fee-token (SEALED_FEE_TOKEN)", p.FeeToken}} {
+		if a.v != "" && (!common.IsHexAddress(a.v) || !strings.HasPrefix(a.v, "0x") || common.HexToAddress(a.v) == (common.Address{})) {
+			errs = append(errs, fmt.Sprintf("%s %q is not an address", a.flag, a.v))
+		}
+	}
+	seen := map[string]bool{}
+	for _, id := range p.AllowedImages {
+		switch {
+		case !imageIDRe.MatchString(id):
+			errs = append(errs, fmt.Sprintf("--allowed-images (SEALED_ALLOWED_IMAGES): %q is not a 0x-prefixed 32-byte imageId", id))
+		case seen[strings.ToLower(id)]:
+			errs = append(errs, fmt.Sprintf("--allowed-images (SEALED_ALLOWED_IMAGES): %s is listed twice", id))
+		}
+		seen[strings.ToLower(id)] = true
+	}
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "\n"))
 	}
@@ -114,6 +148,19 @@ func (p *Params) Vars() map[string]any {
 	}
 	if p.KMSProtection != "" {
 		v["kms_protection_level"] = p.KMSProtection
+	}
+	if p.FeeSplitter != "" {
+		v["fee_splitter"] = strings.ToLower(p.FeeSplitter)
+	}
+	if p.FeeToken != "" {
+		v["fee_token"] = strings.ToLower(p.FeeToken)
+	}
+	if len(p.AllowedImages) > 0 {
+		ids := make([]string, len(p.AllowedImages))
+		for i, id := range p.AllowedImages {
+			ids[i] = strings.ToLower(id)
+		}
+		v["key_broker_allowed_images"] = ids
 	}
 	return v
 }

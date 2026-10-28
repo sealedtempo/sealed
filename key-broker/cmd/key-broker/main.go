@@ -63,11 +63,16 @@ var bootstrapEnv = []string{
 	"SEALED_DEPLOYMENT_REGISTRY", "SEALED_RELEASE_ASSET_BASE",
 }
 
+// bootstrapOptionalEnv are the variables the bootstrap sets only when the customer chose them: the FeeSplitter and
+// fee token when the registries are not mainnet's (the CLI takes them from its deployments file), and the
+// customer's own imageId allowlist (`sealed bootstrap --allowed-images`). key_broker.tf names each one in a dynamic
+// env block; without them the broker uses the mainnet defaults and every PlatformRegistry-approved image.
+var bootstrapOptionalEnv = []string{"SEALED_FEE_SPLITTER", "SEALED_FEE_TOKEN", "SEALED_ALLOWED_IMAGES"}
+
 // optionalEnv are tunables with safe defaults that the bootstrap does not set.
 var optionalEnv = []string{
 	"SEALED_GCP_REGION", "SEALED_DECISION_LOG_ID", "SEALED_TCB_ALLOWED", "SEALED_TCB_ADVISORIES", "SEALED_MAX_IN_FLIGHT",
-	"SEALED_NONCE_CAPACITY", "SEALED_FEE_SPLITTER", "SEALED_FEE_TOKEN", "SEALED_SECRETMANAGER_ENDPOINT",
-	"SEALED_KMS_ENDPOINT", "SEALED_LOGGING_ENDPOINT", devSimEnv,
+	"SEALED_NONCE_CAPACITY", "SEALED_SECRETMANAGER_ENDPOINT", "SEALED_KMS_ENDPOINT", "SEALED_LOGGING_ENDPOINT", devSimEnv,
 }
 
 // renamedEnv are the names an earlier broker read; the bootstrap never set them.
@@ -86,7 +91,7 @@ func checkEnv(env map[string]string) (warnings []string, err error) {
 		if !strings.HasPrefix(k, "SEALED_") && !strings.HasPrefix(k, "TEMPO_") {
 			continue
 		}
-		if slices.Contains(bootstrapEnv, k) || slices.Contains(optionalEnv, k) {
+		if slices.Contains(bootstrapEnv, k) || slices.Contains(bootstrapOptionalEnv, k) || slices.Contains(optionalEnv, k) {
 			continue
 		}
 		if to, ok := renamedEnv[k]; ok {
@@ -238,9 +243,9 @@ func loadConfig(args []string, env map[string]string, out io.Writer) (*config, e
 	fs.StringVar(&platformReg, "platform-registry", envOr(env, "SEALED_PLATFORM_REGISTRY", defaultPlatformRegistry), "PlatformRegistry address ($SEALED_PLATFORM_REGISTRY)")
 	fs.StringVar(&appReg, "app-registry", envOr(env, "SEALED_APP_REGISTRY", defaultAppRegistry), "AppRegistry address ($SEALED_APP_REGISTRY)")
 	fs.StringVar(&depReg, "deployment-registry", envOr(env, "SEALED_DEPLOYMENT_REGISTRY", defaultDeploymentRegistry), "DeploymentRegistry address ($SEALED_DEPLOYMENT_REGISTRY)")
-	fs.StringVar(&feeSplitter, "fee-splitter", envOr(env, "SEALED_FEE_SPLITTER", defaultFeeSplitter), "FeeSplitter address config.contracts.feeSplitter must name ($SEALED_FEE_SPLITTER)")
-	fs.StringVar(&feeToken, "fee-token", envOr(env, "SEALED_FEE_TOKEN", defaultFeeToken), "fee token config.feeToken must name ($SEALED_FEE_TOKEN)")
-	fs.StringVar(&allowedImages, "allowed-images", "", "if set, the only imageIds (comma separated) released to, on top of PlatformRegistry approval")
+	fs.StringVar(&feeSplitter, "fee-splitter", envOr(env, "SEALED_FEE_SPLITTER", defaultFeeSplitter), "FeeSplitter address config.contracts.feeSplitter must name; default mainnet's ($SEALED_FEE_SPLITTER)")
+	fs.StringVar(&feeToken, "fee-token", envOr(env, "SEALED_FEE_TOKEN", defaultFeeToken), "fee token config.feeToken must name; default mainnet's USDC.e ($SEALED_FEE_TOKEN)")
+	fs.StringVar(&allowedImages, "allowed-images", env["SEALED_ALLOWED_IMAGES"], "if set, the only imageIds (comma separated) released to, on top of PlatformRegistry approval ($SEALED_ALLOWED_IMAGES)")
 	fs.StringVar(&c.ReleaseBase, "release-asset-base", envOr(env, "SEALED_RELEASE_ASSET_BASE", defaultReleaseAssetBase), "catalog release asset base URL ($SEALED_RELEASE_ASSET_BASE)")
 	fs.StringVar(&c.Project, "project", env["SEALED_GCP_PROJECT"], "customer GCP project id for Secret Manager and Cloud Logging ($SEALED_GCP_PROJECT)")
 	fs.StringVar(&c.ProjectNumber, "project-number", env["SEALED_GCP_PROJECT_NUMBER"], "customer GCP project number, recorded only ($SEALED_GCP_PROJECT_NUMBER)")
@@ -297,7 +302,7 @@ func loadConfig(args []string, env map[string]string, out io.Writer) (*config, e
 	for _, id := range splitList(allowedImages) {
 		b := common.FromHex(id)
 		if !strings.HasPrefix(id, "0x") || len(b) != 32 {
-			return nil, fmt.Errorf("--allowed-images: %q is not a 32-byte imageId", id)
+			return nil, fmt.Errorf("--allowed-images (SEALED_ALLOWED_IMAGES): %q is not a 0x-prefixed 32-byte imageId", id)
 		}
 		c.AllowedImages = append(c.AllowedImages, [32]byte(b))
 	}
@@ -519,7 +524,7 @@ func run(ctx context.Context, args []string, env map[string]string, log *slog.Lo
 	log.Info("key broker listening", "addr", c.Listen, "customer", strings.ToLower(c.Customer.Hex()), "chainId", c.ChainID,
 		"rpc", chain.RedactURL(c.RPCURL), "releaseAssetBase", c.ReleaseBase, "kmsKey", c.KMSKey, "project", c.Project,
 		"projectNumber", c.ProjectNumber, "region", c.Region, "registries", c.Addrs, "feeSplitter", c.FeeSplitter, "feeToken", c.FeeToken,
-		"tcbAllowed", c.TCBPolicy.AllowedStatuses, "maxHeadAge", c.MaxHeadAge.String(), "devBuild", devBuild,
+		"allowedImages", len(c.AllowedImages), "tcbAllowed", c.TCBPolicy.AllowedStatuses, "maxHeadAge", c.MaxHeadAge.String(), "devBuild", devBuild,
 		"allowSimulated", a.broker.Config().AllowSimulated)
 	select {
 	case err := <-errc:

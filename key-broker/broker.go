@@ -36,9 +36,9 @@ type Config struct {
 	// AllowSimulated accepts dev simulator quotes. Only a dev build (tag sealeddev) with SEALED_DEV_SIM=1 sets it;
 	// the production image cannot (key-broker/cmd/key-broker). It is refused on Tempo mainnet.
 	AllowSimulated bool
-	// ReleaseTimeout bounds one release; 0 means 90 s (the agent waits 120 s).
+	// ReleaseTimeout bounds one release; 0 means DefaultReleaseTimeout (the agent waits 120 s).
 	ReleaseTimeout time.Duration
-	// LogTimeout bounds writing one decision; 0 means 15 s.
+	// LogTimeout bounds writing one decision; 0 means DefaultLogTimeout.
 	LogTimeout time.Duration
 }
 
@@ -103,10 +103,10 @@ func New(cfg Config, deps Deps) (*Broker, error) {
 		}
 	}
 	if cfg.ReleaseTimeout <= 0 {
-		cfg.ReleaseTimeout = 90 * time.Second
+		cfg.ReleaseTimeout = DefaultReleaseTimeout
 	}
 	if cfg.LogTimeout <= 0 {
-		cfg.LogTimeout = 15 * time.Second
+		cfg.LogTimeout = DefaultLogTimeout
 	}
 	if deps.OpLog == nil {
 		deps.OpLog = slog.New(slog.DiscardHandler)

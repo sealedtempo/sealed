@@ -171,6 +171,16 @@ run "key_broker" {
   }
 
   assert {
+    condition     = google_cloud_run_v2_service.key_broker.template[0].max_instance_request_concurrency == 80
+    error_message = "the broker bounds its own work, so Cloud Run hands it up to 80 requests (harden-kb)"
+  }
+
+  assert {
+    condition     = length(module.key_broker_env.optional_env) == 0 && !anytrue([for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : contains(["SEALED_FEE_SPLITTER", "SEALED_FEE_TOKEN", "SEALED_ALLOWED_IMAGES"], e.name)])
+    error_message = "no optional broker variable unless the customer chose one (mainnet FeeSplitter and fee token, no own allowlist)"
+  }
+
+  assert {
     condition     = google_project_iam_member.key_broker_logging.role == "roles/logging.logWriter" && google_project_iam_member.key_broker_logging.member == "serviceAccount:sealed-key-broker@sealed-test-1234.iam.gserviceaccount.com"
     error_message = "the broker may write its decision log"
   }
@@ -246,6 +256,50 @@ run "customer_rpc_and_chain_reach_the_broker" {
     )
     error_message = "the customer's RPC, chain and asset base are never replaced by defaults"
   }
+}
+
+run "non_mainnet_fees_and_image_allowlist_reach_the_broker" {
+  command = plan
+
+  variables {
+    fee_splitter              = "0x00000000000000000000000000000000000000E5"
+    fee_token                 = "0x20C0000000000000000000000000000000000001"
+    key_broker_allowed_images = ["0xAB00000000000000000000000000000000000000000000000000000000000001", "0x00000000000000000000000000000000000000000000000000000000000000cd"]
+  }
+
+  assert {
+    condition = (
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_FEE_SPLITTER"] == "0x00000000000000000000000000000000000000e5" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_FEE_TOKEN"] == "0x20c0000000000000000000000000000000000001" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_ALLOWED_IMAGES"] == "0xab00000000000000000000000000000000000000000000000000000000000001,0x00000000000000000000000000000000000000000000000000000000000000cd"
+    )
+    error_message = "the FeeSplitter, fee token and imageId allowlist the customer chose reach the broker under the names it reads"
+  }
+
+  assert {
+    condition     = { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value } == merge(module.key_broker_env.env, module.key_broker_env.runtime_env)
+    error_message = "the Cloud Run env is still modules/key-broker-env unchanged"
+  }
+}
+
+run "rejects_bad_fee_splitter" {
+  command = plan
+
+  variables {
+    fee_splitter = "0x12"
+  }
+
+  expect_failures = [var.fee_splitter]
+}
+
+run "rejects_bad_allowed_image" {
+  command = plan
+
+  variables {
+    key_broker_allowed_images = ["0x1234"]
+  }
+
+  expect_failures = [var.key_broker_allowed_images]
 }
 
 run "no_debug_identity_by_default" {
