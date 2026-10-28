@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sealed-dev/sealed/runtime/composer"
 )
 
 // D-061 and review V-1: the in-VM sidecar (--stack-config) serves only its allowed clients and, by default, never
@@ -97,5 +99,15 @@ func TestServerGetsLockdownSettings(t *testing.T) {
 		if got := strings.Contains(logs.String(), "without --allowed-clients"); got != tc.warn {
 			t.Fatalf("warning %v, want %v:\n%s", got, tc.warn, logs.String())
 		}
+	}
+}
+
+// The help's example client is the payer's address on the verifier network the composer gives verifierd (composer
+// 1.3.0, D-061), not its edge address 172.30.0.5, which verifierd never sees.
+func TestAllowedClientsHelpNamesThePayersVerifierAddress(t *testing.T) {
+	var help bytes.Buffer
+	loadConfig([]string{"-h"}, envMap(nil), &help)
+	if !strings.Contains(help.String(), composer.PayerVerifierIP) || strings.Contains(help.String(), composer.PayerIP+" ") {
+		t.Fatalf("--allowed-clients help: %s", help.String())
 	}
 }
