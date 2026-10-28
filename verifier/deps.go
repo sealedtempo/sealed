@@ -1,0 +1,118 @@
+// Package verify checks Sealed evidence bundles and live attestations end to end: TDX quote and TCB, image
+// measurements against PlatformRegistry, RTMR3 replay, stack recomputation, releases, the customer's onchain
+// approval and the deployment record (spec 8.4, INTERFACES.md sections 3, 6, 8 and 9, D-014).
+package verify
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealed-dev/sealed/verifier/chain"
+)
+
+// ChainReader is the onchain state the verifier reads. *chain.Client implements it.
+type ChainReader interface {
+	ChainID(ctx context.Context) (uint64, error)
+	Addresses() chain.Addresses
+	GetImage(ctx context.Context, imageID [32]byte) (*chain.Image, error)
+	IsApprovedImage(ctx context.Context, imageID [32]byte) (bool, error)
+	GetRelease(ctx context.Context, releaseID [32]byte) (*chain.Release, error)
+	IsActiveRelease(ctx context.Context, releaseID [32]byte) (bool, error)
+	IsStackApproved(ctx context.Context, customer common.Address, stackHash [32]byte) (bool, error)
+	GetStackApproval(ctx context.Context, customer common.Address, stackHash [32]byte) (*chain.StackApproval, error)
+	GetDeployment(ctx context.Context, deploymentID [32]byte) (*chain.Deployment, error)
+	RecordDigest(ctx context.Context, r chain.Record) ([32]byte, error)
+}
+
+// Composer recomputes a stack deterministically (runtime/composer, D-006). The adapter fetches each release
+// bundle by its onchain bundleHash, checks sha256 against it, and runs the composer with the given config.
+type Composer interface {
+	Compose(ctx context.Context, in ComposeInput) (*ComposeOutput, error)
+}
+
+// ComposeInput is the public config plus the onchain releases it names, in config.apps order.
+type ComposeInput struct {
+	Config   json.RawMessage
+	Releases []ComposeRelease
+}
+
+// ComposeRelease is one release as recorded in AppRegistry.
+type ComposeRelease struct {
+	App        string // config.apps[].id, the app slug
+	ReleaseID  [32]byte
+	AppID      [32]byte
+	Version    string
+	BundleHash [32]byte
+}
+
+// ComposeOutput is what the composer produced.
+type ComposeOutput struct {
+	AppCompose   []byte
+	StackHash    [32]byte
+	ConfigHash   [32]byte
+	DeploymentID [32]byte
+}
+
+// ErrComposerNotConfigured is returned by a nil Composer. Verification then fails closed.
+var ErrComposerNotConfigured = errors.New("composer not configured")
+
+// Deps are the verifier's collaborators.
+type Deps struct {
+	Quotes   *attest.Verifier
+	Chain    ChainReader
+	Composer Composer // nil: stack_recompute fails
+	Now      func() time.Time
+}
+
+func (d Deps) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return time.Now()
+}
+
+func (d Deps) validate() error {
+	if d.Quotes == nil {
+		return errors.New("verify: Deps.Quotes is nil")
+	}
+	if d.Chain == nil {
+		return errors.New("verify: Deps.Chain is nil")
+	}
+	return nil
+}
+
+// Options tune a verification.
+type Options struct {
+	// ChainID, when non-zero, is the chain the bundle must be for (4217 for Tempo mainnet).
+	ChainID uint64
+	// RequireOnchainRecord fails when the deployment is not registered. The oracle verifies evidence before it
+	// registers, so it leaves this false; `sealed verify` sets it.
+	RequireOnchainRecord bool
+	// MaxEvidenceAge, when non-zero, bounds now - attestedAt (the oracle uses 15 minutes).
+	MaxEvidenceAge time.Duration
+	// ExpectedDeploymentID, when set, must equal the bundle's deployment id (sealed verify --deployment).
+	ExpectedDeploymentID *[32]byte
+	// ExpectedCustomer, when set, must equal config.customer (for example the operator for the relay).
+	ExpectedCustomer *common.Address
+}
+
+// maxFutureSkew matches DeploymentRegistry.MAX_FUTURE_SKEW.
+const maxFutureSkew = 5 * time.Minute
+
+// DeploymentID is keccak256(abi.encode(customer, stackHash, salt)) (INTERFACES.md section 2).
+func DeploymentID(customer common.Address, stackHash, salt [32]byte) [32]byte {
+	addrT, _ := abi.NewType("address", "", nil)
+	b32T, _ := abi.NewType("bytes32", "", nil)
+	enc, err := abi.Arguments{{Type: addrT}, {Type: b32T}, {Type: b32T}}.Pack(customer, stackHash, salt)
+	if err != nil {
+		panic(err) // fixed types; cannot fail
+	}
+	return crypto.Keccak256Hash(enc)
+}
