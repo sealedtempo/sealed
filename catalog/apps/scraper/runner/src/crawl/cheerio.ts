@@ -24,7 +24,14 @@ export class SealedCheerioCrawler extends CheerioCrawler {
     // Before Crawlee's own content-type check, so an error status or an egress refusal is reported
     // as such and its body is never downloaded.
     this.postNavigationHooks.unshift(({ request, response }) => {
-      if (response) throwOnFailedResponse(request, pageResponse(response));
+      if (!response) return;
+      try {
+        throwOnFailedResponse(request, pageResponse(response));
+      } catch (err) {
+        // Release the connection instead of leaving an unread body on it.
+        response.destroy();
+        throw err;
+      }
     });
     // JSON bodies would be buffered whole only to be refused as "not HTML".
     this.supportedMimeTypes.delete('application/json');
