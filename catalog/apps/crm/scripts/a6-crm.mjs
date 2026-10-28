@@ -8,9 +8,10 @@
 //   API_KEY_FILE   api-key.json written by crm-bootstrap, or
 //   ADMIN_EMAIL and ADMIN_PASSWORD   mint a one-day key for this run and revoke it afterwards
 //   CRM_ORIGIN     origin for the admin login (default: CRM_URL)
-//   GATE_COOKIE    "name=value" cookie that passes the Sealed gate
-//   GATE_HEADER    "Name: value" header that passes the Sealed gate (not Authorization: Twenty
-//                  needs that header for its own bearer token)
+//   GATE_BASIC     "sealed:<gate password>" for the Sealed gate, sent on calls that carry no
+//                  Twenty token (GET /healthz, the admin login). Calls with a Twenty token send
+//                  it as "Authorization: Bearer", which only a bearer-passthrough route lets
+//                  through (interface change 6); the basic-auth gate refuses them.
 //   A6_CLEANUP=1   delete the three records at the end
 // Prints one JSON line with the record ids. Exit code 0 on success, 1 on failure, 2 on bad usage.
 
@@ -21,19 +22,12 @@ import { createApiKey, login, revokeApiKey } from "../bootstrap/bootstrap.mjs";
 
 export class UsageError extends Error {}
 
+// Headers for requests without a Twenty token. Requests with one replace Authorization with
+// their bearer token.
 export function gateHeaders(env) {
-  const headers = {};
-  if (env.GATE_COOKIE) headers.cookie = env.GATE_COOKIE;
-  if (env.GATE_HEADER) {
-    const i = env.GATE_HEADER.indexOf(":");
-    if (i < 1) throw new UsageError('GATE_HEADER must look like "Name: value"');
-    const name = env.GATE_HEADER.slice(0, i).trim().toLowerCase();
-    if (name === "authorization") {
-      throw new UsageError("GATE_HEADER cannot use Authorization: Twenty needs it for the API key");
-    }
-    headers[name] = env.GATE_HEADER.slice(i + 1).trim();
-  }
-  return headers;
+  if (!env.GATE_BASIC) return {};
+  if (!/^[^:]+:.+$/.test(env.GATE_BASIC)) throw new UsageError('GATE_BASIC must look like "user:password"');
+  return { authorization: `Basic ${Buffer.from(env.GATE_BASIC).toString("base64")}` };
 }
 
 function describe(json) {
@@ -57,6 +51,12 @@ async function rest(ctx, method, path, body) {
     } catch {
       throw new Error(`${method} ${path}: HTTP ${res.status} with a non-JSON body`);
     }
+  }
+  if (res.status === 401 && /^basic/i.test(res.headers.get("www-authenticate") ?? "")) {
+    throw new Error(
+      `${method} ${path}: HTTP 401 from the Sealed gate, which refuses Twenty's bearer token ` +
+        "(the crm route needs bearer passthrough or a cookie gate, interface change 6)",
+    );
   }
   if (!res.ok) throw new Error(`${method} ${path}: HTTP ${res.status} ${describe(json)}`.trim());
   return json;
@@ -89,6 +89,7 @@ export async function runA6(env, { now = Date.now(), log = () => {} } = {}) {
   const base = env.CRM_URL.replace(/\/+$/, "");
   const headers = gateHeaders(env);
   const health = await fetch(`${base}/healthz`, { headers });
+  if (health.status === 401) throw new Error("GET /healthz: HTTP 401 from the Sealed gate (set GATE_BASIC=sealed:<gate password>)");
   if (health.status !== 200) throw new Error(`GET /healthz: HTTP ${health.status}`);
 
   const { apiKey, revoke } = await resolveApiKey(env, base, headers);

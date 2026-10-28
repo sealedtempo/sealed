@@ -8,10 +8,12 @@ import { fileURLToPath } from "node:url";
 
 import { bootstrap, loadConfig } from "../bootstrap/bootstrap.mjs";
 import { gateHeaders, runA6, UsageError } from "../scripts/a6-crm.mjs";
+import { createFakeGate } from "./lib/fake-gate.mjs";
 import { createFakeTwenty } from "./lib/fake-twenty.mjs";
 
 const ORIGIN = "https://crm.34-1-2-3.sslip.io";
 const ADMIN = { ADMIN_EMAIL: "admin@example.com", ADMIN_PASSWORD: "correct-horse-battery" };
+const GATE_PASSWORD = "gate-password-1";
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const cleanups = [];
@@ -80,12 +82,10 @@ describe("a6-crm", () => {
     await assert.rejects(runA6({}), UsageError);
     const { base } = await bootstrapped();
     await assert.rejects(runA6({ CRM_URL: base }), UsageError);
-    assert.throws(() => gateHeaders({ GATE_HEADER: "Authorization: Basic eDp5" }), UsageError);
-    assert.throws(() => gateHeaders({ GATE_HEADER: "no-colon" }), UsageError);
-    assert.deepEqual(gateHeaders({ GATE_COOKIE: "sealed_gate=abc", GATE_HEADER: "X-Sealed-Gate:  t0k " }), {
-      cookie: "sealed_gate=abc",
-      "x-sealed-gate": "t0k",
-    });
+    assert.throws(() => gateHeaders({ GATE_BASIC: "no-colon" }), UsageError);
+    assert.throws(() => gateHeaders({ GATE_BASIC: "sealed:" }), UsageError);
+    assert.deepEqual(gateHeaders({}), {});
+    assert.deepEqual(gateHeaders({ GATE_BASIC: "sealed:pw" }), { authorization: `Basic ${Buffer.from("sealed:pw").toString("base64")}` });
   });
 
   test("the shell wrapper runs the helper and prints one JSON line", async () => {
@@ -106,5 +106,58 @@ describe("a6-crm", () => {
     const child = spawn("bash", [join(appDir, "scripts/a6-crm.sh")], { env: { PATH: process.env.PATH } });
     const code = await new Promise((resolve) => child.on("close", resolve));
     assert.equal(code, 2);
+  });
+});
+
+describe("a6-crm through the Sealed gate", () => {
+  async function behindGate(mode) {
+    const stack = await bootstrapped();
+    const gate = createFakeGate({ upstream: stack.base, mode, password: GATE_PASSWORD });
+    const url = await gate.start();
+    cleanups.push(() => gate.stop());
+    return { ...stack, gate, url };
+  }
+  const GATE_BASIC = `sealed:${GATE_PASSWORD}`;
+
+  test("auth: gate (what the composer allows today) refuses every Twenty bearer call", async () => {
+    const { gate, url, keyFile } = await behindGate("gate");
+    await assert.rejects(
+      runA6({ CRM_URL: url, API_KEY_FILE: keyFile, GATE_BASIC }),
+      /POST \/rest\/companies: HTTP 401 from the Sealed gate, which refuses Twenty's bearer token .*interface change 6/,
+    );
+    assert.equal(gate.seen.find((r) => r.path === "/healthz").outcome, "gated", "the gate password itself works");
+    assert.equal(gate.seen.find((r) => r.path === "/rest/companies").outcome, "refused");
+  });
+
+  test("auth: gate also breaks the admin login flow at the first call with a session token", async () => {
+    const { url } = await behindGate("gate");
+    await assert.rejects(runA6({ CRM_URL: url, CRM_ORIGIN: ORIGIN, GATE_BASIC, ...ADMIN }), /getApiKeyRoles: HTTP 401/);
+  });
+
+  test("bearer-passthrough (interface change 6): API key calls pass, the rest uses the gate password", async () => {
+    const { gate, url, keyFile } = await behindGate("bearer-passthrough");
+    const result = await runA6({ CRM_URL: url, API_KEY_FILE: keyFile, GATE_BASIC });
+    assert.equal(result.ok, true);
+    assert.equal(gate.seen.find((r) => r.path === "/healthz").outcome, "gated");
+    assert.ok(gate.seen.filter((r) => r.path.startsWith("/rest/")).every((r) => r.outcome === "passthrough"));
+  });
+
+  test("bearer-passthrough: the admin login goes through the gate and the key calls pass through", async () => {
+    const { fake, gate, url } = await behindGate("bearer-passthrough");
+    await runA6({ CRM_URL: url, CRM_ORIGIN: ORIGIN, GATE_BASIC, ...ADMIN });
+    assert.equal([...fake.state.apiKeys.values()].find((k) => k.name === "sealed-a6").revoked, true);
+    const metadata = gate.seen.filter((r) => r.path === "/metadata").map((r) => r.outcome);
+    assert.deepEqual(metadata.slice(0, 2), ["gated", "gated"], "login token and its exchange carry no bearer");
+    assert.ok(metadata.slice(2).every((o) => o === "passthrough"), "role lookup and key minting use the session token");
+  });
+
+  test("without the gate password A6 stops at GET /healthz", async () => {
+    const { url, keyFile } = await behindGate("bearer-passthrough");
+    await assert.rejects(runA6({ CRM_URL: url, API_KEY_FILE: keyFile }), /HTTP 401 from the Sealed gate \(set GATE_BASIC/);
+  });
+
+  test("bearer-passthrough: Twenty still refuses a bearer token it did not issue", async () => {
+    const { url } = await behindGate("bearer-passthrough");
+    await assert.rejects(runA6({ CRM_URL: url, API_KEY: "made-up", GATE_BASIC }), /POST \/rest\/companies: HTTP 401 Token invalid\./);
   });
 });
