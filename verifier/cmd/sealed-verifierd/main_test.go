@@ -15,13 +15,23 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/sealed-dev/sealed/runtime/composer"
 	verify "github.com/sealed-dev/sealed/verifier"
+	"github.com/sealed-dev/sealed/verifier/bundles"
 	"github.com/sealed-dev/sealed/verifier/chain"
 	"github.com/sealed-dev/sealed/verifier/internal/anviltest"
 	"github.com/sealed-dev/sealed/verifier/internal/fixture"
 )
 
 func envMap(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+
+// useComposer replaces composerFactory for one test.
+func useComposer(t *testing.T, f func(*config, verify.ChainReader) (verify.Composer, error)) {
+	t.Helper()
+	old := composerFactory
+	composerFactory = f
+	t.Cleanup(func() { composerFactory = old })
+}
 
 var addrFlags = []string{
 	"--platform-registry", "0x5FbDB2315678afecb367f032d93F642f64180aa3",
@@ -69,8 +79,26 @@ func TestConfigSources(t *testing.T) {
 	if c, err = loadConfig(addrFlags, envMap(map[string]string{"SEALED_VERIFIERD_LIVE_HOSTS": "*.sslip.io"}), io.Discard); err != nil || len(c.LiveHosts) != 1 {
 		t.Fatalf("live hosts from env: %v", err)
 	}
-	if _, err := loadConfig(nil, envMap(nil), io.Discard); err == nil {
-		t.Fatal("started without registry addresses")
+	// No address source on chain 4217: the embedded contracts/deployments/tempo-mainnet.json (brief item 19).
+	c, err = loadConfig(nil, envMap(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, mainnet := chain.Mainnet(); c.Addrs != mainnet || c.ChainID != 4217 || c.RPCURL != "https://rpc.tempo.xyz" || !strings.Contains(c.AddrSource, "tempo-mainnet.json") {
+		t.Fatalf("mainnet defaults: %+v (%s)", c.Addrs, c.AddrSource)
+	}
+	if c.Addrs.FeeSplitter != common.HexToAddress("0x3D288c0756c3F26Da0f41257D688bAB3dB3d94AD") {
+		t.Fatalf("mainnet FeeSplitter %s", c.Addrs.FeeSplitter.Hex())
+	}
+	// Other chains have no embedded deployment.
+	if _, err := loadConfig([]string{"--chain-id", "31337"}, envMap(nil), io.Discard); err == nil {
+		t.Fatal("started on chain 31337 without registry addresses")
+	}
+	// A flag overrides one embedded address.
+	c, err = loadConfig([]string{"--deployment-registry", "0x0000000000000000000000000000000000000abc"}, envMap(nil), io.Discard)
+	if err != nil || c.Addrs.DeploymentRegistry != common.HexToAddress("0xabc") || c.Addrs.AppRegistry != common.HexToAddress("0x88C91CAcB74cCeC3b8A1823977EEC42aE3b93b43") ||
+		!strings.Contains(c.AddrSource, "flag overrides") {
+		t.Fatalf("override: %v %+v %s", err, c, c.AddrSource)
 	}
 
 	dir := t.TempDir()
@@ -98,7 +126,9 @@ func TestConfigSources(t *testing.T) {
 		t.Fatalf("repo defaults: %v", err)
 	}
 	for _, bad := range [][]string{{"--chain-id", "x"}, {"--collateral-ttl", "-1s"}, {"--platform-registry", "nope"}, {"extra"},
-		{"--max-in-flight", "0"}, {"--live-allowed-hosts", "https://x.sslip.io"}, {"--live-allowed-hosts", "a.*.io"}} {
+		{"--max-in-flight", "0"}, {"--live-allowed-hosts", "https://x.sslip.io"}, {"--live-allowed-hosts", "a.*.io"},
+		{"--release-asset-base", "http://127.0.0.1:1/releases"}, {"--release-asset-base", "https://u:p@github.com/x"},
+		{"--release-asset-base", "https://github.com/x?y=1"}, {"--release-asset-base", ","}, {"--fee-splitter", "0x12"}} {
 		args := append(append([]string{}, addrFlags...), bad...)
 		if _, err := loadConfig(args, envMap(nil), io.Discard); err == nil {
 			t.Fatalf("accepted %v", bad)
@@ -116,8 +146,7 @@ func TestDaemonRedactsRPCURL(t *testing.T) {
 	}
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
-	composerFactory = func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil }
-	t.Cleanup(func() { composerFactory = nil })
+	useComposer(t, func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil })
 	srv, err := newServer(context.Background(), c, log)
 	if err != nil {
 		t.Fatal(err)
@@ -182,8 +211,7 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	composerFactory = func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil }
-	t.Cleanup(func() { composerFactory = nil })
+	useComposer(t, func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil })
 	srv, err := newServer(context.Background(), c, log)
 	if err != nil {
 		t.Fatal(err)
@@ -216,5 +244,74 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 	if srv.Deps.Composer != nil {
 		t.Fatal("composer wired")
+	}
+}
+
+// TestInVMConfig: the composer's sealed-verifierd sidecar sets only PORT and SEALED_CONFIG_FILE (the stack's public
+// config), and the image sets SEALED_DEFAULTS_FILE. That is enough to listen, reach the RPC and read the
+// stack's registries.
+func TestInVMConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	os.WriteFile(cfgPath, []byte(`{"schema":"sealed-config/v1","chainId":31337,"endpoints":{"tempoRpc":"http://127.0.0.1:8545"},`+
+		`"contracts":{"platformRegistry":"0x00000000000000000000000000000000000000e1","appRegistry":"0x00000000000000000000000000000000000000e2",`+
+		`"deploymentRegistry":"0x00000000000000000000000000000000000000e3","feeSplitter":"0x00000000000000000000000000000000000000e4"}}`), 0o644)
+	repoDefaults := filepath.Join("..", "..", "..", "config", "defaults.yaml")
+	c, err := loadConfig(nil, envMap(map[string]string{"PORT": "8088", "SEALED_CONFIG_FILE": cfgPath, "SEALED_DEFAULTS_FILE": repoDefaults}), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := chain.Addresses{PlatformRegistry: common.HexToAddress("0xe1"), AppRegistry: common.HexToAddress("0xe2"),
+		DeploymentRegistry: common.HexToAddress("0xe3"), FeeSplitter: common.HexToAddress("0xe4")}
+	if c.Listen != ":8088" || c.ChainID != 31337 || c.RPCURL != "http://127.0.0.1:8545" || c.Addrs != want || c.AddrSource != cfgPath {
+		t.Fatalf("in-VM config: %+v", c)
+	}
+	if len(c.ReleaseAssetBases) != 1 || c.ReleaseAssetBases[0] != bundles.DefaultReleaseAssetBase {
+		t.Fatalf("release asset base from defaults.yaml: %v", c.ReleaseAssetBases)
+	}
+	// Explicit settings win over the stack config.
+	c, err = loadConfig([]string{"--tempo-rpc", "https://rpc.example", "--listen", ":9000"}, envMap(map[string]string{"PORT": "8088", "SEALED_CONFIG_FILE": cfgPath}), io.Discard)
+	if err != nil || c.RPCURL != "https://rpc.example" || c.Listen != ":9000" {
+		t.Fatalf("explicit settings: %v %+v", err, c)
+	}
+	if _, err := loadConfig([]string{"--chain-id", "4217"}, envMap(map[string]string{"SEALED_CONFIG_FILE": cfgPath}), io.Discard); err == nil || !strings.Contains(err.Error(), "chain 31337") {
+		t.Fatalf("stack config for another chain: %v", err)
+	}
+	os.WriteFile(cfgPath, []byte(`{"schema":"sealed-config/v1","chainId":31337,"contracts":{}}`), 0o644)
+	if _, err := loadConfig(nil, envMap(map[string]string{"SEALED_CONFIG_FILE": cfgPath}), io.Discard); err == nil {
+		t.Fatal("stack config without registries accepted")
+	}
+	os.WriteFile(cfgPath, []byte(`{"schema":"sealed-evidence/v1"}`), 0o644)
+	if _, err := loadConfig(nil, envMap(map[string]string{"SEALED_CONFIG_FILE": cfgPath}), io.Discard); err == nil {
+		t.Fatal("non-config accepted as stack config")
+	}
+}
+
+// TestReleaseAssetBases: mirrors are a comma-separated list; plain http only under SEALED_DEV_SIM=1.
+func TestReleaseAssetBases(t *testing.T) {
+	c, err := loadConfig([]string{"--release-asset-base", " https://github.com/sealedtempo/sealed/releases/download/ , https://mirror.example/sealed"}, envMap(nil), io.Discard)
+	if err != nil || len(c.ReleaseAssetBases) != 2 || c.ReleaseAssetBases[0] != bundles.DefaultReleaseAssetBase || c.ReleaseAssetBases[1] != "https://mirror.example/sealed" {
+		t.Fatalf("bases %v %v", c, err)
+	}
+	if c, err = loadConfig(nil, envMap(nil), io.Discard); err != nil || len(c.ReleaseAssetBases) != 1 || c.ReleaseAssetBases[0] != bundles.DefaultReleaseAssetBase {
+		t.Fatalf("default base %v %v", c, err)
+	}
+	if c, err = loadConfig([]string{"--release-asset-base", "http://127.0.0.1:9/r"}, envMap(map[string]string{"SEALED_DEV_SIM": "1"}), io.Discard); err != nil || c.ReleaseAssetBases[0] != "http://127.0.0.1:9/r" {
+		t.Fatalf("dev http base %v %v", c, err)
+	}
+	if c, err = loadConfig(nil, envMap(map[string]string{"SEALED_RELEASE_ASSET_BASE": "https://mirror.example/x", "SEALED_BUNDLE_CACHE_DIR": "/tmp/b"}), io.Discard); err != nil ||
+		c.ReleaseAssetBases[0] != "https://mirror.example/x" || c.BundleCacheDir != "/tmp/b" {
+		t.Fatalf("env %v %v", c, err)
+	}
+}
+
+// TestDefaultBaseMatchesDefaults keeps bundles.DefaultReleaseAssetBase equal to config/defaults.yaml.
+func TestDefaultBaseMatchesDefaults(t *testing.T) {
+	d, err := composer.LoadDefaults(filepath.Join("..", "..", "..", "config", "defaults.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Catalog.ReleaseAssetBase != bundles.DefaultReleaseAssetBase {
+		t.Fatalf("config/defaults.yaml release_asset_base %q, bundles.DefaultReleaseAssetBase %q", d.Catalog.ReleaseAssetBase, bundles.DefaultReleaseAssetBase)
 	}
 }
