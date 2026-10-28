@@ -6,6 +6,7 @@
 //	sealed-compose bundle --app-dir catalog/apps/crm [--out crm.tar]
 //	sealed-compose lint [--catalog catalog/apps] [--app-dir DIR...] [--bundle FILE...] [--require-sbom]
 //	sealed-compose compose --config stack.json --app-dir DIR... [--bundle FILE...] [--print summary|app-compose|compose|egress|caddyfile|caddyfile-payment|stack|config|pre-launch] [--out DIR]
+//	sealed-compose version
 package main
 
 import (
@@ -94,9 +95,12 @@ func (b *bundleFlags) load(stderr io.Writer) ([]*composer.Bundle, error) {
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: sealed-compose bundle|lint|compose [flags] (see -h)")
+		return errors.New("usage: sealed-compose bundle|lint|compose|version [flags] (see -h)")
 	}
 	switch args[0] {
+	case "version":
+		_, err := fmt.Fprintln(stdout, composer.Version)
+		return err
 	case "bundle":
 		return runBundle(args[1:], stdout, stderr)
 	case "compose":
@@ -104,7 +108,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "lint":
 		return runLint(args[1:], stdout, stderr)
 	}
-	return fmt.Errorf("unknown command %q (want bundle, lint or compose)", args[0])
+	return fmt.Errorf("unknown command %q (want bundle, lint, compose or version)", args[0])
 }
 
 func runBundle(args []string, stdout, stderr io.Writer) error {
