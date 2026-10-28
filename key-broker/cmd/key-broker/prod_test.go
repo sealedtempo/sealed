@@ -50,7 +50,7 @@ func TestProductionWiringRefusesSimulatedQuotes(t *testing.T) {
 		"SEALED_SECRETMANAGER_ENDPOINT": f.URL,
 		"SEALED_KMS_ENDPOINT":           f.URL,
 		"SEALED_LOGGING_ENDPOINT":       f.URL,
-		"SEALED_TEMPO_RPC":              "http://127.0.0.1:1", // never reached: the quote check fails first
+		"TEMPO_RPC_URL":                 "http://127.0.0.1:1", // never reached: the quote check fails first
 	})
 	c, err := loadConfig(nil, envMap(env), io.Discard)
 	if err != nil {

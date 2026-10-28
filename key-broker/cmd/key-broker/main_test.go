@@ -22,9 +22,9 @@ func envMap(m map[string]string) func(string) string { return func(k string) str
 
 func prodEnv(extra map[string]string) map[string]string {
 	m := map[string]string{
-		"SEALED_CUSTOMER":    strings.ToLower(kbtest.Customer.Hex()),
-		"SEALED_GCP_PROJECT": "cust-proj-1",
-		"SEALED_KMS_KEY":     "projects/cust-proj-1/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb",
+		"SEALED_CUSTOMER_ADDRESS": strings.ToLower(kbtest.Customer.Hex()),
+		"SEALED_GCP_PROJECT":      "cust-proj-1",
+		"SEALED_KMS_KEY_VERSION":  "projects/cust-proj-1/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb",
 	}
 	for k, v := range extra {
 		m[k] = v
@@ -52,16 +52,52 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+// The environment infra/terraform/customer-bootstrap sets on the Cloud Run service (key_broker.tf).
+func TestLoadConfigFromBootstrapEnv(t *testing.T) {
+	env := map[string]string{
+		"SEALED_CUSTOMER_ADDRESS":    strings.ToLower(kbtest.Customer.Hex()),
+		"SEALED_GCP_PROJECT":         "cust-proj-1",
+		"SEALED_GCP_PROJECT_NUMBER":  "123456789012",
+		"SEALED_SECRET_PREFIX":       "sealed-",
+		"SEALED_KMS_KEY_VERSION":     testKeyVersion,
+		"TEMPO_RPC_URL":              "https://rpc.example",
+		"TEMPO_CHAIN_ID":             "4217",
+		"SEALED_PLATFORM_REGISTRY":   "0x18ab956ea44757587896dfd25632fb3e89f7002d",
+		"SEALED_APP_REGISTRY":        "0x88c91cacb74ccec3b8a1823977eec42ae3b93b43",
+		"SEALED_DEPLOYMENT_REGISTRY": "0x254efb9d1809a95ec6d233cc57b3a10849bd2c8e",
+		"SEALED_RELEASE_ASSET_BASE":  "https://github.com/sealedtempo/sealed/releases/download",
+		"PORT":                       "8080",
+	}
+	c, err := loadConfig(nil, envMap(env), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Customer != kbtest.Customer || c.KMSKey != testKeyVersion || c.RPCURL != "https://rpc.example" || c.ChainID != 4217 ||
+		c.Listen != ":8080" || c.Project != "cust-proj-1" || strings.ToLower(c.Addrs.DeploymentRegistry.Hex()) != env["SEALED_DEPLOYMENT_REGISTRY"] {
+		t.Fatalf("config %+v", c)
+	}
+	tf, err := os.ReadFile(filepath.Join("..", "..", "..", "infra", "terraform", "customer-bootstrap", "key_broker.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range env {
+		if name != "PORT" && !strings.Contains(string(tf), `"`+name+`"`) {
+			t.Errorf("the bootstrap does not set %s", name)
+		}
+	}
+}
+
 func TestLoadConfigRejects(t *testing.T) {
 	for name, c := range map[string]struct {
 		args []string
 		env  map[string]string
 	}{
-		"no customer":         {nil, map[string]string{"SEALED_CUSTOMER": ""}},
+		"no customer":         {nil, map[string]string{"SEALED_CUSTOMER_ADDRESS": ""}},
 		"zero customer":       {[]string{"--customer", "0x0000000000000000000000000000000000000000"}, nil},
 		"bad customer":        {[]string{"--customer", "alice"}, nil},
 		"no project":          {nil, map[string]string{"SEALED_GCP_PROJECT": ""}},
-		"no kms key":          {nil, map[string]string{"SEALED_KMS_KEY": ""}},
+		"no kms key":          {nil, map[string]string{"SEALED_KMS_KEY_VERSION": ""}},
+		"foreign prefix":      {nil, map[string]string{"SEALED_SECRET_PREFIX": "other-"}},
 		"bad kms key":         {[]string{"--kms-key", "my-key"}, nil},
 		"http catalog":        {[]string{"--release-asset-base", "http://example.com/releases"}, nil},
 		"bad rpc":             {[]string{"--tempo-rpc", "ws://rpc"}, nil},

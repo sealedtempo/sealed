@@ -69,15 +69,19 @@ rebooted deployment gets the same disk key and enclave signer. Never rotate or d
 
 ## Configuration (set by the customer at bootstrap)
 
+The environment names are the ones `infra/terraform/customer-bootstrap` (`key_broker.tf`) sets on the Cloud Run
+service; `TestLoadConfigFromBootstrapEnv` keeps the two in step.
+
 | flag | environment | default |
 |---|---|---|
-| `--customer` | `SEALED_CUSTOMER` | required |
-| `--tempo-rpc` | `SEALED_TEMPO_RPC` | `https://rpc.tempo.xyz` |
-| `--chain-id` | `SEALED_CHAIN_ID` | `4217` |
+| `--customer` | `SEALED_CUSTOMER_ADDRESS` | required |
+| `--tempo-rpc` | `TEMPO_RPC_URL` | `https://rpc.tempo.xyz` |
+| `--chain-id` | `TEMPO_CHAIN_ID` | `4217` |
 | `--platform-registry`, `--app-registry`, `--deployment-registry` | `SEALED_PLATFORM_REGISTRY`, `SEALED_APP_REGISTRY`, `SEALED_DEPLOYMENT_REGISTRY` | mainnet (`contracts/deployments/tempo-mainnet.json`) |
 | `--release-asset-base` | `SEALED_RELEASE_ASSET_BASE` | `https://github.com/sealedtempo/sealed/releases/download` (https only) |
 | `--project` | `SEALED_GCP_PROJECT` | required |
-| `--kms-key`, `--kms-key-version` | `SEALED_KMS_KEY`, `SEALED_KMS_KEY_VERSION` | required, version `1` |
+| `--kms-key` | `SEALED_KMS_KEY_VERSION` | required: the HMAC key's `cryptoKeyVersions/1` resource name (or a `cryptoKeys` name with `--kms-key-version`, default `1`) |
+| (none) | `SEALED_SECRET_PREFIX` | when set, must be `sealed-` (the broker refuses to start otherwise) |
 | `--region` | `SEALED_GCP_REGION` | `us-central1` (log resource only) |
 | `--decision-log-id` | `SEALED_DECISION_LOG_ID` | `sealed-key-broker-decisions` |
 | `--tcb-allowed`, `--tcb-advisories` | `SEALED_TCB_ALLOWED`, `SEALED_TCB_ADVISORIES` | `UpToDate,SWHardeningNeeded`, any |

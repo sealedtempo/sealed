@@ -124,17 +124,18 @@ func loadConfig(args []string, getenv func(string) string, out io.Writer) (*conf
 	var customer, platformReg, appReg, depReg, kmsKey, kmsVersion, tcbAllowed, tcbAdvisories string
 	var chainID, maxInFlight, nonceCap string
 	fs.StringVar(&c.Listen, "listen", ":"+port, "listen address ($PORT, set by Cloud Run)")
-	fs.StringVar(&customer, "customer", getenv("SEALED_CUSTOMER"), "the customer's Tempo address ($SEALED_CUSTOMER, required)")
-	fs.StringVar(&c.RPCURL, "tempo-rpc", envOr(getenv, "SEALED_TEMPO_RPC", defaultRPC), "Tempo JSON-RPC URL ($SEALED_TEMPO_RPC)")
-	fs.StringVar(&chainID, "chain-id", envOr(getenv, "SEALED_CHAIN_ID", strconv.Itoa(defaultChainID)), "Tempo chain id ($SEALED_CHAIN_ID)")
+	// Environment names are the ones infra/terraform/customer-bootstrap sets on the Cloud Run service.
+	fs.StringVar(&customer, "customer", getenv("SEALED_CUSTOMER_ADDRESS"), "the customer's Tempo address ($SEALED_CUSTOMER_ADDRESS, required)")
+	fs.StringVar(&c.RPCURL, "tempo-rpc", envOr(getenv, "TEMPO_RPC_URL", defaultRPC), "Tempo JSON-RPC URL ($TEMPO_RPC_URL)")
+	fs.StringVar(&chainID, "chain-id", envOr(getenv, "TEMPO_CHAIN_ID", strconv.Itoa(defaultChainID)), "Tempo chain id ($TEMPO_CHAIN_ID)")
 	fs.StringVar(&platformReg, "platform-registry", envOr(getenv, "SEALED_PLATFORM_REGISTRY", defaultPlatformRegistry), "PlatformRegistry address ($SEALED_PLATFORM_REGISTRY)")
 	fs.StringVar(&appReg, "app-registry", envOr(getenv, "SEALED_APP_REGISTRY", defaultAppRegistry), "AppRegistry address ($SEALED_APP_REGISTRY)")
 	fs.StringVar(&depReg, "deployment-registry", envOr(getenv, "SEALED_DEPLOYMENT_REGISTRY", defaultDeploymentRegistry), "DeploymentRegistry address ($SEALED_DEPLOYMENT_REGISTRY)")
 	fs.StringVar(&c.ReleaseBase, "release-asset-base", envOr(getenv, "SEALED_RELEASE_ASSET_BASE", defaultReleaseAssetBase), "catalog release asset base URL ($SEALED_RELEASE_ASSET_BASE)")
 	fs.StringVar(&c.Project, "project", getenv("SEALED_GCP_PROJECT"), "customer GCP project id for Secret Manager and Cloud Logging ($SEALED_GCP_PROJECT)")
 	fs.StringVar(&c.Region, "region", envOr(getenv, "SEALED_GCP_REGION", defaultRegion), "Cloud Run region, for the log resource ($SEALED_GCP_REGION)")
-	fs.StringVar(&kmsKey, "kms-key", getenv("SEALED_KMS_KEY"), "Cloud KMS HMAC_SHA256 key: a cryptoKeys or cryptoKeyVersions resource name ($SEALED_KMS_KEY)")
-	fs.StringVar(&kmsVersion, "kms-key-version", envOr(getenv, "SEALED_KMS_KEY_VERSION", "1"), "key version when --kms-key names a cryptoKey ($SEALED_KMS_KEY_VERSION)")
+	fs.StringVar(&kmsKey, "kms-key", getenv("SEALED_KMS_KEY_VERSION"), "Cloud KMS HMAC_SHA256 key: a cryptoKeyVersions resource name, or a cryptoKeys name with --kms-key-version ($SEALED_KMS_KEY_VERSION, which the bootstrap pins to cryptoKeyVersions/1)")
+	fs.StringVar(&kmsVersion, "kms-key-version", "1", "key version when --kms-key names a cryptoKey")
 	fs.StringVar(&c.LogID, "decision-log-id", envOr(getenv, "SEALED_DECISION_LOG_ID", gcp.DefaultDecisionLogID), "Cloud Logging log id for decisions ($SEALED_DECISION_LOG_ID)")
 	fs.StringVar(&tcbAllowed, "tcb-allowed", envOr(getenv, "SEALED_TCB_ALLOWED", "UpToDate,SWHardeningNeeded"), "allowed Intel TCB statuses ($SEALED_TCB_ALLOWED)")
 	fs.StringVar(&tcbAdvisories, "tcb-advisories", getenv("SEALED_TCB_ADVISORIES"), "if set, the only Intel advisory ids accepted on a non-UpToDate level ($SEALED_TCB_ADVISORIES)")
@@ -152,11 +153,15 @@ func loadConfig(args []string, getenv func(string) string, out io.Writer) (*conf
 		return nil, fmt.Errorf("unexpected arguments %q", fs.Args())
 	}
 
+	// The bootstrap names the Secret Manager prefix its IAM condition allows; the broker reads only that prefix.
+	if p := getenv("SEALED_SECRET_PREFIX"); p != "" && p != keybroker.SecretPrefix {
+		return nil, fmt.Errorf("SEALED_SECRET_PREFIX %q: the key broker reads secrets named %s<app>-<NAME> only", p, keybroker.SecretPrefix)
+	}
 	if c.dev.any() && getenv(devSimEnv) != "1" {
 		return nil, fmt.Errorf("dev options need %s=1", devSimEnv)
 	}
 	if !common.IsHexAddress(customer) || common.HexToAddress(customer) == (common.Address{}) {
-		return nil, fmt.Errorf("--customer (SEALED_CUSTOMER) must be the customer's Tempo address, got %q", customer)
+		return nil, fmt.Errorf("--customer (SEALED_CUSTOMER_ADDRESS) must be the customer's Tempo address, got %q", customer)
 	}
 	c.Customer = common.HexToAddress(customer)
 	var err error
@@ -197,7 +202,7 @@ func loadConfig(args []string, getenv func(string) string, out io.Writer) (*conf
 	}
 	if c.dev.KMSKeyFile == "" {
 		if c.KMSKey, err = gcp.KMSKeyVersion(kmsKey, kmsVersion); err != nil {
-			return nil, fmt.Errorf("--kms-key (SEALED_KMS_KEY): %w", err)
+			return nil, fmt.Errorf("--kms-key (SEALED_KMS_KEY_VERSION): %w", err)
 		}
 	}
 	return c, nil
