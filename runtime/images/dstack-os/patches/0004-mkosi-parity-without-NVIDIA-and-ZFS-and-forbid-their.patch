@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sealedtempo <349375820+sealedtempo@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 +0000
+Subject: [PATCH 4/7] mkosi: parity without NVIDIA and ZFS, and forbid their
+ paths
+
+check-parity.py runs in mkosi.finalize on every build. Remove the NVIDIA,
+nvidia-container, nvattest and ZFS entries it required, empty the
+ldconfig and runtime-linkage lists that only named NVIDIA libraries and
+the zfs binary, and add the main NVIDIA and ZFS paths to
+prod_forbidden_paths, so a build that ever reintroduces them fails before
+assembly.
+---
+ os/mkosi/parity.json | 72 +++++++-------------------------------------
+ 1 file changed, 11 insertions(+), 61 deletions(-)
+
+diff --git a/os/mkosi/parity.json b/os/mkosi/parity.json
+index 2b2a627..257b218 100644
+--- a/os/mkosi/parity.json
++++ b/os/mkosi/parity.json
+@@ -28,38 +28,6 @@
+       "etc/sysctl.d/99-sysbox-sysctl.conf",
+       "etc/modules-load.d/50-sysbox-mod.conf"
+     ],
+-    "zfs-2.4.0": [
+-      "usr/sbin/zfs",
+-      "usr/sbin/zpool",
+-      "usr/lib/systemd/system/zfs.target",
+-      "usr/libexec/zfs/zed.d"
+-    ],
+-    "nvidia-595.91.07": [
+-      "usr/bin/nvidia-smi",
+-      "usr/bin/nvidia-persistenced",
+-      "usr/bin/nv-fabricmanager",
+-      "usr/lib/systemd/system/nvidia-fabricmanager.service",
+-      "usr/bin/nvidia-gpu-detect",
+-      "usr/bin/nvidia-module-options",
+-      "usr/lib/systemd/system/nvidia-module-options.service",
+-      "usr/lib/modprobe.d/nvidia-blacklist.conf",
+-      "usr/lib/x86_64-linux-gnu/libnvidia-nscq.so.2",
+-      "usr/lib/systemd/system/nvidia-fabricmanager.service.d/10-nvswitch-condition.conf"
+-    ],
+-    "nvidia-container": [
+-      "usr/bin/nvidia-container-cli",
+-      "usr/bin/nvidia-container-runtime",
+-      "usr/bin/nvidia-ctk",
+-      "usr/lib/x86_64-linux-gnu/libnvidia-container.so.1",
+-      "usr/lib/x86_64-linux-gnu/libnvidia-container-go.so.1",
+-      "etc/nvidia-container-runtime/config.toml"
+-    ],
+-    "nvattest-2026.06.09": [
+-      "usr/bin/nvattest",
+-      "usr/lib/libnvat.so.1",
+-      "usr/share/nvattest/policies/allow_trust_outpost_ocsp.rego",
+-      "usr/lib/systemd/system/dstack-prepare.service.d/10-nvidia-gpu-ordering.conf"
+-    ],
+     "security-and-tee": [
+       "usr/sbin/cryptsetup",
+       "usr/bin/tpm2_getrandom",
+@@ -75,18 +43,7 @@
+       "usr/sbin/nft"
+     ]
+   },
+-  "required_kernel_globs": {
+-    "nvidia": [
+-      "usr/lib/modules/*/kernel/drivers/video/nvidia.ko",
+-      "usr/lib/modules/*/kernel/drivers/video/nvidia-uvm.ko",
+-      "usr/lib/modules/*/kernel/drivers/video/nvidia-modeset.ko",
+-      "usr/lib/modules/*/kernel/drivers/video/nvidia-drm.ko",
+-      "usr/lib/modules/*/kernel/drivers/video/nvidia-peermem.ko"
+-    ],
+-    "zfs": [
+-      "usr/lib/modules/*/extra/zfs.ko"
+-    ]
+-  },
++  "required_kernel_globs": {},
+   "dev_only_paths": [
+     "usr/bin/dstack-tee-simulator",
+     "usr/bin/swtpm",
+@@ -98,13 +55,6 @@
+     "usr/bin/vim.basic"
+   ],
+   "required_rootfs_globs": {
+-    "nvidia-firmware": [
+-      "usr/lib/firmware/nvidia/595.91.07/*"
+-    ],
+-    "nvidia-libraries": [
+-      "usr/lib/x86_64-linux-gnu/libcuda.so.595.91.07",
+-      "usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.91.07"
+-    ],
+     "cni-plugins": [
+       "usr/lib/cni/loopback",
+       "usr/lib/cni/portmap"
+@@ -170,19 +120,19 @@
+     "usr/lib/systemd/system/getty@.service",
+     "usr/lib/systemd/system/serial-getty@.service",
+     "usr/lib/systemd/system/debug-shell.service",
+-    "usr/lib/systemd/system/systemd-logind.service"
+-  ],
+-  "required_ldconfig_entries": [
+-    "libnvidia-ml.so.1",
+-    "libnvidia-container.so.1",
+-    "libnvidia-container-go.so.1"
+-  ],
+-  "runtime_link_paths": [
+-    "usr/bin/nvattest",
++    "usr/lib/systemd/system/systemd-logind.service",
+     "usr/bin/nvidia-smi",
++    "usr/bin/nvidia-persistenced",
+     "usr/bin/nvidia-container-cli",
+-    "usr/sbin/zfs"
++    "usr/bin/nvattest",
++    "usr/lib/firmware/nvidia",
++    "usr/lib/x86_64-linux-gnu/libcuda.so.1",
++    "usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
++    "usr/sbin/zfs",
++    "usr/sbin/zpool"
+   ],
++  "required_ldconfig_entries": [],
++  "runtime_link_paths": [],
+   "required_symlink_resolutions": {
+     "usr/sbin/iptables": "xtables-nft-multi",
+     "usr/sbin/ip6tables": "xtables-nft-multi",

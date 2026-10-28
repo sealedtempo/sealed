@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sealedtempo <349375820+sealedtempo@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 +0000
+Subject: [PATCH 5/7] dstack-util: ext4 is the only data-disk filesystem
+
+The image ships no ZFS userspace or module. Default storage_fs to ext4
+when neither the kernel command line nor app-compose.json names one, and
+reject "zfs" from either source with a clear error, so a compose that
+asks for ZFS fails at boot instead of failing later on a missing zpool
+binary. The measured storage-fs runtime event is therefore always ext4.
+---
+ dstack/dstack-util/src/system_setup.rs | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/dstack/dstack-util/src/system_setup.rs b/dstack/dstack-util/src/system_setup.rs
+index 2aa9df2..de19e03 100644
+--- a/dstack/dstack-util/src/system_setup.rs
++++ b/dstack/dstack-util/src/system_setup.rs
+@@ -131,8 +131,9 @@ struct InstanceInfo {
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Default)]
+ enum FsType {
+-    #[default]
++    // Sealed: this image does not ship ZFS, so the variant is never produced.
+     Zfs,
++    #[default]
+     Ext4,
+ }
+ 
+@@ -149,9 +150,9 @@ impl FromStr for FsType {
+     type Err = anyhow::Error;
+     fn from_str(s: &str) -> Result<Self, Self::Err> {
+         match s.to_lowercase().as_str() {
+-            "zfs" => Ok(FsType::Zfs),
++            "zfs" => bail!("Invalid filesystem type: zfs is not supported by this image, use ext4"),
+             "ext4" => Ok(FsType::Ext4),
+-            _ => bail!("Invalid filesystem type: {s}, supported types: zfs, ext4"),
++            _ => bail!("Invalid filesystem type: {s}, supported types: ext4"),
+         }
+     }
+ }
+@@ -168,7 +169,7 @@ fn parse_dstack_options(shared: &HostShared) -> Result<DstackOptions> {
+ 
+     let mut options = DstackOptions {
+         storage_encrypted: true, // Default to encryption enabled
+-        storage_fs: FsType::Zfs, // Default to ZFS
++        storage_fs: FsType::Ext4, // Sealed: default to ext4, ZFS is not shipped
+         storage_discard: true,   // Reclaim unused blocks from sparse host images
+     };
+ 

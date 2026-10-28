@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sealedtempo <349375820+sealedtempo@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 +0000
+Subject: [PATCH 7/7] mkosi: build the sealed-logship component in the debug
+ variant only
+
+The Sealed debug image exports container logs to the customer's Cloud
+Logging (Sealed spec 5.8). Its mkosi profile sets
+SEALED_IMAGE_VARIANT=debug, and only then is the sealed-logship component
+appended to the component list. The component itself is added by the
+Sealed overlay commit.
+---
+ os/mkosi/scripts/build-components.sh | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/os/mkosi/scripts/build-components.sh b/os/mkosi/scripts/build-components.sh
+index 7c3358b..3def8e6 100755
+--- a/os/mkosi/scripts/build-components.sh
++++ b/os/mkosi/scripts/build-components.sh
+@@ -31,6 +31,12 @@ components=(
+   kernel
+   ovmf
+ )
++# Sealed: the debug variant (mkosi profile sealed-debug, which sets
++# SEALED_IMAGE_VARIANT=debug) adds the container log exporter for the
++# customer's Cloud Logging. The production variant never builds it.
++if [[ ${SEALED_IMAGE_VARIANT:-prod} == debug ]]; then
++  components+=(sealed-logship)
++fi
+ 
+ for component in "${components[@]}"; do component_run "$component"; done
+ component_assemble

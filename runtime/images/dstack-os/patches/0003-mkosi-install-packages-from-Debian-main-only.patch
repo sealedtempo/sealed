@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sealedtempo <349375820+sealedtempo@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 +0000
+Subject: [PATCH 3/7] mkosi: install packages from Debian main only
+
+Every runtime and build package resolves from main. Dropping contrib and
+non-free-firmware from Repositories= makes that structural: no package
+from those components can enter the image, so the Debian part of the
+license inventory is DFSG-free by construction.
+---
+ os/mkosi/mkosi.conf | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/os/mkosi/mkosi.conf b/os/mkosi/mkosi.conf
+index 1a24a8c..5d2aad4 100644
+--- a/os/mkosi/mkosi.conf
++++ b/os/mkosi/mkosi.conf
+@@ -7,7 +7,9 @@ Distribution=debian
+ Release=trixie
+ Architecture=x86-64
+ Snapshot=20260721T000000Z
+-Repositories=main,contrib,non-free-firmware
++# Sealed: Debian main only. Nothing in Packages= comes from contrib or
++# non-free-firmware, and leaving them out means nothing can.
++Repositories=main
+ 
+ [Output]
+ # Format=none would return before install_build_dest, extra trees, postinst,

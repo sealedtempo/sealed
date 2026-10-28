@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sealedtempo <349375820+sealedtempo@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 +0000
+Subject: [PATCH 2/7] mkosi: drop the NVIDIA runtime, units and nvattest
+ libraries
+
+With no NVIDIA component built, remove the configuration that referred to
+it: the nvidia runtime in /etc/docker/daemon.json, the three nvidia unit
+lines in 80-dstack.preset, and the two libxmlsec1 runtime packages that
+only nvattest linked against.
+---
+ os/mkosi/mkosi.conf                                      | 9 ++-------
+ os/mkosi/mkosi.skeleton/etc/docker/daemon.json           | 1 -
+ .../usr/lib/systemd/system-preset/80-dstack.preset       | 3 ---
+ 3 files changed, 2 insertions(+), 11 deletions(-)
+
+diff --git a/os/mkosi/mkosi.conf b/os/mkosi/mkosi.conf
+index 1850873..1a24a8c 100644
+--- a/os/mkosi/mkosi.conf
++++ b/os/mkosi/mkosi.conf
+@@ -77,13 +77,8 @@ Packages=
+         systemd-boot-efi
+         acpid
+         numactl
+-        # nvattest links against xmlsec1 and its OpenSSL crypto backend, but
+-        # only libxmlsec1-dev was listed, under BuildPackages -- so the binary
+-        # shipped without libxmlsec1-openssl.so.1 and every GPU CVM failed at
+-        # boot with "error while loading shared libraries", which
+-        # dstack-prepare treats as fatal.
+-        libxmlsec1t64-openssl
+-        libxmlsec1t64
++        # Sealed: libxmlsec1t64-openssl and libxmlsec1t64 are not installed.
++        # Only nvattest used them, and nvattest is not built.
+ RemoveFiles=
+         /var/lib/containerd/.dstack-keep
+         /var/lib/docker/.dstack-keep
+diff --git a/os/mkosi/mkosi.skeleton/etc/docker/daemon.json b/os/mkosi/mkosi.skeleton/etc/docker/daemon.json
+index 83d9947..a97bf26 100644
+--- a/os/mkosi/mkosi.skeleton/etc/docker/daemon.json
++++ b/os/mkosi/mkosi.skeleton/etc/docker/daemon.json
+@@ -2,7 +2,6 @@
+   "log-driver": "json-file",
+   "log-opts": {"max-size": "100m", "max-file": "10"},
+   "runtimes": {
+-    "nvidia": {"args": [], "path": "nvidia-container-runtime"},
+     "sysbox-runc": {"path": "/usr/bin/sysbox-runc"}
+   }
+ }
+diff --git a/os/mkosi/mkosi.skeleton/usr/lib/systemd/system-preset/80-dstack.preset b/os/mkosi/mkosi.skeleton/usr/lib/systemd/system-preset/80-dstack.preset
+index b51076f..fc1ba0d 100644
+--- a/os/mkosi/mkosi.skeleton/usr/lib/systemd/system-preset/80-dstack.preset
++++ b/os/mkosi/mkosi.skeleton/usr/lib/systemd/system-preset/80-dstack.preset
+@@ -13,9 +13,6 @@ enable dstack-guest-agent.socket
+ enable dstack-guest-agent.service
+ enable app-compose.service
+ enable dstack-gateway-checker.service
+-enable nvidia-module-options.service
+-enable nvidia-persistenced.service
+-enable nvidia-fabricmanager.service
+ enable containerd-stargz-grpc.service
+ enable sysbox.service
+ enable sysbox-fs.service
