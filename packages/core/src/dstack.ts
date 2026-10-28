@@ -6,13 +6,14 @@ import { bytesToBareHex, concatBytes, equalBytes, hexToBytes, utf8 } from "./hex
 
 export const DSTACK_RUNTIME_EVENT_TYPE = 0x08000001;
 
-export interface DstackEvent {
+// A type alias (not an interface) so it stays assignable to the loose zod event-log schema.
+export type DstackEvent = {
   imr: number;
   event_type: number;
   digest: string;
   event: string;
   event_payload: string;
-}
+};
 
 /** Event names and order a Sealed stack must produce (INTERFACES 6). */
 export const SEALED_RTMR3_EVENTS = [
