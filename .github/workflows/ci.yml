@@ -1,3 +1,9 @@
+# The full test matrix: Go (with a local Tempo node for the verifier and release script tests), every
+# TypeScript package, the catalog's Python and node suites, the contracts, and the workflow and script
+# policy. Catalog checks (lint, compose, SBOM and Grype) are in catalog.yml.
+#
+# Every action is pinned by full commit SHA with its version in a comment; catalog/tools/release
+# (go run ./catalog/tools/release workflows) enforces it, together with the secrets rules.
 name: ci
 on:
   pull_request:
@@ -5,29 +11,54 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  GO_VERSION: "1.27.3"
+  NODE_VERSION: "24.22.1"
+  PYTHON_VERSION: "3.12.16"
+  FOUNDRY_VERSION: v1.7.1
 jobs:
   go:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The verifier's anvil end-to-end tests and the release script tests must not skip in CI.
+      SEALED_REQUIRE_ANVIL: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version-file: go.mod }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      # dependencies/ is not committed; restore it from soldeer.lock.
+      - run: make -C contracts deps
       - run: go vet ./...
-      - run: go test ./...
+      # gofmt for the release tooling (other packages keep their owners' checks).
+      - name: gofmt catalog/tools
+        run: |
+          unformatted="$(gofmt -l catalog/tools)"
+          if [ -n "$unformatted" ]; then echo "::error::gofmt needed: $unformatted"; exit 1; fi
+      - run: go test -count=1 ./...
   ts:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       # Scraper and relay Postgres tests use the runner image's PostgreSQL 16 (CI makes the scraper's required).
       PG_BIN: /usr/lib/postgresql/16/bin
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      # pnpm version from package.json packageManager (pnpm@10.33.2).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: pnpm }
       # The relay catalog test runs the real composer lint, which needs Go.
-      - uses: actions/setup-go@v5
-        with: { go-version-file: go.mod }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       # The agent simulator CLI test and the relay smoke test run the built dist.
@@ -35,31 +66,55 @@ jobs:
       - run: pnpm -r test
   catalog:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version-file: go.mod }
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: python -m pip install PyYAML==6.0.3 httpx==0.28.1 jsonschema==4.25.1
-      - run: |
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: python -m pip install --disable-pip-version-check PyYAML==6.0.3 httpx==0.28.1 jsonschema==4.25.1
+      - name: Python suites (llm-gateway, coding-agent, local-model)
+        run: |
           for d in catalog/apps/llm-gateway catalog/apps/coding-agent runtime/images/local-model; do
             make -C "$d" test PYTHON=python
           done
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ env.NODE_VERSION }}" }
       # App-local node --test suites with their own lockfiles; they run the real composer from this tree.
-      - run: |
+      - name: crm and internal-tools suites
+        run: |
           for d in catalog/apps/crm catalog/apps/internal-tools; do
             (cd "$d" && pnpm install --ignore-workspace --frozen-lockfile && pnpm test)
           done
   contracts:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: foundry-rs/foundry-toolchain@v1
-        with: { version: nightly }
-      # dependencies/ is not committed; restore it from soldeer.lock.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
       - run: make -C contracts deps
+      - run: make -C contracts fmt-check
       - run: make -C contracts test
+  workflows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      # actionlint runs shellcheck (preinstalled on the runner) on every run: block.
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+      - name: Pinning and secrets policy
+        run: go run ./catalog/tools/release workflows
+      - name: shellcheck scripts/release
+        run: |
+          shellcheck --version
+          shellcheck -x -S warning scripts/release/*.sh
+          for f in scripts/release/*.sh; do bash -n "$f"; done

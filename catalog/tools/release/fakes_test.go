@@ -30,6 +30,7 @@ copy)
   mkdir -p "$FAKE_STATE/crane"
   printf '%s' "$d" >"$FAKE_STATE/crane/$(key "$dst")"
   printf '%s' "$d" >"$FAKE_STATE/crane/$(key "${dst%:*}@$d")" ;;
+auth) cat >/dev/null ;;
 tag)
   d="${2##*@}"
   mkdir -p "$FAKE_STATE/crane"
@@ -44,6 +45,7 @@ esac
 const fakeDocker = `#!/usr/bin/env bash
 set -euo pipefail
 echo "docker $*" >>"$FAKE_LOG"
+[ "$1" = login ] && { cat >/dev/null; exit 0; }
 [ "$1 $2" = "buildx build" ] || { echo "fake docker: unsupported $*" >&2; exit 2; }
 shift 2
 meta="" output="" nocache=0 file="" ctx=""
@@ -92,14 +94,18 @@ echo "grype $*" >>"$FAKE_LOG"
 cat "$FAKE_GRYPE_REPORT"
 `
 
+// fakeCosign copies $FAKE_SIGSTORE_BUNDLE, or writes a structurally valid Sigstore v0.3 bundle for the blob
+// (right digest, a placeholder certificate, a Rekor entry) when it is not set.
 const fakeCosign = `#!/usr/bin/env bash
 set -euo pipefail
 echo "cosign $*" >>"$FAKE_LOG"
 case "$1" in
 sign-blob)
-  out=""; prev=""
-  for a in "$@"; do [ "$prev" = --bundle ] && out="$a"; prev="$a"; done
-  cp "$FAKE_SIGSTORE_BUNDLE" "$out" ;;
+  out=""; prev=""; blob=""
+  for a in "$@"; do [ "$prev" = --bundle ] && out="$a"; prev="$a"; blob="$a"; done
+  if [ -n "${FAKE_SIGSTORE_BUNDLE:-}" ]; then cp "$FAKE_SIGSTORE_BUNDLE" "$out"; exit 0; fi
+  d="$(openssl dgst -sha256 -binary "$blob" | base64 | tr -d '\n')"
+  printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"certificate":{"rawBytes":"MIIBfake"},"tlogEntries":[{"logIndex":"424242","integratedTime":"1761667200"}]},"messageSignature":{"messageDigest":{"algorithm":"SHA2_256","digest":"%s"},"signature":"c2lnbmF0dXJl"}}' "$d" >"$out" ;;
 verify-blob)
   [ "${FAKE_VERIFY_FAIL:-0}" = 1 ] && { echo "none of the expected identities matched" >&2; exit 1; }
   exit 0 ;;

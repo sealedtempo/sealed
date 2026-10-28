@@ -1,0 +1,95 @@
+# Mirror upstream images to the catalog registry with crane, digest for digest (spec 5.3). VMs pull only
+# from ghcr.io, so every upstream image a manifest or runtime-images.json pins is copied there unchanged
+# (the whole index, so the pinned digest is the digest ghcr.io serves).
+#
+# The release workflow calls this for the apps it releases (a never_mirror image fails it, D-049). A push
+# that changes a pin, and a manual run, mirror the whole catalog and skip never_mirror images with a warning.
+name: mirror
+on:
+  workflow_call:
+    inputs:
+      apps:
+        description: Comma-separated app ids (empty mirrors every image)
+        type: string
+        required: false
+        default: ""
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: Comma-separated app ids (empty mirrors every image)
+        type: string
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - catalog/apps/*/manifest.yaml
+      - catalog/apps/*/*/manifest.yaml
+      - runtime/composer/runtime-images.json
+      - catalog/tools/release/images.yaml
+permissions: {}
+concurrency:
+  group: mirror-${{ inputs.apps || 'all' }}
+  cancel-in-progress: false
+env:
+  GO_VERSION: "1.27.3"
+  CRANE_VERSION: v0.22.1
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      # crane from source through the Go module proxy and checksum database, at an exact version.
+      - name: Install crane
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/google/go-containerregistry/cmd/crane@$CRANE_VERSION"
+          go build -o "$RUNNER_TEMP/bin/sealed-release" ./catalog/tools/release
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Registry login
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "$TOKEN" | crane auth login ghcr.io -u "$ACTOR" --password-stdin
+          # Optional: anonymous Docker Hub pulls are rate limited per runner IP.
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            printf '%s' "$DOCKERHUB_TOKEN" | crane auth login index.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+      - name: Mirror
+        env:
+          APPS: ${{ inputs.apps }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          if [ -n "$APPS" ]; then
+            sealed-release images --format mirror-matrix --apps "$APPS" --fail-on-blocked >"$RUNNER_TEMP/mirror.json"
+            scripts/release/mirror-images.sh "$RUNNER_TEMP/mirror.json"
+          else
+            sealed-release images --format mirror-matrix >"$RUNNER_TEMP/mirror.json"
+            scripts/release/mirror-images.sh "$RUNNER_TEMP/mirror.json" --skip-blocked
+          fi
+      - name: Summary
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/mirror.json" ] || exit 0
+          {
+            echo "### Mirrored images"
+            echo
+            echo "| image | target |"
+            echo "|---|---|"
+            jq -r '.include[] | "| \(.name) | `\(.target)` |"' "$RUNNER_TEMP/mirror.json"
+            jq -r '.blocked[] | "| \(.name) | not mirrored: \(.blocked) |"' "$RUNNER_TEMP/mirror.json"
+          } >>"$GITHUB_STEP_SUMMARY"

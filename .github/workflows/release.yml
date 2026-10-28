@@ -1,0 +1,314 @@
+# Release job (spec 6.8, D-046, D-038), on merge to main: for every app whose bundle inputs changed (or the
+# apps given to a manual run) and whose release_version is not released yet:
+#   1. plan: only registered apps (OWNER registers with scripts/release/register-apps.sh, never CI), every
+#      image built and pinned, a releasable version;
+#   2. mirror the app's upstream images to the catalog registry, digest for digest;
+#   3. build: Syft SBOM and Grype scan per image from the catalog registry, the waivers gate, the bundle with
+#      `sealed release build` (checked byte for byte against the composer library), the release-mode lint,
+#      and cosign keyless signing through GitHub OIDC (Fulcio certificate, Rekor entry);
+#   4. SLSA build provenance for every bundle with slsa-github-generator;
+#   5. publish: a GitHub Release named <appId>-v<version> with the bundle, .sig, .crt, .sigstore.json,
+#      .intoto.jsonl, SBOMs, scans and release.json, fetched back by its public URL and checked against
+#      bundleHash, then AppRegistry.publishRelease on Tempo mainnet with the OPS key (environment mainnet),
+#      after making sure the OPS fee token preference is FEE_TOKEN; the tx hash goes into the release notes.
+name: release
+on:
+  push:
+    branches: [main]
+    paths:
+      - catalog/apps/**
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: Comma-separated app ids to release, or "all" (versions already released are skipped)
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: release
+  cancel-in-progress: false
+env:
+  GO_VERSION: "1.27.3"
+  FOUNDRY_VERSION: v1.7.1
+  SYFT_VERSION: v1.55.0
+  GRYPE_VERSION: v0.121.0
+  COSIGN_VERSION: v3.1.4
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+      apps: ${{ steps.plan.outputs.apps }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - name: Plan (read-only chain and GitHub checks)
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          APPS: ${{ inputs.apps }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            sel=(--apps "$APPS")
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            git diff --name-only "$BEFORE" HEAD >"$RUNNER_TEMP/changed.txt"
+            sel=(--changed "$RUNNER_TEMP/changed.txt")
+          else
+            sel=(--apps all)
+          fi
+          scripts/release/plan-releases.sh release "${sel[@]}" --out "$RUNNER_TEMP/plan.json"
+          {
+            echo "matrix=$(jq -c '{include: .include}' "$RUNNER_TEMP/plan.json")"
+            echo "count=$(jq .count "$RUNNER_TEMP/plan.json")"
+            echo "apps=$(jq -r '[.include[].app] | join(",")' "$RUNNER_TEMP/plan.json")"
+          } >>"$GITHUB_OUTPUT"
+  mirror:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/mirror.yml
+    with:
+      apps: ${{ needs.plan.outputs.apps }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  build:
+    needs: [plan, mirror]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # cosign keyless signing (Fulcio certificate for this workflow's identity)
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with: { syft-version: "${{ env.SYFT_VERSION }}" }
+      - uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with: { grype-version: "${{ env.GRYPE_VERSION }}" }
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with: { cosign-release: "${{ env.COSIGN_VERSION }}" }
+      - name: Tools
+        run: |
+          go build -o "$RUNNER_TEMP/bin/sealed-release" ./catalog/tools/release
+          go build -o "$RUNNER_TEMP/bin/sealed-compose" ./runtime/composer/cmd/sealed-compose
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Registry login (read)
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      # SBOM and scan of exactly what VMs pull: <registry>/<name>@<digest>.
+      - name: SBOM, Grype and waivers
+        env:
+          APP: ${{ matrix.app }}
+          REFS: ${{ toJSON(matrix.imageRefs) }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          while IFS=$'\t' read -r name ref; do
+            scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "catalog/apps/$APP/waivers.yaml" --out "$RUNNER_TEMP/scan"
+          done < <(jq -r '.[] | [.name, .ref] | @tsv' <<<"$REFS")
+      - name: Bundle (sealed release build, cross-check, release lint)
+        env:
+          APP: ${{ matrix.app }}
+          BUNDLE: ${{ matrix.assets.bundle }}
+          ALLOW_MISSING_SEALED_CLI: ${{ vars.ALLOW_MISSING_SEALED_CLI }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+          SEALED_COMPOSE_BIN: ${{ runner.temp }}/bin/sealed-compose
+        run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          scripts/release/build-bundle.sh --app "$APP" --sbom-dir "$RUNNER_TEMP/scan/sbom" --scan-dir "$RUNNER_TEMP/scan/scan" \
+            --out "$RUNNER_TEMP/dist/$BUNDLE" --info "$RUNNER_TEMP/info.json"
+      - name: Sign (cosign keyless, Rekor)
+        env:
+          BUNDLE: ${{ matrix.assets.bundle }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: scripts/release/sign-bundle.sh --bundle "$RUNNER_TEMP/dist/$BUNDLE"
+      - name: Release assets and release.json
+        env:
+          BUNDLE: ${{ matrix.assets.bundle }}
+          RELEASE_JSON: ${{ matrix.assets.releaseJson }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          for f in "$RUNNER_TEMP"/scan/sbom/*.spdx.json; do n="$(basename "$f" .spdx.json)"; cp "$f" "$dist/sbom.$n.spdx.json"; done
+          for f in "$RUNNER_TEMP"/scan/scan/*.json; do n="$(basename "$f" .json)"; cp "$f" "$dist/scan.$n.json"; done
+          rm -f "$dist/$BUNDLE.rekor.json"
+          sealed-release release-doc --bundle "$dist/$BUNDLE" --scans "$RUNNER_TEMP/scan/summary" --sigstore "$dist/$BUNDLE.sigstore.json" \
+            --commit "$GITHUB_SHA" --run-url "$RUN_URL" --identity "https://github.com/$GITHUB_WORKFLOW_REF" --out "$dist/$RELEASE_JSON"
+          ls -l "$dist"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.app }}
+          path: |
+            ${{ runner.temp }}/dist
+            ${{ runner.temp }}/info.json
+          if-no-files-found: error
+          retention-days: 90
+  subjects:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    outputs:
+      hashes: ${{ steps.hashes.outputs.hashes }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/releases
+      - name: Bundle digests (sha256sum format, base64)
+        id: hashes
+        run: |
+          cd "$RUNNER_TEMP/releases"
+          files="$(find . -name '*.bundle.tar' -type f | LC_ALL=C sort)"
+          [ -n "$files" ] || { echo "::error::no bundles"; exit 1; }
+          sums="$(for f in $files; do (cd "$(dirname "$f")" && sha256sum "$(basename "$f")"); done)"
+          printf '%s\n' "$sums"
+          echo "hashes=$(printf '%s\n' "$sums" | base64 -w0)" >>"$GITHUB_OUTPUT"
+  # The SLSA generator has to be called by its vX.Y.Z tag (it rejects SHA references, because its
+  # provenance names the builder by tag), so this job checks the tag still points at the reviewed commit.
+  slsa-pin:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: slsa-github-generator v2.1.0 is commit f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$(gh api repos/slsa-framework/slsa-github-generator/git/ref/tags/v2.1.0 --jq '.object.sha')"
+          [ "$sha" = f7dd8c54c2067bafc12ca7a55595d5ee9b75204a ] || { echo "::error::tag v2.1.0 moved to $sha"; exit 1; }
+  provenance:
+    needs: [subjects, slsa-pin]
+    permissions:
+      actions: read # detect the GitHub Actions environment
+      id-token: write # sign the provenance
+      contents: write # required by the generator (assets are uploaded by the publish job, not here)
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.subjects.outputs.hashes }}
+      provenance-name: bundles.intoto.jsonl
+      upload-assets: false
+  publish:
+    needs: [plan, build, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Environment secrets (OPS_PRIVATE_KEY) and its protection rules (required reviewers, main only).
+    environment: mainnet
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 1 # one OPS transaction at a time (nonces)
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - run: go build -o "$RUNNER_TEMP/bin/sealed-release" ./catalog/tools/release && echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ matrix.app }}
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: ${{ runner.temp }}/provenance
+      - name: GitHub Release
+        id: gh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ matrix.tag }}
+          PROVENANCE: ${{ matrix.assets.provenance }}
+          RELEASE_JSON: ${{ matrix.assets.releaseJson }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          dist="$RUNNER_TEMP/release/dist"
+          cp "$RUNNER_TEMP/provenance/bundles.intoto.jsonl" "$dist/$PROVENANCE"
+          sealed-release notes --release "$dist/$RELEASE_JSON" >"$RUNNER_TEMP/notes.md"
+          state="$(scripts/release/github-release.sh publish --tag "$TAG" --target "$GITHUB_SHA" --notes "$RUNNER_TEMP/notes.md" --assets "$dist")"
+          echo "state=$state" >>"$GITHUB_OUTPUT"
+      # Onchain publication uses the bundle the public release serves. A re-run after a published release
+      # (for example after a failed transaction) takes that release's own release.json and bundle.
+      - name: Fetch the bundle by its public URL (D-046)
+        env:
+          STATE: ${{ steps.gh.outputs.state }}
+          BUNDLE: ${{ matrix.assets.bundle }}
+          RELEASE_JSON: ${{ matrix.assets.releaseJson }}
+          BASE_URL: ${{ matrix.assets.baseUrl }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          mkdir -p "$RUNNER_TEMP/public"
+          if [ "$STATE" = exists ]; then
+            curl -fsSL --proto '=https' -o "$RUNNER_TEMP/public/release.json" "$BASE_URL/$RELEASE_JSON"
+          else
+            cp "$RUNNER_TEMP/release/dist/$RELEASE_JSON" "$RUNNER_TEMP/public/release.json"
+          fi
+          hash="$(jq -r .bundleHash "$RUNNER_TEMP/public/release.json")"
+          scripts/release/github-release.sh fetch --url "$BASE_URL/$BUNDLE" --sha256 "$hash" --out "$RUNNER_TEMP/public/$BUNDLE"
+          sealed-release info --bundle "$RUNNER_TEMP/public/$BUNDLE" >"$RUNNER_TEMP/public/info.json"
+          [ "$(jq -r .releaseId "$RUNNER_TEMP/public/info.json")" = "$(jq -r .releaseId "$RUNNER_TEMP/public/release.json")" ] ||
+            { echo "::error::release.json and the public bundle disagree"; exit 1; }
+      - name: AppRegistry.publishRelease on Tempo mainnet (OPS)
+        env:
+          OPS_PRIVATE_KEY: ${{ secrets.OPS_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          BASE_URL: ${{ matrix.assets.baseUrl }}
+          PROVENANCE: ${{ matrix.assets.provenance }}
+          SIGNATURE: ${{ matrix.assets.signature }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          scripts/release/publish-release.sh --info "$RUNNER_TEMP/public/info.json" \
+            --provenance-uri "$BASE_URL/$PROVENANCE" --signature-uri "$BASE_URL/$SIGNATURE" \
+            --out "$RUNNER_TEMP/onchain.json" 2> >(tee "$RUNNER_TEMP/publish.log" >&2)
+      - name: Release notes with the transaction
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ matrix.tag }}
+          RELEASE_JSON: ${{ matrix.assets.releaseJson }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          out="$RUNNER_TEMP/final"
+          mkdir -p "$out"
+          sealed-release release-doc --base "$RUNNER_TEMP/public/release.json" --onchain "$RUNNER_TEMP/onchain.json" --out "$out/$RELEASE_JSON"
+          sealed-release notes --release "$out/$RELEASE_JSON" >"$RUNNER_TEMP/notes.md"
+          scripts/release/github-release.sh notes --tag "$TAG" --notes "$RUNNER_TEMP/notes.md"
+          gh release upload "$TAG" "$out/$RELEASE_JSON" --clobber
+          {
+            echo "### $TAG"
+            echo
+            jq -r '"publishRelease: \(.txHash) (block \(.blockNumber), fee \(.feeUsd // "?") USD)"' "$RUNNER_TEMP/onchain.json"
+            echo
+            echo "MAINNET_LEDGER.md row (copy into the private repo):"
+            echo
+            grep '^| ' "$RUNNER_TEMP/publish.log" || echo "(already published earlier; see that run)"
+          } >>"$GITHUB_STEP_SUMMARY"

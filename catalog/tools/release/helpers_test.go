@@ -61,7 +61,14 @@ func copyFile(src, dst string) error {
 		out.Close()
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		return err
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(dst, st.Mode().Perm())
 }
 
 func writeFile(t testing.TB, p, content string) {

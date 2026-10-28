@@ -12,6 +12,7 @@ RELEASE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export SEALED_REPO_ROOT="$RELEASE_ROOT"
 # Tempo FeeManager precompile: userTokens(address) and setUserToken(address) (D-038).
 FEE_MANAGER=0xfeec000000000000000000000000000000000000
+# shellcheck disable=SC2034 # used by the scripts that source this file
 REGISTRAR_ROLE=0xedcc084d3dcd65a1f7f23c65c46722faca6953d28e43150a467cf43e5c309238 # keccak256("REGISTRAR_ROLE")
 
 log() { printf '%s\n' "$*" >&2; }
