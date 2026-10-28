@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sealed-dev/sealed/internal/localtempo"
 	"github.com/sealed-dev/sealed/runtime/composer"
 )
 
@@ -59,7 +60,7 @@ func requireTools(t *testing.T, tools ...string) {
 // and returns its URL.
 func startAnvil(t *testing.T, chainID int) string {
 	t.Helper()
-	args := []string{"--network", "tempo", "--hardfork", "T4", "--port", "0", "--gas-limit", "500000000"}
+	args := []string{"--network", "tempo", "--hardfork", localtempo.Hardfork, "--port", "0", "--gas-limit", "500000000"}
 	if chainID != 0 {
 		args = append(args, "--chain-id", fmt.Sprint(chainID))
 	}

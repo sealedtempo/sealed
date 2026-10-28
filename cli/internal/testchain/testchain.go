@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/sealed-dev/sealed/internal/localtempo"
 	"github.com/sealed-dev/sealed/verifier/chain"
 )
 
@@ -102,7 +103,7 @@ func Start(t testing.TB) *Node {
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	// Chain id 4217 as on mainnet, so configs and evidence carry the production chain id.
-	cmd := exec.Command(bin, "--network", "tempo", "--hardfork", "T4", "--chain-id", "4217", "--port", fmt.Sprint(port), "--gas-limit", "500000000", "--silent")
+	cmd := exec.Command(bin, "--network", "tempo", "--hardfork", localtempo.Hardfork, "--chain-id", "4217", "--port", fmt.Sprint(port), "--gas-limit", "500000000", "--silent")
 	var logs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
 	if err := cmd.Start(); err != nil {

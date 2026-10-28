@@ -28,6 +28,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
+
+	"github.com/sealed-dev/sealed/internal/localtempo"
 )
 
 // Anvil's default dev keys (mnemonic "test test ... junk"). Public; local use only.
@@ -92,8 +94,8 @@ func Start(t testing.TB) *Node {
 		SkipOrFail(t, "anvil not installed")
 	}
 	port := freePort(t)
-	// Block gas limit 500M as on mainnet: Foundry 1.7.1's T4 rules charge about 27M gas for DeploymentRegistry.
-	cmd := exec.Command(bin, "--network", "tempo", "--hardfork", "T4", "--port", fmt.Sprint(port),
+	// Mainnet's hardfork (D-053) and its 500M block gas limit.
+	cmd := exec.Command(bin, "--network", "tempo", "--hardfork", localtempo.Hardfork, "--port", fmt.Sprint(port),
 		"--gas-limit", "500000000", "--silent")
 	var logs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
