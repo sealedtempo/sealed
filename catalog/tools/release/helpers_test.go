@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+// TestMain removes the binaries the script tests build once per process.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	for _, b := range []string{toolBin, composeBin} {
+		if b != "" {
+			_ = os.RemoveAll(filepath.Dir(b))
+		}
+	}
+	os.Exit(code)
+}
+
 // repoRoot is the real repository root (three levels up from this package).
 func repoRoot(t testing.TB) string {
 	t.Helper()
