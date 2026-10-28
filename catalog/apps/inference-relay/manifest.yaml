@@ -5,8 +5,8 @@ category: ai
 description: >-
   Paid, attested inference for Sealed deployments. An mppx server takes Machine Payments Protocol
   payments in FEE_TOKEN (USDC.e) on Tempo (per-token sessions over SSE, per-request charges as the fallback)
-  and forwards to a LiteLLM instance that reaches Tinfoil, Phala, NEAR AI and Privatemode only
-  through attestation-verified, key-pinned channels. Operated by the platform; OWNER approves its stack.
+  and forwards to a LiteLLM instance that reaches Tinfoil, Phala and NEAR AI only through
+  attestation-verified, key-pinned channels. Operated by the platform; OWNER approves its stack.
 upstream:
   repo: https://github.com/sealed-dev/sealed
   version: 0.1.0
@@ -38,12 +38,6 @@ images:
     digest: sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
     platform: linux/amd64
     license_spdx: PostgreSQL
-  # Edgeless Systems Privatemode proxy v1.60.0 (OCI index digest). privatemode-proxy/ is MIT; see LICENSE-NOTICE.
-  - name: privatemode-proxy
-    source: ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.60.0
-    digest: sha256:ea044948f9ee427ba8eff07a489e1105f20170e3e8c42b9800d8adaf065b24b3
-    platform: linux/amd64
-    license_spdx: MIT
 resources:
   cpu: 2
   memory_gb: 6
@@ -92,10 +86,6 @@ secrets:
     optional: true
   - name: NEARAI_API_KEY
     description: NEAR AI Cloud API key. Enables nearai/<model>; also authenticates its attestation reports.
-    generate: none
-    optional: true
-  - name: PRIVATEMODE_API_KEY
-    description: Privatemode API key. Enables privatemode/<model> through the Privatemode proxy.
     generate: none
     optional: true
 telemetry_off_env:

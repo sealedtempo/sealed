@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 
-export const PROVIDERS = ['tinfoil', 'phala', 'nearai', 'privatemode'] as const
+/** Attested providers behind the relay. Privatemode was dropped (D-055). */
+export const PROVIDERS = ['tinfoil', 'phala', 'nearai'] as const
 export type ProviderId = (typeof PROVIDERS)[number]
 
 /**

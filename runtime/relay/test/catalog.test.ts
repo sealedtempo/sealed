@@ -76,7 +76,7 @@ describe('catalog/apps/inference-relay', () => {
       if (String(image.source).startsWith('build:')) expect(image.digest).toBe(`sha256:${'0'.repeat(64)}`)
       else expect(image.digest).not.toBe(`sha256:${'0'.repeat(64)}`)
     }
-    expect(Object.keys(fragment.volumes)).toEqual(['inference-relay-pgdata', 'inference-relay-privatemode-ws'])
+    expect(Object.keys(fragment.volumes)).toEqual(['inference-relay-pgdata'])
     expect(manifest.primary_service in fragment.services).toBe(true)
   })
 
@@ -108,11 +108,10 @@ describe('catalog/apps/inference-relay', () => {
     expect(env('inference-relay-nearai')).toHaveProperty('NEARAI_ACCEPTED_OS_MEASUREMENTS')
   })
 
-  it('shares the Privatemode proxy workspace read-only with the front for manifest evidence', () => {
-    const front = fragment.services['inference-relay-front']
-    expect(front.volumes).toContain(`inference-relay-privatemode-ws:${front.environment.PRIVATEMODE_WORKSPACE}:ro`)
-    expect(front['x-sealed-secrets']).toContain('PRIVATEMODE_API_KEY')
-    expect(fragment.services['inference-relay-privatemode'].volumes).toEqual(['inference-relay-privatemode-ws:/workspace'])
+  it('ships no Privatemode service, image, secret, model or egress host (D-055)', () => {
+    const text = JSON.stringify({ manifest, fragment, litellm, egress })
+    expect(text.toLowerCase()).not.toContain('privatemode')
+    expect(text).not.toContain('confidential.cloud')
   })
 
   // Runs the real composer lint once runtime/composer is in this tree (after ws/composer merges).
@@ -148,8 +147,7 @@ describe('catalog/apps/inference-relay', () => {
       const params = byName.get(m.id) as Record<string, string>
       expect(params, m.id).toBeDefined()
       expect(params.model).toBe(`openai/${m.upstreamModel}`)
-      const host = m.provider === 'privatemode' ? 'http://inference-relay-privatemode:8080/v1' : `http://inference-relay-${m.provider}:8100/v1`
-      expect(params.api_base).toBe(host)
+      expect(params.api_base).toBe(`http://inference-relay-${m.provider}:8100/v1`)
       expect(params.api_key).toBe(`os.environ/${PROVIDER_KEY_ENV[m.provider]}`)
     }
     expect(litellm.general_settings.master_key).toBe('os.environ/LITELLM_MASTER_KEY')

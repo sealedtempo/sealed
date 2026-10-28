@@ -1,8 +1,13 @@
 import { Challenge, Credential } from 'mppx'
+import { Session } from 'mppx/tempo'
 import { encodeFunctionData } from 'viem'
 import { generatePrivateKey } from 'viem/accounts'
 import { Account, Transaction } from 'viem/tempo'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { ChannelJournal } from '../src/channel-journal.js'
 import { ESCROW_PRECOMPILE, PATHUSD } from '../src/config.js'
 import { type FirewallPolicy, feeCap, inspectCredential, paymentFirewall } from '../src/payment-firewall.js'
 import { RelayPinError } from '../src/relay-transport.js'
@@ -45,6 +50,17 @@ function header(intent: 'charge' | 'session', request: Record<string, unknown>, 
   const challenge = Challenge.from({ id: 'test-challenge', realm: 'relay.test', method: 'tempo', intent, request } as never)
   return Credential.serialize(Credential.from({ challenge, payload } as never))
 }
+
+/** The channel descriptor mppx sends with an open (ChannelOps.createOpenPayload). */
+function channelOf(transaction: `0x${string}`, to: `0x${string}`, operator: `0x${string}`, salt: `0x${string}`) {
+  const expiringNonceHash = Session.Precompile.Channel.computeExpiringNonceHash(
+    Session.Precompile.Channel.transactionForExpiringNonceHash({ transaction: Transaction.deserialize(transaction as `0x76${string}`) as never }) as never,
+    { sender: payer.address },
+  )
+  return { payer: payer.address, payee: to, operator, token: PATHUSD, salt, authorizedSigner: payer.address, expiringNonceHash }
+}
+const channelIdOf = (descriptor: ReturnType<typeof channelOf>) =>
+  Session.Precompile.Channel.computeId({ ...descriptor, chainId: 4217, escrow: ESCROW_PRECOMPILE } as never) as `0x${string}`
 
 const chargeRequest = (amount: string, recipient = payee) => ({ amount, currency: PATHUSD, recipient, methodDetails: { chainId: 4217 } })
 const transfer = (to: string, amount: bigint) =>
@@ -94,18 +110,36 @@ describe('payment firewall', () => {
   })
 
   it('meters a session open by its deposit and caps the channel', async () => {
+    const operator = payee as `0x${string}`
+    const salt = `0x${'00'.repeat(32)}` as const
     const open = (deposit: bigint, to: `0x${string}` = payee as `0x${string}`) =>
-      signedTx([{ to: ESCROW_PRECOMPILE, data: encodeFunctionData({ abi: escrow, functionName: 'open', args: [to, payee as `0x${string}`, PATHUSD, deposit, `0x${'00'.repeat(32)}`, payer.address] }) }])
+      signedTx([{ to: ESCROW_PRECOMPILE, data: encodeFunctionData({ abi: escrow, functionName: 'open', args: [to, operator, PATHUSD, deposit, salt, payer.address] }) }])
     const request = { amount: '0.000001', unitType: 'usd_micro', currency: PATHUSD, recipient: payee, methodDetails: { chainId: 4217, escrowContract: ESCROW_PRECOMPILE } }
-    const ok = header('session', request, { action: 'open', channelId: '0x' + 'cd'.repeat(32), transaction: await open(400_000n), cumulativeAmount: '10', signature: '0x' })
-    expect(inspectCredential(ok, policy, new Map()).debits).toEqual([
-      { kind: 'deposit', amount: 400_000n, channelId: '0x' + 'cd'.repeat(32) },
+    const openPayload = async (deposit: bigint, to: `0x${string}` = payee as `0x${string}`) => {
+      const transaction = await open(deposit, to)
+      const descriptor = channelOf(transaction, to, operator, salt)
+      return { action: 'open', channelId: channelIdOf(descriptor), transaction, descriptor, cumulativeAmount: '10', signature: '0x' }
+    }
+    const okPayload = await openPayload(400_000n)
+    const decoded = inspectCredential(header('session', request, okPayload), policy, new Map())
+    expect(decoded.debits).toEqual([
+      { kind: 'deposit', amount: 400_000n, channelId: okPayload.channelId },
       { kind: 'fee', amount: FEE },
     ])
-    const big = header('session', request, { action: 'open', channelId: '0x' + 'cd'.repeat(32), transaction: await open(600_000n), cumulativeAmount: '0', signature: '0x' })
+    // The descriptor the journal records for recovery is the channel the transaction opens.
+    expect(decoded.open).toMatchObject({ channelId: okPayload.channelId, deposit: 400_000n, chainId: 4217, escrow: ESCROW_PRECOMPILE })
+    expect(decoded.signed?.hash).toMatch(/^0x[0-9a-f]{64}$/)
+    const big = header('session', request, await openPayload(600_000n))
     expect(() => inspectCredential(big, policy, new Map())).toThrow(/cap/)
-    const elsewhere = header('session', request, { action: 'open', channelId: '0x' + 'cd'.repeat(32), transaction: await open(1n, ('0x' + '11'.repeat(20)) as `0x${string}`), cumulativeAmount: '0', signature: '0x' })
+    const elsewhere = header('session', request, await openPayload(1n, ('0x' + '11'.repeat(20)) as `0x${string}`))
     expect(() => inspectCredential(elsewhere, policy, new Map())).toThrow(/another payee/)
+    // A descriptor that is not the opened channel is refused (recovery could not close it).
+    const otherSalt = { ...okPayload, descriptor: { ...okPayload.descriptor, salt: `0x${'01'.repeat(32)}` } }
+    expect(() => inspectCredential(header('session', request, otherSalt), policy, new Map())).toThrow(/descriptor differs/)
+    const otherId = { ...okPayload, channelId: `0x${'cd'.repeat(32)}` }
+    expect(() => inspectCredential(header('session', request, otherId), policy, new Map())).toThrow(/channel id differs/)
+    const { descriptor: _d, ...noDescriptor } = okPayload
+    expect(() => inspectCredential(header('session', request, noDescriptor), policy, new Map())).toThrow(/no descriptor/)
     const customEscrow = header('session', { ...request, methodDetails: { chainId: 4217, escrowContract: '0x33b901018174DDabE4841042ab76ba85D4e24f25' } }, { action: 'voucher', channelId: '0x01', cumulativeAmount: '1', signature: '0x' })
     expect(() => inspectCredential(customEscrow, policy, new Map())).toThrow(/precompile/)
     const voucher = header('session', request, { action: 'voucher', channelId: '0x' + 'cd'.repeat(32), cumulativeAmount: '500', signature: '0x' })
@@ -228,5 +262,113 @@ describe('payment firewall', () => {
       await fetchImpl('https://relay/v1/chat/completions', post(voucher))
       expect(agent.calls).toEqual([])
     })
+  })
+
+  describe('session bootstrap proof (review M1)', () => {
+    const proof = (request: Record<string, unknown>) => header('charge', request, { type: 'proof', signature: `0x${'11'.repeat(65)}` })
+
+    it('lets mppx\'s zero-amount proof through with no debit when chain, currency and recipient match', async () => {
+      expect(inspectCredential(proof(chargeRequest('0')), policy, new Map()).debits).toEqual([])
+      const guard = new SpendGuard(1_000n)
+      const agent = fakeAgentBudget({ budget: 1_000n })
+      const sent: string[] = []
+      const fetchImpl = paymentFirewall(async (input) => (sent.push((input as Request).method), new Response(null, { status: 200 })), policy, guard, agent.budget)
+      await fetchImpl('https://relay/v1/chat/completions', { method: 'HEAD', headers: { authorization: proof(chargeRequest('0')) } })
+      expect(sent).toEqual(['HEAD'])
+      expect(agent.calls).toEqual([])
+      expect(guard.counters().debited).toBe('0')
+    })
+
+    it.each([
+      ['a non-zero amount', chargeRequest('1'), /zero-amount/],
+      ['another recipient', chargeRequest('0', '0x' + '11'.repeat(20)), /recipient/],
+      ['another currency', { ...chargeRequest('0'), currency: '0x20c0000000000000000000000000000000000001' }, /currency/],
+      ['another chain', { ...chargeRequest('0'), methodDetails: { chainId: 1 } }, /chain 1/],
+    ])('refuses a proof for %s', (_name, request, message) => {
+      expect(() => inspectCredential(proof(request), policy, new Map())).toThrow(message)
+    })
+  })
+
+  describe('uncertain outcomes (402, an error without a receipt, a failure after sending)', () => {
+    const charge = async (amount: bigint) =>
+      header('charge', chargeRequest(amount.toString()), { type: 'transaction', signature: await signedTx([transfer(payee, amount)]) })
+    const post = (auth: string) => ({ method: 'POST', headers: { authorization: auth } })
+
+    it('gives a charge back when the relay failed before taking it (an error without a payment receipt)', async () => {
+      const agent = fakeAgentBudget({ budget: 2_000_000n })
+      const guard = new SpendGuard(2_000_000n)
+      let receipt = false
+      const fetchImpl = paymentFirewall(
+        async () => new Response('{"error":{"charged":false}}', { status: 503, headers: receipt ? { 'payment-receipt': 'r' } : {} }),
+        policy,
+        guard,
+        agent.budget,
+      )
+      await fetchImpl('https://relay/v1/chat/completions', post(await charge(1_000n)))
+      expect(agent.releases()).toEqual([0n])
+      expect(guard.counters().debited).toBe('0')
+      // With a receipt the charge was taken: it stays counted (the payer answers 424).
+      receipt = true
+      await fetchImpl('https://relay/v1/chat/completions', post(await charge(1_000n)))
+      expect(agent.state.used).toBe(1_000n + FEE)
+      expect(guard.counters().debited).toBe((1_000n + FEE).toString())
+    })
+
+    it.each([
+      ['absent', 0n, '0'],
+      ['reverted', FEE, FEE.toString()],
+      ['landed', 1_000n + FEE, (1_000n + FEE).toString()],
+      ['unknown', 1_000n + FEE, (1_000n + FEE).toString()],
+    ] as const)('with a chain watcher, settles a 402 from the transaction outcome: %s', async (outcome, used, debited) => {
+      const agent = fakeAgentBudget({ budget: 2_000_000n })
+      const guard = new SpendGuard(2_000_000n)
+      const asked: { hash: string; validBefore?: number }[] = []
+      const fetchImpl = paymentFirewall(async () => new Response(null, { status: 402 }), policy, guard, agent.budget, {
+        watcher: { outcome: async (hash, validBefore) => (asked.push({ hash, validBefore }), outcome) },
+      })
+      await fetchImpl('https://relay/v1/chat/completions', post(await charge(1_000n)))
+      await fetchImpl.idle()
+      expect(asked).toHaveLength(1)
+      expect(agent.releases()).toEqual([used])
+      expect(guard.counters().debited).toBe(debited)
+    })
+
+    it('with a chain watcher, a failure after sending is settled from the chain too', async () => {
+      const agent = fakeAgentBudget({ budget: 2_000_000n })
+      const guard = new SpendGuard(2_000_000n)
+      const fetchImpl = paymentFirewall(async () => Promise.reject(new TypeError('socket hang up')), policy, guard, agent.budget, {
+        watcher: { outcome: async () => 'absent' },
+      })
+      await expect(fetchImpl('https://relay/v1/chat/completions', post(await charge(1_000n)))).rejects.toThrow(/socket/)
+      await fetchImpl.idle()
+      expect(agent.state.used).toBe(0n)
+      expect(guard.counters().debited).toBe('0')
+    })
+  })
+
+  it('journals a channel open before its credential leaves, then its vouchers and its close', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'payer-journal-'))
+    const journal = new ChannelJournal(join(dir, 'channels.json'), () => 1_000)
+    const guard = new SpendGuard(2_000_000n)
+    const operator = payee as `0x${string}`
+    const salt = `0x${'02'.repeat(32)}` as const
+    const transaction = await signedTx([{ to: ESCROW_PRECOMPILE, data: encodeFunctionData({ abi: escrow, functionName: 'open', args: [payee as `0x${string}`, operator, PATHUSD, 300_000n, salt, payer.address] }) }])
+    const descriptor = channelOf(transaction, payee as `0x${string}`, operator, salt)
+    const channelId = channelIdOf(descriptor)
+    const request = { amount: '0.000001', unitType: 'usd_micro', currency: PATHUSD, recipient: payee, methodDetails: { chainId: 4217, escrowContract: ESCROW_PRECOMPILE } }
+    const seen: (string | undefined)[] = []
+    const fetchImpl = paymentFirewall(async () => {
+      seen.push(journal.get(channelId)?.status)
+      return new Response(null, { status: 200 })
+    }, policy, guard, undefined, { journal })
+    const send = (payload: Record<string, unknown>) => fetchImpl('https://relay/v1/chat/completions', { method: 'POST', headers: { authorization: header('session', request, payload) } })
+    await send({ action: 'open', channelId, transaction, descriptor, cumulativeAmount: '10', signature: '0x' })
+    expect(seen).toEqual(['open'])
+    await send({ action: 'voucher', channelId, cumulativeAmount: '500', signature: '0x' })
+    expect(journal.get(channelId)).toMatchObject({ status: 'open', deposited: '300000', maxVoucher: '500', descriptor: { salt, payee } })
+    // Persisted: a restarted payer finds the descriptor it needs for requestClose and withdraw.
+    expect(new ChannelJournal(join(dir, 'channels.json')).get(channelId)?.descriptor.expiringNonceHash).toBe(descriptor.expiringNonceHash.toLowerCase())
+    await send({ action: 'close', channelId, cumulativeAmount: '500', signature: '0x', closeSignature: '0x' })
+    expect(journal.get(channelId)?.status).toBe('closed')
   })
 })

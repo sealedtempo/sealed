@@ -1,44 +1,14 @@
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
 import type { ProviderId } from '../prices.js'
 import type { FetchLike, ProviderStatus } from './types.js'
 import { nowSeconds } from './types.js'
 
-/** Where the relay front learns whether a provider is attested right now. */
-export type StatusSource =
-  | { kind: 'sidecar'; statusUrl: string }
-  /**
-   * Edgeless's Privatemode proxy attests the deployment against its manifest and only encrypts
-   * with a key it obtained after attestation; it answers 500 while it holds none. The proof that
-   * it is serving verified traffic is an authenticated one-token completion through it.
-   */
-  | {
-      kind: 'privatemode'
-      baseUrl: string
-      apiKey: () => string | undefined
-      model: string
-      /** The proxy's workspace (read-only mount), for the manifest it logged. */
-      workspaceDir?: string
-      probeSeconds?: number
-    }
+/**
+ * Where the relay front learns whether a provider is attested right now: its verifier sidecar
+ * (one per provider, each holding only that provider's key).
+ */
+export type StatusSource = { kind: 'sidecar'; statusUrl: string }
 
 export type GateEntry = { provider: ProviderId; enabled: boolean; source: StatusSource }
-
-/** Latest manifest the Privatemode proxy logged (workspace/manifests/log.txt names it). */
-export function privatemodeManifestEvidence(workspaceDir: string): Record<string, string> {
-  try {
-    const dir = join(workspaceDir, 'manifests')
-    const lines = readFileSync(join(dir, 'log.txt'), 'utf8').trim().split('\n').filter(Boolean)
-    const last = lines.at(-1)
-    if (!last) return { manifest: 'not logged yet' }
-    const [loggedAt, path] = last.split(' ')
-    const bytes = readFileSync(join(dir, basename(path ?? '')))
-    return { manifestSha256: createHash('sha256').update(bytes).digest('hex'), manifestLoggedAt: loggedAt ?? '', manifestVersion: String(lines.length) }
-  } catch (error) {
-    return { manifest: `unreadable: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}` }
-  }
-}
 
 /**
  * Relay-front view of provider attestation. Statuses are polled, and a request is only
@@ -75,18 +45,14 @@ export class ProviderGate {
   }
 
   async pollAll(): Promise<void> {
-    await Promise.all(this.entries.filter((e) => e.enabled).map((e) => this.pollIfDue(e)))
+    await Promise.all(this.entries.filter((e) => e.enabled).map((e) => this.poll(e)))
   }
 
-  /**
-   * Re-reads one provider's status now, right before a payment settles. Sidecar statuses are
-   * local and cheap; a Privatemode probe is a billed completion, so it keeps its own schedule.
-   */
+  /** Re-reads one provider's status now, right before a payment settles (sidecar statuses are local and cheap). */
   async refresh(provider: ProviderId): Promise<void> {
     const entry = this.entries.find((e) => e.provider === provider)
     if (!entry?.enabled) return
-    if (entry.source.kind === 'sidecar') await this.poll(entry)
-    else await this.pollIfDue(entry)
+    await this.poll(entry)
   }
 
   status(provider: ProviderId): ProviderStatus {
@@ -111,14 +77,6 @@ export class ProviderGate {
     return (this.options.now ?? nowSeconds)()
   }
 
-  private pollIfDue(entry: GateEntry): Promise<void> {
-    if (entry.source.kind === 'privatemode') {
-      const last = this.polledAt.get(entry.provider)
-      if (last !== undefined && this.now() - last < (entry.source.probeSeconds ?? 120)) return Promise.resolve()
-    }
-    return this.poll(entry)
-  }
-
   private poll(entry: GateEntry): Promise<void> {
     const running = this.inflight.get(entry.provider)
     if (running) return running
@@ -134,45 +92,17 @@ export class ProviderGate {
     const fetchImpl = this.options.fetch ?? fetch
     const maxAge = this.options.maxStatusAgeSeconds ?? 60
     try {
-      if (entry.source.kind === 'sidecar') {
-        const res = await fetchImpl(entry.source.statusUrl, { signal: AbortSignal.timeout(5_000) })
-        if (!res.ok) throw new Error(`sidecar status HTTP ${res.status}`)
-        const body = (await res.json()) as Partial<ProviderStatus>
-        this.statuses.set(entry.provider, {
-          provider: entry.provider,
-          enabled: entry.enabled && body.enabled === true,
-          verified: body.verified === true,
-          verifiedAt: body.verifiedAt,
-          expiresAt: body.verified === true ? Math.min(body.expiresAt ?? Infinity, this.now() + maxAge) : undefined,
-          detail: typeof body.detail === 'string' ? body.detail : 'no detail',
-          evidence: body.evidence,
-        })
-        return
-      }
-      const source = entry.source
-      const key = source.apiKey()
-      if (!key) throw new Error('PRIVATEMODE_API_KEY not readable by the relay front')
-      const res = await fetchImpl(`${source.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: source.model, messages: [{ role: 'user', content: 'ok' }], max_tokens: 1, stream: false }),
-        signal: AbortSignal.timeout(30_000),
-      })
-      await res.body?.cancel().catch(() => {})
-      const evidence = {
-        method: 'authenticated completion through privatemode-proxy (encrypts only with a key released after attestation)',
-        probeStatus: String(res.status),
-        ...(source.workspaceDir ? privatemodeManifestEvidence(source.workspaceDir) : {}),
-      }
-      const at = this.now()
+      const res = await fetchImpl(entry.source.statusUrl, { signal: AbortSignal.timeout(5_000) })
+      if (!res.ok) throw new Error(`sidecar status HTTP ${res.status}`)
+      const body = (await res.json()) as Partial<ProviderStatus>
       this.statuses.set(entry.provider, {
         provider: entry.provider,
-        enabled: entry.enabled,
-        verified: res.ok,
-        verifiedAt: res.ok ? at : undefined,
-        expiresAt: res.ok ? at + (source.probeSeconds ?? 120) + maxAge : undefined,
-        detail: res.ok ? 'attested by privatemode-proxy; probe completion succeeded' : `privatemode-proxy refused the probe (HTTP ${res.status})`,
-        evidence,
+        enabled: entry.enabled && body.enabled === true,
+        verified: body.verified === true,
+        verifiedAt: body.verifiedAt,
+        expiresAt: body.verified === true ? Math.min(body.expiresAt ?? Infinity, this.now() + maxAge) : undefined,
+        detail: typeof body.detail === 'string' ? body.detail : 'no detail',
+        evidence: body.evidence,
       })
     } catch (error) {
       this.statuses.set(entry.provider, {

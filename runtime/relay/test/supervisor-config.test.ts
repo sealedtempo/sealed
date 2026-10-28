@@ -70,7 +70,8 @@ describe('relay configuration', () => {
     expect(config.databaseUrl).toBe('postgresql://relay:p%40ss%2Fword@inference-relay-db:5432/relay')
     const enabled = config.providers.filter((p) => p.enabled).map((p) => p.provider)
     expect(enabled).toEqual(['nearai'])
-    expect(config.providers.find((p) => p.provider === 'privatemode')).toMatchObject({ kind: 'privatemode', statusUrl: 'http://inference-relay-privatemode:8080' })
+    expect(config.providers.map((p) => p.provider)).toEqual(['tinfoil', 'phala', 'nearai'])
+    expect(config.providers.find((p) => p.provider === 'tinfoil')).toMatchObject({ statusUrl: 'http://inference-relay-tinfoil:8100/v1/status' })
     expect(config.settlerKey).toBeUndefined()
   })
 
@@ -92,6 +93,5 @@ describe('relay configuration', () => {
   it('builds sidecar verifiers only for configured providers', () => {
     expect(verifierFor('nearai', env)?.provider).toBe('nearai')
     expect(verifierFor('tinfoil', env)).toBeUndefined()
-    expect(() => verifierFor('privatemode', { ...env, PRIVATEMODE_API_KEY: 'x' })).toThrow(/proxy/)
   })
 })

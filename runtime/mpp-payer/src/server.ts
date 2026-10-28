@@ -1,10 +1,15 @@
 import { type Context, Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { GateState } from './attestation-gate.js'
 import { CompletionAccumulator, sseFrame } from './openai.js'
-import type { RelayResult } from './relay-client.js'
+import { type RelayResult, RelaySessionFailedError } from './relay-client.js'
 import { RelayChannelError } from './relay-transport.js'
+import { sseData } from './sse.js'
 import { BudgetUnavailableError } from './shared-budget.js'
 import { PaymentPolicyError, SpendLimitError } from './spend-guard.js'
+
+/** The relay refuses bodies above 4 MiB (runtime/relay DEFAULT_MAX_BODY_BYTES); the payer stops reading there too. */
+export const MAX_BODY_BYTES = 4 * 1024 * 1024
 
 export type PayerDeps = {
   gate: { ensureFresh(): Promise<GateState>; isOpen(): boolean }
@@ -19,6 +24,23 @@ export type PayerDeps = {
 
 function error(status: number, type: string, message: string): Response {
   return Response.json({ error: { type, message } }, { status })
+}
+
+/**
+ * 424: the relay took a per-request charge and then failed. LiteLLM and the OpenAI SDKs retry
+ * 429 and 5xx; a retried charge would be paid again, so this answer is a 4xx they do not retry.
+ */
+function failedAfterPayment(detail: string, upstreamStatus?: number): Response {
+  return Response.json(
+    {
+      error: {
+        type: 'relay_failed_after_payment',
+        message: `the relay was paid for this request and then failed (${detail}); it is not retried automatically`,
+        ...(upstreamStatus !== undefined ? { relay_status: upstreamStatus } : {}),
+      },
+    },
+    { status: 424 },
+  )
 }
 
 function passthroughHeaders(from: Headers): Headers {
@@ -103,6 +125,11 @@ export function createPayerApp(deps: PayerDeps): Hono {
     }
   })
 
+  app.post(
+    '/v1/chat/completions',
+    bodyLimit({ maxSize: MAX_BODY_BYTES, onError: () => error(413, 'request_too_large', `request body exceeds ${MAX_BODY_BYTES} bytes`) }),
+  )
+
   app.post('/v1/chat/completions', async (c) => {
     const gate = await deps.gate.ensureFresh()
     if (!gate.ok) return attestationFailed(gate.detail)
@@ -128,6 +155,10 @@ export function createPayerApp(deps: PayerDeps): Hono {
         log({ event: 'relay_channel_refused', model, detail: err.message.slice(0, 200) })
         return attestationFailed(err.message)
       }
+      if (err instanceof RelaySessionFailedError) {
+        log({ event: 'relay_session_failed', model, detail: (err.cause as Error)?.message?.slice(0, 200) })
+        return error(502, 'relay_session_failed', 'the relay session failed after the request was sent')
+      }
       log({ event: 'relay_request_failed', model, detail: (err as Error).message?.slice(0, 200) })
       return error(502, 'relay_unreachable', 'relay request failed')
     } finally {
@@ -135,8 +166,28 @@ export function createPayerApp(deps: PayerDeps): Hono {
     }
 
     if (result.kind === 'response') {
-      log({ event: 'relay_request', model, intent: result.intent, status: result.response.status })
-      return new Response(result.response.body, { status: result.response.status, headers: passthroughHeaders(result.response.headers) })
+      const { response, paid } = result
+      log({ event: 'relay_request', model, intent: result.intent, status: response.status, paid })
+      if (paid && response.status >= 400) {
+        await response.body?.cancel().catch(() => {})
+        return failedAfterPayment(`relay status ${response.status}`, response.status)
+      }
+      // A charge is always sent as a stream (the relay settles it after the upstream's first
+      // byte); a non-stream caller gets it folded back into one chat.completion.
+      if (result.streamed && !wantsStream && response.ok) {
+        const acc = new CompletionAccumulator()
+        try {
+          for await (const data of sseData(response)) {
+            if (data === '[DONE]') break
+            acc.add(data)
+          }
+        } catch (err) {
+          return paid ? failedAfterPayment('stream interrupted') : error(502, 'relay_stream_failed', (err as Error).message)
+        }
+        if (acc.error !== undefined) return paid ? failedAfterPayment('upstream error in the stream') : Response.json({ error: acc.error }, { status: 502 })
+        return Response.json(acc.result(model))
+      }
+      return new Response(response.body, { status: response.status, headers: passthroughHeaders(response.headers) })
     }
 
     log({ event: 'relay_request', model, intent: 'session', stream: wantsStream })

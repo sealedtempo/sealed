@@ -144,6 +144,8 @@ describe('relay attestation gate', () => {
     expect((await lax.gate.check()).detail).toMatch(/lacks required checks: expected_apps/)
     const otherMode = gateWith(undefined, fakeVerifierd({ ok: true, mode: 'evidence' }))
     expect((await otherMode.gate.check()).detail).toMatch(/mode evidence/)
+    const noMode = gateWith(undefined, fakeVerifierd({ ok: true, mode: null }))
+    expect((await noMode.gate.check()).detail).toMatch(/mode \(none\)/)
     const otherStack = gateWith(undefined, fakeVerifierd({ ok: true, stackHash: '0x' + '12'.repeat(32) }))
     expect((await otherStack.gate.check()).detail).toMatch(/different app-compose/)
   })
@@ -189,9 +191,9 @@ describe('relay attestation gate', () => {
 
 describe('payee from the real composer output', () => {
   // test/fixtures/relay-app-compose.json: `sealed-compose compose --fill-release-ids
-  // --allow-missing-sbom --print app-compose` (composer 1.2.0) over catalog/apps/inference-relay as
-  // it is, with the relay route on the attest host (on_attest_host), an OWNER config with only that
-  // app, mainnet contracts and USDC.e as feeToken.
+  // --allow-missing-sbom --print app-compose` (composer 1.3.0) over catalog/apps/inference-relay as
+  // it is (without Privatemode, D-055), with the relay route on the attest host (on_attest_host), an
+  // OWNER config with only that app, mainnet contracts and USDC.e as feeToken.
   const composed = readFileSync(join(import.meta.dirname, 'fixtures/relay-app-compose.json'), 'utf8')
 
   it('reads the deployed treasury, the literal TREASURY_ADDRESS of inference-relay-front', () => {

@@ -173,9 +173,10 @@ export class SpendGuard {
 
   /**
    * Reserves every debit of one payment together (for example a charge and its network fee), or
-   * none of them. Returns one release function for all of them.
+   * none of them. Returns one release function for all of them; `keep` names debits that stay
+   * counted (for example the network fee of a transaction that was included but reverted).
    */
-  reserveAll(debits: readonly { amount: bigint; kind: DebitKind }[]): () => void {
+  reserveAll(debits: readonly { amount: bigint; kind: DebitKind }[]): (keep?: (debit: { amount: bigint; kind: DebitKind }) => boolean) => void {
     this.roll()
     let total = 0n
     for (const d of debits) {
@@ -196,11 +197,12 @@ export class SpendGuard {
     }
     this.persist()
     let released = false
-    return () => {
+    return (keep) => {
       if (released || day !== this.day) return
       released = true
-      this.debited -= total
       for (const d of debits) {
+        if (keep?.(d)) continue
+        this.debited -= d.amount
         this.byKind[d.kind].n--
         this.byKind[d.kind].amount -= d.amount
       }

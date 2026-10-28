@@ -7,7 +7,7 @@
 #
 #   payer (customer VM) --MPP--> inference-relay-front --> inference-relay-litellm
 #       --> inference-relay-{tinfoil,phala,nearai} (verify, then TLS-pinned forward)
-#       --> inference-relay-privatemode (Edgeless proxy: attests and encrypts itself)
+# Privatemode is not part of the relay (D-055: its proxy image may not be redistributed).
 services:
   inference-relay-front:
     image: "{{image:relay}}"
@@ -17,7 +17,6 @@ services:
       - LITELLM_MASTER_KEY
       - DATABASE_PASSWORD
       - RELAY_SETTLER_KEY
-      - PRIVATEMODE_API_KEY
     environment:
       PORT: "8080"
       MPP_REALM: sealed-inference-relay
@@ -46,10 +45,6 @@ services:
       RELAY_MAX_BODY_BYTES: "4194304"
       RELAY_UNPAID_PER_MINUTE: "120"
       TRUSTED_PROXY_IPS: 172.30.0.4
-      PRIVATEMODE_WORKSPACE: /privatemode-workspace
-      PRIVATEMODE_PROBE_SECONDS: "120"
-    volumes:
-      - inference-relay-privatemode-ws:/privatemode-workspace:ro
     depends_on:
       inference-relay-db:
         condition: service_healthy
@@ -74,7 +69,6 @@ services:
       - TINFOIL_API_KEY
       - PHALA_API_KEY
       - NEARAI_API_KEY
-      - PRIVATEMODE_API_KEY
     environment:
       STORE_MODEL_IN_DB: "False"
       LITELLM_LOG: ERROR
@@ -181,21 +175,5 @@ services:
     read_only: true
     mem_limit: 256m
 
-  # Edgeless Privatemode proxy (MIT, privatemode-proxy/ of edgelesssys/privatemode-public).
-  # It verifies the Privatemode deployment against its manifest, obtains the prompt key only
-  # after attestation and encrypts requests end to end; while it holds no such key it answers
-  # 500. LiteLLM and the front's probe pass PRIVATEMODE_API_KEY per request, so the proxy itself
-  # holds no secret. Its workspace (the manifest log) is shared read-only with the front, which
-  # records the manifest hash as evidence.
-  inference-relay-privatemode:
-    image: "{{image:privatemode-proxy}}"
-    entrypoint: ["/bin/privatemode-proxy"]
-    command: ["--port=8080", "--listen-address=0.0.0.0", "--workspace=/workspace", "--disable-prompt-cache=true", "--log-format=json"]
-    volumes:
-      - inference-relay-privatemode-ws:/workspace
-    read_only: true
-    mem_limit: 256m
-
 volumes:
   inference-relay-pgdata: {}
-  inference-relay-privatemode-ws: {}

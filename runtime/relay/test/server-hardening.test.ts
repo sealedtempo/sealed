@@ -51,6 +51,7 @@ function setup(
   })
   const payments: Payments = {
     sessionsEnabled: false,
+    preflightCharge: async () => ((options.intent ?? 'charge') === 'none' ? { kind: 'none' } : { kind: 'valid' }),
     async handle(_request, o): Promise<PaymentResult> {
       offers.push(o)
       if ((options.intent ?? 'charge') === 'none') return { status: 402, challenge: new Response('pay', { status: 402 }) }
@@ -210,7 +211,12 @@ describe('relay request hardening', () => {
     const relay = createRelayApp({
       prices,
       gate: { allows: () => true, status: (p: string) => ({ provider: p, enabled: true, verified: true, detail: 'ok' }), all: () => [] } as never,
-      payments: { sessionsEnabled: false, handle: async () => ({ status: 200, intent: 'charge', withReceipt: (r) => r as Response }), credit: async () => 'credited' },
+      payments: {
+        sessionsEnabled: false,
+        preflightCharge: async () => ({ kind: 'valid' }),
+        handle: async () => ({ status: 200, intent: 'charge', withReceipt: (r) => r as Response }),
+        credit: async () => 'credited',
+      },
       upstream: new Upstream({ baseURL: 'http://litellm/v1', apiKey: 'k', fetch: llm.fetch }),
       batchTokens: 8,
       onUsage: (e) => usage.push(e),

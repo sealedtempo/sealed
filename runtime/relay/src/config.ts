@@ -12,7 +12,6 @@ export const PROVIDER_KEY_ENV: Record<ProviderId, string> = {
   tinfoil: 'TINFOIL_API_KEY',
   phala: 'PHALA_API_KEY',
   nearai: 'NEARAI_API_KEY',
-  privatemode: 'PRIVATEMODE_API_KEY',
 }
 
 /** A secret from env (envexec exports them) or its tmpfs file; undefined when absent or empty. */
@@ -76,10 +75,8 @@ export type RelayConfig = {
   settleIntervalMs: number
   superviseSeconds: number
   usageUrl: string
-  providers: { provider: ProviderId; enabled: boolean; statusUrl: string; kind: 'sidecar' | 'privatemode' }[]
-  /** The Privatemode proxy's workspace, mounted read-only into the front for manifest evidence. */
-  privatemodeWorkspace?: string
-  privatemodeProbeSeconds: number
+  /** One verifier sidecar per provider; a provider is enabled when its API key is configured. */
+  providers: { provider: ProviderId; enabled: boolean; statusUrl: string }[]
   maxBodyBytes: number
   unpaidPerMinute: number
   /** Peers whose X-Forwarded-For names the client (the stack's Caddy). */
@@ -96,17 +93,11 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
   const rawSettler = readSecret('RELAY_SETTLER_KEY', env)
   const settler = rawSettler && !rawSettler.startsWith('0x') ? `0x${rawSettler}` : rawSettler
   if (settler && !/^0x[0-9a-fA-F]{64}$/.test(settler)) throw new Error('RELAY_SETTLER_KEY must be a 32-byte hex key')
-  const providers = PROVIDERS.map((provider) => {
-    const proxy = provider === 'privatemode'
-    const host = `inference-relay-${provider}`
-    const statusUrl = env[`${provider.toUpperCase()}_STATUS_URL`] ?? (proxy ? `http://${host}:8080` : `http://${host}:8100/v1/status`)
-    return {
-      provider,
-      enabled: readSecret(PROVIDER_KEY_ENV[provider], env) !== undefined,
-      statusUrl,
-      kind: proxy ? ('privatemode' as const) : ('sidecar' as const),
-    }
-  })
+  const providers = PROVIDERS.map((provider) => ({
+    provider,
+    enabled: readSecret(PROVIDER_KEY_ENV[provider], env) !== undefined,
+    statusUrl: env[`${provider.toUpperCase()}_STATUS_URL`] ?? `http://inference-relay-${provider}:8100/v1/status`,
+  }))
   const recipient = address(requireEnv(env, 'TREASURY_ADDRESS'), 'TREASURY_ADDRESS')
   if (/^0x0{40}$/.test(recipient))
     throw new Error('TREASURY_ADDRESS is the zero-address placeholder; the release must pin the operator treasury')
@@ -131,8 +122,6 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     superviseSeconds: intEnv(env, 'SUPERVISE_INTERVAL_SECONDS', 60),
     usageUrl: env.SEALED_USAGE_URL ?? 'http://sealed-agent:7070/v1/usage-events',
     providers,
-    privatemodeWorkspace: env.PRIVATEMODE_WORKSPACE || undefined,
-    privatemodeProbeSeconds: intEnv(env, 'PRIVATEMODE_PROBE_SECONDS', 120),
     maxBodyBytes: intEnv(env, 'RELAY_MAX_BODY_BYTES', 4 * 1024 * 1024),
     unpaidPerMinute: intEnv(env, 'RELAY_UNPAID_PER_MINUTE', 120),
     trustedProxies: (env.TRUSTED_PROXY_IPS ?? '172.30.0.4')
