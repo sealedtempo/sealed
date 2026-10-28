@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Mppx, tempo } from 'mppx/client'
 import type { Account, Client } from 'viem'
 import { ESCROW_PRECOMPILE } from './config.js'
+import { RelayChannelError } from './relay-transport.js'
 import { PaymentPolicyError, SpendLimitError } from './spend-guard.js'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -46,11 +47,11 @@ function formatUnits(value: bigint, decimals: number): string {
   return `${value / base}${frac ? `.${frac}` : ''}`
 }
 
-/** The first SpendLimitError or PaymentPolicyError in an error's cause chain. */
-export function rootPolicyError(error: unknown): SpendLimitError | PaymentPolicyError | undefined {
+/** The first SpendLimitError, PaymentPolicyError or RelayChannelError in an error's cause chain. */
+export function rootPolicyError(error: unknown): SpendLimitError | PaymentPolicyError | RelayChannelError | undefined {
   let current: unknown = error
   for (let depth = 0; current && depth < 8; depth++) {
-    if (current instanceof SpendLimitError || current instanceof PaymentPolicyError) return current
+    if (current instanceof SpendLimitError || current instanceof PaymentPolicyError || current instanceof RelayChannelError) return current
     current = (current as { cause?: unknown }).cause
   }
   return undefined
@@ -59,7 +60,9 @@ export function rootPolicyError(error: unknown): SpendLimitError | PaymentPolicy
 /**
  * Pays the relay with mppx: per-token MPP sessions over SSE first, per-request charges as the
  * fallback when a session cannot be opened or used (no session offer, escrow unavailable,
- * remaining budget below one deposit). Payment policy violations never fall back.
+ * remaining budget below one deposit). Payment policy violations and refusals of the pinned
+ * relay channel never fall back. `deps.fetch` is the payment firewall over the TLS-pinned
+ * relay transport, so mppx can only reach the attested relay key.
  */
 export class RelayClient {
   private session: SessionManagerLike | undefined
@@ -109,7 +112,8 @@ export class RelayClient {
         return { kind: 'session', events }
       } catch (error) {
         const policy = rootPolicyError(error)
-        if (policy instanceof PaymentPolicyError) throw policy
+        // A policy violation or an unattested relay channel never falls back to another payment path.
+        if (policy instanceof PaymentPolicyError || policy instanceof RelayChannelError) throw policy
         const refusal = this.refusals.get(requestId)
         if (refusal) return { kind: 'response', intent: 'refused', response: refusal }
         this.sessionsDisabledUntil = this.now() + (this.deps.sessionRetrySeconds ?? 300)

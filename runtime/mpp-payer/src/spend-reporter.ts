@@ -5,7 +5,7 @@ export type SpendReport = {
   mode: string
   currency: string
   counters: SpendCounters
-  relay: { attested: boolean; checkedAt?: number; sessionsAvailable: boolean }
+  relay: { attested: boolean; checkedAt?: number; stackHash?: string; sessionsAvailable: boolean }
   sentAt: number
 }
 

@@ -2,6 +2,7 @@ import { type Context, Hono } from 'hono'
 import type { GateState } from './attestation-gate.js'
 import { CompletionAccumulator, sseFrame } from './openai.js'
 import type { RelayResult } from './relay-client.js'
+import { RelayChannelError } from './relay-transport.js'
 import { PaymentPolicyError, SpendLimitError } from './spend-guard.js'
 
 export type PayerDeps = {
@@ -85,18 +86,24 @@ export function createPayerApp(deps: PayerDeps): Hono {
     return next()
   })
 
+  const attestationFailed = (detail: string) =>
+    error(503, 'relay_attestation_failed', `relay attestation failed, refusing to send requests: ${detail}`)
+
   app.get('/v1/models', async () => {
+    const gate = await deps.gate.ensureFresh()
+    if (!gate.ok) return attestationFailed(gate.detail)
     try {
       const res = await deps.models()
       return new Response(res.body, { status: res.status, headers: passthroughHeaders(res.headers) })
-    } catch {
+    } catch (err) {
+      if (err instanceof RelayChannelError) return attestationFailed(err.message)
       return error(502, 'relay_unreachable', 'relay model list unavailable')
     }
   })
 
   app.post('/v1/chat/completions', async (c) => {
     const gate = await deps.gate.ensureFresh()
-    if (!gate.ok) return error(503, 'relay_attestation_failed', `relay attestation failed, refusing to send requests: ${gate.detail}`)
+    if (!gate.ok) return attestationFailed(gate.detail)
 
     let body: Record<string, unknown>
     try {
@@ -114,6 +121,10 @@ export function createPayerApp(deps: PayerDeps): Hono {
     } catch (err) {
       if (err instanceof SpendLimitError) return error(429, 'spend_limit_exceeded', err.message)
       if (err instanceof PaymentPolicyError) return error(502, 'payment_refused', err.message)
+      if (err instanceof RelayChannelError) {
+        log({ event: 'relay_channel_refused', model, detail: err.message.slice(0, 200) })
+        return attestationFailed(err.message)
+      }
       log({ event: 'relay_request_failed', model, detail: (err as Error).message?.slice(0, 200) })
       return error(502, 'relay_unreachable', 'relay request failed')
     } finally {

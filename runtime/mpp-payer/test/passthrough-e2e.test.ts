@@ -74,10 +74,11 @@ describe.skipIf(!anvilAvailable())('payer -> relay -> LiteLLM, paid with mppx on
     const relayFetch = async (input: RequestInfo | URL, init?: RequestInit) => relayApp.fetch(new Request(input, init))
     const verifier = fakeVerifierd({ ok: options.verifierOk ?? true })
     const gate = new RelayAttestationGate({
-      attestUrl: 'https://attest.relay.sealed.test/attest',
+      attestUrl: 'https://relay.sealed.test/attest',
       verifierdUrl: 'http://sealed-verifierd:8088',
       relayOwner: ('0x' + '0a'.repeat(20)) as `0x${string}`,
       intervalSeconds: 900,
+      retrySeconds: 0,
       fetchAttest: fakeAttest({ appCompose: relayAppCompose(treasury) }).fetchAttest,
       fetchVerifier: verifier.fetchVerifier,
     })

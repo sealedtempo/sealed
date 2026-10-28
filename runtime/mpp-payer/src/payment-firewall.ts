@@ -2,6 +2,7 @@ import { Credential } from 'mppx'
 import { decodeFunctionData, isAddressEqual } from 'viem'
 import { Transaction } from 'viem/tempo'
 import { ESCROW_PRECOMPILE } from './config.js'
+import { wasNotSent } from './relay-transport.js'
 import { PaymentPolicyError, type SpendGuard } from './spend-guard.js'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -183,7 +184,8 @@ export function inspectCredential(header: string, policy: FirewallPolicy, deposi
 /**
  * A fetch for mppx clients that inspects every outgoing Payment credential, reserves the
  * debit in the spend guard before the credential leaves, and releases it if the relay
- * answers 402 (payment not accepted).
+ * answers 402 (payment not accepted) or the request provably never left (pinned transport
+ * refusal). `inner` is the TLS-pinned relay transport in production.
  */
 export function paymentFirewall(inner: FetchLike, policy: FirewallPolicy, guard: SpendGuard): FetchLike {
   const deposits = new Map<string, bigint>()
@@ -193,8 +195,15 @@ export function paymentFirewall(inner: FetchLike, policy: FirewallPolicy, guard:
     if (!header) return inner(request)
     const { credential, debits } = inspectCredential(header, policy, deposits)
     const releases = debits.map((d) => guard.reserve(d.amount, d.kind))
-    // If the request throws, the credential may have been delivered, so the reservation is kept.
-    const response = await inner(request)
+    let response: Response
+    try {
+      response = await inner(request)
+    } catch (error) {
+      // Refused before sending (for example a relay key that is not the attested one): nothing was spent.
+      // Any other failure may have delivered the credential, so its reservation is kept.
+      if (wasNotSent(error)) for (const release of releases) release()
+      throw error
+    }
     if (response.status === 402) {
       for (const release of releases) release()
       return response

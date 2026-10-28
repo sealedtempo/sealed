@@ -7,8 +7,9 @@ import { CallerAllowlist } from './caller-allowlist.js'
 import { loadPayerConfig } from './config.js'
 import { paymentFirewall } from './payment-firewall.js'
 import { RelayClient } from './relay-client.js'
+import { PinnedRelayTransport } from './relay-transport.js'
 import { createPayerApp } from './server.js'
-import { SpendGuard } from './spend-guard.js'
+import { FileSpendStore, SpendGuard } from './spend-guard.js'
 import { SpendReporter } from './spend-reporter.js'
 
 const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), ...event }))
@@ -26,6 +27,7 @@ function main(): void {
     .extend(walletActions)
     .extend(tempoActions())
 
+  let transport: PinnedRelayTransport | undefined
   const gate = new RelayAttestationGate({
     attestUrl: config.relayAttestUrl,
     verifierdUrl: config.verifierdUrl,
@@ -33,11 +35,21 @@ function main(): void {
     intervalSeconds: config.attestIntervalSeconds,
     payeeOverride: config.relayPayee,
     allowSimulated: process.env.SEALED_DEV_SIM === '1',
+    onExplicitFailure: () => transport?.reset(),
     log,
   })
-  const guard = new SpendGuard(config.spendLimitPerDay)
+  // Everything sent to the relay goes over connections pinned to the attested TLS key.
+  transport = new PinnedRelayTransport({
+    origin: config.relayUrl,
+    pin: () => gate.pin(),
+    repin: () => gate.recheckAfterKeyMismatch(),
+  })
+  const guard = new SpendGuard(config.spendLimitPerDay, Date.now, {
+    shareBps: config.relaySpendShareBps,
+    store: new FileSpendStore(config.spendStateFile, (e) => log({ event: 'spend_state_unsaved', detail: e.message })),
+  })
   const firewalled = paymentFirewall(
-    fetch,
+    transport.fetch,
     {
       payerAddress: account.address,
       currency: config.currency,
@@ -68,7 +80,12 @@ function main(): void {
       mode: config.mode,
       currency: config.currency,
       counters: guard.counters(),
-      relay: { attested: gate.isOpen(), checkedAt: gate.state().checkedAt, sessionsAvailable: relay.sessionsAvailable() },
+      relay: {
+        attested: gate.isOpen(),
+        checkedAt: gate.state().checkedAt,
+        stackHash: gate.state().stackHash,
+        sessionsAvailable: relay.sessionsAvailable(),
+      },
     }),
     log,
   })
@@ -77,7 +94,7 @@ function main(): void {
   const app = createPayerApp({
     gate,
     relay,
-    models: () => fetch(`${config.relayUrl}/v1/models`, { signal: AbortSignal.timeout(15_000) }),
+    models: () => transport.fetch(`${config.relayUrl}/v1/models`, { signal: AbortSignal.timeout(15_000) }),
     callers,
     remoteAddress: (c) => (c.env as { incoming?: { socket?: { remoteAddress?: string } } })?.incoming?.socket?.remoteAddress,
     onPayment: () => reporter.poke(),
@@ -95,6 +112,7 @@ function main(): void {
     callers.stop()
     reporter.stop()
     await relay.close()
+    await transport.close()
     await reporter.send()
     server.close()
     process.exit(0)

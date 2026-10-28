@@ -7,14 +7,14 @@ import type { AddressInfo } from 'node:net'
 
 export type TlsFixture = { cert: string; key: string }
 
-/** A fresh self-signed P-256 certificate for localhost (openssl CLI). */
-export function selfSigned(): TlsFixture {
+/** A fresh self-signed P-256 certificate for localhost (openssl CLI). Distinct subjects let tests trust several at once. */
+export function selfSigned(commonName = 'localhost'): TlsFixture {
   const dir = mkdtempSync(join(tmpdir(), 'sealed-tls-'))
   try {
     execFileSync('openssl', [
       'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
       '-keyout', join(dir, 'k.pem'), '-out', join(dir, 'c.pem'), '-days', '2',
-      '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
+      '-subj', `/CN=${commonName}`, '-addext', 'subjectAltName=DNS:localhost',
     ], { stdio: 'ignore' })
     return { cert: readFileSync(join(dir, 'c.pem'), 'utf8'), key: readFileSync(join(dir, 'k.pem'), 'utf8') }
   } finally {

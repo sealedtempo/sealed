@@ -17,10 +17,11 @@ function sessionEvents(words: string[], usage = true): AsyncIterable<string> {
 function setup(relayImpl: (body: Record<string, unknown>) => Promise<RelayResult>, verdict = { ok: true }, callerOk = true) {
   const verifier = fakeVerifierd(verdict)
   const gate = new RelayAttestationGate({
-    attestUrl: 'https://attest.relay.example/attest',
+    attestUrl: 'https://relay.example/attest',
     verifierdUrl: 'http://v:8088',
     relayOwner: ('0x' + '0a'.repeat(20)) as `0x${string}`,
     intervalSeconds: 900,
+    retrySeconds: 0,
     fetchAttest: fakeAttest().fetchAttest,
     fetchVerifier: verifier.fetchVerifier,
   })

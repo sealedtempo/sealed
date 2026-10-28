@@ -5,6 +5,8 @@ export const PATHUSD = '0x20c0000000000000000000000000000000000000' as const
 export const ESCROW_PRECOMPILE = '0x4d50500000000000000000000000000000000000' as const
 export const DEFAULT_SECRETS_DIR = '/run/sealed/secrets/sealed-mpp-payer'
 export const DEFAULT_CONFIG_PATH = '/etc/sealed/config.json'
+/** In the payer image's writable layer, which survives container restarts. */
+export const DEFAULT_SPEND_STATE_FILE = '/var/lib/sealed-mpp-payer/spend-state.json'
 
 export type SettlementMode = 'access-key' | 'enclave-account'
 
@@ -24,7 +26,7 @@ export type PayerConfig = {
   relayUrl: string
   relayAttestUrl: string
   relayOwner: `0x${string}`
-  /** Pinned relay payee; when unset it is taken from the attested relay compose. */
+  /** Optional pin of the relay payee; it must equal TREASURY_ADDRESS in the attested relay compose. */
   relayPayee?: `0x${string}`
   rpcUrl: string
   verifierdUrl: string
@@ -32,6 +34,10 @@ export type PayerConfig = {
   attestIntervalSeconds: number
   allowedCallers: string[]
   reportIntervalSeconds: number
+  /** Share of SPEND_LIMIT_PER_DAY the payer may spend on the relay; the rest stays for the agent's fees (D-026). */
+  relaySpendShareBps: number
+  /** Where the day's debits are kept so a restart does not reset the budget. */
+  spendStateFile: string
 }
 
 type PublicConfig = {
@@ -72,16 +78,30 @@ export function readPayerSecret(name: string, env: NodeJS.ProcessEnv = process.e
   return readFileSync(path, 'utf8').trim() || undefined
 }
 
-function url(value: unknown, name: string): string {
+function httpsUrl(value: unknown, name: string): URL {
   if (typeof value !== 'string') throw new Error(`config ${name} missing`)
   const parsed = new URL(value)
-  if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1')
-    throw new Error(`config ${name} must be https`)
-  return value.replace(/\/+$/, '')
+  if (parsed.protocol !== 'https:') throw new Error(`config ${name} must be https (the relay's TLS key is attested)`)
+  return parsed
+}
+
+/**
+ * The relay's chat endpoint must be served on the attested origin: the live attestation binds
+ * the TLS key of the relayAttest connection, and every relay request is pinned to that key, so
+ * both endpoints must be one host and port (one certificate).
+ */
+export function relayEndpoints(relay: unknown, relayAttest: unknown): { relayUrl: string; relayAttestUrl: string } {
+  const r = httpsUrl(relay, 'endpoints.relay')
+  const a = httpsUrl(relayAttest, 'endpoints.relayAttest')
+  if (r.origin !== a.origin)
+    throw new Error(
+      `endpoints.relay (${r.origin}) and endpoints.relayAttest (${a.origin}) must share one origin: relay requests are pinned to the attested TLS key`,
+    )
+  return { relayUrl: `${r.origin}${r.pathname.replace(/\/+$/, '')}`, relayAttestUrl: a.toString() }
 }
 
 export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConfig {
-  const path = env.SEALED_CONFIG_PATH ?? DEFAULT_CONFIG_PATH
+  const path = env.SEALED_CONFIG_FILE ?? env.SEALED_CONFIG_PATH ?? DEFAULT_CONFIG_PATH
   const pub = JSON.parse(readFileSync(path, 'utf8')) as PublicConfig
   if (pub.schema !== undefined && pub.schema !== 'sealed-config/v1') throw new Error(`unexpected config schema ${pub.schema}`)
   const chainId = pub.chainId ?? 4217
@@ -101,6 +121,9 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
   if (mode !== 'access-key' && mode !== 'enclave-account') throw new Error(`unknown settlement mode ${mode}`)
 
   const defaultDeposit = spendLimitPerDay / 4n > 500_000n ? 500_000n : spendLimitPerDay / 4n
+  const relaySpendShareBps = intEnv(env, 'RELAY_SPEND_SHARE_BPS', 8000)
+  if (relaySpendShareBps > 10_000) throw new Error('RELAY_SPEND_SHARE_BPS must be at most 10000')
+  const { relayUrl, relayAttestUrl } = relayEndpoints(pub.endpoints?.relay, pub.endpoints?.relayAttest)
   return {
     port: intEnv(env, 'PORT', 8090),
     chainId,
@@ -112,18 +135,20 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
     spendLimitPerDay,
     maxDeposit: env.MAX_DEPOSIT ? baseUnits(env.MAX_DEPOSIT, 'MAX_DEPOSIT') : defaultDeposit,
     maxCharge: env.MAX_CHARGE ? baseUnits(env.MAX_CHARGE, 'MAX_CHARGE') : 50_000n,
-    relayUrl: url(pub.endpoints?.relay, 'endpoints.relay'),
-    relayAttestUrl: url(pub.endpoints?.relayAttest, 'endpoints.relayAttest'),
+    relayUrl,
+    relayAttestUrl,
     relayOwner: address(pub.relayOwner, 'relayOwner'),
     relayPayee: env.RELAY_PAYEE ? address(env.RELAY_PAYEE, 'RELAY_PAYEE') : undefined,
     rpcUrl: pub.endpoints?.tempoRpc ?? 'https://rpc.tempo.xyz',
-    verifierdUrl: (env.VERIFIERD_URL ?? 'http://sealed-verifierd:8088').replace(/\/+$/, ''),
-    agentUrl: (env.AGENT_URL ?? 'http://sealed-agent:7070').replace(/\/+$/, ''),
+    verifierdUrl: (env.SEALED_VERIFIERD_URL ?? env.VERIFIERD_URL ?? 'http://sealed-verifierd:8088').replace(/\/+$/, ''),
+    agentUrl: (env.SEALED_AGENT_URL ?? env.AGENT_URL ?? 'http://sealed-agent:7070').replace(/\/+$/, ''),
     attestIntervalSeconds: intEnv(env, 'ATTEST_INTERVAL_SECONDS', 900),
     allowedCallers: (env.ALLOWED_CALLERS ?? 'llm-gateway')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
     reportIntervalSeconds: intEnv(env, 'SPEND_REPORT_INTERVAL_SECONDS', 60),
+    relaySpendShareBps,
+    spendStateFile: env.SPEND_STATE_FILE ?? DEFAULT_SPEND_STATE_FILE,
   }
 }
