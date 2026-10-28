@@ -76,7 +76,9 @@ at one block. A `dep_` alias is resolved through `--api` (`POST /v1/verify`); wi
 evidence is downloaded from `--api` (`SEALED_API_KEY` as bearer). The platform is never trusted for a check: the
 deployment id it resolves is required to match the evidence and the chain. Prints a readable report, or JSON
 with `--json`; `--report <file>` writes the JSON too. `--dev-*` flags (simulated quotes, self-signed or private
-attest hosts) need `SEALED_DEV_SIM=1` and reports then say simulated.
+attest hosts, `--dev-allow-http-assets` for a local devnet's plain http release asset host) need
+`SEALED_DEV_SIM=1` and reports then say simulated. A chain without embedded defaults (a local devnet) needs
+`--deployments` and a `--defaults` file naming its chain id and release asset base.
 
 ### catalog, release build
 
@@ -84,7 +86,9 @@ attest hosts) need `SEALED_DEV_SIM=1` and reports then say simulated.
 `getRelease`); `show` downloads the latest bundle, checks it against bundleHash and prints its manifest.
 `release build <app>` builds the deterministic bundle from `catalog/apps/<app>` and prints the publishRelease
 arguments; `--check` rebuilds a published release with the SBOMs and scans of the published bundle (CI generates
-them) and must match the onchain bundleHash byte for byte, or lists the files that differ.
+them) and must match the onchain bundleHash byte for byte, or lists the files that differ. A manifest image whose
+digest is still the all-zero placeholder (D-028) cannot boot, so `release build` refuses it; only a local devnet
+builds such bundles, with `--dev-allow-unbuilt` and `SEALED_DEV_SIM=1` (the JSON output lists them as `unbuilt`).
 
 ## Tests
 

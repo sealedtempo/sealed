@@ -144,7 +144,7 @@ func (e *Env) httpClient() *http.Client {
 // common holds the flags shared by commands that read the chain or the catalog.
 type commonFlags struct {
 	rpc, defaultsFile, deploymentsFile, assetBase, bundleCache string
-	json                                                       bool
+	json, devHTTPAssets                                        bool
 }
 
 func (c *commonFlags) register(fs *flag.FlagSet) {
@@ -154,9 +154,13 @@ func (c *commonFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.assetBase, "release-asset-base", "", "release asset base URL (default catalog.release_asset_base)")
 	fs.StringVar(&c.bundleCache, "bundle-cache", "", "content-addressed bundle cache directory (default the user cache dir)")
 	fs.BoolVar(&c.json, "json", false, "print JSON")
+	fs.BoolVar(&c.devHTTPAssets, "dev-allow-http-assets", false, "DEV ONLY (SEALED_DEV_SIM=1): fetch release bundles from a plain http asset base (local devnets); the sha256 check against bundleHash still applies")
 }
 
 func (c *commonFlags) settings(e *Env) (*settings.Settings, error) {
+	if c.devHTTPAssets && e.getenv("SEALED_DEV_SIM") != "1" {
+		return nil, usagef("--dev-allow-http-assets needs SEALED_DEV_SIM=1 (never for a production check)")
+	}
 	return settings.Load(settings.Options{DefaultsFile: c.defaultsFile, DeploymentsFile: c.deploymentsFile, RPCURL: c.rpc}.FromEnv(e.getenv))
 }
 
@@ -171,7 +175,7 @@ func (c *commonFlags) fetcher(e *Env, s *settings.Settings) *bundles.Fetcher {
 			cache = filepath.Join(dir, "sealed", "bundles")
 		}
 	}
-	return &bundles.Fetcher{Base: base, HTTP: e.httpClient(), CacheDir: cache, AllowHTTP: e.AllowHTTPBundles}
+	return &bundles.Fetcher{Base: base, HTTP: e.httpClient(), CacheDir: cache, AllowHTTP: e.AllowHTTPBundles || c.devHTTPAssets}
 }
 
 // usageError is a command line mistake (exit 2).
