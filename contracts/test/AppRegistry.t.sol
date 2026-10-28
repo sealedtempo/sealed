@@ -435,6 +435,20 @@ contract AppRegistryTest is SealedTest {
         assertTrue(a != b);
     }
 
+    /// @dev Review fix (logic-F5): each (appId, bundleHash) is published once, whatever the earlier status.
+    function test_publishRelease_revertsOnDuplicateBundle() public {
+        bytes32 bundle = keccak256(abi.encode("bundle", appA, "1.0.0"));
+        assertEq(apps.releaseByBundle(appA, bundle), releaseA);
+        vm.expectRevert(abi.encodeWithSelector(AppRegistry.BundleAlreadyPublished.selector, appA, bundle, releaseA));
+        _publishAs(ops, appA, "1.0.1", bundle);
+
+        vm.prank(owner);
+        apps.revokeRelease(releaseA, "malicious");
+        vm.expectRevert(abi.encodeWithSelector(AppRegistry.BundleAlreadyPublished.selector, appA, bundle, releaseA));
+        _publishAs(ops, appA, "1.0.2", bundle);
+        assertEq(apps.releaseByBundle(appB, bundle), bytes32(0), "per app");
+    }
+
     function test_publishRelease_revokedVersionCannotBeReused() public {
         vm.prank(owner);
         apps.revokeRelease(releaseA, "bad");

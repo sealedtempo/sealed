@@ -133,6 +133,28 @@ contract PlatformRegistryTest is SealedTest {
         );
     }
 
+    /// @dev Review fix (logic-F5): one image per measurement set, whatever the earlier image's status.
+    function test_addImage_revertsOnDuplicateMeasurements() public {
+        _add(newId, false);
+        bytes32 mh = platform.getImage(newId).measurementsHash;
+        assertEq(platform.imageByMeasurements(mh), newId);
+        bytes32 third = keccak256("image-3");
+        vm.startPrank(owner);
+        vm.expectRevert(abi.encodeWithSelector(PlatformRegistry.MeasurementsAlreadyRegistered.selector, mh, newId));
+        platform.addImage(
+            third, "sealed-os", "2.0.1", _measurement(1), _measurement(2), _measurement(3), _measurement(4), true, ""
+        );
+        platform.deprecateImage(newId);
+        platform.revokeImage(newId, "CVE");
+        vm.expectRevert(abi.encodeWithSelector(PlatformRegistry.MeasurementsAlreadyRegistered.selector, mh, newId));
+        platform.addImage(
+            third, "sealed-os", "2.0.1", _measurement(1), _measurement(2), _measurement(3), _measurement(4), false, ""
+        );
+        vm.stopPrank();
+        assertEq(uint8(platform.imageStatus(third)), uint8(IPlatformRegistry.ImageStatus.None));
+        assertEq(platform.imageByMeasurements(keccak256("none")), bytes32(0));
+    }
+
     function test_addImage_revertsOnEmptyName() public {
         vm.prank(owner);
         vm.expectRevert(PlatformRegistry.EmptyField.selector);

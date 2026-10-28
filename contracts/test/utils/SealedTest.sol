@@ -84,25 +84,37 @@ abstract contract SealedTest is Test {
         }
     }
 
-    function _measurementsHash() internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(_measurement(1), _measurement(2), _measurement(3), _measurement(4)));
+    /// @dev A 48-byte register value derived from an image label, so every test image has its own measurements
+    ///      (PlatformRegistry registers each measurement set once).
+    function _measurementOf(string memory label, uint8 index) internal pure returns (bytes memory) {
+        return abi.encodePacked(keccak256(abi.encode(label, index, 0)), bytes16(keccak256(abi.encode(label, index, 1))));
+    }
+
+    function _imageMeasurementsHash(string memory name, string memory version) internal pure returns (bytes32) {
+        string memory label = string.concat(name, "@", version);
+        return keccak256(
+            abi.encodePacked(
+                _measurementOf(label, 0), _measurementOf(label, 1), _measurementOf(label, 2), _measurementOf(label, 3)
+            )
+        );
     }
 
     function _imageIdFor(string memory name, string memory version) internal pure returns (bytes32) {
-        return keccak256(abi.encode(name, version, _measurementsHash()));
+        return keccak256(abi.encode(name, version, _imageMeasurementsHash(name, version)));
     }
 
     function _addImage(string memory name, string memory version, bool isDebug) internal returns (bytes32 id) {
         id = _imageIdFor(name, version);
+        string memory label = string.concat(name, "@", version);
         vm.prank(owner);
         platform.addImage(
             id,
             name,
             version,
-            _measurement(1),
-            _measurement(2),
-            _measurement(3),
-            _measurement(4),
+            _measurementOf(label, 0),
+            _measurementOf(label, 1),
+            _measurementOf(label, 2),
+            _measurementOf(label, 3),
             isDebug,
             "https://github.com/sealed/sealed-os"
         );

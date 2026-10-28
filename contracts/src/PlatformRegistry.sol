@@ -10,6 +10,8 @@ import {OwnableNoRenounce} from "./utils/OwnableNoRenounce.sol";
 /// @dev D-007: addImage takes the raw 48-byte measurements, computes measurementsHash onchain and emits both, so the
 ///      event can never disagree with the stored hash. Status: None -> Active -> Deprecated -> Revoked, or
 ///      Active -> Revoked. Revoked is terminal.
+///      Each measurement set is registered once (contract review): a revoked image's MRTD/RTMRs cannot come back
+///      under a new imageId, and imageByMeasurements maps a quote's measurements to its one image.
 contract PlatformRegistry is IPlatformRegistry, OwnableNoRenounce {
     /// @notice Contract version.
     string public constant VERSION = "1.0.0";
@@ -18,6 +20,9 @@ contract PlatformRegistry is IPlatformRegistry, OwnableNoRenounce {
     uint256 public constant MEASUREMENT_LENGTH = 48;
 
     mapping(bytes32 imageId => Image image) private _images;
+
+    /// @notice The image registered with a measurementsHash (bytes32(0) when none). Never cleared.
+    mapping(bytes32 measurementsHash => bytes32 imageId) public imageByMeasurements;
 
     /// @notice Number of images ever added.
     uint256 public imageCount;
@@ -60,6 +65,8 @@ contract PlatformRegistry is IPlatformRegistry, OwnableNoRenounce {
     error ZeroImageId();
     /// @notice An image with this id already exists.
     error ImageAlreadyExists(bytes32 imageId);
+    /// @notice These measurements are already registered (in any status) under `imageId`.
+    error MeasurementsAlreadyRegistered(bytes32 measurementsHash, bytes32 imageId);
     /// @notice No image with this id exists.
     error ImageNotFound(bytes32 imageId);
     /// @notice A measurement was not exactly 48 bytes. `index` is 0 for MRTD and 1..3 for RTMR0..RTMR2.
@@ -74,7 +81,7 @@ contract PlatformRegistry is IPlatformRegistry, OwnableNoRenounce {
 
     /// @notice Adds an Active image. Owner only.
     /// @dev imageId is computed offchain (keccak256(abi.encode(name, version, measurementsHash))); any unique non-zero
-    ///      id is accepted.
+    ///      id is accepted. The measurements must not belong to any earlier image, whatever its status.
     /// @param imageId Unique non-zero image id.
     /// @param name Image name (non-empty).
     /// @param version Image version (non-empty).
@@ -101,6 +108,9 @@ contract PlatformRegistry is IPlatformRegistry, OwnableNoRenounce {
         if (_images[imageId].status != ImageStatus.None) revert ImageAlreadyExists(imageId);
         if (bytes(name).length == 0 || bytes(version).length == 0) revert EmptyField();
         measurementsHash = computeMeasurementsHash(mrtd, rtmr0, rtmr1, rtmr2);
+        bytes32 existing = imageByMeasurements[measurementsHash];
+        if (existing != bytes32(0)) revert MeasurementsAlreadyRegistered(measurementsHash, existing);
+        imageByMeasurements[measurementsHash] = imageId;
 
         Image storage image = _images[imageId];
         image.measurementsHash = measurementsHash;
@@ -117,7 +127,9 @@ contract PlatformRegistry is IPlatformRegistry, OwnableNoRenounce {
         emit ImageAdded(imageId, measurementsHash, name, version, mrtd, rtmr0, rtmr1, rtmr2, isDebug, sourceURI);
     }
 
-    /// @notice Deprecates an Active image. Owner only. Deprecated images are no longer approved.
+    /// @notice Deprecates an Active image. Owner only. Deprecated images are no longer approved: like revokeImage,
+    ///         this stops registrations and heartbeats of every stack on the image at once (D-013 keeps images
+    ///         literal), and the measurements cannot be registered again.
     /// @param imageId The image id.
     function deprecateImage(bytes32 imageId) external onlyOwner {
         Image storage image = _images[imageId];

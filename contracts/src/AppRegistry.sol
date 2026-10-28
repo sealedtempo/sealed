@@ -15,6 +15,8 @@ import {OwnableNoRenounce} from "./utils/OwnableNoRenounce.sol";
 ///      Release status (D-013): None -> Active -> Deprecated -> Revoked, or Active -> Revoked. Revoked is terminal.
 ///      isActiveRelease is true for Active and Deprecated; isApprovableRelease only for Active; latestRelease returns
 ///      the newest Active release.
+///      Each (appId, bundleHash) is published once (contract review): a revoked bundle cannot come back as a new
+///      version. Versions also stay taken after revocation.
 contract AppRegistry is IAppRegistry, OwnableNoRenounce, AccessControl {
     /// @notice Contract version.
     string public constant VERSION = "1.0.0";
@@ -29,6 +31,7 @@ contract AppRegistry is IAppRegistry, OwnableNoRenounce, AccessControl {
     mapping(bytes32 releaseId => Release release) private _releases;
     mapping(bytes32 appId => bytes32[] releaseIds) private _appReleases;
     mapping(bytes32 appId => mapping(bytes32 versionHash => bytes32 releaseId)) private _releaseByVersion;
+    mapping(bytes32 appId => mapping(bytes32 bundleHash => bytes32 releaseId)) private _releaseByBundle;
     bytes32[] private _appIds;
 
     /// @notice Emitted when an app is registered.
@@ -93,6 +96,8 @@ contract AppRegistry is IAppRegistry, OwnableNoRenounce, AccessControl {
     error ReleaseAlreadyExists(bytes32 releaseId);
     /// @notice The app already has a release with this version.
     error VersionAlreadyPublished(bytes32 appId, string version);
+    /// @notice The app already published this bundle (in any status) as `releaseId`.
+    error BundleAlreadyPublished(bytes32 appId, bytes32 bundleHash, bytes32 releaseId);
     /// @notice The release does not exist.
     error ReleaseNotFound(bytes32 releaseId);
     /// @notice The release's status does not allow this transition.
@@ -205,7 +210,7 @@ contract AppRegistry is IAppRegistry, OwnableNoRenounce, AccessControl {
     /// @notice Publishes an Active release. REGISTRAR_ROLE only.
     /// @param appId A registered app.
     /// @param version Release version (non-empty, unique per app).
-    /// @param bundleHash sha256 of the deterministic release bundle (non-zero).
+    /// @param bundleHash sha256 of the deterministic release bundle (non-zero, unique per app).
     /// @param egressPolicyHash sha256 of the canonical egress policy.
     /// @param sbomHash Hash over the bundle's SBOM files.
     /// @param provenanceURI Build provenance location.
@@ -371,6 +376,14 @@ contract AppRegistry is IAppRegistry, OwnableNoRenounce, AccessControl {
         return _releaseByVersion[appId][keccak256(bytes(version))];
     }
 
+    /// @notice The release id an app published a bundle as, or bytes32(0).
+    /// @param appId The app id.
+    /// @param bundleHash The bundle hash.
+    /// @return The release id.
+    function releaseByBundle(bytes32 appId, bytes32 bundleHash) external view returns (bytes32) {
+        return _releaseByBundle[appId][bundleHash];
+    }
+
     /// @notice keccak256(abi.encode(appId, version, bundleHash)) (D-008).
     /// @param appId The app id.
     /// @param version The version string.
@@ -407,7 +420,10 @@ contract AppRegistry is IAppRegistry, OwnableNoRenounce, AccessControl {
         if (_releases[releaseId].status != ReleaseStatus.None) revert ReleaseAlreadyExists(releaseId);
         bytes32 versionHash = keccak256(bytes(version));
         if (_releaseByVersion[appId][versionHash] != bytes32(0)) revert VersionAlreadyPublished(appId, version);
+        bytes32 bundleRelease = _releaseByBundle[appId][bundleHash];
+        if (bundleRelease != bytes32(0)) revert BundleAlreadyPublished(appId, bundleHash, bundleRelease);
         _releaseByVersion[appId][versionHash] = releaseId;
+        _releaseByBundle[appId][bundleHash] = releaseId;
         _appReleases[appId].push(releaseId);
     }
 
