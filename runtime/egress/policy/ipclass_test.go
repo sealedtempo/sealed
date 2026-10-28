@@ -45,6 +45,18 @@ func TestClassify(t *testing.T) {
 		"100::1":                 ClassReserved,     // discard-only
 		"fec0::1":                ClassReserved,     // site-local
 		"4000::1":                ClassReserved,     // outside 2000::/3
+		"192.0.0.8":              ClassReserved,     // IETF protocol assignments
+		"198.18.0.1":             ClassReserved,     // benchmarking
+		"198.19.255.255":         ClassReserved,
+		"192.88.99.1":            ClassReserved, // retired 6to4 relay anycast
+		"2001:2::1":              ClassReserved, // IPv6 benchmarking
+		"2001:10::1":             ClassReserved, // ORCHID
+		"2001:20::1":             ClassReserved, // ORCHIDv2
+		"198.51.100.7":           ClassPublic,   // TEST-NET-2 stays public (unrouted fixture)
+		"172.30.0.1":             ClassVMInternal,
+		"172.30.0.3":             ClassVMInternal,
+		"172.31.0.2":             ClassVMInternal,
+		"172.30.1.1":             ClassPrivate,
 	}
 	for s, want := range cases {
 		if got := Classify(netip.MustParseAddr(s)); got != want {
@@ -79,7 +91,7 @@ func TestIPPolicyCheck(t *testing.T) {
 
 func TestValidateAllowedPrivateCIDR(t *testing.T) {
 	good := []string{"10.0.0.0/8", "10.128.0.0/9", "172.16.0.0/12", "192.168.10.0/24", "100.64.0.0/10", "fc00::/7", "fd00:1::/64", "10.1.2.3/32"}
-	bad := []string{"0.0.0.0/0", "8.8.8.0/24", "169.254.0.0/16", "169.254.169.254/32", "127.0.0.0/8", "10.0.0.1/8", "10.0.0.0/7", "::/0", "fe80::/10", "64:ff9b::/96", "::ffff:10.0.0.0/104", "10.0.0.0", "garbage"}
+	bad := []string{"0.0.0.0/0", "8.8.8.0/24", "169.254.0.0/16", "169.254.169.254/32", "127.0.0.0/8", "10.0.0.1/8", "10.0.0.0/7", "::/0", "fe80::/10", "64:ff9b::/96", "::ffff:10.0.0.0/104", "10.0.0.0", "garbage", "172.30.0.0/24", "172.30.0.128/25", "172.31.0.5/32"}
 	for _, s := range good {
 		if _, err := validateAllowedPrivateCIDR(s); err != nil {
 			t.Errorf("validateAllowedPrivateCIDR(%q) = %v", s, err)
@@ -103,7 +115,7 @@ func TestAlwaysDeniedPrefixes(t *testing.T) {
 		}
 		return false
 	}
-	for _, s := range []string{"169.254.169.254", "127.0.0.1", "0.0.0.0", "224.0.0.1", "fe80::1", "::1", "64:ff9b::1", "fd20:ce::254"} {
+	for _, s := range []string{"169.254.169.254", "127.0.0.1", "0.0.0.0", "224.0.0.1", "fe80::1", "::1", "64:ff9b::1", "fd20:ce::254", "172.30.0.1", "172.31.0.1", "198.18.0.1"} {
 		if !contains(s) {
 			t.Errorf("%s missing from always-denied prefixes", s)
 		}

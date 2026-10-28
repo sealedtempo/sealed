@@ -1,7 +1,8 @@
 // Package stats counts allowed and blocked egress attempts per caller and
-// destination key, and serves them to the stats readers. Keys are
-// "host:port" strings chosen by the proxy and DNS server; nothing else
-// about a request (paths, queries, payloads) ever reaches this package.
+// destination key, and serves them to the stats readers. Keys come from the
+// policy package's key grammar (allowlist entries or a fixed vocabulary);
+// nothing else about a request (names, paths, queries, payloads) ever
+// reaches this package.
 package stats
 
 import (
@@ -9,10 +10,14 @@ import (
 	"time"
 )
 
-// OverflowKey collects attempts once a caller has MaxKeys distinct keys.
+// OverflowKey collects attempts once a caller has MaxKeys distinct capped
+// keys.
 const OverflowKey = "other:0"
 
-// DefaultMaxKeys bounds distinct keys per caller and per verdict.
+// DefaultMaxKeys bounds the distinct capped keys per caller and verdict.
+// Keys that are the caller's own allowlist entries are not capped: the
+// config already bounds them (at most 1024 per caller), and capping them
+// would let junk keys hide legitimate traffic.
 const DefaultMaxKeys = 256
 
 // Counts maps a destination key to an attempt count.
@@ -38,8 +43,14 @@ type Counter struct {
 	mu       sync.Mutex
 	since    time.Time
 	maxKeys  int
-	total    map[string]*CallerCounts
-	interval map[string]*CallerCounts
+	total    map[string]*tally
+	interval map[string]*tally
+}
+
+// tally is one caller's counts plus how many capped keys each verdict holds.
+type tally struct {
+	CallerCounts
+	cappedAllowed, cappedBlocked int
 }
 
 // New returns a Counter whose snapshots report since as their start time.
@@ -51,33 +62,42 @@ func New(since time.Time, maxKeys int) *Counter {
 	return &Counter{
 		since:    since,
 		maxKeys:  maxKeys,
-		total:    map[string]*CallerCounts{},
-		interval: map[string]*CallerCounts{},
+		total:    map[string]*tally{},
+		interval: map[string]*tally{},
 	}
 }
 
-// Allow counts one allowed attempt.
-func (c *Counter) Allow(caller, key string) { c.add(caller, key, true) }
+// Allow counts one allowed attempt. key is the allowlist entry that matched,
+// so it is not capped.
+func (c *Counter) Allow(caller, key string) { c.add(caller, key, true, false) }
 
-// Block counts one blocked attempt.
-func (c *Counter) Block(caller, key string) { c.add(caller, key, false) }
+// BlockEntry counts one blocked attempt whose key is one of the caller's
+// allowlist entries (or derived one-to-one from one); it is not capped.
+func (c *Counter) BlockEntry(caller, key string) { c.add(caller, key, false, false) }
 
-func (c *Counter) add(caller, key string, allowed bool) {
+// Block counts one blocked attempt under a capped key.
+func (c *Counter) Block(caller, key string) { c.add(caller, key, false, true) }
+
+func (c *Counter) add(caller, key string, allowed, capped bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, set := range []map[string]*CallerCounts{c.total, c.interval} {
-		cc := set[caller]
-		if cc == nil {
-			cc = &CallerCounts{Allowed: Counts{}, Blocked: Counts{}}
-			set[caller] = cc
+	for _, set := range []map[string]*tally{c.total, c.interval} {
+		t := set[caller]
+		if t == nil {
+			t = &tally{CallerCounts: CallerCounts{Allowed: Counts{}, Blocked: Counts{}}}
+			set[caller] = t
 		}
-		m := cc.Blocked
+		m, n := t.Blocked, &t.cappedBlocked
 		if allowed {
-			m = cc.Allowed
+			m, n = t.Allowed, &t.cappedAllowed
 		}
 		k := key
-		if _, ok := m[k]; !ok && len(m) >= c.maxKeys {
-			k = OverflowKey
+		if _, seen := m[k]; !seen && capped {
+			if *n >= c.maxKeys {
+				k = OverflowKey
+			} else {
+				*n++
+			}
 		}
 		m[k]++
 	}
@@ -95,11 +115,11 @@ func (c *Counter) TakeInterval(start time.Time) Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := build(start, c.interval)
-	c.interval = map[string]*CallerCounts{}
+	c.interval = map[string]*tally{}
 	return s
 }
 
-func build(since time.Time, set map[string]*CallerCounts) Snapshot {
+func build(since time.Time, set map[string]*tally) Snapshot {
 	s := Snapshot{
 		Since:   since.Unix(),
 		Allowed: Counts{},

@@ -14,6 +14,7 @@ type Allowlist struct {
 	wildcard  map[string]Entry // "base:port" for "*.base:port"
 	names     map[string]Entry // exact hostnames, any port (DNS)
 	wildNames map[string]Entry // wildcard bases, any port (DNS)
+	ports     map[uint16]bool  // every port any entry lists
 }
 
 // NewAllowlist indexes entries. The first entry for a name wins as the
@@ -25,8 +26,10 @@ func NewAllowlist(entries []Entry) *Allowlist {
 		wildcard:  map[string]Entry{},
 		names:     map[string]Entry{},
 		wildNames: map[string]Entry{},
+		ports:     map[uint16]bool{},
 	}
 	for _, e := range entries {
+		a.ports[e.Port] = true
 		key := e.Host + ":" + strconv.Itoa(int(e.Port))
 		switch {
 		case e.Wildcard:

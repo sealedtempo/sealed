@@ -3,15 +3,21 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
 
+	"github.com/sealed-dev/sealed/runtime/egress/auth"
+	"github.com/sealed-dev/sealed/runtime/egress/limits"
 	"github.com/sealed-dev/sealed/runtime/egress/policy"
 	"github.com/sealed-dev/sealed/runtime/egress/stats"
 	"github.com/sealed-dev/sealed/runtime/egress/upstream"
@@ -61,7 +67,16 @@ func TestDestination(t *testing.T) {
 	}
 }
 
-func newTestProxy(t *testing.T) *Proxy {
+type testProxy struct {
+	*Proxy
+	authDir string
+}
+
+func newTestProxy(t *testing.T) *Proxy { return newTestProxyWith(t, false).Proxy }
+
+// newTestProxyWith builds a proxy for alpha (172.30.0.16) and sealed-agent
+// (172.30.0.3); withAuth makes alpha a proxyAuth caller.
+func newTestProxyWith(t *testing.T, withAuth bool) testProxy {
 	t.Helper()
 	for _, v := range proxyEnvVars {
 		t.Setenv(v, "")
@@ -70,7 +85,8 @@ func newTestProxy(t *testing.T) *Proxy {
 		Listen:      &policy.Listen{Proxy: "127.0.0.1:0", DNS: "127.0.0.1:0", Stats: "127.0.0.1:0"},
 		UpstreamDNS: []string{"127.0.0.1:53"},
 		Callers: []policy.Caller{
-			{Name: "alpha", IP: "172.30.0.16", Allow: []string{"api.example.com:443"}},
+			{Name: "alpha", IP: "172.30.0.16", Allow: []string{"api.example.com:443"}, ProxyAuth: withAuth},
+			{Name: "sealed-agent", IP: "172.30.0.3", Allow: []string{}},
 		},
 		AllowedPrivateCIDRs: []string{},
 		StatsReaders:        []string{},
@@ -79,7 +95,13 @@ func newTestProxy(t *testing.T) *Proxy {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := t.TempDir()
+	tokens, err := auth.Provision(dir, pol.ProxyAuthCallers())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, err := New(Options{
+		Tokens:   tokens,
 		Policy:   pol,
 		Resolver: upstream.New(pol.Upstreams(), time.Second),
 		Stats:    stats.New(time.Now(), 0),
@@ -92,7 +114,7 @@ func newTestProxy(t *testing.T) *Proxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return p
+	return testProxy{Proxy: p, authDir: dir}
 }
 
 func TestDeciderDeniesUnlessAllowlisted(t *testing.T) {
@@ -155,8 +177,94 @@ func TestOnRejectRewritesOnlyPolicyDenials(t *testing.T) {
 		t.Error("upstream error rewritten")
 	}
 	s := p.opts.Stats.Snapshot()
-	if s.Callers["alpha"].Blocked["*.example.com:443"] != 1 || s.Blocked.Total() != 1 {
+	if s.Callers["alpha"].Blocked["unlisted:443"] != 1 || s.Blocked.Total() != 1 {
 		t.Errorf("blocked = %v", s.Callers)
+	}
+}
+
+func TestRequestKey(t *testing.T) {
+	entries := []policy.Entry{}
+	for _, s := range []string{"api.example.com:443", "198.51.100.7:443"} {
+		e, err := policy.ParseEntry(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, e)
+	}
+	allow := policy.NewAllowlist(entries)
+	cases := map[string]string{
+		"CONNECT secretpayload42.com:443 HTTP/1.1\r\nHost: secretpayload42.com:443\r\n\r\n":          "unlisted:443",
+		"CONNECT api.example.com:22 HTTP/1.1\r\nHost: api.example.com:22\r\n\r\n":                    "api.example.com:other",
+		"CONNECT 203.0.113.77:443 HTTP/1.1\r\nHost: 203.0.113.77:443\r\n\r\n":                        "ip-public:443",
+		"CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n\r\n":                                      "ip-loopback:443",
+		"CONNECT [fd20:ce::254]:80 HTTP/1.1\r\nHost: [fd20:ce::254]:80\r\n\r\n":                      "ip-metadata:80",
+		"GET http://169.254.169.254/computeMetadata/v1/ HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n":   "ip-metadata:80",
+		"GET https://api.example.com/x HTTP/1.1\r\nHost: api.example.com\r\n\r\n":                    "api.example.com:443",
+		"GET https://exfil-abc123.evil.example/ HTTP/1.1\r\nHost: exfil-abc123.evil.example\r\n\r\n": "unlisted:443",
+		"CONNECT api.example.com:0443 HTTP/1.1\r\nHost: api.example.com:0443\r\n\r\n":                "api.example.com:other",
+		"CONNECT localhost:443 HTTP/1.1\r\nHost: localhost:443\r\n\r\n":                              "invalid:443",
+	}
+	for raw, want := range cases {
+		r := readRequest(t, raw)
+		if got, _ := requestKey(allow, r); got != want {
+			t.Errorf("requestKey(%q) = %q, want %q", strings.SplitN(raw, "\r\n", 2)[0], got, want)
+		}
+	}
+}
+
+func TestUnauthenticatedCallerGets407(t *testing.T) {
+	p := newTestProxyWith(t, true)
+	tok, err := os.ReadFile(filepath.Join(p.authDir, "alpha", auth.TokenFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	connect := func(hdr string) *http.Request {
+		r := readRequest(t, "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n"+hdr+"\r\n")
+		r.RemoteAddr = "172.30.0.16:5000"
+		return r
+	}
+	if _, err := p.roleFromRequest(connect("")); err == nil {
+		t.Fatal("role granted without a credential")
+	}
+	creds := base64.StdEncoding.EncodeToString([]byte("alpha:" + string(tok)))
+	if role, err := p.roleFromRequest(connect("Proxy-Authorization: Basic " + creds + "\r\n")); err != nil || role != "alpha" {
+		t.Fatalf("role with credential = %q, %v", role, err)
+	}
+	resp := &http.Response{StatusCode: http.StatusProxyAuthRequired, Header: http.Header{}, Request: connect("")}
+	p.onReject(nil, resp)
+	if resp.StatusCode != http.StatusProxyAuthRequired || !strings.HasPrefix(resp.Header.Get("Proxy-Authenticate"), "Basic") {
+		t.Errorf("unauthenticated response = %d %v", resp.StatusCode, resp.Header)
+	}
+	if got := p.opts.Stats.Snapshot().Callers["alpha"].Blocked[policy.KeyUnauthenticated]; got != 1 {
+		t.Errorf("unauthenticated not counted: %v", p.opts.Stats.Snapshot().Callers)
+	}
+}
+
+func TestRateLimitIsPerCaller(t *testing.T) {
+	p := newTestProxyWith(t, false)
+	p.requests = limits.NewRate(0.001, 2)
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	h := p.rateLimit(ok)
+	send := func(remote string) int {
+		r := readRequest(t, "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n\r\n")
+		r.RemoteAddr = remote
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	for i := 0; i < 2; i++ {
+		if code := send("172.30.0.16:5000"); code != http.StatusNoContent {
+			t.Fatalf("request %d = %d", i, code)
+		}
+	}
+	if code := send("172.30.0.16:5001"); code != http.StatusTooManyRequests {
+		t.Fatalf("over the rate = %d, want 429", code)
+	}
+	if code := send("172.30.0.3:5000"); code != http.StatusNoContent {
+		t.Fatalf("another caller limited by alpha's rate: %d", code)
+	}
+	if got := p.opts.Stats.Snapshot().Callers["alpha"].Blocked[policy.KeyRateLimited]; got != 1 {
+		t.Errorf("rate-limited not counted: %v", p.opts.Stats.Snapshot().Callers)
 	}
 }
 
@@ -178,4 +286,60 @@ func TestRuleRanges(t *testing.T) {
 	if !r[0].Net.Contains(net.ParseIP("169.254.169.254")) || r[0].Net.Contains(net.ParseIP("169.254.169.253")) {
 		t.Error("IPv4 range built with the wrong mask")
 	}
+}
+
+func TestLimitListenerRefusesOverShareAndReleasesOnClose(t *testing.T) {
+	p := newTestProxy(t)
+	p.opts.SourceIP = func(netip.AddrPort) netip.Addr { return netip.MustParseAddr("172.30.0.16") }
+	p.opts.Limits.ConnLifetime = 300 * time.Millisecond
+	p.conns = limits.NewPool(1, 1, 0)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ll := &limitListener{Listener: ln, p: p}
+	accepted := make(chan net.Conn, 4)
+	go func() {
+		for {
+			c, err := ll.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	dial := func() net.Conn {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		return c
+	}
+	first := dial()
+	server := <-accepted
+	second := dial()
+	resp, err := http.ReadResponse(bufio.NewReader(second), nil)
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("X-Sealed-Egress") != "limited" {
+		t.Fatalf("over-share connection: %v %v", resp, err)
+	}
+	server.Close()
+	third := dial()
+	select {
+	case c := <-accepted:
+		defer c.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("slot not released when the connection closed")
+	}
+	// The maximum lifetime closes a connection even while it is in use.
+	_ = third.SetReadDeadline(time.Now().Add(3 * time.Second))
+	start := time.Now()
+	if _, err := third.Read(make([]byte, 1)); err == nil {
+		t.Fatal("connection still open after its lifetime")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("lifetime not enforced")
+	}
+	_ = first
 }

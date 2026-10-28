@@ -1,7 +1,8 @@
 // Package dnsfilter is the DNS server every container uses. It answers A and
 // AAAA queries only for names on the calling container's allowlist,
 // forwards those upstream, and answers everything else with NXDOMAIN (or
-// REFUSED for unknown sources and query kinds used for tunneling).
+// REFUSED for unknown sources, query kinds used for tunneling and callers
+// over their query rate).
 package dnsfilter
 
 import (
@@ -9,19 +10,16 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/miekg/dns"
 
+	"github.com/sealed-dev/sealed/runtime/egress/limits"
 	"github.com/sealed-dev/sealed/runtime/egress/policy"
 	"github.com/sealed-dev/sealed/runtime/egress/stats"
 	"github.com/sealed-dev/sealed/runtime/egress/upstream"
 )
-
-// DNSPort is the port used in stats keys for DNS lookups ("name:53").
-const DNSPort = 53
 
 const (
 	queryTimeout = 4 * time.Second
@@ -34,15 +32,27 @@ type Server struct {
 	upstream *upstream.Client
 	stats    *stats.Counter
 	sourceIP func(netip.AddrPort) netip.Addr
+	rate     *limits.Rate
+	inflight *limits.Inflight
 
 	mu      sync.Mutex
 	servers []*dns.Server
 }
 
 // New returns a Server. sourceIP maps a client address to the caller IP
-// used for policy; production passes the remote IP unchanged.
-func New(p *policy.Policy, up *upstream.Client, st *stats.Counter, sourceIP func(netip.AddrPort) netip.Addr) *Server {
-	return &Server{policy: p, upstream: up, stats: st, sourceIP: sourceIP}
+// used for policy; production passes the remote IP unchanged. lim supplies
+// the per-caller query rate and in-flight upstream cap (zero fields take
+// limits.Defaults).
+func New(p *policy.Policy, up *upstream.Client, st *stats.Counter, sourceIP func(netip.AddrPort) netip.Addr, lim limits.Config) *Server {
+	lim = lim.WithDefaults()
+	return &Server{
+		policy:   p,
+		upstream: up,
+		stats:    st,
+		sourceIP: sourceIP,
+		rate:     limits.NewRate(lim.DNSRate, lim.DNSBurst),
+		inflight: limits.NewInflight(lim.DNSInflight),
+	}
 }
 
 // Serve starts answering on pc (UDP) and ln (TCP). It returns once both
@@ -106,29 +116,43 @@ func (s *Server) answer(remote net.Addr, req *dns.Msg) *dns.Msg {
 	if known {
 		callerName = caller.Name
 	}
-	name, nameErr := policy.NormalizeHostname(q.Name)
-	if !known {
-		s.stats.Block(callerName, policy.UnmatchedKey(strings.TrimSuffix(q.Name, "."), DNSPort))
+	// Rate first, so a flood costs one map lookup per packet and never
+	// reaches the upstreams.
+	if !s.rate.Allow(callerName) {
+		s.stats.Block(callerName, policy.KeyRateLimitedDNS)
 		return rcode(req, dns.RcodeRefused)
 	}
+	if !known {
+		key, _ := (*policy.Allowlist)(nil).BlockedDNSKey(q.Name)
+		s.stats.Block(callerName, key)
+		return rcode(req, dns.RcodeRefused)
+	}
+	name, nameErr := policy.NormalizeHostname(q.Name)
 	var entry policy.Entry
 	allowed := false
 	if nameErr == nil {
 		entry, allowed = caller.Allow.MatchName(name)
 	}
 	if !allowed {
-		s.stats.Block(callerName, policy.UnmatchedKey(strings.TrimSuffix(q.Name, "."), DNSPort))
+		key, _ := caller.Allow.BlockedDNSKey(q.Name)
+		s.stats.Block(callerName, key)
 		return rcode(req, dns.RcodeNameError)
 	}
-	key := nameKey(entry)
+	key := policy.DNSKey(entry)
 	if q.Qclass != dns.ClassINET || q.Qtype == dns.TypeANY {
-		s.stats.Block(callerName, key)
+		s.stats.BlockEntry(callerName, key)
 		return rcode(req, dns.RcodeRefused)
 	}
 	if q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
 		// Allowed name, but only addresses are served: empty NOERROR.
 		return rcode(req, dns.RcodeSuccess)
 	}
+	done, ok := s.inflight.Begin(callerName)
+	if !ok {
+		s.stats.Block(callerName, policy.KeyRateLimitedDNS)
+		return rcode(req, dns.RcodeRefused)
+	}
+	defer done()
 
 	out := new(dns.Msg)
 	out.SetQuestion(dns.Fqdn(name), q.Qtype)
@@ -170,7 +194,7 @@ func (s *Server) answer(remote net.Addr, req *dns.Msg) *dns.Msg {
 	if filtered {
 		// An allowed name pointing at metadata, loopback or a private range
 		// (DNS rebinding): drop those addresses and count the attempt.
-		s.stats.Block(callerName, key)
+		s.stats.BlockEntry(callerName, key)
 	}
 	return reply
 }
@@ -186,13 +210,6 @@ func (s *Server) callerFor(remote net.Addr) (*policy.CallerPolicy, bool) {
 func (s *Server) addressAllowed(ip net.IP) bool {
 	a, ok := netip.AddrFromSlice(ip)
 	return ok && s.policy.IP().Check(a) == nil
-}
-
-// nameKey is the stats key for a lookup that matched entry: the entry's
-// host pattern with the DNS port.
-func nameKey(e policy.Entry) string {
-	e.Port = DNSPort
-	return e.String()
 }
 
 func rcode(req *dns.Msg, rc int) *dns.Msg {

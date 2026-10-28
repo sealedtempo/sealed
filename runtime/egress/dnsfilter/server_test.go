@@ -11,6 +11,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/sealed-dev/sealed/runtime/egress/internal/dnstest"
+	"github.com/sealed-dev/sealed/runtime/egress/limits"
 	"github.com/sealed-dev/sealed/runtime/egress/policy"
 	"github.com/sealed-dev/sealed/runtime/egress/stats"
 	"github.com/sealed-dev/sealed/runtime/egress/upstream"
@@ -65,7 +66,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	st := stats.New(time.Now(), 0)
 	up4 := upstream.New(pol.Upstreams(), time.Second)
-	return &fixture{srv: New(pol, up4, st, func(ap netip.AddrPort) netip.Addr { return ap.Addr() }), up: up, stats: st}
+	return &fixture{srv: New(pol, up4, st, func(ap netip.AddrPort) netip.Addr { return ap.Addr() }, limits.Config{}), up: up, stats: st}
 }
 
 func (f *fixture) ask(from netip.Addr, name string, qtype uint16) *dns.Msg {
@@ -128,11 +129,10 @@ func TestBlockedNamesGetNXDOMAINAndAreCounted(t *testing.T) {
 		t.Error("blocked name leaked to the upstream resolver")
 	}
 	b := f.stats.Snapshot().Callers["alpha"].Blocked
-	if b["*.evil.test:53"] != 2 {
-		t.Errorf("random subdomains not collapsed and counted: %v", b)
-	}
-	if b["*.alpha.test:53"] != 2 || b["alpha.test:53"] != 1 {
-		t.Errorf("blocked counts = %v", b)
+	// Every name off the allowlist is one fixed key: the queried labels and
+	// the registrable domain never leave the VM.
+	if b["unlisted:53"] != 5 || len(b) != 1 {
+		t.Errorf("blocked counts = %v, want only unlisted:53", b)
 	}
 }
 
@@ -197,10 +197,10 @@ func TestPerCallerIsolationAndUnknownSources(t *testing.T) {
 		t.Errorf("unknown source: %s", dns.RcodeToString[m.Rcode])
 	}
 	s := f.stats.Snapshot()
-	if s.Callers["beta"].Blocked["*.alpha.test:53"] != 1 || s.Callers["alpha"].Blocked["beta.test:53"] != 1 {
+	if s.Callers["beta"].Blocked["unlisted:53"] != 1 || s.Callers["alpha"].Blocked["unlisted:53"] != 1 {
 		t.Errorf("isolation blocks not counted: %v", s.Callers)
 	}
-	if s.Callers[policy.UnknownCaller].Blocked["*.alpha.test:53"] != 1 {
+	if s.Callers[policy.UnknownCaller].Blocked["unlisted:53"] != 1 {
 		t.Errorf("unknown source not counted: %v", s.Callers)
 	}
 }
@@ -220,6 +220,51 @@ func TestMalformedQueries(t *testing.T) {
 	}
 	if m := f.ask(alphaIP, `bad\000name.alpha.test`, dns.TypeA); m.Rcode != dns.RcodeNameError {
 		t.Errorf("binary label: %s", dns.RcodeToString[m.Rcode])
+	}
+}
+
+func TestQueryRateIsPerCaller(t *testing.T) {
+	f := newFixture(t)
+	f.srv.rate = limits.NewRate(0.001, 3)
+	for i := 0; i < 3; i++ {
+		if m := f.ask(alphaIP, "api.alpha.test", dns.TypeA); m.Rcode != dns.RcodeSuccess {
+			t.Fatalf("query %d: %s", i, dns.RcodeToString[m.Rcode])
+		}
+	}
+	before := len(f.up.Queries())
+	for i := 0; i < 5; i++ {
+		if m := f.ask(alphaIP, "api.alpha.test", dns.TypeA); m.Rcode != dns.RcodeRefused {
+			t.Fatalf("over the rate: %s, want REFUSED", dns.RcodeToString[m.Rcode])
+		}
+	}
+	if len(f.up.Queries()) != before {
+		t.Error("rate-limited queries reached the upstream")
+	}
+	if m := f.ask(betaIP, "beta.test", dns.TypeA); m.Rcode != dns.RcodeSuccess {
+		t.Errorf("beta limited by alpha's flood: %s", dns.RcodeToString[m.Rcode])
+	}
+	if got := f.stats.Snapshot().Callers["alpha"].Blocked[policy.KeyRateLimitedDNS]; got != 5 {
+		t.Errorf("rate-limited count = %d", got)
+	}
+}
+
+func TestInflightUpstreamQueriesAreCapped(t *testing.T) {
+	f := newFixture(t)
+	f.srv.inflight = limits.NewInflight(1)
+	hold, ok := f.srv.inflight.Begin("alpha")
+	if !ok {
+		t.Fatal("Begin")
+	}
+	if m := f.ask(alphaIP, "api.alpha.test", dns.TypeA); m.Rcode != dns.RcodeRefused {
+		t.Errorf("over the in-flight cap: %s", dns.RcodeToString[m.Rcode])
+	}
+	// Answers that need no upstream still work.
+	if m := f.ask(alphaIP, "evil.test", dns.TypeA); m.Rcode != dns.RcodeNameError {
+		t.Errorf("blocked name: %s", dns.RcodeToString[m.Rcode])
+	}
+	hold()
+	if m := f.ask(alphaIP, "api.alpha.test", dns.TypeA); m.Rcode != dns.RcodeSuccess {
+		t.Errorf("after release: %s", dns.RcodeToString[m.Rcode])
 	}
 }
 

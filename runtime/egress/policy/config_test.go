@@ -80,15 +80,16 @@ func TestParseRoundTrip(t *testing.T) {
 func TestParseRejectsNonCanonical(t *testing.T) {
 	good := string(encode(t, sampleConfig()))
 	cases := map[string]string{
-		"trailing newline": good + "\n",
-		"whitespace":       strings.Replace(good, `"listen":`, `"listen": `, 1),
-		"unsorted keys":    strings.Replace(good, `{"dns":":53","proxy":":3128","stats":":9100"}`, `{"proxy":":3128","dns":":53","stats":":9100"}`, 1),
-		"duplicate key":    strings.Replace(good, `"statsReaders":["172.30.0.3"]`, `"statsReaders":["172.30.0.3"],"statsReaders":["172.30.0.3"]`, 1),
-		"escaped slash":    strings.Replace(good, `"8.8.8.8:53"`, `"8.8.8.8:53\/"`, 1),
-		"unicode escape":   strings.Replace(good, `"scraper"`, `"scr\u0061per"`, 1),
-		"trailing data":    good + "{}",
-		"not json":         "listen: :3128",
-		"empty":            "",
+		"two newlines":   good + "\n\n",
+		"crlf":           good + "\r\n",
+		"whitespace":     strings.Replace(good, `"listen":`, `"listen": `, 1),
+		"unsorted keys":  strings.Replace(good, `{"dns":":53","proxy":":3128","stats":":9100"}`, `{"proxy":":3128","dns":":53","stats":":9100"}`, 1),
+		"duplicate key":  strings.Replace(good, `"statsReaders":["172.30.0.3"]`, `"statsReaders":["172.30.0.3"],"statsReaders":["172.30.0.3"]`, 1),
+		"escaped slash":  strings.Replace(good, `"8.8.8.8:53"`, `"8.8.8.8:53\/"`, 1),
+		"unicode escape": strings.Replace(good, `"scraper"`, `"scr\u0061per"`, 1),
+		"trailing data":  good + "{}",
+		"not json":       "listen: :3128",
+		"empty":          "",
 	}
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {
@@ -144,9 +145,16 @@ func TestParseRejectsBadFields(t *testing.T) {
 		"link-local cidr":         func(c *Config) { c.AllowedPrivateCIDRs = []string{"169.254.0.0/16"} },
 		"non-canonical cidr":      func(c *Config) { c.AllowedPrivateCIDRs = []string{"10.0.0.1/8"} },
 		"duplicate cidr":          func(c *Config) { c.AllowedPrivateCIDRs = []string{"10.0.0.0/8", "10.0.0.0/8"} },
-		"null stats readers":      func(c *Config) { c.StatsReaders = nil },
-		"bad stats reader":        func(c *Config) { c.StatsReaders = []string{"agent"} },
-		"duplicate stats reader":  func(c *Config) { c.StatsReaders = []string{"172.30.0.3", "172.30.0.3"} },
+		"overlapping cidrs":       func(c *Config) { c.AllowedPrivateCIDRs = []string{"10.0.0.0/8", "10.1.0.0/16"} },
+		"cidr inside apps net":    func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.30.0.0/25"} },
+		"cidr is edge net":        func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.31.0.0/24"} },
+		"vm-internal ip entry": func(c *Config) {
+			c.AllowedPrivateCIDRs = []string{"172.16.0.0/12"}
+			c.Callers[0].Allow = []string{"172.30.0.1:22"}
+		},
+		"null stats readers":     func(c *Config) { c.StatsReaders = nil },
+		"bad stats reader":       func(c *Config) { c.StatsReaders = []string{"agent"} },
+		"duplicate stats reader": func(c *Config) { c.StatsReaders = []string{"172.30.0.3", "172.30.0.3"} },
 	}
 	for name, mutate := range cases {
 		c := sampleConfig()
@@ -172,6 +180,9 @@ func TestParseRejectsKeyCaseAndExtras(t *testing.T) {
 		"capitalized key": strings.Replace(good, `"callers"`, `"Callers"`, 1),
 		"unknown key":     strings.Replace(good, `"upstreamDns":`, `"upstreamDnz":[],"upstreamDns":`, 1),
 		"caller extra":    strings.Replace(good, `"name":"scraper"`, `"name":"scraper","role":"x"`, 1),
+		"proxyAuth false": strings.Replace(good, `"name":"scraper"`, `"name":"scraper","proxyAuth":false`, 1),
+		"proxyAuth case":  strings.Replace(good, `"name":"scraper"`, `"name":"scraper","proxyauth":true`, 1),
+		"proxyAuth type":  strings.Replace(good, `"name":"scraper"`, `"name":"scraper","proxyAuth":"yes"`, 1),
 		"listen missing":  strings.Replace(good, `"proxy":":3128",`, ``, 1),
 		"wrong type":      strings.Replace(good, `"statsReaders":["172.30.0.3"]`, `"statsReaders":"172.30.0.3"`, 1),
 	}
@@ -194,5 +205,87 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}
+	}
+}
+
+func TestParseAcceptsOneTrailingNewline(t *testing.T) {
+	data := encode(t, sampleConfig())
+	if _, err := Parse(append(append([]byte(nil), data...), '\n')); err != nil {
+		t.Fatalf("one trailing LF (YAML block scalar) rejected: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "egress.json")
+	if err := os.WriteFile(path, append(append([]byte(nil), data...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, raw, err := Load(path); err != nil || string(raw) != string(data) {
+		t.Fatalf("Load = %q, %v; want the canonical bytes without the LF", raw, err)
+	}
+}
+
+func TestProxyAuthIsOptionalAndCanonical(t *testing.T) {
+	c := sampleConfig()
+	c.Callers[0].ProxyAuth = true
+	data := encode(t, c)
+	if !strings.Contains(string(data), `"name":"sealed-agent","proxyAuth":true}`) {
+		t.Fatalf("encoding = %s", data)
+	}
+	parsed, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Compile(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.ProxyAuthCallers(); len(got) != 1 || got[0] != "sealed-agent" {
+		t.Errorf("ProxyAuthCallers = %v", got)
+	}
+	if agent, _ := p.CallerByName("sealed-agent"); !agent.ProxyAuth {
+		t.Error("CallerPolicy.ProxyAuth not set")
+	}
+	if scraper, _ := p.CallerByName("scraper"); scraper.ProxyAuth {
+		t.Error("ProxyAuth set for a caller without the key")
+	}
+	// Configs without the key keep their bytes.
+	if strings.Contains(string(encode(t, sampleConfig())), "proxyAuth") {
+		t.Error("proxyAuth emitted when false")
+	}
+}
+
+func TestBroadPrivateCIDRDoesNotOpenVMNetworks(t *testing.T) {
+	c := sampleConfig()
+	c.AllowedPrivateCIDRs = []string{"172.16.0.0/12"}
+	p, err := Compile(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"172.30.0.1", "172.30.0.3", "172.31.0.1", "172.31.0.2"} {
+		if p.IP().Check(netip.MustParseAddr(ip)) == nil {
+			t.Errorf("%s reachable through allowedPrivateCidrs 172.16.0.0/12", ip)
+		}
+	}
+	if p.IP().Check(netip.MustParseAddr("172.20.1.5")) != nil {
+		t.Error("VPC address inside 172.16.0.0/12 denied")
+	}
+}
+
+func TestCompileLocalDeny(t *testing.T) {
+	c := sampleConfig()
+	c.AllowedPrivateCIDRs = []string{"10.0.0.0/8"}
+	p, err := Compile(c, netip.MustParsePrefix("10.9.0.0/16"), netip.MustParsePrefix("203.0.113.0/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"10.9.0.1", "203.0.113.7"} {
+		if p.IP().Check(netip.MustParseAddr(ip)) == nil {
+			t.Errorf("%s on a local network was allowed", ip)
+		}
+	}
+	if p.IP().Check(netip.MustParseAddr("10.8.0.1")) != nil {
+		t.Error("allowed private address denied")
+	}
+	denied := p.IP().DeniedPrefixes()
+	if denied[len(denied)-1] != netip.MustParsePrefix("203.0.113.0/24") {
+		t.Errorf("DeniedPrefixes does not end with the local networks: %v", denied[len(denied)-2:])
 	}
 }

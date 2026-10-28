@@ -21,11 +21,15 @@ type Entry struct {
 }
 
 func (e Entry) String() string {
-	host := e.Host
+	return e.HostPattern() + ":" + strconv.Itoa(int(e.Port))
+}
+
+// HostPattern is the entry without its port: "host", "*.domain" or the IP.
+func (e Entry) HostPattern() string {
 	if e.Wildcard {
-		host = "*." + host
+		return "*." + e.Host
 	}
-	return host + ":" + strconv.Itoa(int(e.Port))
+	return e.Host
 }
 
 // IsIP reports whether the entry names a raw IP destination.
@@ -117,34 +121,4 @@ func NormalizeHostname(h string) (string, error) {
 		return "", err
 	}
 	return h, nil
-}
-
-// UnmatchedKey returns the stats key for a destination that matched no
-// allowlist entry. Hostnames are reduced to their registrable domain
-// ("*.evil.com:443"), so a blocked name cannot smuggle data into the counts
-// that leave the VM, and random subdomains collapse into one key.
-func UnmatchedKey(host string, port uint16) string {
-	p := strconv.Itoa(int(port))
-	if ip, err := netip.ParseAddr(host); err == nil {
-		if ip.Is6() && !ip.Is4In6() {
-			return "[" + ip.String() + "]:" + p
-		}
-		return ip.Unmap().String() + ":" + p
-	}
-	h, err := NormalizeHostname(host)
-	if err != nil {
-		return "invalid:" + p
-	}
-	base, err := publicsuffix.EffectiveTLDPlusOne(h)
-	if err != nil {
-		labels := strings.Split(h, ".")
-		if len(labels) <= 2 {
-			return h + ":" + p
-		}
-		base = strings.Join(labels[len(labels)-2:], ".")
-	}
-	if base == h {
-		return h + ":" + p
-	}
-	return "*." + base + ":" + p
 }

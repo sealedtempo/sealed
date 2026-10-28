@@ -7,9 +7,10 @@ import (
 
 // CallerPolicy is the compiled allowlist of one caller.
 type CallerPolicy struct {
-	Name  string
-	IP    netip.Addr
-	Allow *Allowlist
+	Name      string
+	IP        netip.Addr
+	Allow     *Allowlist
+	ProxyAuth bool
 }
 
 // Policy is the compiled, read-only form of a validated Config.
@@ -21,8 +22,9 @@ type Policy struct {
 	upstreams     []netip.AddrPort
 }
 
-// Compile validates cfg and builds lookup tables.
-func Compile(cfg *Config) (*Policy, error) {
+// Compile validates cfg and builds lookup tables. localDeny adds ranges that
+// are denied whatever the config says (the egress container's own networks).
+func Compile(cfg *Config, localDeny ...netip.Prefix) (*Policy, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -35,14 +37,14 @@ func Compile(cfg *Config) (*Policy, error) {
 	for _, s := range cfg.AllowedPrivateCIDRs {
 		prefixes = append(prefixes, netip.MustParsePrefix(s))
 	}
-	p.ip = NewIPPolicy(prefixes)
+	p.ip = NewIPPolicy(prefixes, localDeny...)
 	for _, c := range cfg.Callers {
 		entries := make([]Entry, 0, len(c.Allow))
 		for _, s := range c.Allow {
 			e, _ := ParseEntry(s) // validated above
 			entries = append(entries, e)
 		}
-		cp := &CallerPolicy{Name: c.Name, IP: netip.MustParseAddr(c.IP), Allow: NewAllowlist(entries)}
+		cp := &CallerPolicy{Name: c.Name, IP: netip.MustParseAddr(c.IP), Allow: NewAllowlist(entries), ProxyAuth: c.ProxyAuth}
 		p.callersByIP[cp.IP] = cp
 		p.callersByName[cp.Name] = cp
 	}
@@ -75,6 +77,19 @@ func (p *Policy) IP() IPPolicy { return p.ip }
 
 // Upstreams returns the upstream DNS servers in config order.
 func (p *Policy) Upstreams() []netip.AddrPort { return append([]netip.AddrPort(nil), p.upstreams...) }
+
+// ProxyAuthCallers returns the names of callers that must authenticate,
+// sorted.
+func (p *Policy) ProxyAuthCallers() []string {
+	var names []string
+	for n, c := range p.callersByName {
+		if c.ProxyAuth {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
 
 // CallerNames returns the caller names, sorted.
 func (p *Policy) CallerNames() []string {

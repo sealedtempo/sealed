@@ -5,17 +5,16 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"time"
 )
 
-// Handler serves GET /v1/stats to callers whose source passes isReader, and
+// Handler serves GET /v1/stats to requests that pass authorize (source IP
+// in statsReaders, plus the caller's token when it uses proxy auth), and
 // GET /healthz to anyone (it carries no data).
-func Handler(c *Counter, isReader func(remote netip.AddrPort) bool) http.Handler {
+func Handler(c *Counter, authorize func(r *http.Request) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/stats", func(w http.ResponseWriter, r *http.Request) {
-		remote, err := netip.ParseAddrPort(r.RemoteAddr)
-		if err != nil || !isReader(remote) {
+		if !authorize(r) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 			return
 		}

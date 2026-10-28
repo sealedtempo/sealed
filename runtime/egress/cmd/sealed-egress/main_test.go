@@ -78,6 +78,78 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+func TestCheckDigestIgnoresOneTrailingNewline(t *testing.T) {
+	clearProxyEnv(t)
+	path := writeConfig(t, "127.0.0.1:0")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plain, withLF syncBuffer
+	if code := run([]string{"-config", path, "-check"}, &plain); code != 0 {
+		t.Fatal(plain.String())
+	}
+	lf := filepath.Join(t.TempDir(), "lf.json")
+	if err := os.WriteFile(lf, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"-config", lf, "-check"}, &withLF); code != 0 {
+		t.Fatalf("config with one trailing LF rejected: %s", withLF.String())
+	}
+	digestOf := func(s string) string { return s[strings.Index(s, "sha256:"):] }
+	if digestOf(plain.String()) != digestOf(withLF.String()) {
+		t.Errorf("digests differ: %q vs %q", plain.String(), withLF.String())
+	}
+	if shutdownTimeout >= 10*time.Second {
+		t.Errorf("shutdownTimeout %v is not below Docker's 10s stop grace", shutdownTimeout)
+	}
+}
+
+func TestRunWritesProxyCredentials(t *testing.T) {
+	clearProxyEnv(t)
+	cfg := &policy.Config{
+		Listen:              &policy.Listen{Proxy: "127.0.0.1:0", DNS: "127.0.0.1:0", Stats: "127.0.0.1:0"},
+		UpstreamDNS:         []string{"127.0.0.1:53"},
+		Callers:             []policy.Caller{{Name: "sealed-agent", IP: "172.30.0.3", Allow: []string{"rpc.tempo.xyz:443"}, ProxyAuth: true}},
+		AllowedPrivateCIDRs: []string{},
+		StatsReaders:        []string{"172.30.0.3"},
+	}
+	data, err := policy.EncodeCanonical(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "egress.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	authDir := t.TempDir()
+	var out syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-config", path, "-auth-dir", authDir}, &out) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(out.String(), "sealed-egress started") {
+		if time.Now().After(deadline) {
+			t.Fatalf("not started: %s", out.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	tok, err := os.ReadFile(filepath.Join(authDir, "sealed-agent", "token"))
+	if err != nil || len(tok) != 64 {
+		t.Fatalf("token = %q, %v", tok, err)
+	}
+	if strings.Contains(out.String(), string(tok)) {
+		t.Error("token logged")
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("did not stop")
+	}
+}
+
 func TestInvalidConfigExits2(t *testing.T) {
 	clearProxyEnv(t)
 	bad := filepath.Join(t.TempDir(), "bad.json")

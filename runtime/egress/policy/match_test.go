@@ -162,27 +162,65 @@ func TestNormalizeHostname(t *testing.T) {
 	}
 }
 
-func TestUnmatchedKey(t *testing.T) {
+func TestBlockedKeyNeverCarriesChosenData(t *testing.T) {
+	a := NewAllowlist(mustEntries(t, "api.example.com:443", "api.example.com:8443", "*.cdn.example.net:443", "198.51.100.7:443"))
 	cases := []struct {
-		host string
-		port uint16
-		want string
+		host   string
+		port   uint16
+		want   string
+		listed bool
 	}{
-		{"evil.com", 443, "evil.com:443"},
-		{"x7f3a9.evil.com", 443, "*.evil.com:443"},
-		{"secret-data-here.tunnel.evil.com", 53, "*.evil.com:53"},
-		{"a.b.evil.co.uk", 443, "*.evil.co.uk:443"},
-		{"Evil.COM", 80, "evil.com:80"},
-		{"203.0.113.9", 443, "203.0.113.9:443"},
-		{"::ffff:203.0.113.9", 443, "203.0.113.9:443"},
-		{"2001:db8::1", 443, "[2001:db8::1]:443"},
-		{"com", 443, "invalid:443"},
-		{"bad host", 443, "invalid:443"},
-		{"x.y.unknowntld", 443, "*.y.unknowntld:443"},
+		{"api.example.com", 443, "api.example.com:443", true},
+		{"API.Example.COM.", 443, "api.example.com:443", true},
+		{"198.51.100.7", 443, "198.51.100.7:443", true},
+		{"x1.cdn.example.net", 443, "*.cdn.example.net:443", true},
+		// On the allowlist by name, wrong port: the pattern plus a port token.
+		{"api.example.com", 22, "api.example.com:other", false},
+		{"api.example.com", 80, "api.example.com:80", false},
+		{"x1.cdn.example.net", 8443, "*.cdn.example.net:8443", false},
+		// Everything else collapses into the fixed vocabulary.
+		{"thisisexfiltrateddata0123456789abcdef.github.io", 443, "unlisted:443", false},
+		{"secretpayload42.com", 443, "unlisted:443", false},
+		{"a.b.cdn.example.net", 443, "unlisted:443", false},
+		{"cdn.example.net", 443, "unlisted:443", false},
+		{"x.y.unknowntld", 31337, "unlisted:other", false},
+		{"secret.bd", 443, "unlisted:443", false},
+		{"203.0.113.9", 443, "ip-public:443", false},
+		{"203.0.113.9", 8443, "ip-public:8443", false},
+		{"203.0.113.9", 6553, "ip-public:other", false},
+		{"::ffff:203.0.113.9", 443, "ip-public:443", false},
+		{"[2001:db8::1]", 443, "ip-public:443", false},
+		{"169.254.169.254", 80, "ip-metadata:80", false},
+		{"127.0.0.1", 443, "ip-loopback:443", false},
+		{"10.1.2.3", 443, "ip-private:443", false},
+		{"172.30.0.3", 7070, "ip-vm-internal:other", false},
+		{"com", 443, "invalid:443", false},
+		{"bad host", 443, "invalid:443", false},
 	}
 	for _, c := range cases {
-		if got := UnmatchedKey(c.host, c.port); got != c.want {
-			t.Errorf("UnmatchedKey(%q, %d) = %q, want %q", c.host, c.port, got, c.want)
+		got, listed := a.BlockedKey(c.host, c.port)
+		if got != c.want || listed != c.listed {
+			t.Errorf("BlockedKey(%q, %d) = %q, %v; want %q, %v", c.host, c.port, got, listed, c.want, c.listed)
+		}
+	}
+	var unknown *Allowlist
+	if got, listed := unknown.BlockedKey("api.example.com", 8443); got != "unlisted:other" || listed {
+		t.Errorf("nil allowlist: %q %v", got, listed)
+	}
+}
+
+func TestBlockedDNSKey(t *testing.T) {
+	a := NewAllowlist(mustEntries(t, "api.example.com:443", "*.cdn.example.net:443"))
+	cases := map[string]string{
+		"api.example.com.":                "api.example.com:53",
+		"x1.cdn.example.net":              "*.cdn.example.net:53",
+		"aGVsbG8gd29ybGQ.evil.test":       "unlisted:53",
+		"exfil.cdn.example.net.evil.test": "unlisted:53",
+		"bad name":                        "invalid:53",
+	}
+	for name, want := range cases {
+		if got, _ := a.BlockedDNSKey(name); got != want {
+			t.Errorf("BlockedDNSKey(%q) = %q, want %q", name, got, want)
 		}
 	}
 }

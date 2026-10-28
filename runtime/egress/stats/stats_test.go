@@ -56,6 +56,31 @@ func TestCounterOverflow(t *testing.T) {
 	}
 }
 
+func TestEntryKeysAreNotCapped(t *testing.T) {
+	c := New(time.Now(), 2)
+	// Junk-free fixed keys fill the cap...
+	c.Block("app", "unlisted:443")
+	c.Block("app", "unlisted:other")
+	c.Block("app", "ip-public:443")
+	// ...but allowlist entries keep their own keys, allowed or blocked.
+	for i := 0; i < 5; i++ {
+		c.Allow("app", fmt.Sprintf("host%d.example:443", i))
+		c.BlockEntry("app", fmt.Sprintf("rebind%d.example:443", i))
+	}
+	cc := c.Snapshot().Callers["app"]
+	if len(cc.Allowed) != 5 || cc.Allowed[OverflowKey] != 0 {
+		t.Errorf("allowed = %v, want 5 entry keys and no overflow", cc.Allowed)
+	}
+	if cc.Blocked["rebind4.example:443"] != 1 || cc.Blocked[OverflowKey] != 1 || len(cc.Blocked) != 8 {
+		t.Errorf("blocked = %v", cc.Blocked)
+	}
+	// The cap is per caller: another caller starts fresh.
+	c.Block("other", "unlisted:443")
+	if c.Snapshot().Callers["other"].Blocked["unlisted:443"] != 1 {
+		t.Error("cap leaked across callers")
+	}
+}
+
 func TestTakeIntervalResets(t *testing.T) {
 	c := New(time.Now(), 0)
 	c.Allow("a", "x.example:443")
@@ -75,7 +100,10 @@ func TestHandler(t *testing.T) {
 	c := New(time.Unix(1730000000, 0), 0)
 	c.Allow("a", "x.example:443")
 	reader := netip.MustParseAddr("172.30.0.3")
-	h := Handler(c, func(ap netip.AddrPort) bool { return ap.Addr() == reader })
+	h := Handler(c, func(r *http.Request) bool {
+		ap, err := netip.ParseAddrPort(r.RemoteAddr)
+		return err == nil && ap.Addr() == reader
+	})
 
 	do := func(method, path, remote string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, nil)

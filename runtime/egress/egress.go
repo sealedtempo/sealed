@@ -14,12 +14,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sealed-dev/sealed/runtime/egress/auth"
 	"github.com/sealed-dev/sealed/runtime/egress/dnsfilter"
+	"github.com/sealed-dev/sealed/runtime/egress/limits"
 	"github.com/sealed-dev/sealed/runtime/egress/policy"
 	"github.com/sealed-dev/sealed/runtime/egress/proxy"
 	"github.com/sealed-dev/sealed/runtime/egress/stats"
 	"github.com/sealed-dev/sealed/runtime/egress/upstream"
 )
+
+// DefaultAuthDir is where proxy credentials for proxyAuth callers are
+// written (one subdirectory per caller, see package auth).
+const DefaultAuthDir = "/run/sealed-egress/auth"
 
 // Options holds process-level settings that are not part of the measured
 // config. The zero value is the production setup.
@@ -27,6 +33,16 @@ type Options struct {
 	Logger *slog.Logger
 	// StatsLogInterval is how often counts are logged (default 1 minute).
 	StatsLogInterval time.Duration
+	// AuthDir receives the proxy credentials of proxyAuth callers
+	// (default DefaultAuthDir). Unused when no caller sets proxyAuth.
+	AuthDir string
+	// Limits are the per-caller connection, rate and DNS limits; zero
+	// fields take limits.Defaults.
+	Limits limits.Config
+	// LocalSubnets returns the egress container's own networks, which are
+	// always denied as destinations. nil reads the interfaces
+	// (InterfaceSubnets); tests pass a fixed list.
+	LocalSubnets func() ([]netip.Prefix, error)
 
 	// SourceIP maps a client's remote address to the caller IP used for
 	// policy. Tests only: production identifies callers by their real
@@ -57,12 +73,58 @@ type Service struct {
 // RemoteIP is the production caller identity: the connection's source IP.
 func RemoteIP(ap netip.AddrPort) netip.Addr { return ap.Addr().Unmap() }
 
-// Start validates cfg, binds every listener and starts serving.
-func Start(cfg *policy.Config, opts Options) (*Service, error) {
-	pol, err := policy.Compile(cfg)
+// InterfaceSubnets lists the networks of this host's (container's)
+// interfaces. In the VM these are the apps and edge bridges; denying them
+// keeps the bridge gateways and other containers unreachable through the
+// proxy even if the composer renumbers the networks.
+func InterfaceSubnets() ([]netip.Prefix, error) {
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, err
 	}
+	var out []netip.Prefix
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ipnet.IP)
+		if !ok {
+			continue
+		}
+		ones, _ := ipnet.Mask.Size()
+		ip = ip.Unmap()
+		if ip.Is4() && ones > 32 {
+			ones -= 96
+		}
+		if pfx, err := ip.Prefix(ones); err == nil {
+			out = append(out, pfx)
+		}
+	}
+	return out, nil
+}
+
+// Start validates cfg, binds every listener and starts serving.
+func Start(cfg *policy.Config, opts Options) (*Service, error) {
+	if opts.LocalSubnets == nil {
+		opts.LocalSubnets = InterfaceSubnets
+	}
+	local, err := opts.LocalSubnets()
+	if err != nil {
+		return nil, fmt.Errorf("list local networks: %w", err)
+	}
+	pol, err := policy.Compile(cfg, local...)
+	if err != nil {
+		return nil, err
+	}
+	if opts.AuthDir == "" {
+		opts.AuthDir = DefaultAuthDir
+	}
+	tokens, err := auth.Provision(opts.AuthDir, pol.ProxyAuthCallers())
+	if err != nil {
+		return nil, err
+	}
+	opts.Limits = opts.Limits.WithDefaults()
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -91,6 +153,8 @@ func Start(cfg *policy.Config, opts Options) (*Service, error) {
 		Stats:    s.counter,
 		SourceIP: opts.SourceIP,
 		Dial:     opts.Dial,
+		Tokens:   tokens,
+		Limits:   opts.Limits,
 	})
 	if err != nil {
 		return nil, err
@@ -130,13 +194,11 @@ func Start(cfg *policy.Config, opts Options) (*Service, error) {
 		}
 	}()
 
-	s.dns = dnsfilter.New(pol, up, s.counter, opts.SourceIP)
+	s.dns = dnsfilter.New(pol, up, s.counter, opts.SourceIP, opts.Limits)
 	s.dns.Serve(dnsPC, dnsLn, s.errs)
 
 	s.statsServer = &http.Server{
-		Handler: stats.Handler(s.counter, func(ap netip.AddrPort) bool {
-			return pol.IsStatsReader(opts.SourceIP(ap))
-		}),
+		Handler:           stats.Handler(s.counter, statsAuthorizer(pol, tokens, opts.SourceIP)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -154,6 +216,25 @@ func Start(cfg *policy.Config, opts Options) (*Service, error) {
 		stats.LogEvery(logCtx, s.counter, opts.StatsLogInterval, s.log)
 	}()
 	return s, nil
+}
+
+// statsAuthorizer admits GET /v1/stats from statsReaders. A reader that is
+// also a proxyAuth caller must send Authorization: Bearer <its token>.
+func statsAuthorizer(pol *policy.Policy, tokens *auth.Tokens, sourceIP func(netip.AddrPort) netip.Addr) func(*http.Request) bool {
+	return func(r *http.Request) bool {
+		ap, err := netip.ParseAddrPort(r.RemoteAddr)
+		if err != nil {
+			return false
+		}
+		ip := sourceIP(ap)
+		if !pol.IsStatsReader(ip) {
+			return false
+		}
+		if c, ok := pol.CallerByIP(ip); ok {
+			return tokens.CheckBearer(c.Name, r.Header)
+		}
+		return true
+	}
 }
 
 // listenDNS binds UDP and TCP on the same port. With port 0 the TCP bind

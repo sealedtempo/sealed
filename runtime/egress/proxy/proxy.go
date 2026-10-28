@@ -1,8 +1,10 @@
 // Package proxy is the sealed-egress HTTP proxy: CONNECT tunnels and
 // absolute-URI http:// forwarding, built on stripe/smokescreen embedded as a
 // library. Smokescreen resolves each destination, checks every resolved IP
-// and dials only the checked IP; this package supplies the per-caller
-// allowlist decision, the always-deny ranges and the counters.
+// and dials only the checked IP; this package supplies caller identity
+// (source IP, plus a credential for proxyAuth callers), the per-caller
+// allowlist decision, the always-deny ranges, per-caller limits and the
+// counters.
 package proxy
 
 import (
@@ -26,6 +28,8 @@ import (
 	"github.com/stripe/smokescreen/pkg/smokescreen/conntrack"
 	"github.com/stripe/smokescreen/pkg/smokescreen/hostport"
 
+	"github.com/sealed-dev/sealed/runtime/egress/auth"
+	"github.com/sealed-dev/sealed/runtime/egress/limits"
 	"github.com/sealed-dev/sealed/runtime/egress/policy"
 	"github.com/sealed-dev/sealed/runtime/egress/stats"
 )
@@ -46,22 +50,35 @@ type Options struct {
 	SourceIP func(netip.AddrPort) netip.Addr
 	// Dial opens a TCP connection to an ip:port that passed every check.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// Tokens holds the credentials of proxyAuth callers (nil: none).
+	Tokens *auth.Tokens
+	// Limits bounds each caller's connections and request rate; zero
+	// fields take limits.Defaults.
+	Limits limits.Config
 
 	ConnectTimeout    time.Duration
 	IdleTimeout       time.Duration
 	ReadHeaderTimeout time.Duration
-	MaxTunnels        int
 }
 
 // Proxy serves the egress proxy on a listener.
 type Proxy struct {
-	opts    Options
-	cfg     *smokescreen.Config
-	gp      *goproxy.ProxyHttpServer
-	server  *http.Server
-	tracker *conntrack.Tracker
-	closing atomic.Bool
+	opts         Options
+	cfg          *smokescreen.Config
+	gp           *goproxy.ProxyHttpServer
+	server       *http.Server
+	tracker      *conntrack.Tracker
+	closing      atomic.Bool
+	conns        *limits.Pool
+	unknownConns *limits.Pool
+	requests     *limits.Rate
 }
+
+// Errors that decide how a refused request is answered and counted.
+var (
+	errUnknownSource   = errors.New("source is not a configured caller")
+	errUnauthenticated = errors.New("missing or invalid proxy credential")
+)
 
 // New builds a Proxy. It fails if proxy environment variables are set.
 func New(opts Options) (*Proxy, error) {
@@ -82,10 +99,14 @@ func New(opts Options) (*Proxy, error) {
 	if opts.ReadHeaderTimeout <= 0 {
 		opts.ReadHeaderTimeout = 30 * time.Second
 	}
-	if opts.MaxTunnels <= 0 {
-		opts.MaxTunnels = 2048
+	opts.Limits = opts.Limits.WithDefaults()
+	lim := opts.Limits
+	p := &Proxy{
+		opts:         opts,
+		conns:        limits.NewPool(lim.ConnsReserved, lim.ConnsPerCaller, lim.ConnsShared),
+		unknownConns: limits.NewPool(0, lim.ConnsUnknown, lim.ConnsUnknown),
+		requests:     limits.NewRate(lim.RequestRate, lim.RequestBurst),
 	}
-	p := &Proxy{opts: opts}
 
 	// Smokescreen logs every request with hosts and addresses. Egress logs
 	// only per-minute counts, so its logger is discarded.
@@ -101,7 +122,7 @@ func New(opts Options) (*Proxy, error) {
 	cfg.Resolver = opts.Resolver
 	cfg.Network = "ip"
 	cfg.MostSpecificIPRules = true
-	cfg.DenyRanges = ruleRanges(policy.AlwaysDeniedPrefixes())
+	cfg.DenyRanges = ruleRanges(opts.Policy.IP().DeniedPrefixes())
 	cfg.AllowRanges = ruleRanges(opts.Policy.IP().AllowedPrivate())
 	cfg.ConnectTimeout = opts.ConnectTimeout
 	cfg.IdleTimeout = opts.IdleTimeout
@@ -110,8 +131,11 @@ func New(opts Options) (*Proxy, error) {
 	cfg.PostDecisionRequestHandler = p.countAllowed
 	cfg.RejectResponseHandlerWithCtx = p.onReject
 	cfg.AdditionalErrorMessageOnDeny = DenyMessage
-	cfg.MaxConcurrentConnectTunnels = opts.MaxTunnels
-	cfg.TunnelLimiter = smokescreen.NewTunnelLimiter(opts.MaxTunnels, cfg)
+	// No global tunnel or request limit: one caller could exhaust it and
+	// lock out sealed-agent and the payer. Limits are per caller instead
+	// (limitListener and rateLimit).
+	cfg.MaxConcurrentConnectTunnels = 0
+	cfg.TunnelLimiter = nil
 	cfg.ShuttingDown.Store(false)
 	p.tracker = conntrack.NewTracker(cfg.IdleTimeout, cfg.MetricsClient, cfg.Log, atomic.Value{}, nil)
 	cfg.ConnTracker = p.tracker
@@ -136,7 +160,7 @@ func New(opts Options) (*Proxy, error) {
 	// No read or write timeout: tunnels and long plain-HTTP transfers are
 	// bounded by the idle timeout instead (smokescreen wraps hijacked conns).
 	p.server = &http.Server{
-		Handler:           gp,
+		Handler:           p.rateLimit(gp),
 		ReadHeaderTimeout: opts.ReadHeaderTimeout,
 		IdleTimeout:       opts.IdleTimeout,
 		ErrorLog:          log.New(io.Discard, "", 0),
@@ -146,7 +170,7 @@ func New(opts Options) (*Proxy, error) {
 
 // Serve accepts proxy clients on ln until Shutdown.
 func (p *Proxy) Serve(ln net.Listener) error {
-	err := p.server.Serve(ln)
+	err := p.server.Serve(&limitListener{Listener: ln, p: p})
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -179,18 +203,36 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func (p *Proxy) callerOf(r *http.Request) (*policy.CallerPolicy, bool) {
-	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+// callerOf returns the caller a client address belongs to, by source IP.
+func (p *Proxy) callerOf(remote string) (*policy.CallerPolicy, bool) {
+	ap, err := netip.ParseAddrPort(remote)
 	if err != nil {
 		return nil, false
 	}
 	return p.opts.Policy.CallerByIP(p.opts.SourceIP(ap))
 }
 
-func (p *Proxy) roleFromRequest(r *http.Request) (string, error) {
-	c, ok := p.callerOf(r)
+// identify returns the caller that sent r. For proxyAuth callers the source
+// IP only names the caller; the request must also carry its credential.
+// On errUnauthenticated the caller is returned too, for counting.
+func (p *Proxy) identify(r *http.Request) (*policy.CallerPolicy, error) {
+	c, ok := p.callerOf(r.RemoteAddr)
 	if !ok {
-		return "", smokescreen.MissingRoleError("source is not a configured caller")
+		return nil, errUnknownSource
+	}
+	if !p.opts.Tokens.CheckProxy(c.Name, r.Header) {
+		return c, errUnauthenticated
+	}
+	return c, nil
+}
+
+func (p *Proxy) roleFromRequest(r *http.Request) (string, error) {
+	c, err := p.identify(r)
+	if errors.Is(err, errUnknownSource) {
+		return "", smokescreen.MissingRoleError(err.Error())
+	}
+	if err != nil {
+		return "", err
 	}
 	return c.Name, nil
 }
@@ -241,9 +283,9 @@ func destination(r *http.Request) (string, uint16, error) {
 
 // match returns the caller and the allowlist entry that permits r.
 func (p *Proxy) match(r *http.Request) (*policy.CallerPolicy, policy.Entry, error) {
-	c, ok := p.callerOf(r)
-	if !ok {
-		return nil, policy.Entry{}, errors.New("source is not a configured caller")
+	c, err := p.identify(r)
+	if err != nil {
+		return c, policy.Entry{}, err
 	}
 	host, port, err := destination(r)
 	if err != nil {
@@ -251,7 +293,9 @@ func (p *Proxy) match(r *http.Request) (*policy.CallerPolicy, policy.Entry, erro
 	}
 	e, ok := c.Allow.Match(host, port)
 	if !ok {
-		return c, policy.Entry{}, fmt.Errorf("%s is not on the allowlist", policy.UnmatchedKey(host, port))
+		// The reason goes back to the client only (smokescreen's logs are
+		// discarded), so it names what the client asked for.
+		return c, policy.Entry{}, fmt.Errorf("%s:%d is not on the allowlist for %s", host, port, c.Name)
 	}
 	return c, e, nil
 }
@@ -297,56 +341,87 @@ func (p *Proxy) countAllowed(r *http.Request) error {
 	return nil
 }
 
-// onReject turns smokescreen's policy denials (407) into 403, and counts
-// them. Upstream failures (502, 504) and limits (429) are not blocks.
+// onReject turns smokescreen's policy denials (407) into 403 and counts
+// them, or keeps 407 with a challenge when a proxyAuth caller sent no valid
+// credential. Upstream failures (502, 504) are not blocks.
 func (p *Proxy) onReject(_ *smokescreen.SmokescreenContext, resp *http.Response) {
 	if resp.StatusCode != http.StatusProxyAuthRequired {
 		return
 	}
+	r := resp.Request
+	if r == nil {
+		p.block(nil, policy.KeyInvalid+":0", false)
+		toForbidden(resp)
+		return
+	}
+	c, e, err := p.match(r)
+	switch {
+	case errors.Is(err, errUnauthenticated):
+		const msg = "This caller must send its sealed-egress proxy credential.\n"
+		resp.Status = "407 Proxy Authentication Required"
+		resp.Header.Set("Proxy-Authenticate", `Basic realm="sealed-egress"`)
+		resp.Header.Set("X-Sealed-Egress", "auth-required")
+		resp.Header.Del("X-Smokescreen-Error")
+		resp.Body = io.NopCloser(strings.NewReader(msg))
+		resp.ContentLength = int64(len(msg))
+		p.block(c, policy.KeyUnauthenticated, false)
+	case err == nil:
+		// On the allowlist but blocked after resolution (metadata, loopback,
+		// a private or local range): count under the entry.
+		toForbidden(resp)
+		p.block(c, e.String(), true)
+	default:
+		toForbidden(resp)
+		var allow *policy.Allowlist
+		if c != nil {
+			allow = c.Allow
+		}
+		key, listed := requestKey(allow, r)
+		p.block(c, key, listed)
+	}
+}
+
+func toForbidden(resp *http.Response) {
 	resp.StatusCode = http.StatusForbidden
 	resp.Status = "403 Forbidden"
 	resp.Header.Set("X-Sealed-Egress", "blocked")
-	caller, key := policy.UnknownCaller, "invalid:0"
-	if r := resp.Request; r != nil {
-		c, e, err := p.match(r)
-		switch {
-		case c != nil && err == nil:
-			// On the allowlist but blocked after resolution (metadata,
-			// loopback, private range): count under the entry.
-			caller, key = c.Name, e.String()
-		default:
-			if c != nil {
-				caller = c.Name
-			}
-			key = blockedKey(c, r)
-		}
+}
+
+// block counts one blocked attempt. listed keys are allowlist entries and
+// are not subject to the per-caller key cap.
+func (p *Proxy) block(c *policy.CallerPolicy, key string, listed bool) {
+	caller := policy.UnknownCaller
+	if c != nil {
+		caller = c.Name
+	}
+	if listed {
+		p.opts.Stats.BlockEntry(caller, key)
+		return
 	}
 	p.opts.Stats.Block(caller, key)
 }
 
-// blockedKey is the stats key for a denied request. Names on the caller's
-// allowlist (any port) keep their entry pattern; anything else is reduced
-// by policy.UnmatchedKey.
-func blockedKey(c *policy.CallerPolicy, r *http.Request) string {
-	host, port, err := destination(r)
+// requestKey is the stats key for a denied request (policy key grammar).
+// Requests that destination rejects are keyed by whatever host and port
+// they name, so an IPv6 literal still counts as ip-<class>.
+func requestKey(allow *policy.Allowlist, r *http.Request) (string, bool) {
+	if host, port, err := destination(r); err == nil {
+		return allow.BlockedKey(host, port)
+	}
+	host, port := r.Host, ""
+	if r.Method != http.MethodConnect && r.URL != nil && r.URL.Host != "" {
+		host, port = r.URL.Hostname(), r.URL.Port()
+		if port == "" {
+			port = map[string]string{"http": "80", "https": "443"}[r.URL.Scheme]
+		}
+	} else if h, pt, err := net.SplitHostPort(r.Host); err == nil {
+		host, port = h, pt
+	}
+	pn, err := policy.ParsePort(port)
 	if err != nil {
-		h, pt, splitErr := net.SplitHostPort(r.Host)
-		if splitErr != nil {
-			h, pt = r.Host, "80"
-		}
-		pn, perr := policy.ParsePort(pt)
-		if perr != nil {
-			return "invalid:0"
-		}
-		return policy.UnmatchedKey(h, pn)
+		pn = 0
 	}
-	if c != nil {
-		if e, ok := c.Allow.MatchName(host); ok {
-			e.Port = port
-			return e.String()
-		}
-	}
-	return policy.UnmatchedKey(host, port)
+	return allow.BlockedKey(host, pn)
 }
 
 // dial is smokescreen's ProxyDialTimeout. address is always the resolved

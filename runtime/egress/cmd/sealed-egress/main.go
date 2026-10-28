@@ -1,13 +1,13 @@
 // Command sealed-egress is the outbound proxy and filtering DNS server for a
 // Sealed deployment VM. Usage:
 //
-//	sealed-egress [-config PATH]          run
-//	sealed-egress [-config PATH] -check   validate the config and exit
-//	sealed-egress [-config PATH] -healthcheck
-//	                                      probe the local /healthz (for compose healthchecks)
+//	sealed-egress [-config PATH] [-auth-dir DIR]   run
+//	sealed-egress [-config PATH] -check            validate the config and exit
+//	sealed-egress [-config PATH] -healthcheck      probe the local /healthz (for compose healthchecks)
 //
 // The config path comes from -config, else $SEALED_EGRESS_CONFIG, else
-// DefaultConfigPath.
+// DefaultConfigPath. -auth-dir (default egress.DefaultAuthDir) receives the
+// proxy credentials of callers that set proxyAuth.
 package main
 
 import (
@@ -32,7 +32,10 @@ import (
 // DefaultConfigPath is where the composer mounts the measured egress config.
 const DefaultConfigPath = "/etc/sealed/egress.json"
 
-const shutdownTimeout = 15 * time.Second
+// shutdownTimeout bounds the tunnel drain on SIGTERM. Docker sends SIGKILL
+// 10 seconds after SIGTERM unless stop_grace_period says otherwise, and the
+// drain must finish (and the final counts line be written) before that.
+const shutdownTimeout = 8 * time.Second
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stderr))
@@ -44,6 +47,7 @@ func run(args []string, stderr io.Writer) int {
 	configPath := fs.String("config", "", "path to the egress config (CJSON); default $SEALED_EGRESS_CONFIG or "+DefaultConfigPath)
 	check := fs.Bool("check", false, "validate the config and exit")
 	healthcheck := fs.Bool("healthcheck", false, "probe the local stats /healthz endpoint and exit")
+	authDir := fs.String("auth-dir", egress.DefaultAuthDir, "directory for the proxy credentials of proxyAuth callers")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -79,7 +83,7 @@ func run(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	svc, err := egress.Start(cfg, egress.Options{Logger: logger})
+	svc, err := egress.Start(cfg, egress.Options{Logger: logger, AuthDir: *authDir})
 	if err != nil {
 		logger.Error("start failed", "error", err.Error())
 		return 1
@@ -87,6 +91,7 @@ func run(args []string, stderr io.Writer) int {
 	logger.Info("sealed-egress started",
 		"config_sha256", digest(raw),
 		"callers", len(cfg.Callers),
+		"proxy_auth_callers", len(policyAuthCallers(cfg)),
 		"proxy", svc.ProxyAddr.String(),
 		"dns", svc.DNSUDPAddr.String(),
 		"stats", svc.StatsAddr.String(),
@@ -106,6 +111,16 @@ func run(args []string, stderr io.Writer) int {
 		logger.Error("shutdown", "error", err.Error())
 	}
 	return code
+}
+
+func policyAuthCallers(cfg *policy.Config) []string {
+	var names []string
+	for _, c := range cfg.Callers {
+		if c.ProxyAuth {
+			names = append(names, c.Name)
+		}
+	}
+	return names
 }
 
 func resolveConfigPath(flagValue string) string {

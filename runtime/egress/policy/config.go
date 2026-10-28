@@ -39,6 +39,10 @@ type Caller struct {
 	Name  string   `json:"name"`
 	IP    string   `json:"ip"`
 	Allow []string `json:"allow"`
+	// ProxyAuth makes the source IP alone insufficient: requests must also
+	// carry the caller's proxy credential (see package auth). Optional key,
+	// present only as true, so configs without it keep their bytes.
+	ProxyAuth bool `json:"proxyAuth,omitempty"`
 }
 
 // MaxConfigBytes bounds the config file size.
@@ -62,7 +66,12 @@ var requiredKeys = map[string][]string{
 	"caller": {"allow", "ip", "name"},
 }
 
-// Load reads and parses the config file at path.
+// optionalCallerKey may appear in a caller, and only with the value true.
+const optionalCallerKey = "proxyAuth"
+
+// Load reads and parses the config file at path. The returned bytes are the
+// canonical document (without the one trailing newline Parse tolerates), so
+// their sha256 matches the composer's.
 func Load(path string) (*Config, []byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -77,14 +86,24 @@ func Load(path string) (*Config, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return cfg, data, nil
+	return cfg, trimFinalNewline(data), nil
 }
 
-// Parse decodes canonical JSON config bytes and validates every field.
+// trimFinalNewline drops one trailing LF. Compose writes inline `configs`
+// content verbatim, and a YAML block scalar (`content: |`) ends in one; the
+// measured bytes are the compose, not this file, so accepting it costs no
+// integrity while rejecting it would stop the whole stack.
+func trimFinalNewline(data []byte) []byte {
+	return bytes.TrimSuffix(data, []byte("\n"))
+}
+
+// Parse decodes canonical JSON config bytes and validates every field. The
+// bytes must be canonical CJSON, optionally followed by a single LF.
 func Parse(data []byte) (*Config, error) {
 	if len(data) > MaxConfigBytes {
 		return nil, fmt.Errorf("egress config is larger than %d bytes", MaxConfigBytes)
 	}
+	data = trimFinalNewline(data)
 	if err := CheckCanonical(data); err != nil {
 		return nil, fmt.Errorf("egress config: %w", err)
 	}
@@ -128,7 +147,16 @@ func checkKeys(tree any) error {
 			if !ok {
 				return fmt.Errorf("callers[%d] must be an object", i)
 			}
-			if err := exactKeys(fmt.Sprintf("callers[%d]", i), obj, requiredKeys["caller"]); err != nil {
+			where := fmt.Sprintf("callers[%d]", i)
+			want := requiredKeys["caller"]
+			if v, present := obj[optionalCallerKey]; present {
+				if v != true {
+					return fmt.Errorf("%s.%s: must be true when present (omit it for false)", where, optionalCallerKey)
+				}
+				want = append(append([]string(nil), want...), optionalCallerKey)
+				sort.Strings(want)
+			}
+			if err := exactKeys(where, obj, want); err != nil {
 				return err
 			}
 		}
@@ -193,6 +221,7 @@ func (c *Config) Validate() error {
 	}
 
 	var prefixes []netip.Prefix
+	var prevCIDRs []string
 	if c.AllowedPrivateCIDRs == nil {
 		add("allowedPrivateCidrs: required (use [] for none)")
 	}
@@ -205,9 +234,16 @@ func (c *Config) Validate() error {
 		}
 		if seenCIDR[s] {
 			add("allowedPrivateCidrs[%d]: duplicate %q", i, s)
+			continue
 		}
 		seenCIDR[s] = true
+		for j, prev := range prefixes {
+			if prev.Overlaps(pfx) {
+				add("allowedPrivateCidrs[%d]: %q overlaps %q; list each range once", i, s, prevCIDRs[j])
+			}
+		}
 		prefixes = append(prefixes, pfx)
+		prevCIDRs = append(prevCIDRs, s)
 	}
 	ipPolicy := NewIPPolicy(prefixes)
 
