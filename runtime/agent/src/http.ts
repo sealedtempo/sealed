@@ -32,6 +32,36 @@ export interface RequestOptions {
   body?: unknown;
   timeoutMs?: number;
   headers?: Record<string, string>;
+  /** Response bodies above this are rejected (default MAX_RESPONSE_BYTES). */
+  maxBytes?: number;
+}
+
+/** Large enough for app-compose.json, quotes with event logs and evidence answers. */
+export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+export class ResponseTooLargeError extends Error {}
+
+async function readCapped(res: Response, max: number, url: string): Promise<string> {
+  const declared = Number(res.headers.get("content-length") ?? "0");
+  if (declared > max) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new ResponseTooLargeError(`response from ${url} is larger than ${max} bytes`);
+  }
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new ResponseTooLargeError(`response from ${url} is larger than ${max} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 export async function fetchJson<T = unknown>(url: string, opts: RequestOptions = {}): Promise<T> {
@@ -42,7 +72,7 @@ export async function fetchJson<T = unknown>(url: string, opts: RequestOptions =
     signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
     redirect: "error",
   });
-  const text = await res.text();
+  const text = await readCapped(res, opts.maxBytes ?? MAX_RESPONSE_BYTES, url);
   if (!res.ok) throw new HttpError(res.status, text.slice(0, 2000), url);
   return (text ? JSON.parse(text) : undefined) as T;
 }
@@ -80,9 +110,18 @@ export function localRequest(ep: Endpoint, path: string, opts: RequestOptions = 
             if (u.protocol !== "http:") throw new Error("local endpoints must be plain http");
             return { hostname: u.hostname, port: u.port || 80, path: `${u.pathname}${u.search}` };
           })();
+    const max = opts.maxBytes ?? MAX_RESPONSE_BYTES;
     const req = http.request({ ...target, method, headers, agent: directAgent, timeout: opts.timeoutMs ?? 30_000 }, (res) => {
       const chunks: Buffer[] = [];
-      res.on("data", (c: Buffer) => chunks.push(c));
+      let size = 0;
+      res.on("data", (c: Buffer) => {
+        size += c.length;
+        if (size > max) {
+          req.destroy(new ResponseTooLargeError(`response from ${path} is larger than ${max} bytes`));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
       res.on("error", reject);
     });

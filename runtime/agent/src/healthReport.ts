@@ -26,14 +26,19 @@ export function httpEgressStats(url: string): EgressStatsSource {
   };
 }
 
-function counts(v: unknown): Record<string, number> {
-  const out: Record<string, number> = {};
+/** Per-destination counters are app-chosen names: only well-formed host:port keys, at most this many (largest first). */
+export const MAX_EGRESS_KEYS = 50;
+const HOST_PORT_RE = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*:[0-9]{1,5}$/;
+
+export function counts(v: unknown): Record<string, number> {
+  const entries: [string, number][] = [];
   if (v && typeof v === "object") {
     for (const [k, n] of Object.entries(v as Record<string, unknown>)) {
-      if (typeof n === "number" && Number.isSafeInteger(n) && n >= 0 && k.length <= 260) out[k] = n;
+      if (typeof n === "number" && Number.isSafeInteger(n) && n >= 0 && k.length <= 260 && HOST_PORT_RE.test(k)) entries.push([k, n]);
     }
   }
-  return out;
+  entries.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  return Object.fromEntries(entries.slice(0, MAX_EGRESS_KEYS));
 }
 
 export interface HealthInputs {
@@ -48,7 +53,7 @@ export function healthBody(i: HealthInputs) {
     at: i.at,
     apps: i.apps,
     egress: i.egress
-      ? { ...(i.egress.since !== undefined ? { since: i.egress.since } : {}), allowed: i.egress.allowed, blocked: i.egress.blocked }
+      ? { ...(i.egress.since !== undefined ? { since: i.egress.since } : {}), allowed: counts(i.egress.allowed), blocked: counts(i.egress.blocked) }
       : { allowed: {}, blocked: {} },
     payments: i.payments,
   };
