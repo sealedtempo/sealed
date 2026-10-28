@@ -4,7 +4,7 @@
 // Rekor endpoints point at a closed local port).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Address } from "@sealed/core";
+import { type Address, LOCAL_HARDFORK } from "@sealed/core";
 import { ADDR, CHAIN_ID, type Contracts, KEYS, TOKENS } from "./chain.ts";
 import { answers, http } from "./net.ts";
 import { type Proc, type Supervisor, waitFor } from "./procs.ts";
@@ -17,6 +17,16 @@ export interface Bins {
   keyBroker: string;
   verifierd: string;
   compose: string;
+}
+
+/**
+ * The composer's Version, as `sealed-compose version` prints it. A config's composerVersion must equal it, or the
+ * composer (and the key broker and verifiers, which compose again) refuse the config, so the devnet never pins one.
+ */
+export async function composerVersion(sup: Supervisor, bin: string): Promise<string> {
+  const out = (await sup.runOk("compose-version", bin, ["version"], { cleanEnv: true, env: { PATH: process.env.PATH } })).trim();
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(out)) throw new Error(`${bin} version printed ${JSON.stringify(out)}, not a composer version`);
+  return out;
 }
 
 // --- PostgreSQL ------------------------------------------------------------------------------------------------
@@ -85,6 +95,9 @@ export async function startKeyBroker(
         SEALED_PLATFORM_REGISTRY: o.contracts.platformRegistry,
         SEALED_APP_REGISTRY: o.contracts.appRegistry,
         SEALED_DEPLOYMENT_REGISTRY: o.contracts.deploymentRegistry,
+        // ws/harden-kb: a release needs the config's feeSplitter and feeToken to be these (mainnet's by default).
+        SEALED_FEE_SPLITTER: o.contracts.feeSplitter,
+        SEALED_FEE_TOKEN: TOKENS.pathUsd,
         SEALED_RELEASE_ASSET_BASE: o.assetBase,
         GCE_METADATA_HOST: "127.0.0.1:9",
       },
@@ -157,7 +170,7 @@ export async function startApi(
       TEMPO_RPC_URL: o.rpcUrl,
       TEMPO_PUBLIC_RPC_URL: o.rpcUrl,
       TEMPO_CHAIN_ID: String(CHAIN_ID),
-      TEMPO_HARDFORK: "t4",
+      TEMPO_HARDFORK: LOCAL_HARDFORK,
       SEALED_DEPLOYMENTS_FILE: o.contracts.file,
       INDEXER_START_BLOCK: String(o.contracts.deployBlock),
       INDEXER_POLL_MS: "500",

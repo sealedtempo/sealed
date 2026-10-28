@@ -15,7 +15,6 @@
 //
 // Environment: everything settingsFromEnv reads (SEALED_DEV_SIM=1 required), plus DEVNET_LUKS_STATE,
 // DEVNET_MOUNTINFO, DEVNET_OUT (directory for ready.json, evidence.json, caddy.log, chown.log).
-import dns from "node:dns";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { join } from "node:path";
@@ -27,28 +26,11 @@ import { normalizePeer } from "@sealed/agent/dist/src/stack.js";
 import { readFileSync } from "node:fs";
 import { fixedTlsKey, ServedCertSource, type TlsKeySource } from "@sealed/agent/dist/src/tls.js";
 import { FakeLuksRunner } from "./fakeLuks.ts";
+import { installDevnetResolver } from "./net.ts";
 
 export const PEER_HEADER = "x-devnet-peer";
 export const DEVICE_ID = "253:7";
-export const DEVNET_DOMAIN = ".devnet.test";
-
-type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void;
-
-/** Resolves every *.devnet.test name to 127.0.0.1 for this process (node:http and fetch both use dns.lookup). */
-export function installDevnetResolver(): void {
-  const original = dns.lookup;
-  const patched = (host: string, opts: unknown, cb?: LookupCallback) => {
-    const callback = (typeof opts === "function" ? opts : cb) as LookupCallback;
-    const options = (typeof opts === "object" && opts !== null ? opts : {}) as dns.LookupOptions;
-    if (typeof host === "string" && host.endsWith(DEVNET_DOMAIN)) {
-      if (options.all) process.nextTick(callback, null, [{ address: "127.0.0.1", family: 4 }]);
-      else process.nextTick(callback, null, "127.0.0.1", 4);
-      return;
-    }
-    return (original as (...a: unknown[]) => void).call(dns, host, opts, cb);
-  };
-  (dns as { lookup: unknown }).lookup = patched;
-}
+export { DEVNET_DOMAIN, installDevnetResolver } from "./net.ts";
 
 function need(name: string): string {
   const v = process.env[name];

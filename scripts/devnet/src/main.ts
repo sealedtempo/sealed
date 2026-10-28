@@ -59,7 +59,7 @@ async function main(): Promise<number> {
   }
   await sup.stopAll();
   await devnet.assets?.close().catch(() => undefined);
-  await devnet.front?.close().catch(() => undefined);
+  await devnet.close().catch(() => undefined);
   const lines = log.summary(failed ? "FAIL" : "PASS");
   if (failed) {
     lines.push("", `FAILED: ${failed instanceof Error ? failed.message : String(failed)}`, `run directory kept: ${runDir}`);

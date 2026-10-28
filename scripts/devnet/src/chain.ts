@@ -1,4 +1,4 @@
-// The local Tempo node and the Sealed contracts: anvil --network tempo (hardfork T4) and script/Deploy.s.sol
+// The local Tempo node and the Sealed contracts: anvil --network tempo (hardfork T12, mainnet's, D-053) and script/Deploy.s.sol
 // broadcast with forge, as contracts/script/local-e2e.sh does. Only anvil's public dev keys sign, and the chain id
 // is anvil's 31337, so nothing signed here is valid on Tempo mainnet (4217).
 import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
@@ -9,6 +9,7 @@ import {
   deploymentRegistryAbi,
   feeSplitterAbi,
   type Hex,
+  LOCAL_HARDFORK,
   oracleSignatureVerifierAbi,
   platformRegistryAbi,
 } from "@sealed/core";
@@ -47,8 +48,9 @@ export interface Node {
 }
 
 export async function startAnvil(sup: Supervisor, port: number): Promise<Node> {
-  // Block gas limit 500M as on mainnet (anvil's default 30M is below DeploymentRegistry's creation under T4 rules).
-  const proc = sup.spawn("anvil", "anvil", ["--network", "tempo", "--hardfork", "T4", "--host", "127.0.0.1", "--port", String(port), "--gas-limit", "500000000"]);
+  // The hardfork the contracts and every other local node use (D-053, @sealed/core LOCAL_HARDFORK); block gas
+  // limit 500M as on mainnet.
+  const proc = sup.spawn("anvil", "anvil", ["--network", "tempo", "--hardfork", LOCAL_HARDFORK.toUpperCase(), "--host", "127.0.0.1", "--port", String(port), "--gas-limit", "500000000"]);
   const rpcUrl = `http://127.0.0.1:${port}`;
   const client = localClient(rpcUrl);
   await waitFor("anvil", async () => (await client.getChainId()) === CHAIN_ID, { proc, timeoutMs: 20_000 });

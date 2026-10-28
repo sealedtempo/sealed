@@ -2,10 +2,12 @@
 // processes and an assertion after each step. See ../README.md for the step list and what is simulated.
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import {
   type Address,
   appId as computeAppId,
+  buildAccessKeyAuthorization,
   canonicalize,
   deploymentId as computeDeploymentId,
   type Hex,
@@ -15,11 +17,11 @@ import {
   SIM_DEBUG_MRTD,
   SIM_MEASUREMENTS,
 } from "@sealed/core";
-import { http as viemHttp, parseEventLogs, toFunctionSelector } from "viem";
+import { http as viemHttp, parseEventLogs } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { Abis, Account, Addresses, createClient } from "viem/tempo";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { tempoChain } from "@sealed/core";
+import { LOCAL_HARDFORK, tempoChain } from "@sealed/core";
 import { type AssetServer, sha256Hex, startAssetServer } from "./assets.ts";
 import { type AttestFront, selfSignedCert, startAttestFront } from "./attestFront.ts";
 import { ABIS, ADDR, Chain, CHAIN_ID, deployContracts, KEYS, REGISTRAR_ROLE, startAnvil, TOKENS } from "./chain.ts";
@@ -31,6 +33,7 @@ import {
   type AgentPaths,
   agentPaths,
   type Bins,
+  composerVersion,
   type KeyBroker,
   type Postgres,
   startAgent,
@@ -40,12 +43,20 @@ import {
   startSimulator,
   startVerifierd,
 } from "./services.ts";
+import { ENDPOINT_HOSTS, type EndpointName, endpointCert, endpointUrls, startTlsFront, type TlsFront } from "./tlsFront.ts";
 
 /** The five catalog apps a customer stack runs, plus the platform's relay app (registered and released only). */
 export const STACK_APPS = ["coding-agent", "crm", "internal-tools", "llm-gateway", "scraper"] as const;
 export const CATALOG_APPS = [...STACK_APPS, "inference-relay"] as const;
 export const MAINTAINER_SHARE_BPS = 2000;
 const IMAGE_VERSION = "1.0.0-devnet";
+/**
+ * The customer's spend limit per day, in pathUSD base units (100.00): config settlement.spendLimitPerDay and the
+ * access key's onchain limit. Fee settlement comes first (D-048): the payer gets what is left after
+ * reserved_for_fees, which covers the onchain period (a day from authorization, review M5): app-hours of crm,
+ * coding-agent and internal-tools and a network fee for every settlement of a 1-minute interval, about 33 pathUSD.
+ */
+const DAILY_LIMIT = 100_000_000n;
 const PEER_HEADER = "x-devnet-peer";
 
 export interface DevnetOptions {
@@ -169,6 +180,12 @@ export class Devnet {
   defaultsPath!: string;
   private readonly simEndpoints = new Map<string, string>();
   front?: AttestFront;
+  /** HTTPS fronts of the key broker, the api and anvil: the config's endpoints (composer 1.3.0 takes https only). */
+  readonly endpointFronts: TlsFront[] = [];
+  /** The fronts' certificate (PEM file), which the agent host trusts through NODE_EXTRA_CA_CERTS. */
+  private endpointCaFile = "";
+  private frontPorts!: Record<EndpointName, number>;
+  private composerVersion = "";
   private agentPort = 0;
   private brokerPort = 0;
   private apiPort = 0;
@@ -213,13 +230,20 @@ export class Devnet {
     await this.stepTamperNoQuote(a);
     await this.stepRevokeStack(agentA);
     await this.stepRevokeRelease(agentA);
+    await this.close();
+  }
+
+  /** Closes the in-process servers (the attest front and the endpoint fronts). */
+  async close(): Promise<void> {
     await this.front?.close();
+    this.front = undefined;
+    for (const f of this.endpointFronts.splice(0)) await f.close();
   }
 
   // --- 1. chain ------------------------------------------------------------------------------------------------
 
   private async stepChain(): Promise<void> {
-    this.log.step("Local Tempo node and contracts (anvil --network tempo T4, script/Deploy.s.sol)");
+    this.log.step(`Local Tempo node and contracts (anvil --network tempo ${LOCAL_HARDFORK.toUpperCase()}, script/Deploy.s.sol)`);
     const node = await startAnvil(this.sup, this.port());
     this.log.ok(`anvil at ${node.rpcUrl}, chain ${CHAIN_ID}, block gas limit ${(await node.client.getBlock()).gasLimit}`);
     const c = await deployContracts(this.sup, { contractsDir: join(this.o.repo, "contracts"), rpcUrl: node.rpcUrl, runDir: this.o.runDir, runId: this.o.runId });
@@ -349,16 +373,15 @@ export class Devnet {
       customer: ADDR.customer,
       salt: o.salt,
       imageId: o.imageId,
-      composerVersion: "1.2.0",
+      composerVersion: this.composerVersion,
       apps: [...o.apps].sort().map((id) => ({ id, releaseId: (this.releases.get(id) as Release).releaseId })),
       hostnames: { scheme: "sslip", ip: "203.0.113.10" },
       egressAdditions: {},
       allowedVpcRanges: [],
-      // The composer refuses loopback endpoints; the agent host resolves *.devnet.test to 127.0.0.1.
+      // The composer refuses loopback and plain http endpoints: the config names the HTTPS fronts by *.devnet.test
+      // names, which the agent host resolves to 127.0.0.1.
       endpoints: {
-        keyBroker: `http://key-broker.devnet.test:${this.brokerPort}`,
-        platformApi: `http://api.devnet.test:${this.apiPort}`,
-        tempoRpc: `http://rpc.devnet.test:${new URL(this.chain.node.rpcUrl).port}`,
+        ...endpointUrls(this.frontPorts),
         relay: "https://attest.relay.devnet.example",
         relayAttest: "https://attest.relay.devnet.example/attest",
       },
@@ -369,7 +392,7 @@ export class Devnet {
         feeSplitter: this.chain.c.feeSplitter,
       },
       feeToken: TOKENS.pathUsd,
-      settlement: { mode: o.mode, intervalMinutes: 1, gracePeriodMinutes: o.graceMinutes ?? 5, spendLimitPerDay: "2000000" },
+      settlement: { mode: o.mode, intervalMinutes: 1, gracePeriodMinutes: o.graceMinutes ?? 5, spendLimitPerDay: DAILY_LIMIT.toString() },
       relayOwner: ADDR.treasury,
       debug: false,
     };
@@ -426,6 +449,9 @@ export class Devnet {
     this.brokerPort = this.port();
     this.apiPort = this.port();
     this.agentPort = this.port();
+    this.frontPorts = { keyBroker: this.port(), platformApi: this.port(), tempoRpc: this.port() };
+    this.composerVersion = await composerVersion(this.sup, this.o.bins.compose);
+    this.log.ok(`configs name composer ${this.composerVersion} (sealed-compose version) and the https endpoints ${Object.values(endpointUrls(this.frontPorts)).join(", ")}`);
     const config = this.baseConfig({ apps: STACK_APPS, mode: "access-key", imageId: this.images.prod, salt: this.salt("a") });
     const a = await this.compose("a", config, STACK_APPS);
     this.log.ok(`fetched ${STACK_APPS.length} bundles by the release asset rule; each sha256 equals its onchain bundleHash`);
@@ -476,8 +502,41 @@ export class Devnet {
     });
     this.apiUrl = api.url;
     this.log.ok(`platform api ${api.url} (oracle key = the local test oracle signer, OPS = the registrar key, indexer from block ${this.chain.c.deployBlock})`);
+    await this.startEndpointFronts();
     void a;
     await this.checkCatalog();
+  }
+
+  /**
+   * The config's endpoints: an HTTPS front for each of the key broker, the api and anvil, with one run-local
+   * certificate for the three *.devnet.test names that only the agent host trusts. Checked from a client that trusts
+   * that certificate and nothing else, by name.
+   */
+  private async startEndpointFronts(): Promise<void> {
+    const cert = await endpointCert(this.sup, this.path("endpoint-fronts"), Object.values(ENDPOINT_HOSTS));
+    this.endpointCaFile = cert.certFile;
+    const targets: Record<EndpointName, number> = { keyBroker: this.brokerPort, platformApi: this.apiPort, tempoRpc: Number(new URL(this.chain.node.rpcUrl).port) };
+    for (const k of Object.keys(ENDPOINT_HOSTS) as EndpointName[]) {
+      this.endpointFronts.push(await startTlsFront({ hostname: ENDPOINT_HOSTS[k], port: this.frontPorts[k], targetPort: targets[k], ...cert }));
+    }
+    const viaFront = (k: EndpointName, path: string, body?: string) =>
+      new Promise<{ status: number; text: string }>((ok, fail) => {
+        const req = httpsRequest(
+          { host: "127.0.0.1", port: this.frontPorts[k], servername: ENDPOINT_HOSTS[k], ca: cert.cert, path, method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" } },
+          (res) => {
+            let text = "";
+            res.on("data", (c: Buffer) => (text += c.toString()));
+            res.on("end", () => ok({ status: res.statusCode ?? 0, text }));
+          },
+        );
+        req.on("error", fail);
+        req.end(body);
+      });
+    const chainId = await viaFront("tempoRpc", "/", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }));
+    checkEq(Number((JSON.parse(chainId.text) as { result: string }).result), CHAIN_ID, `eth_chainId through https://${ENDPOINT_HOSTS.tempoRpc}`);
+    checkEq((await viaFront("platformApi", "/v1/catalog/apps")).status, 200, `GET /v1/catalog/apps through https://${ENDPOINT_HOSTS.platformApi}`);
+    checkEq((await viaFront("keyBroker", "/v1/nonce")).status, 200, `GET /v1/nonce through https://${ENDPOINT_HOSTS.keyBroker}`);
+    this.log.ok(`https fronts ${this.endpointFronts.map((f) => f.url).join(", ")} (one run-local self-signed certificate; the agent host trusts it through NODE_EXTRA_CA_CERTS)`);
   }
 
   /** The api's catalog (indexer plus release assets by the D-046 rule) as the console shows it. */
@@ -523,7 +582,9 @@ export class Devnet {
     cpSync(join(c.dir, "Caddyfile.payment-needed"), paths.caddyfilePaymentNeeded);
     rmSync(join(paths.out, "ready.json"), { force: true });
     rmSync(join(paths.out, "evidence.json"), { force: true });
-    const proc = startAgent(this.sup, { name, hostScript: join(this.o.repo, "scripts", "devnet", "src", "agentHost.ts"), paths, dstack, port, defaultsPath: this.defaultsPath, env });
+    // The agent trusts the endpoint fronts' certificate as an agent in a VM trusts the public CAs of the real endpoints.
+    const agentEnv = { NODE_EXTRA_CA_CERTS: this.endpointCaFile, ...env };
+    const proc = startAgent(this.sup, { name, hostScript: join(this.o.repo, "scripts", "devnet", "src", "agentHost.ts"), paths, dstack, port, defaultsPath: this.defaultsPath, env: agentEnv });
     const run = { name, paths, port, proc, composed: c, env };
     this.agents.push(run);
     return run;
@@ -674,7 +735,7 @@ export class Devnet {
     const payerKey = this.secretFile(run.paths, "sealed-mpp-payer", "ENCLAVE_KEY");
     check(existsSync(payerKey), "the payer key file exists");
     checkEq(privateKeyToAccount(readFileSync(payerKey, "utf8").trim() as Hex).address, ready.enclaveSigner, "the payer key belongs to the enclave signer");
-    checkEq(readFileSync(this.secretFile(run.paths, "sealed-mpp-payer", "SPEND_LIMIT_PER_DAY"), "utf8").trim(), "2000000", "payer daily limit");
+    checkEq(readFileSync(this.secretFile(run.paths, "sealed-mpp-payer", "SPEND_LIMIT_PER_DAY"), "utf8").trim(), DAILY_LIMIT.toString(), "payer daily limit");
     this.log.ok("sealed-mpp-payer got the enclave key and the daily spend limit");
     check(existsSync(join(run.paths.ready, "ok")), "ready flag written");
     this.log.ok(`ready flag ${join("run", "sealed", "ready", "ok")} written after the secrets`);
@@ -828,32 +889,14 @@ export class Devnet {
   private async authorizeAccessKey(keyId: Address): Promise<Hex> {
     const chain = tempoChain({ chainId: CHAIN_ID, rpcUrl: this.chain.node.rpcUrl, feeToken: TOKENS.pathUsd });
     const wallet = createClient({ chain: chain as never, transport: viemHttp(this.chain.node.rpcUrl), pollingInterval: 100 });
-    const fs = this.chain.c.feeSplitter;
+    // The D-054 authorization exactly as the console and the api build it (one helper in @sealed/core).
+    const auth = buildAccessKeyAuthorization({ keyId, feeToken: TOKENS.pathUsd, feeSplitter: this.chain.c.feeSplitter, treasury: ADDR.treasury, limit: DAILY_LIMIT, period: "day" });
     const hash = await wallet.writeContract({
       account: Account.fromSecp256k1(KEYS.customer),
       address: Addresses.accountKeychain,
       abi: Abis.accountKeychain,
       functionName: "authorizeKey",
-      args: [
-        keyId,
-        0,
-        {
-          expiry: 2n ** 64n - 1n,
-          enforceLimits: true,
-          limits: [{ token: TOKENS.pathUsd, amount: 2_000_000n, period: 86_400n }],
-          allowAnyCalls: false,
-          allowedCalls: [
-            { target: TOKENS.pathUsd, selectorRules: [{ selector: toFunctionSelector("approve(address,uint256)"), recipients: [fs] }] },
-            {
-              target: fs,
-              selectorRules: [
-                { selector: toFunctionSelector("payFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
-                { selector: toFunctionSelector("topUpFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
-              ],
-            },
-          ],
-        },
-      ],
+      args: auth.args,
       feeToken: TOKENS.alphaUsd,
       gas: 12_000_000n,
     } as never);
@@ -930,7 +973,7 @@ export class Devnet {
     this.log.step("Usage and fees, access-key mode: usage events, signed report, settlement every few seconds, split, withdraw");
     const ready = readJson<Ready>(join(run.paths.out, "ready.json"));
     const hash = await this.authorizeAccessKey(ready.enclaveSigner);
-    this.log.ok(`customer authorized the enclave signer as an access key on the AccountKeychain precompile (limit 2.00 pathUSD per day, approve/payFees/topUpFees only; tx ${hash})`);
+    this.log.ok(`customer authorized the enclave signer as an access key on the AccountKeychain precompile (D-054: limit ${DAILY_LIMIT / 1_000_000n}.00 pathUSD per day, the eight fee and relay calls; tx ${hash})`);
     const llmIp = this.serviceIp(run.composed, "llm-gateway");
     const wrong = await this.postUsage(run, "scraper", "pages", 5, llmIp);
     checkEq(wrong.status, 403, "usage for another app's service IP is refused");
@@ -968,17 +1011,17 @@ export class Devnet {
     const call = (path: string, body: unknown, peer = payer) => http<{ ok: boolean; remaining: string; reservationId?: string; reason?: string }>(`http://127.0.0.1:${run.port}${path}`, { body, headers: { [PEER_HEADER]: peer } });
     checkEq((await call("/v1/spend/reserve", { amount: "1" }, this.serviceIp(run.composed, "llm-gateway"))).status, 403, "only sealed-mpp-payer may reserve");
     checkEq((await call("/v1/spend/reserve", { amount: "1", currency: TOKENS.alphaUsd })).status, 422, "a reservation in another token");
-    const probe = await call("/v1/spend/reserve", { amount: "2000001", currency: TOKENS.pathUsd });
+    const probe = await call("/v1/spend/reserve", { amount: (DAILY_LIMIT + 1n).toString(), currency: TOKENS.pathUsd });
     check(probe.status === 200 && probe.body.ok === false && probe.body.reason === "budget", `more than the daily limit is refused: ${probe.text}`);
     const remaining = BigInt(probe.body.remaining);
-    check(remaining > 0n && remaining <= 2_000_000n - feesSpent, `the payer's share excludes the fees already paid (${remaining} <= 2000000 - ${feesSpent})`);
+    check(remaining > 0n && remaining <= DAILY_LIMIT - feesSpent, `the payer's share excludes the fees already paid (${remaining} <= ${DAILY_LIMIT} - ${feesSpent})`);
     const r = await call("/v1/spend/reserve", { amount: "100000", currency: TOKENS.pathUsd });
     check(r.body.ok && r.body.reservationId, "a reservation within the budget");
     checkEq(BigInt(r.body.remaining), remaining - 100_000n, "remaining after the reservation");
     const rel = await call("/v1/spend/release", { reservationId: r.body.reservationId, used: "60000" });
     checkEq(BigInt(rel.body.remaining), remaining - 60_000n, "remaining after releasing with 60000 used");
     checkEq((await call("/v1/spend/release", { reservationId: r.body.reservationId, used: "0" })).status, 404, "a reservation releases once");
-    this.log.ok(`shared spend budget (D-048): the payer could reserve ${remaining} of 2000000 after ${feesSpent} of fees, and a release counts only what was used`);
+    this.log.ok(`shared spend budget (D-048): the payer could reserve ${remaining} of ${DAILY_LIMIT} after ${feesSpent} of fees and the reserve for the rest of the period, and a release counts only what was used`);
   }
 
   private async stepUsageEnclaveAccount(): Promise<void> {

@@ -1,6 +1,28 @@
-// Ports and small HTTP helpers. Ports are chosen by the OS (bind to port 0) and held until every port of the run
-// is chosen, so two components never get the same one.
+// Ports, name resolution and small HTTP helpers. Ports are chosen by the OS (bind to port 0) and held until every
+// port of the run is chosen, so two components never get the same one.
+import dns from "node:dns";
 import { createServer, type Server } from "node:net";
+
+/** The RFC 6761 names the devnet's configs use for its endpoints (the composer refuses loopback endpoints). */
+export const DEVNET_DOMAIN = ".devnet.test";
+
+type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void;
+
+/** Resolves every *.devnet.test name to 127.0.0.1 for this process (node:http and fetch both use dns.lookup). */
+export function installDevnetResolver(): void {
+  const original = dns.lookup;
+  const patched = (host: string, opts: unknown, cb?: LookupCallback) => {
+    const callback = (typeof opts === "function" ? opts : cb) as LookupCallback;
+    const options = (typeof opts === "object" && opts !== null ? opts : {}) as dns.LookupOptions;
+    if (typeof host === "string" && host.endsWith(DEVNET_DOMAIN)) {
+      if (options.all) process.nextTick(callback, null, [{ address: "127.0.0.1", family: 4 }]);
+      else process.nextTick(callback, null, "127.0.0.1", 4);
+      return;
+    }
+    return (original as (...a: unknown[]) => void).call(dns, host, opts, cb);
+  };
+  (dns as { lookup: unknown }).lookup = patched;
+}
 
 export async function freePorts(n: number, host = "127.0.0.1"): Promise<number[]> {
   const servers: Server[] = [];

@@ -23,23 +23,25 @@ binaries (`PG_BIN`, default `/opt/homebrew/opt/postgresql@17/bin`), and the priv
 
 | component | how |
 |---|---|
-| Tempo node | `anvil --network tempo --hardfork T4 --gas-limit 500000000` on a free port |
+| Tempo node | `anvil --network tempo --hardfork T12 --gas-limit 500000000` on a free port (mainnet's hardfork, D-053; `LOCAL_HARDFORK` of `@sealed/core`) |
 | contracts | `contracts/script/Deploy.s.sol` broadcast with forge (oracle signer = a local test key, FEE_TOKEN = the local node's pathUSD), `record-deployment.sh` |
 | release assets | a local HTTP server at `<base>/<appId>-v<version>/<appId>-<version>.bundle.tar` (D-046) |
-| key broker | `key-broker` dev build, `SEALED_DEV_SIM=1`, `--dev-allow-simulated`, in-memory secret store (`--dev-secrets-file`), file-backed HMAC key, JSON-lines decision log |
+| key broker | `key-broker` dev build, `SEALED_DEV_SIM=1`, `--dev-allow-simulated`, in-memory secret store (`--dev-secrets-file`), file-backed HMAC key, JSON-lines decision log; `SEALED_FEE_SPLITTER` and `SEALED_FEE_TOKEN` name the local FeeSplitter and pathUSD (the broker refuses a config with others) |
 | sealed-verifierd | `--dev-allow-simulated`, the run's deployments file, the local asset base |
 | platform api | `services/api` `dist/main.js serve` as oracle and indexer, a throwaway PostgreSQL 17 cluster, ORACLE and OPS from anvil dev keys; its Google and Rekor endpoints point at a closed local port |
 | dstack simulator | `runtime/agent` `dist/sim.js` serving the exact app-compose.json |
 | sealed-agent | `src/agentHost.ts`: the real `Agent` class booted like `runtime/agent/src/main.ts` |
 | attest host | `src/attestFront.ts`: HTTPS with a self-signed certificate for the stack's attest hostname, proxying `/attest` to the agent as Caddy does |
+| endpoint fronts | `src/tlsFront.ts`: the composer takes only https endpoints (composer 1.3.0), so the config names `https://key-broker.devnet.test`, `https://api.devnet.test` and `https://rpc.devnet.test` on free ports; each front forwards to the key broker, the api or anvil, with one run-local self-signed certificate for the three names that only the agent host trusts (`NODE_EXTRA_CA_CERTS`) |
 
 The agent host replaces only what a laptop has no equivalent for: the block-device tools behind `LuksDisk`
 (`src/fakeLuks.ts`: the LUKS2 format, open, mkfs and mount steps run against a fake that keeps the header and
 filesystem state across reboots and refuses another diskKey), Caddy's admin socket (switches are recorded), Caddy's
 TLS listener (the attest front above), egress stats and container health probes, chown of volume directories, the caller address of
 local API calls (taken from an `x-devnet-peer` header, standing in for the apps' fixed 172.30.x.y addresses), and
-name resolution: the composer refuses loopback endpoints, so configs name `*.devnet.test` hosts (RFC 6761) and the
-agent host resolves them to 127.0.0.1, as sealed-egress's DNS would inside a VM.
+name resolution: the composer refuses loopback and plain http endpoints, so configs name `*.devnet.test` hosts
+(RFC 6761) behind the endpoint fronts and the agent host resolves them to 127.0.0.1, as sealed-egress's DNS would
+inside a VM. Configs carry the `composerVersion` that `sealed-compose version` prints, never a pinned one.
 
 ## Steps and assertions
 
@@ -62,7 +64,9 @@ agent host resolves them to 127.0.0.1, as sealed-egress's DNS would inside a VM.
    `dep_` alias through `--api`, and `--live` against a local TLS front for the attest host (a self-signed
    certificate; the agent reads its key by a TLS handshake as it reads Caddy's): the quote binds that key, and a
    front with another certificate fails `tls_binding`.
-8. Access-key mode: the customer authorizes the enclave signer on the AccountKeychain precompile; usage events
+8. Access-key mode: the customer authorizes the enclave signer on the AccountKeychain precompile with the D-054
+   authorization `buildAccessKeyAuthorization` builds for the console and the api (100.00 pathUSD per day: fee
+   settlement reserves the app-hours and network fees of the whole onchain period first, D-048); usage events
    from the apps' own addresses (wrong address and wrong unit refused); the agent settles every few seconds
    (`test_overrides.settlement_interval_seconds`), the api stores the signed report, FeesPaid legs, usagePaid,
    the indexer, the 80/20 split, the shared spend budget (D-048) and a maintainer withdrawal.
@@ -87,6 +91,6 @@ failure, SIGINT, SIGTERM and SIGHUP.
 ## Unit tests
 
 ```sh
-pnpm --filter @sealed/devnet test        # asset rule and tar reader, fake LUKS runner with the real LuksDisk, secret plan, supervisor
+pnpm --filter @sealed/devnet test        # asset rule and tar reader, fake LUKS runner with the real LuksDisk, secret plan, supervisor, endpoint fronts, composer version
 pnpm --filter @sealed/devnet typecheck
 ```
