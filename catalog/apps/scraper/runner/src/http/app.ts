@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { errorMessage, silentLogger } from '../log.js';
 import { apiRoutes } from './api.js';
+import { DEFAULT_ALLOWED_CLIENTS, parseAllowedClients } from '../client-policy.js';
+import { clientGuard } from './clients.js';
 import type { AppDeps } from './deps.js';
 import { pageSecurity, sameOriginGuard } from './security.js';
 import { notFoundPage, uiRoutes } from './ui.js';
@@ -10,6 +12,7 @@ export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
   app.use('*', pageSecurity);
+  app.use('*', clientGuard(deps.clients ?? parseAllowedClients(DEFAULT_ALLOWED_CLIENTS), deps.remoteAddress));
   app.use('*', sameOriginGuard());
 
   app.get('/healthz', async (c) => {

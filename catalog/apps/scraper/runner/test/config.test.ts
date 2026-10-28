@@ -58,6 +58,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...base, SCRAPER_METERING: 'maybe' })).toThrow();
   });
 
+  it('allows Caddy and loopback by default and reads SCRAPER_ALLOWED_CLIENTS', () => {
+    expect(loadConfig(base).allowedClients.entries).toEqual(['172.30.0.4', '127.0.0.1', '::1']);
+    const custom = loadConfig({ ...base, SCRAPER_ALLOWED_CLIENTS: '172.30.0.4, 172.30.0.20' }).allowedClients;
+    expect(custom.allows('172.30.0.20')).toBe(true);
+    expect(custom.allows('127.0.0.1')).toBe(false);
+    expect(() => loadConfig({ ...base, SCRAPER_ALLOWED_CLIENTS: 'caddy' })).toThrow(/SCRAPER_ALLOWED_CLIENTS caddy is not an IP/);
+  });
+
   it('can restrict crawlers', () => {
     expect(loadConfig({ ...base, SCRAPER_CRAWLERS: 'cheerio, playwright' }).crawlers).toEqual(['cheerio', 'playwright']);
   });

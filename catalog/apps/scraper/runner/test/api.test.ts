@@ -31,11 +31,14 @@ const JOB = {
 let store: MemoryRunStore;
 let runs: FakeRuns;
 let app: ReturnType<typeof createApp>;
+// The request's peer address; Caddy's fixed apps-network address unless a test changes it.
+let peer: string | undefined;
 
 function setup(crawlers: CrawlerKind[] = ['cheerio', 'playwright']) {
   store = new MemoryRunStore();
   runs = new FakeRuns(store);
-  app = createApp({ store, runs, crawlers });
+  peer = '172.30.0.4';
+  app = createApp({ store, runs, crawlers, remoteAddress: () => peer });
 }
 
 const postJson = (path: string, body: unknown, headers: Record<string, string> = {}) =>
@@ -112,6 +115,39 @@ describe('POST /api/v1/jobs', () => {
       (await postJson('/api/v1/jobs', JOB, { origin: 'https://scraper.1-2-3-4.sslip.io', host: 'scraper.1-2-3-4.sslip.io', 'sec-fetch-site': 'same-origin' }))
         .status,
     ).toBe(201);
+  });
+});
+
+describe('client allowlist', () => {
+  it('refuses every other container on the apps network, for the API and the UI', async () => {
+    peer = '172.30.0.16';
+    const create = await postJson('/api/v1/jobs', JOB);
+    expect(create.status).toBe(403);
+    expect(await create.json()).toEqual({ error: { code: 'forbidden_client', message: 'this client may not use the scraper' } });
+    expect(runs.submitted).toEqual([]);
+    expect((await app.request('/api/v1/runs')).status).toBe(403);
+    expect((await app.request('/')).status).toBe(403);
+    expect((await app.request('/runs/new', { method: 'POST' })).status).toBe(403);
+  });
+
+  it('refuses requests whose peer address is unknown', async () => {
+    peer = undefined;
+    expect((await app.request('/api/v1/runs')).status).toBe(403);
+  });
+
+  it('keeps /healthz open and accepts Caddy on a dual-stack socket', async () => {
+    peer = '172.30.0.3';
+    expect((await app.request('/healthz')).status).toBe(200);
+    peer = '::ffff:172.30.0.4';
+    expect((await app.request('/api/v1/runs')).status).toBe(200);
+  });
+
+  it('reads the peer from the Node socket by default', async () => {
+    const real = createApp({ store, runs, crawlers: ['cheerio'] });
+    const env = (address: string) => ({ incoming: { socket: { remoteAddress: address } } });
+    expect((await real.request('/api/v1/runs', {}, env('172.30.0.4'))).status).toBe(200);
+    expect((await real.request('/api/v1/runs', {}, env('172.30.0.9'))).status).toBe(403);
+    expect((await real.request('/api/v1/runs')).status).toBe(403);
   });
 });
 

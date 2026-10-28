@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { log } from '@crawlee/core';
 import { serve, type ServerType } from '@hono/node-server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseAllowedClients } from '../src/client-policy.js';
 import { createCrawl } from '../src/crawl/index.js';
 import { migrate } from '../src/db/migrate.js';
 import { PgRunStore } from '../src/db/store.js';
@@ -114,6 +115,21 @@ describe.runIf(hasPostgres)('end to end: job -> crawl -> Postgres -> CSV export 
 
     const page = await (await fetch(`${base}/runs/${run.id}`)).text();
     expect(page).toContain('Wood screw &quot;No. 8&quot;');
+  });
+
+  it('refuses peers outside the client allowlist on a real socket, except /healthz', async () => {
+    const guarded = createApp({ store: new PgRunStore(db.pool), runs: manager, crawlers: ['cheerio'], clients: parseAllowedClients('172.30.0.4') });
+    const server = serve({ fetch: guarded.fetch, port: 0, hostname: '127.0.0.1' });
+    await new Promise<void>((r) => server.once('listening', () => r()));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      expect((await fetch(`${url}/api/v1/runs`)).status).toBe(403);
+      const post = await fetch(`${url}/api/v1/jobs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(a6Job()) });
+      expect(post.status).toBe(403);
+      expect((await fetch(`${url}/healthz`)).status).toBe(200);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 
   it('runs two jobs side by side with separate storage', async () => {

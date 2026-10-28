@@ -107,6 +107,8 @@ describe('compose.fragment.yaml (INTERFACES 14)', () => {
     expect(runner.environment.PORT).toBe(String(manifest.routes[0].internal_port));
     expect(runner.environment.SEALED_AGENT_URL).toBe('http://sealed-agent:7070');
     expect(runner.environment.CRAWLEE_PERSIST_STORAGE).toBe('false');
+    // Only Caddy, whose apps-network address is fixed by INTERFACES 6, may call the runner.
+    expect(runner.environment.SCRAPER_ALLOWED_CLIENTS).toBe('172.30.0.4');
     expect(runner.read_only).toBe(true);
     expect(fragment.services['scraper-db']!.environment.POSTGRES_PASSWORD_FILE).toBe('/run/sealed/secrets/scraper/SCRAPER_DB_PASSWORD');
   });

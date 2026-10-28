@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { ClientListError, DEFAULT_ALLOWED_CLIENTS, parseAllowedClients, type ClientPolicy } from './client-policy.js';
 import type { LogLevel } from './log.js';
 
 export const ROBOTS_PRODUCT_TOKEN = 'SealedScraper';
@@ -7,6 +8,7 @@ export const DEFAULT_USER_AGENT = `${ROBOTS_PRODUCT_TOKEN}/1.0 (+https://github.
 export interface Config {
   host: string;
   port: number;
+  allowedClients: ClientPolicy;
   databaseUrl: string;
   dbPassword: string | undefined;
   // sealed-egress. Undefined only when SCRAPER_ALLOW_NO_PROXY=1 (local development).
@@ -89,9 +91,17 @@ export function loadConfig(env: Env = process.env, readFile = (p: string) => rea
     ? env.SCRAPER_CRAWLERS.split(',').map((s) => s.trim()).filter(Boolean)
     : undefined;
 
+  let allowedClients: ClientPolicy;
+  try {
+    allowedClients = parseAllowedClients(env.SCRAPER_ALLOWED_CLIENTS || DEFAULT_ALLOWED_CLIENTS);
+  } catch (err) {
+    throw new ConfigError(`SCRAPER_ALLOWED_CLIENTS ${(err as ClientListError).message}`);
+  }
+
   return {
     host: env.HOST ?? '0.0.0.0',
     port: int(env, 'PORT', 8080, 1, 65535),
+    allowedClients,
     databaseUrl,
     dbPassword: readPassword(env, readFile),
     proxyUrl,

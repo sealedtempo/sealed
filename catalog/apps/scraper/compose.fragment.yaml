@@ -8,6 +8,8 @@ services:
     x-sealed-secrets: [SCRAPER_DB_PASSWORD]
     environment:
       PORT: "8080"
+      # Only Caddy (fixed apps-network address, INTERFACES 6) may call the runner; /healthz is open.
+      SCRAPER_ALLOWED_CLIENTS: "172.30.0.4"
       DATABASE_URL: postgres://scraper@scraper-db:5432/scraper
       SEALED_AGENT_URL: http://sealed-agent:7070
       SCRAPER_MAX_RUNS: "2"
