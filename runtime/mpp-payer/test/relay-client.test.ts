@@ -2,6 +2,7 @@ import { generatePrivateKey } from 'viem/accounts'
 import { Account } from 'viem/tempo'
 import { describe, expect, it } from 'vitest'
 import { RelayClient, type SessionManagerLike } from '../src/relay-client.js'
+import { BudgetUnavailableError } from '../src/shared-budget.js'
 import { PaymentPolicyError, SpendLimitError } from '../src/spend-guard.js'
 
 const payee = ('0x' + 'ab'.repeat(20)) as `0x${string}`
@@ -93,6 +94,23 @@ describe('RelayClient', () => {
       charge: async () => Promise.reject(Object.assign(new Error('payment failed'), { cause: new SpendLimitError(40n, 10n) })),
     })
     await expect(limit.relay.chat({})).rejects.toThrow(SpendLimitError)
+  })
+
+  it('falls back to a charge when the shared budget cannot cover a deposit, but never when it is unavailable', async () => {
+    const short = client({ session: async () => Promise.reject(Object.assign(new Error('open failed'), { cause: new SpendLimitError(500_360n, 9_000n, 'shared') })) })
+    expect(await short.relay.chat({})).toMatchObject({ kind: 'response', intent: 'charge' })
+    expect(short.relay.sessionsAvailable()).toBe(false)
+    let charged = false
+    const down = client({
+      session: async () => Promise.reject(Object.assign(new Error('open failed'), { cause: new BudgetUnavailableError('sealed-agent spend budget unreachable') })),
+      charge: async () => {
+        charged = true
+        return Response.json({})
+      },
+    })
+    await expect(down.relay.chat({})).rejects.toThrow(BudgetUnavailableError)
+    expect(charged).toBe(false)
+    expect(down.relay.sessionsAvailable()).toBe(true)
   })
 
   it('refuses to pay before the relay payee is attested', async () => {

@@ -48,13 +48,32 @@ describe('SpendGuard', () => {
     expect(guard.counters().sessionAuthorized).toBe('2')
   })
 
-  it('budgets only the relay share of the daily limit, leaving the rest for agent fees', () => {
-    const guard = new SpendGuard(2_000_000n, Date.now, { shareBps: 8000 })
-    expect(guard.remaining()).toBe(1_600_000n)
-    expect(() => guard.reserve(1_600_001n, 'deposit')).toThrow(SpendLimitError)
-    guard.reserve(1_600_000n, 'deposit')
-    expect(guard.counters()).toMatchObject({ limit: '2000000', budget: '1600000', remaining: '0' })
-    expect(() => new SpendGuard(1n, Date.now, { shareBps: 10_001 })).toThrow(/basis points/)
+  it('caps at the whole daily limit: the share for agent fees is kept by the shared budget in sealed-agent', () => {
+    const guard = new SpendGuard(2_000_000n)
+    expect(guard.remaining()).toBe(2_000_000n)
+    expect(() => guard.reserve(2_000_001n, 'deposit')).toThrow(SpendLimitError)
+    guard.reserve(2_000_000n, 'deposit')
+    expect(guard.counters()).toMatchObject({ limit: '2000000', budget: '2000000', remaining: '0' })
+  })
+
+  it('reserves a payment and its network fee together or not at all', () => {
+    const guard = new SpendGuard(1_000n)
+    const release = guard.reserveAll([
+      { amount: 600n, kind: 'charge' },
+      { amount: 7n, kind: 'fee' },
+    ])
+    // Fees count in debited (they use the access-key limit) but not in the charge amount.
+    expect(guard.counters()).toMatchObject({ debited: '607', charges: 1, chargeAmount: '600', remaining: '393' })
+    expect(() =>
+      guard.reserveAll([
+        { amount: 390n, kind: 'charge' },
+        { amount: 4n, kind: 'fee' },
+      ]),
+    ).toThrow(SpendLimitError)
+    expect(guard.counters()).toMatchObject({ debited: '607', charges: 1, refused: 1 })
+    release()
+    expect(guard.counters()).toMatchObject({ debited: '0', charges: 0, chargeAmount: '0', remaining: '1000' })
+    expect(() => guard.reserveAll([{ amount: 0n, kind: 'fee' }])).toThrow(PaymentPolicyError)
   })
 
   it('persists the day across restarts, so a crash loop cannot spend the budget again', () => {

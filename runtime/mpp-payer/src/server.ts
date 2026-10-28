@@ -3,6 +3,7 @@ import type { GateState } from './attestation-gate.js'
 import { CompletionAccumulator, sseFrame } from './openai.js'
 import type { RelayResult } from './relay-client.js'
 import { RelayChannelError } from './relay-transport.js'
+import { BudgetUnavailableError } from './shared-budget.js'
 import { PaymentPolicyError, SpendLimitError } from './spend-guard.js'
 
 export type PayerDeps = {
@@ -55,7 +56,8 @@ function streamSession(events: AsyncIterable<string>, onDone: () => void): Respo
           await iterator.return?.()
         }
       } catch (err) {
-        const policy = err instanceof SpendLimitError ? 'spend_limit_exceeded' : 'relay_stream_failed'
+        const policy =
+          err instanceof SpendLimitError ? 'spend_limit_exceeded' : err instanceof BudgetUnavailableError ? 'spend_budget_unavailable' : 'relay_stream_failed'
         controller.enqueue(encoder.encode(sseFrame(JSON.stringify({ error: { type: policy, message: (err as Error).message } }))))
         controller.enqueue(encoder.encode(sseFrame('[DONE]')))
         controller.close()
@@ -120,6 +122,7 @@ export function createPayerApp(deps: PayerDeps): Hono {
       result = await deps.relay.chat(body, c.req.raw.signal)
     } catch (err) {
       if (err instanceof SpendLimitError) return error(429, 'spend_limit_exceeded', err.message)
+      if (err instanceof BudgetUnavailableError) return error(503, 'spend_budget_unavailable', err.message)
       if (err instanceof PaymentPolicyError) return error(502, 'payment_refused', err.message)
       if (err instanceof RelayChannelError) {
         log({ event: 'relay_channel_refused', model, detail: err.message.slice(0, 200) })
@@ -147,6 +150,7 @@ export function createPayerApp(deps: PayerDeps): Hono {
       }
     } catch (err) {
       if (err instanceof SpendLimitError) return error(429, 'spend_limit_exceeded', err.message)
+      if (err instanceof BudgetUnavailableError) return error(503, 'spend_budget_unavailable', err.message)
       return error(502, 'relay_stream_failed', (err as Error).message)
     } finally {
       deps.onPayment?.()

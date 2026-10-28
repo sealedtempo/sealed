@@ -2,20 +2,28 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 /**
- * Client-side spend guard. Every debit of the customer's money (a per-request charge, a
- * channel deposit, a channel top-up) must reserve budget here before its credential leaves
- * the payer. The budget is a share of the daily limit (SPEND_LIMIT_PER_DAY) per UTC day: the
- * agent's fee payments count against the same onchain limit (D-026), so part of it stays
- * reserved for them. Refunds from cooperative channel closes give budget back. The day's
- * debits are persisted, so a restart (or a crash loop) does not reset the budget. The
- * protocol's own access-key limit is the hard cap in access-key mode.
+ * Local spend guard, the payer's second cap. Every debit of the customer's money (a per-request
+ * charge, a channel deposit, a channel top-up, and the network fee of a transaction the payer
+ * pays itself) reserves budget here before its credential leaves the payer. The first cap is
+ * sealed-agent's shared daily budget (D-048, shared-budget.ts), which also holds back what fee
+ * settlement needs. This guard caps the payer at the daily limit (SPEND_LIMIT_PER_DAY) per UTC
+ * day on its own, so a lost or misbehaving agent budget cannot let it spend more. Refunds from
+ * cooperative channel closes give budget back. The day's debits are persisted, so a restart (or
+ * a crash loop) does not reset the budget. The protocol's own access-key limit is the hard cap
+ * in access-key mode.
  */
 export class SpendLimitError extends Error {
   constructor(
     readonly requested: bigint,
     readonly remaining: bigint,
+    /** local: this guard; shared: sealed-agent's shared budget (fee settlement has priority). */
+    readonly scope: 'local' | 'shared' = 'local',
   ) {
-    super(`daily spend limit reached: requested ${requested}, remaining ${remaining} base units`)
+    super(
+      scope === 'shared'
+        ? `shared daily budget reached (fee settlement has priority): requested ${requested}, remaining ${remaining} base units`
+        : `daily spend limit reached: requested ${requested}, remaining ${remaining} base units`,
+    )
     this.name = 'SpendLimitError'
   }
 }
@@ -27,13 +35,15 @@ export class PaymentPolicyError extends Error {
   }
 }
 
-export type DebitKind = 'charge' | 'deposit' | 'topUp'
+/** fee: the network fee cap of a transaction the payer's account pays itself (it counts against the access-key limit). */
+export type DebitKind = 'charge' | 'deposit' | 'topUp' | 'fee'
 
 export type SpendCounters = {
   day: string
   limit: string
-  /** The part of the limit the payer may spend on the relay. */
+  /** This guard's daily cap: the whole limit (the shared budget in sealed-agent is the first cap). */
   budget: string
+  /** Every debit, network fee caps included. */
   debited: string
   remaining: string
   charges: number
@@ -95,17 +105,15 @@ export class FileSpendStore implements SpendStore {
   }
 }
 
-export type SpendGuardOptions = { store?: SpendStore; shareBps?: number }
+export type SpendGuardOptions = { store?: SpendStore }
 
 export class SpendGuard {
   private day: string
   private debited = 0n
   private refunded = 0n
   private refused = 0
-  private readonly byKind = { charge: { n: 0, amount: 0n }, deposit: { n: 0, amount: 0n }, topUp: { n: 0, amount: 0n } }
+  private readonly byKind = { charge: { n: 0, amount: 0n }, deposit: { n: 0, amount: 0n }, topUp: { n: 0, amount: 0n }, fee: { n: 0, amount: 0n } }
   private readonly vouchers = new Map<string, bigint>()
-  /** What the payer may spend per day: limitPerDay x shareBps / 10000. */
-  readonly budgetPerDay: bigint
   private readonly store: SpendStore | undefined
 
   constructor(
@@ -114,9 +122,6 @@ export class SpendGuard {
     options: SpendGuardOptions = {},
   ) {
     if (limitPerDay < 0n) throw new Error('negative spend limit')
-    const share = options.shareBps ?? 10_000
-    if (!Number.isInteger(share) || share < 0 || share > 10_000) throw new Error('spend share must be 0..10000 basis points')
-    this.budgetPerDay = (limitPerDay * BigInt(share)) / 10_000n
     this.store = options.store
     this.day = utcDay(this.now())
     const saved = this.store?.load()
@@ -155,32 +160,48 @@ export class SpendGuard {
 
   remaining(): bigint {
     this.roll()
-    const left = this.budgetPerDay - this.debited + this.refunded
+    const left = this.limitPerDay - this.debited + this.refunded
     return left > 0n ? left : 0n
   }
 
   /** Reserves budget for one debit or throws SpendLimitError. Returns a release function. */
   reserve(amount: bigint, kind: DebitKind): () => void {
+    return this.reserveAll([{ amount, kind }])
+  }
+
+  /**
+   * Reserves every debit of one payment together (for example a charge and its network fee), or
+   * none of them. Returns one release function for all of them.
+   */
+  reserveAll(debits: readonly { amount: bigint; kind: DebitKind }[]): () => void {
     this.roll()
-    if (amount <= 0n) throw new PaymentPolicyError(`refusing a non-positive ${kind} of ${amount}`)
+    let total = 0n
+    for (const d of debits) {
+      if (d.amount <= 0n) throw new PaymentPolicyError(`refusing a non-positive ${d.kind} of ${d.amount}`)
+      total += d.amount
+    }
     const remaining = this.remaining()
-    if (amount > remaining) {
+    if (total > remaining) {
       this.refused++
       this.persist()
-      throw new SpendLimitError(amount, remaining)
+      throw new SpendLimitError(total, remaining)
     }
     const day = this.day
-    this.debited += amount
-    this.byKind[kind].n++
-    this.byKind[kind].amount += amount
+    this.debited += total
+    for (const d of debits) {
+      this.byKind[d.kind].n++
+      this.byKind[d.kind].amount += d.amount
+    }
     this.persist()
     let released = false
     return () => {
       if (released || day !== this.day) return
       released = true
-      this.debited -= amount
-      this.byKind[kind].n--
-      this.byKind[kind].amount -= amount
+      this.debited -= total
+      for (const d of debits) {
+        this.byKind[d.kind].n--
+        this.byKind[d.kind].amount -= d.amount
+      }
       this.persist()
     }
   }
@@ -210,7 +231,7 @@ export class SpendGuard {
     return {
       day: this.day,
       limit: this.limitPerDay.toString(),
-      budget: this.budgetPerDay.toString(),
+      budget: this.limitPerDay.toString(),
       debited: this.debited.toString(),
       remaining: this.remaining().toString(),
       charges: this.byKind.charge.n,

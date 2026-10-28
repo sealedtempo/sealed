@@ -34,8 +34,6 @@ export type PayerConfig = {
   attestIntervalSeconds: number
   allowedCallers: string[]
   reportIntervalSeconds: number
-  /** Share of SPEND_LIMIT_PER_DAY the payer may spend on the relay; the rest stays for the agent's fees (D-026). */
-  relaySpendShareBps: number
   /** Where the day's debits are kept so a restart does not reset the budget. */
   spendStateFile: string
 }
@@ -121,8 +119,8 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
   if (mode !== 'access-key' && mode !== 'enclave-account') throw new Error(`unknown settlement mode ${mode}`)
 
   const defaultDeposit = spendLimitPerDay / 4n > 500_000n ? 500_000n : spendLimitPerDay / 4n
-  const relaySpendShareBps = intEnv(env, 'RELAY_SPEND_SHARE_BPS', 8000)
-  if (relaySpendShareBps > 10_000) throw new Error('RELAY_SPEND_SHARE_BPS must be at most 10000')
+  if (env.RELAY_SPEND_SHARE_BPS !== undefined && env.RELAY_SPEND_SHARE_BPS !== '')
+    throw new Error('RELAY_SPEND_SHARE_BPS was removed: the payer draws from sealed-agent\'s shared daily budget (D-048)')
   const { relayUrl, relayAttestUrl } = relayEndpoints(pub.endpoints?.relay, pub.endpoints?.relayAttest)
   return {
     port: intEnv(env, 'PORT', 8090),
@@ -148,7 +146,6 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
       .map((s) => s.trim())
       .filter(Boolean),
     reportIntervalSeconds: intEnv(env, 'SPEND_REPORT_INTERVAL_SECONDS', 60),
-    relaySpendShareBps,
     spendStateFile: env.SPEND_STATE_FILE ?? DEFAULT_SPEND_STATE_FILE,
   }
 }

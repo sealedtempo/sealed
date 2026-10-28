@@ -108,7 +108,12 @@ describe('payer configuration', () => {
 
   it('reads the enclave key and daily limit from the payer tmpfs and the rest from the public config', () => {
     const c = loadPayerConfig(env)
-    expect(c).toMatchObject({ port: 8090, chainId: 4217, mode: 'access-key', customer: '0x' + 'cc'.repeat(20), spendLimitPerDay: 2_000_000n, maxDeposit: 500_000n, relayUrl: 'https://relay.example', relayAttestUrl: 'https://relay.example/attest', verifierdUrl: 'http://sealed-verifierd:8088', agentUrl: 'http://sealed-agent:7070', attestIntervalSeconds: 900, allowedCallers: ['llm-gateway'], relaySpendShareBps: 8000 })
+    expect(c).toMatchObject({ port: 8090, chainId: 4217, mode: 'access-key', customer: '0x' + 'cc'.repeat(20), spendLimitPerDay: 2_000_000n, maxDeposit: 500_000n, relayUrl: 'https://relay.example', relayAttestUrl: 'https://relay.example/attest', verifierdUrl: 'http://sealed-verifierd:8088', agentUrl: 'http://sealed-agent:7070', attestIntervalSeconds: 900, allowedCallers: ['llm-gateway'] })
+    expect(c).not.toHaveProperty('relaySpendShareBps')
+  })
+
+  it('refuses the removed relay share setting', () => {
+    expect(() => loadPayerConfig({ ...env, RELAY_SPEND_SHARE_BPS: '8000' })).toThrow(/shared daily budget/)
   })
 
   it('reads the environment names the composer sets on the payer sidecar', () => {
