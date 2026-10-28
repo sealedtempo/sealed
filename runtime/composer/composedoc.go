@@ -44,7 +44,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 
 	img := func(name string) string { return ri.Images[name].Ref }
 
-	services[svcInit] = map[string]any{
+	services[svcInit] = harden(map[string]any{
 		"image":        img(imgInit),
 		"entrypoint":   []any{"/envexec", "install", BinDir},
 		"network_mode": "none",
@@ -52,8 +52,8 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		"restart":      "no",
 		"logging":      logging(),
 		"volumes":      []any{volumeMount(volBin, BinDir, false)},
-	}
-	services[svcEgress] = map[string]any{
+	}, capsNone, nil)
+	services[svcEgress] = harden(map[string]any{
 		"image": img(imgEgress),
 		"networks": map[string]any{
 			"apps": map[string]any{"ipv4_address": EgressAppsIP},
@@ -67,8 +67,10 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		"depends_on":  dependsOn(map[string]string{svcInit: "service_completed_successfully"}),
 		"restart":     "unless-stopped",
 		"logging":     logging(),
-	}
+	}, capsNone, nil)
 
+	// The agent's DataRoot bind is only the mount point it opens LUKS on;
+	// nothing is written there before the mount, so Docker may create it.
 	agentVolumes := []any{
 		map[string]any{"type": "bind", "source": DstackSocket, "target": DstackSocket},
 		map[string]any{"type": "bind", "source": DataRoot, "target": DataRoot,
@@ -97,7 +99,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 	} {
 		agentEnv[k] = v
 	}
-	services[svcAgent] = map[string]any{
+	services[svcAgent] = harden(map[string]any{
 		"image":       img(imgAgent),
 		"networks":    map[string]any{"apps": map[string]any{"ipv4_address": AgentIP}},
 		"dns":         []any{DNSIP},
@@ -109,7 +111,6 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 			configMount(cfgCaddyfile, AgentCaddyfilePath),
 			configMount(cfgCaddyfilePN, AgentCaddyfilePNPath),
 		},
-		"cap_add":     []any{"SYS_ADMIN"},
 		"devices":     []any{DataDeviceHost + ":" + DataDevice, "/dev/mapper/control:/dev/mapper/control"},
 		"healthcheck": probe("http://127.0.0.1:"+strconv.Itoa(AgentPort)+"/v1/ready", "5s", "24h"),
 		"depends_on": dependsOn(map[string]string{
@@ -118,12 +119,12 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		}),
 		"restart": "unless-stopped",
 		"logging": logging(),
-	}
+	}, capsAgentDrop, []string{"SYS_ADMIN"})
 
 	caddyEnv := proxyEnv(noProxy)
 	caddyEnv["XDG_DATA_HOME"] = "/data"
 	caddyEnv["XDG_CONFIG_HOME"] = "/config"
-	services[svcCaddy] = map[string]any{
+	services[svcCaddy] = harden(map[string]any{
 		"image": img(imgCaddy),
 		"entrypoint": []any{EnvexecPath, "--app", GateApp, "--secret", gateSecret, "--",
 			"caddy", "run", "--config", CaddyfilePath, "--adapter", "caddyfile"},
@@ -139,7 +140,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 			volumeMount(volReady, ReadyDir, true),
 			volumeMount(volSecretsPfx+GateApp, SecretsRoot+"/"+GateApp, true),
 			volumeMount(volCaddyAdmin, CaddyAdminDir, false),
-			dataBind("_caddy", "data", "/data", false),
+			dataBind(caddyDataApp, caddyDataVolume, "/data", false),
 			map[string]any{"type": "tmpfs", "target": "/config"},
 		},
 		"configs": []any{
@@ -153,7 +154,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		}),
 		"restart": "unless-stopped",
 		"logging": logging(),
-	}
+	}, capsNone, []string{"NET_BIND_SERVICE"})
 
 	if hasGateway {
 		payerEnv := proxyEnv(noProxy)
@@ -162,7 +163,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		payerEnv["SEALED_SECRETS_DIR"] = SecretsRoot + "/" + svcPayer
 		payerEnv["SEALED_AGENT_URL"] = "http://" + svcAgent + ":" + strconv.Itoa(AgentPort)
 		payerEnv["SEALED_VERIFIERD_URL"] = "http://" + svcVerifierd + ":" + strconv.Itoa(VerifierdPort)
-		services[svcPayer] = map[string]any{
+		services[svcPayer] = harden(map[string]any{
 			"image":       img(imgPayer),
 			"networks":    map[string]any{"apps": map[string]any{"ipv4_address": PayerIP}},
 			"dns":         []any{DNSIP},
@@ -178,11 +179,11 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 			}),
 			"restart": "unless-stopped",
 			"logging": logging(),
-		}
+		}, capsNone, nil)
 		vdEnv := proxyEnv(noProxy)
 		vdEnv["PORT"] = strconv.Itoa(VerifierdPort)
 		vdEnv["SEALED_CONFIG_FILE"] = ConfigPath
-		services[svcVerifierd] = map[string]any{
+		services[svcVerifierd] = harden(map[string]any{
 			"image":       img(imgVerifierd),
 			"networks":    map[string]any{"apps": map[string]any{"ipv4_address": VerifierdIP}},
 			"dns":         []any{DNSIP},
@@ -192,7 +193,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 			"depends_on":  dependsOn(map[string]string{svcEgress: "service_healthy"}),
 			"restart":     "unless-stopped",
 			"logging":     logging(),
-		}
+		}, capsNone, nil)
 	}
 
 	for _, a := range apps {
@@ -334,6 +335,7 @@ func appService(a *plannedApp, s *plannedService, noProxy string) (map[string]an
 		"restart":     restart,
 		"logging":     logging(),
 	}
+	harden(svc, capsAppDrop, nil)
 	switch c := spec.Command.(type) {
 	case string:
 		svc["command"] = c
@@ -443,6 +445,31 @@ func proxyEnv(noProxy string) map[string]any {
 
 func logging() map[string]any { return map[string]any{"driver": "none"} }
 
+// Capability sets. Docker's default set includes NET_RAW, which lets a
+// container forge source IPs and ARP replies on the shared apps bridge;
+// sealed-egress identifies callers by source IP, so no service keeps it.
+// Sidecars we build drop everything. App images are unknown, so apps keep
+// the defaults their entrypoints rely on (CHOWN, SETUID, SETGID, ...) and
+// drop the ones no app needs. The agent keeps MKNOD because libdevmapper
+// creates /dev/mapper nodes itself when udev is absent.
+var (
+	capsNone      = []string{"ALL"}
+	capsAppDrop   = []string{"AUDIT_WRITE", "MKNOD", "NET_RAW", "SETFCAP"}
+	capsAgentDrop = []string{"NET_RAW"}
+)
+
+// harden sets cap_drop, cap_add and no-new-privileges on a service, so
+// setuid binaries and file capabilities cannot raise privileges either.
+// Fragments cannot set these keys (INTERFACES section 14).
+func harden(svc map[string]any, drop, add []string) map[string]any {
+	svc["cap_drop"] = toAny(drop)
+	if len(add) > 0 {
+		svc["cap_add"] = toAny(add)
+	}
+	svc["security_opt"] = []any{"no-new-privileges:true"}
+	return svc
+}
+
 func volumeMount(source, target string, readOnly bool) map[string]any {
 	m := map[string]any{"type": "volume", "source": source, "target": target, "volume": map[string]any{"nocopy": true}}
 	if readOnly {
@@ -451,12 +478,18 @@ func volumeMount(source, target string, readOnly bool) map[string]any {
 	return m
 }
 
+// dataBind mounts a directory of the encrypted data disk. Docker must not
+// create the source: before sealed-agent opens the disk (a reboot restarts
+// containers without waiting for depends_on) the path would land on the host
+// side of the mount point. A missing source makes the container fail to
+// start instead; sealed-agent creates every DataDirs entry after unlocking,
+// and compose up starts the app once the agent is healthy.
 func dataBind(app, volume, target string, readOnly bool) map[string]any {
 	m := map[string]any{
 		"type":   "bind",
-		"source": DataRoot + "/" + app + "/" + volume,
+		"source": DataPath(app, volume),
 		"target": target,
-		"bind":   map[string]any{"create_host_path": true},
+		"bind":   map[string]any{"create_host_path": false},
 	}
 	if readOnly {
 		m["read_only"] = true

@@ -59,6 +59,11 @@ func TestComposeCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), "attest.34-1-2-3.sslip.io {") {
 		t.Fatal("caddyfile not printed")
 	}
+	// Release flows refuse stacks with placeholder digests.
+	err := run(append(append([]string{}, args[:len(args)-2]...), "--require-built"), &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "unbuilt") {
+		t.Fatalf("unbuilt stack passed --require-built: %v", err)
+	}
 	// Without --fill-release-ids the placeholder ids do not match.
 	if err := run([]string{"compose", "--config", "../../testdata/config.json", "--registry", "ghcr.io/sealed-dev",
 		"--app-dir", filepath.Join(apps, "notes"), "--app-dir", filepath.Join(apps, "llm-gateway")}, &stdout, &stderr); err == nil {
@@ -70,6 +75,14 @@ func TestLintCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"lint", "--catalog", apps, "--require-sbom", "--json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("%v\n%s", err, stdout.String())
+	}
+	tarPath := filepath.Join(t.TempDir(), "notes.tar")
+	if err := run([]string{"bundle", "--registry", "ghcr.io/evil", "--app-dir", filepath.Join(apps, "notes"), "--out", tarPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if err := run([]string{"lint", "--bundle", tarPath}, &stdout, &stderr); err == nil || !strings.Contains(stdout.String(), "[registry]") {
+		t.Fatalf("foreign registry bundle passed lint: %v\n%s", err, stdout.String())
 	}
 	if err := run([]string{"lint"}, &stdout, &stderr); err == nil {
 		t.Fatal("empty lint accepted")

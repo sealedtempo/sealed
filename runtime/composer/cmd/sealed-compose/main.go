@@ -144,6 +144,7 @@ func runCompose(args []string, stdout, stderr io.Writer) error {
 	fill := fs.Bool("fill-release-ids", false, "replace config releaseIds with the bundles' ids (development only)")
 	printWhat := fs.String("print", "summary", "summary|app-compose|compose|egress|caddyfile|caddyfile-payment|stack|config|pre-launch")
 	outDir := fs.String("out", "", "also write every artifact into this directory")
+	requireBuilt := fs.Bool("require-built", false, "fail when any image still has the all-zero placeholder digest (release and approval flows)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -172,6 +173,11 @@ func runCompose(args []string, stdout, stderr io.Writer) error {
 	res, err := composer.Compose(cfg, bundles)
 	if err != nil {
 		return err
+	}
+	if *requireBuilt {
+		if err := res.RequireBuilt(); err != nil {
+			return err
+		}
 	}
 	artifacts := map[string][]byte{
 		"app-compose.json":         res.AppCompose,
@@ -280,12 +286,13 @@ func runLint(args []string, stdout, stderr io.Writer) error {
 	var appDirs, bundleFiles multi
 	fs.Var(&appDirs, "app-dir", "catalog app directory (repeatable)")
 	fs.Var(&bundleFiles, "bundle", "bundle tar file (repeatable)")
-	requireSBOM := fs.Bool("require-sbom", false, "treat a missing SBOM as an error")
+	requireSBOM := fs.Bool("require-sbom", false, "release mode: a missing SBOM or an unrecognized package license is an error")
+	registry := fs.String("registry", "", "catalog.registry that bundle image refs must use (default: the runtime images registry)")
 	asJSON := fs.Bool("json", false, "print findings as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	opts := lint.Options{RequireSBOM: *requireSBOM}
+	opts := lint.Options{RequireSBOM: *requireSBOM, Registry: *registry}
 	var findings []lint.Finding
 	if *catalog != "" {
 		fsCat, err := lint.LintCatalog(*catalog, opts)

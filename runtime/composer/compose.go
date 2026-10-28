@@ -26,8 +26,18 @@ type Result struct {
 	StackInfo              []byte // CJSON sealed-stack/v1 document for sealed-agent
 	PreLaunchScript        string // host rules (INTERFACES section 15)
 	// Unbuilt lists images whose digest is still the all-zero placeholder.
-	// Such a stack cannot boot; release tooling must refuse it.
+	// Such a stack cannot boot; release tooling refuses it via RequireBuilt.
 	Unbuilt []string
+}
+
+// RequireBuilt fails when any image of the stack still has the all-zero
+// placeholder digest. Release tooling and approval flows call it; local
+// development composes such stacks to inspect them.
+func (r *Result) RequireBuilt() error {
+	if len(r.Unbuilt) == 0 {
+		return nil
+	}
+	return fmt.Errorf("compose: stack uses unbuilt images (all-zero digests): %s", strings.Join(r.Unbuilt, ", "))
 }
 
 // In-VM paths and ports shared with the sidecars (documented in README.md).
@@ -54,6 +64,16 @@ const (
 	VerifierdPort        = 8088
 	GateApp              = "_gate"
 	ACMEHost             = "acme-v02.api.letsencrypt.org:443"
+	// MaxAppComposeBytes is dstack v0.6.1's cap on app-compose.json (the
+	// guest refuses larger files at boot), so a larger stack could be
+	// approved but never start.
+	MaxAppComposeBytes = 50 << 20
+)
+
+// Caddy's ACME account and certificates live on the encrypted data disk.
+const (
+	caddyDataApp    = "_caddy"
+	caddyDataVolume = "data"
 )
 
 // Sidecar service names.
@@ -101,6 +121,9 @@ func ComposeWith(cfg *Config, bundles []*Bundle, ri *RuntimeImages) (*Result, er
 	}
 	apps, err := planApps(cfg, bundles)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkImageRefs(apps, ri); err != nil {
 		return nil, err
 	}
 	hasGateway := false
@@ -154,6 +177,9 @@ func ComposeWith(cfg *Config, bundles []*Bundle, ri *RuntimeImages) (*Result, er
 	}
 	if res.AppCompose, err = AppComposeJSON(string(res.ComposeJSON), res.PreLaunchScript, res.ConfigHash); err != nil {
 		return nil, err
+	}
+	if len(res.AppCompose) > MaxAppComposeBytes {
+		return nil, fmt.Errorf("compose: app-compose.json is %d bytes, over dstack's %d-byte limit", len(res.AppCompose), MaxAppComposeBytes)
 	}
 	res.StackHash = SHA256(res.AppCompose)
 	customer, _ := ParseAddress(cfg.Customer)
@@ -288,6 +314,22 @@ func planApps(cfg *Config, bundles []*Bundle) ([]*plannedApp, error) {
 		}
 	}
 	return apps, nil
+}
+
+// checkImageRefs requires every app image to come from the catalog registry
+// of the runtime image set: VMs pull only from there (spec 5.3), and image
+// pulls do not go through sealed-egress. Digests already pin the content.
+func checkImageRefs(apps []*plannedApp, ri *RuntimeImages) error {
+	for _, a := range apps {
+		for i, img := range a.bundle.Manifest.Images {
+			want := ri.Registry + "/" + img.Name + "@" + img.Digest
+			if img.Ref != want {
+				return &ManifestError{App: a.id, Field: fmt.Sprintf("images[%d].ref", i),
+					Msg: fmt.Sprintf("%q is not %q; bundles must be built for the catalog registry %s", img.Ref, want, ri.Registry)}
+			}
+		}
+	}
+	return nil
 }
 
 type plannedRoute struct {
@@ -433,6 +475,10 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 		for _, s := range m.Secrets {
 			secrets = append(secrets, map[string]any{"name": s.Name, "optional": s.Optional})
 		}
+		var vols []any
+		for _, v := range a.bundle.Fragment.Volumes {
+			vols = append(vols, map[string]any{"name": v, "path": DataPath(a.id, v)})
+		}
 		for _, r := range routes {
 			if r.app != a.id {
 				continue
@@ -457,11 +503,28 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 			"metering":       map[string]any{"unit": m.Metering.Unit, "source": m.Metering.Source},
 			"healthcheck":    map[string]any{"service": m.Healthcheck.Service, "port": hcPort, "path": m.Healthcheck.HTTP},
 			"routes":         nonNil(rts),
+			"volumes":        nonNil(vols),
 		}
 		if m.Bootstrap != nil && m.Bootstrap.Service != "" {
-			entry["bootstrap"] = map[string]any{"service": m.Bootstrap.Service, "doneFile": m.Bootstrap.DoneFile}
+			// donePath is the data-disk path of the done file, or "" when
+			// the file lives inside the bootstrap container.
+			bs := map[string]any{"service": m.Bootstrap.Service, "doneFile": m.Bootstrap.DoneFile, "donePath": ""}
+			if m.Bootstrap.DoneFile != "" {
+				p, err := ResolveDoneFile(m, a.bundle.Fragment)
+				if err != nil {
+					return nil, err
+				}
+				bs["donePath"] = p
+			}
+			entry["bootstrap"] = bs
 		}
 		appList = append(appList, entry)
+	}
+	dataDirs := []string{DataPath(caddyDataApp, caddyDataVolume)}
+	for _, a := range apps {
+		for _, v := range a.bundle.Fragment.Volumes {
+			dataDirs = append(dataDirs, DataPath(a.id, v))
+		}
 	}
 	attestHost, err := cfg.Hostname("attest")
 	if err != nil {
@@ -476,6 +539,8 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 		"schema":          "sealed-stack/v1",
 		"composerVersion": Version,
 		"apps":            appList,
+		"dataRoot":        DataRoot,
+		"dataDirs":        toAny(sortedStrings(dataDirs)),
 		"sidecars":        sidecars,
 		"attestHost":      attestHost,
 		"gate":            map[string]any{"username": caddy.DefaultGateUser, "secretApp": GateApp, "secret": gateSecret},
