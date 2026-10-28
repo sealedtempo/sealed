@@ -29,9 +29,10 @@ The service runs as uid 10001 from the start: the workspace volume declares
 
 Why a proxy: the gate password and the gate cookie must never reach the agent, because the gate
 protects every app UI. A client logs in to the gate once (Basic auth, user `sealed`) and then sends the
-`sealed_gate` cookie, so its own `Authorization: Bearer <session key>` passes the gate untouched; a
-browser, however, keeps sending the gate's Basic credentials, which the proxy drops. Both scripts are
-embedded verbatim in `compose.fragment.yaml`.
+`sealed_gate` cookie, so its own `Authorization: Bearer <session key>` passes the gate untouched. A
+browser keeps sending the gate's Basic credentials after it logged in; Caddy removes those and the gate
+cookie before the request reaches this container, and the proxy drops them again as a second line.
+Both scripts are embedded verbatim in `compose.fragment.yaml`.
 
 `OPENCODE_CONFIG_CONTENT` defines one provider, `litellm` (`@ai-sdk/openai-compatible`,
 `http://llm-gateway:4000/v1`, key `{env:LLM_GATEWAY_KEY}`), with models `relay-default` (id
