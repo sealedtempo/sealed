@@ -2,8 +2,8 @@
 #
 # Each model is <provider>/<model> and maps to an OpenAI-compatible upstream that only
 # forwards over an attested channel: the provider's verification sidecar (Tinfoil, Phala,
-# NEAR AI; TLS pinned to the attested key) or the Privatemode proxy (attests and encrypts
-# itself). LiteLLM holds the provider keys as os.environ references and passes them as bearer
+# NEAR AI; TLS pinned to the attested key). LiteLLM holds the provider keys as os.environ
+# references and passes them as bearer
 # tokens; the relay front refuses any model whose provider is not attested before it gets here.
 # Must match runtime/relay/config/prices.json (checked by runtime/relay/test/catalog.test.ts).
 # Never add enterprise-only settings here.
@@ -57,14 +57,6 @@ model_list:
     model_info:
       mode: chat
       sealed_provider: nearai
-  - model_name: privatemode/gpt-oss-120b
-    litellm_params:
-      model: openai/gpt-oss-120b
-      api_base: http://inference-relay-privatemode:8080/v1
-      api_key: os.environ/PRIVATEMODE_API_KEY
-    model_info:
-      mode: chat
-      sealed_provider: privatemode
 
 litellm_settings:
   drop_params: true

@@ -72,7 +72,7 @@ describe('relay pricing', () => {
     expect(table.currency).toBe('0x20c000000000000000000000b9537d11c60e8b50')
     expect(table.models.length).toBeGreaterThan(0)
     const providers = new Set(table.models.map((m) => m.provider))
-    expect([...providers].sort()).toEqual(['nearai', 'phala', 'privatemode', 'tinfoil'])
+    expect([...providers].sort()).toEqual(['nearai', 'phala', 'tinfoil'])
     for (const m of table.models) expect(m.id.startsWith(`${m.provider}/`)).toBe(true)
   })
 

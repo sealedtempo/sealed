@@ -36,14 +36,12 @@ export function verifierFor(provider: ProviderId, env: NodeJS.ProcessEnv = proce
         acceptedOsMeasurements: list(env.NEARAI_ACCEPTED_OS_MEASUREMENTS),
         allowUnpinned,
       })
-    case 'privatemode':
-      throw new Error('privatemode runs as its own attesting proxy container, not as a sidecar')
   }
 }
 
 function main(): void {
   const provider = (process.argv[2] ?? process.env.PROVIDER) as ProviderId
-  if (!(PROVIDERS as readonly string[]).includes(provider) || provider === 'privatemode')
+  if (!(PROVIDERS as readonly string[]).includes(provider))
     throw new Error(`usage: sidecar-main <tinfoil|phala|nearai>, got ${String(provider)}`)
   const sidecar = new ProviderSidecar(verifierFor(provider), {
     provider,

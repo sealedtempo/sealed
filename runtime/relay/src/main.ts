@@ -3,7 +3,7 @@ import pg from 'pg'
 import { http, createClient, parseUnits, publicActions, walletActions } from 'viem'
 import { tempo as tempoChain } from 'viem/chains'
 import { Account, tempoActions } from 'viem/tempo'
-import { PROVIDER_KEY_ENV, loadRelayConfig, readSecret } from './config.js'
+import { loadRelayConfig } from './config.js'
 import { createPayments } from './payments.js'
 import { PgStore } from './pg-store.js'
 import { loadPriceTable } from './prices.js'
@@ -52,23 +52,8 @@ async function main(): Promise<void> {
     onSettlement: (event) => log({ event: 'session_settled', channelId: event.channelId, txHash: event.txHash }),
   })
 
-  const privatemodeModel = prices.models.find((m) => m.provider === 'privatemode')
   const gate = new ProviderGate(
-    config.providers.map((p): GateEntry => {
-      if (p.kind === 'sidecar') return { provider: p.provider, enabled: p.enabled, source: { kind: 'sidecar', statusUrl: p.statusUrl } }
-      return {
-        provider: p.provider,
-        enabled: p.enabled && privatemodeModel !== undefined,
-        source: {
-          kind: 'privatemode',
-          baseUrl: p.statusUrl,
-          apiKey: () => readSecret(PROVIDER_KEY_ENV.privatemode),
-          model: privatemodeModel?.upstreamModel ?? '',
-          workspaceDir: config.privatemodeWorkspace,
-          probeSeconds: config.privatemodeProbeSeconds,
-        },
-      }
-    }),
+    config.providers.map((p): GateEntry => ({ provider: p.provider, enabled: p.enabled, source: { kind: 'sidecar', statusUrl: p.statusUrl } })),
   )
   gate.start()
 

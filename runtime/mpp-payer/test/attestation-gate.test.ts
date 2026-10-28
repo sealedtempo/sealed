@@ -188,10 +188,11 @@ describe('relay attestation gate', () => {
 })
 
 describe('payee from the real composer output', () => {
-  // test/fixtures/relay-app-compose.json: `sealed-compose compose --print app-compose` (composer
-  // 1.1.1, ws/int-payments) over catalog/apps/inference-relay with the on_attest_host line removed
-  // (the composer that knows it is ws/int-composer's; the front's environment does not depend on
-  // it), an OWNER config with only that app, mainnet contracts and USDC.e as feeToken.
+  // test/fixtures/relay-app-compose.json: `sealed-compose compose --allow-missing-sbom
+  // --fill-release-ids --print app-compose` (composer 1.1.1, ws/fix-payments) over
+  // catalog/apps/inference-relay without Privatemode (D-055) and with the on_attest_host line
+  // removed (the composer that knows it is ws/int-composer's; the front's environment does not
+  // depend on it), an OWNER config with only that app, mainnet contracts and USDC.e as feeToken.
   const composed = readFileSync(join(import.meta.dirname, 'fixtures/relay-app-compose.json'), 'utf8')
 
   it('reads the deployed treasury, the literal TREASURY_ADDRESS of inference-relay-front', () => {

@@ -19,7 +19,9 @@ platform project and an onchain deployment record.
 | `inference-relay-tinfoil` | verifies Tinfoil with `@tinfoilsh/verifier`, forwards over TLS pinned to the attested key |
 | `inference-relay-phala` | verifies Phala Confidential AI with `@phala/aci-verifier` (`connectAci`), requires a reviewed compose hash (`PHALA_ACCEPTED_COMPOSE_HASHES`), forwards over its pinned transport |
 | `inference-relay-nearai` | verifies the NEAR AI Cloud gateway report (Intel DCAP quote with `@phala/dcap-qvl`, report_data binding of signer, TLS key and nonce, RTMR3 and compose), requires a reviewed compose hash and OS image (`NEARAI_ACCEPTED_COMPOSE_HASHES`, `NEARAI_ACCEPTED_OS_MEASUREMENTS`), forwards pinned |
-| `inference-relay-privatemode` | Edgeless Privatemode proxy v1.60.0, which attests the Privatemode deployment against its manifest and encrypts prompts itself |
+
+Privatemode is not offered (D-055): the privatemode-proxy image's upstream license forbids
+redistribution outside four MIT directories, so it cannot be mirrored, and there is no key for it.
 
 A provider is enabled only when its API key secret exists. The front polls each provider's
 status and refuses a request for that provider with `503 attestation_failed` before any
@@ -34,10 +36,6 @@ Code identity:
   `nearai/*` stay off until the operator reviews the provider's serving stack and pins the
   hashes in the fragment. The refusal names the observed value (`GET /v1/attest-status`).
   `ALLOW_UNPINNED_PROVIDER_CODE=1` accepts empty lists for development only.
-- Privatemode: the proxy verifies the deployment against the manifest it fetched; the front proves
-  the proxy is serving attested traffic with an authenticated one-token completion through it
-  every 120 seconds (the proxy encrypts only with a key released after attestation and answers 500
-  while it holds none) and records the hash of the manifest the proxy logged.
 - NEAR AI model attestations and GPU evidence (`nvidia_payload`) are not checked, and
   `/v1/attest-status` says so; the TLS channel terminates at the gateway, whose TDX quote is
   checked.
@@ -54,7 +52,8 @@ Code identity:
     SSE and the relay charges per token, in batches of `SESSION_BATCH_TOKENS`, ahead of delivery,
     then reconciles with the provider's reported usage and credits back any overcharge.
   - `charge`: one FEE_TOKEN transfer priced from estimated prompt tokens plus `max_tokens`
-    (the relay always sets `max_tokens`, bounded by the model's limit).
+    (the relay always sets `max_tokens`, bounded by the model's limit). Pull mode only: the payer
+    signs the transfer and the relay broadcasts it.
 - `GET /v1/models`: models with relay prices (`input_per_1m`, `output_per_1m` in FEE_TOKEN base
   units per 1M tokens, list price x (1 + `relay_markup_bps`/10000)) and whether each is attested.
   `default` resolves to the first preferred model whose provider is attested.
@@ -72,16 +71,24 @@ network fees only). A supervisor runs
 mppx's `superviseCloses` every minute over the open channels listed in Postgres, so spend is
 captured before a payer's close request can be withdrawn after the 900 second grace period.
 
-A per-request charge is final: the transfer settles before the upstream call, so a provider
-failure after that is not refunded. Payers use sessions first, which charge only for delivered
-tokens.
+A per-request charge is settled only after the upstream answered: the relay validates the
+credential without broadcasting it (challenge binding, amount, a simulation, the replay marker),
+calls its LiteLLM, and broadcasts the payer's signed transfer once the upstream answered 2xx and
+produced its first byte. An upstream that fails before that (an error status, no connection, an
+empty body) costs the payer nothing: the answer carries no `Payment-Receipt` and
+`"charged": false`, and the signed transaction expires unbroadcast at its `validBefore`
+(25 seconds after signing). When the first byte would come later than 6 seconds before that
+expiry, the relay answers `504 upstream_timeout` without charging, so long non-streaming requests
+should use sessions or stream (`sealed-mpp-payer` always sends charges as streams). A failure
+after the charge settled (mid-stream) is not refunded. Payers use sessions first, which charge
+only for delivered tokens and credit back what the upstream did not deliver.
 
 Prices live in `runtime/relay/config/prices.json`, baked into the measured image, as provider
 list prices in FEE_TOKEN base units per 1M tokens. Every entry names its source and the date it
 was read. Tinfoil's prices come from its public model catalog, `https://tinfoil.sh/models`, read on
 2026-10-28 (`https://tinfoil.sh/pricing` says API pricing is per model): GPT-OSS 120B $0.15 in and
 $0.60 out per 1M tokens, GLM-5.3 $1.80 and $5.75, so the relay charges $0.1575 / $0.63 and
-$1.89 / $6.0375. Privatemode prices in EUR, so its entry stays `"confirmed": false`.
+$1.89 / $6.0375.
 `TREASURY_ADDRESS` in the fragment is a literal (measured, read by every payer).
 `pnpm --filter @sealed/relay release-check` fails while a price is unconfirmed or unsourced, the
 treasury differs from the deployed one, or the fee token differs from `config/defaults.yaml`; the
