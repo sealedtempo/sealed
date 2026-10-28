@@ -277,9 +277,15 @@ export class LuksDisk implements DataDisk {
         log.info("data disk already mounted", { mountPoint });
         return;
       }
-      if (fresh || !(await this.hasAnySignature(this.mapper))) {
+      if (fresh) {
         log.info("creating ext4 filesystem on the data disk");
         await this.ok("mkfs.ext4", ["-q", "-L", "sealed-data", this.mapper]);
+      } else if (!(await this.hasAnySignature(this.mapper))) {
+        // An established volume whose plaintext shows no filesystem: corrupted ciphertext (or a first boot that
+        // stopped between luksFormat and mkfs). Formatting would turn a fault into the loss of the customer's
+        // data, so the boot stops and the volume stays as it is (review ws-int-agent 10).
+        await this.runner.run("cryptsetup", ["close", name]);
+        throw new Error(`refusing to format ${device}: the existing LUKS2 volume holds no filesystem; it is left untouched`);
       }
       await mkdir(mountPoint, { recursive: true });
       await this.ok("mount", ["-t", "ext4", "-o", "nodev,nosuid", this.mapper, mountPoint]);

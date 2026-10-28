@@ -1,8 +1,10 @@
 // Boot step 3 (spec 5.6, INTERFACES 14-15): app secrets as files on tmpfs, the payer key for
-// sealed-mpp-payer, then the ready flag. Each owner directory is its own tmpfs volume, mounted into
-// that app only; a secret is never written to a directory that is not tmpfs, so it cannot land on
-// the container's disk-backed writable layer.
-import { mkdir, open, readdir, rename, rm, statfs } from "node:fs/promises";
+// sealed-mpp-payer, then the ready flag. A secret is never written to a directory that is not tmpfs, so
+// it cannot land on a disk-backed layer. Two layouts:
+// - composer 1.1: each owner directory is its own tmpfs volume, mounted into the agent and that app only;
+// - composer 1.2 and later (D-042): the host's /run/sealed/secrets (on the CVM's /run tmpfs) is bound into
+//   the agent, which creates the owner directories itself, and each service binds single files from it.
+import { chmod, lstat, mkdir, open, readdir, rename, rm, statfs } from "node:fs/promises";
 import { join } from "node:path";
 
 export const PAYER_DIR = "sealed-mpp-payer";
@@ -14,7 +16,11 @@ const NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 export interface SecretsLayout {
   secretsDir: string;
   readyDir: string;
-  /** Production: every secrets directory must already be a tmpfs mount. Dev sim mode creates plain directories. */
+  /**
+   * Production: every secrets directory must be on tmpfs, either a tmpfs mount of its own (composer 1.1) or a
+   * directory the agent creates in a secrets root that is on tmpfs (composer 1.2). Dev sim mode creates plain
+   * directories.
+   */
   requireTmpfs: boolean;
   /** statfs f_type of a path (tests substitute it). */
   fsType?: (path: string) => Promise<number>;
@@ -24,18 +30,50 @@ export class SecretsTargetError extends Error {}
 
 const defaultFsType = async (path: string) => (await statfs(path)).type;
 
+async function requireTmpfsAt(layout: SecretsLayout, path: string, what: string): Promise<void> {
+  let type: number;
+  try {
+    type = await (layout.fsType ?? defaultFsType)(path);
+  } catch (err) {
+    throw new SecretsTargetError(`${path} is not a mounted tmpfs (${(err as NodeJS.ErrnoException).code ?? "error"})`);
+  }
+  if (type !== TMPFS_MAGIC) throw new SecretsTargetError(`${what} ${path} is not on tmpfs (f_type 0x${type.toString(16)}); refusing to write secrets there`);
+}
+
+/**
+ * Makes sure `dir` (an owner directory directly below the secrets root) exists on tmpfs. An existing directory
+ * must itself be on tmpfs (a composer 1.1 volume, or one created at an earlier boot of this VM). A missing one is
+ * created, mode 0755, only when the secrets root is on tmpfs (the composer 1.2 bind of the host's
+ * /run/sealed/secrets; review ws-int-agent 1), and checked again. A symlink or a non-directory in its place is
+ * refused, so a write can never be redirected.
+ */
 async function prepareDir(layout: SecretsLayout, dir: string): Promise<void> {
   if (!layout.requireTmpfs) {
     await mkdir(dir, { recursive: true, mode: 0o755 });
     return;
   }
-  let type: number;
+  let exists = false;
   try {
-    type = await (layout.fsType ?? defaultFsType)(dir);
+    const st = await lstat(dir);
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new SecretsTargetError(`${dir} exists and is not a directory; refusing to write secrets there`);
+    exists = true;
   } catch (err) {
-    throw new SecretsTargetError(`${dir} is not a mounted tmpfs (${(err as NodeJS.ErrnoException).code ?? "error"})`);
+    if (err instanceof SecretsTargetError) throw err;
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw new SecretsTargetError(`${dir} cannot be checked (${(err as NodeJS.ErrnoException).code ?? "error"})`);
   }
-  if (type !== TMPFS_MAGIC) throw new SecretsTargetError(`${dir} is not on tmpfs (f_type 0x${type.toString(16)}); refusing to write secrets there`);
+  if (!exists) {
+    await requireTmpfsAt(layout, layout.secretsDir, "the secrets root");
+    try {
+      await mkdir(dir, { mode: 0o755 });
+    } catch (err) {
+      // Created meanwhile (EEXIST) is fine only if it is a plain directory: checked below like any other.
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      const st = await lstat(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) throw new SecretsTargetError(`${dir} exists and is not a directory; refusing to write secrets there`);
+    }
+    await chmod(dir, 0o755);
+  }
+  await requireTmpfsAt(layout, dir, "secrets directory");
 }
 
 /** Writes via a temp file in the same directory and renames it into place. */

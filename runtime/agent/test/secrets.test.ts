@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -86,5 +86,50 @@ describe("tmpfs secrets (INTERFACES 14-15)", () => {
     expect(await readdir(layout.readyDir)).toEqual(["ok"]);
     await writeReadyFlag(layout, 124);
     expect(await readFile(join(layout.readyDir, "ok"), "utf8")).toBe("124\n");
+  });
+
+  // Review ws-int-agent 1: composer 1.2 binds the host's /run/sealed/secrets (on the CVM's /run tmpfs) into the
+  // agent, so the owner directories do not exist at boot and the agent has to create them.
+  it("composer 1.2: creates each owner directory (0755) in a secrets root on tmpfs before writing", async () => {
+    const root = layout.secretsDir;
+    await mkdir(root, { recursive: true });
+    const onTmpfs = (p: string) => p === root || p.startsWith(`${root}/`);
+    const prod: SecretsLayout = { ...layout, requireTmpfs: true, fsType: async (p) => {
+      await stat(p);
+      return onTmpfs(p) ? TMPFS_MAGIC : 0xef53;
+    } };
+    const individually = new Map([["crm", new Set(["APP_SECRET"])]]);
+    await writeSecrets(prod, { crm: { APP_SECRET: "s" }, _gate: { GATE_PASSWORD_BCRYPT: "$2a$" } }, owners, { individually });
+    await writePayerSecrets(prod, "0xkey", "1");
+    for (const owner of ["crm", "_gate", "sealed-mpp-payer"]) expect((await stat(join(root, owner))).mode & 0o777).toBe(0o755);
+    expect(await readFile(join(root, "crm", "APP_SECRET"), "utf8")).toBe("s");
+    expect(await readFile(join(root, "sealed-mpp-payer", "ENCLAVE_KEY"), "utf8")).toBe("0xkey");
+    // A second boot of the same VM finds them and writes again.
+    await writeSecrets(prod, { crm: { APP_SECRET: "s2" } }, owners, { individually });
+    expect(await readFile(join(root, "crm", "APP_SECRET"), "utf8")).toBe("s2");
+  });
+
+  it("composer 1.2: never writes through a symlink or a file in an owner's place, nor into a root that is not tmpfs", async () => {
+    const root = layout.secretsDir;
+    await mkdir(join(dir, "elsewhere"), { recursive: true });
+    await mkdir(root, { recursive: true });
+    const tmpfsRoot: SecretsLayout = { ...layout, requireTmpfs: true, fsType: async (p) => {
+      await stat(p);
+      return p === root || p.startsWith(`${root}/`) || p.startsWith(join(dir, "elsewhere")) ? TMPFS_MAGIC : 0xef53;
+    } };
+    await symlink(join(dir, "elsewhere"), join(root, "_gate"));
+    await expect(writeSecrets(tmpfsRoot, { _gate: { GATE_PASSWORD_BCRYPT: "$2a$" } }, owners)).rejects.toThrow("is not a directory");
+    await writeFile(join(root, "crm"), "");
+    await expect(writeSecrets(tmpfsRoot, { crm: { APP_SECRET: "s" } }, owners)).rejects.toThrow("is not a directory");
+    expect(await readdir(join(dir, "elsewhere"))).toEqual([]);
+    await rm(join(root, "crm"));
+    const diskRoot: SecretsLayout = { ...tmpfsRoot, fsType: async (p) => {
+      await stat(p);
+      return 0xef53;
+    } };
+    await expect(writeSecrets(diskRoot, { crm: { APP_SECRET: "s" } }, owners)).rejects.toThrow("the secrets root");
+    await expect(writePayerSecrets(diskRoot, "0xkey", "1")).rejects.toThrow(SecretsTargetError);
+    await expect(stat(join(root, "crm"))).rejects.toThrow();
+    await expect(stat(join(root, "sealed-mpp-payer"))).rejects.toThrow();
   });
 });

@@ -76,6 +76,29 @@ export function parsePublicConfig(text: string): { config: SealedConfig; json: R
   return { config: parsed.data, json };
 }
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+/**
+ * Review C-4 (the agent's side): over plain http the agent cannot tell who answers, so anyone on the path could
+ * hand it chosen secrets for its ephemeral HPKE key (a known disk key on a fresh deployment) or read the relay's
+ * traffic. Every endpoint must be https, except a loopback endpoint (local tests) and dev sim mode.
+ */
+export function requireHttpsEndpoints(endpoints: Record<string, unknown>, devSim: boolean): void {
+  if (devSim) return;
+  for (const [name, raw] of Object.entries(endpoints)) {
+    if (typeof raw !== "string") continue;
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      throw new Error(`config endpoints.${name} is not a URL`);
+    }
+    if (u.protocol === "https:") continue;
+    if (u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname)) continue;
+    throw new Error(`config endpoints.${name} must be https (got ${u.protocol}//${u.host})`);
+  }
+}
+
 /** Optional cross-check: a file the composer mounts must hold exactly the measured bytes. */
 export async function checkMountedCopy(path: string | undefined, measured: string, what: string): Promise<void> {
   if (!path) return;
