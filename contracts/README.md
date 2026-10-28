@@ -188,6 +188,9 @@ Rules this leaves to offchain components:
   a shortfall goes into the next report. `UsageAlreadyPaid` is handled per leg of a batch.
 - The stop flow settles the last period before `closeDeployment` (Closed deployments cannot pay).
 - go-ethereum `crypto.Sign` returns v in {0, 1}; the Go oracle adds 27.
+- `lastAttestedAt` may be up to 5 minutes ahead of block time, so liveness math (`now - lastAttestedAt`) clamps at
+  0. Indexers recover the oracle signer of a registration from the transaction input
+  (`OracleSignatureVerifier.recoverSigner`); events do not carry it.
 - Method 2 stays unset until a report_data v2 binds deploymentId, customer and a chain-anchored freshness value.
 
 ## EIP-712
