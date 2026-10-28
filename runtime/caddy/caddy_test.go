@@ -97,7 +97,7 @@ func TestRenderNormal(t *testing.T) {
 	if strings.Contains(tools, "basic_auth") {
 		t.Error("public route gated")
 	}
-	if strings.Contains(s, "—") || bytes.ContainsRune(cf, '\r') {
+	if strings.Contains(s, "\u2014") || bytes.ContainsRune(cf, '\r') {
 		t.Error("em-dash or CR in output")
 	}
 	again, _ := Render(testInput(), false)
@@ -153,7 +153,7 @@ func TestRenderValidates(t *testing.T) {
 
 func TestPaymentPage(t *testing.T) {
 	page := string(PaymentNeededHTML)
-	for _, banned := range []string{"—", "no breaches", "unbreakable", "zero-knowledge", "http://", "https://", "<script"} {
+	for _, banned := range []string{"\u2014", "no breaches", "unbreakable", "zero-knowledge", "http://", "https://", "<script"} {
 		if strings.Contains(strings.ToLower(page), banned) {
 			t.Errorf("page contains %q", banned)
 		}
