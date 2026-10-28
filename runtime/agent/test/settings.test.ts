@@ -1,4 +1,8 @@
+import { parseDefaults } from "@sealed/core";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { settlementIntervalMs } from "../src/agent.js";
 import { settingsFromEnv } from "../src/settings.js";
 
 describe("agent settings", () => {
@@ -41,5 +45,21 @@ describe("agent settings", () => {
     expect(() => settingsFromEnv({ SEALED_DISK_MODE: "dir" })).toThrow("SEALED_DEV_SIM");
     expect(settingsFromEnv({ SEALED_DEV_SIM: "1", DSTACK_SIMULATOR_ENDPOINT: "/tmp/sim.sock" }).dstackEndpoint).toBe("/tmp/sim.sock");
     expect(settingsFromEnv({ DSTACK_SOCKET: "/run/dstack.sock" }).dstackEndpoint).toBe("/run/dstack.sock");
+  });
+  // Regression (devnet-e2e): a local devnet could only settle every intervalMinutes (at least a minute), so a
+  // full payment round trip took minutes. test_overrides.settlement_interval_seconds speeds up the timer, and
+  // only for a dev simulator agent with SEALED_TEST_OVERRIDES=1.
+  it("settles every intervalMinutes unless a dev sim agent has test_overrides.settlement_interval_seconds", () => {
+    const yaml = readFileSync(join(import.meta.dirname, "../../../config/defaults.yaml"), "utf8").replace(
+      "test_overrides: {",
+      "test_overrides: {settlement_interval_seconds: 3, ",
+    );
+    const cfg = { settlement: { intervalMinutes: 2 } };
+    const withOverrides = parseDefaults(yaml, { testOverrides: true });
+    const plain = parseDefaults(yaml, { testOverrides: false });
+    expect(settlementIntervalMs(cfg, withOverrides, { devSim: true, testOverrides: true })).toBe(3000);
+    expect(settlementIntervalMs(cfg, withOverrides, { devSim: false, testOverrides: true })).toBe(120_000);
+    expect(settlementIntervalMs(cfg, plain, { devSim: true, testOverrides: false })).toBe(120_000);
+    expect(settlementIntervalMs(cfg, parseDefaults(yaml.replace("settlement_interval_seconds: 3", "settlement_interval_seconds: 0"), { testOverrides: true }), { devSim: true, testOverrides: true })).toBe(120_000);
   });
 });

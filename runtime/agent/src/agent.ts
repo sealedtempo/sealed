@@ -407,7 +407,7 @@ export class Agent {
     const opts = { clock: this.clock, log: this.log, signal: this.abort.signal };
     this.loops.push(
       every("app health poll", s.pollIntervalSec * 1000, () => this.pollApps(), { ...opts, runFirst: true }),
-      every("settlement", ctx.config.settlement.intervalMinutes * 60_000, () => this.settle(), opts),
+      every("settlement", settlementIntervalMs(ctx.config, ctx.defaults, s), () => this.settle(), opts),
       every("health report", s.healthIntervalSec * 1000, () => this.reportHealth(), opts),
       every("re-attestation", s.reattestHours * 3_600_000, () => this.attest(), opts),
     );
@@ -560,6 +560,22 @@ export class Agent {
       this.server.closeAllConnections();
     });
   }
+}
+
+/**
+ * The settlement timer: the measured config's intervalMinutes. Only a dev simulator agent with
+ * SEALED_TEST_OVERRIDES=1 may settle faster, when defaults.yaml test_overrides sets
+ * settlement_interval_seconds (local devnets settle in seconds instead of minutes). Periods are cut at
+ * each tick, so the timer is the only thing that changes.
+ */
+export function settlementIntervalMs(
+  config: { settlement: { intervalMinutes: number } },
+  defaults: Defaults,
+  settings: Pick<AgentSettings, "devSim" | "testOverrides">,
+): number {
+  const sec = (defaults as { settlement_interval_seconds?: unknown }).settlement_interval_seconds;
+  if (settings.devSim && settings.testOverrides && typeof sec === "number" && Number.isInteger(sec) && sec > 0) return sec * 1000;
+  return config.settlement.intervalMinutes * 60_000;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {

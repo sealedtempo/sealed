@@ -103,7 +103,7 @@ The composer sets these on the sealed-agent service (runtime/composer README, "C
 
 Agent-only settings: `SEALED_LISTEN_HOST` (`0.0.0.0`), `SEALED_LUKS_NAME` (`sealed-data`), `SEALED_STATE_DIR` (`<data>/.sealed-agent`), `SEALED_RUN_AS` (`10001:10001` in the image), `SEALED_DEFAULTS_PATH`, `SEALED_TEST_OVERRIDES=1`, `SEALED_APP_COMPOSE_PATH` (read app-compose from a file instead of `/Info`), `SEALED_REATTEST_HOURS` (24), `SEALED_HEALTH_INTERVAL_S` (60), `SEALED_POLL_INTERVAL_S` (30).
 
-Development only, with `SEALED_DEV_SIM=1` (otherwise refused): `DSTACK_SIMULATOR_ENDPOINT` (socket path or `http://host:port`), `SEALED_DISK_MODE=dir` (a plain directory instead of LUKS), and secrets in plain directories instead of tmpfs mounts.
+Development only, with `SEALED_DEV_SIM=1` (otherwise refused): `DSTACK_SIMULATOR_ENDPOINT` (socket path or `http://host:port`), `SEALED_DISK_MODE=dir` (a plain directory instead of LUKS), and secrets in plain directories instead of tmpfs mounts. With `SEALED_TEST_OVERRIDES=1` too, `test_overrides.settlement_interval_seconds` in the defaults file sets the settlement timer in seconds instead of the config's `intervalMinutes` (the devnet, `make devnet-e2e`, settles every few seconds).
 
 ## Dev simulator
 
