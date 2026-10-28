@@ -34,6 +34,10 @@
       "types": "./dist/chain.d.ts",
       "default": "./dist/chain.js"
     },
+    "./access-key": {
+      "types": "./dist/accessKey.d.ts",
+      "default": "./dist/accessKey.js"
+    },
     "./config": {
       "types": "./dist/defaults.d.ts",
       "default": "./dist/defaults.js"

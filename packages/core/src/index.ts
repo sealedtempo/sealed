@@ -8,6 +8,7 @@ export * from "./signer.js";
 export * from "./defaults.js";
 export * from "./pricing.js";
 export * from "./chain.js";
+export * from "./accessKey.js";
 export * from "./dstack.js";
 export * from "./abis/index.js";
 export * from "./types/index.js";
