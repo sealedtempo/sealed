@@ -20,12 +20,14 @@ Exit status is non-zero when any check fails.
 |---|---|---|
 | deployer identity | getIamPolicy on the deployer SA | only `roles/iam.serviceAccountTokenCreator` for the platform SA |
 | deployer roles | project, subnet getIamPolicy; custom roles | only `sealedDeployer` (condition on `sealed-*` instance, disk and image names), `sealedDeployerAddresses` and `sealedSubnetUser` on `sealed-subnet`, each with exactly its permissions |
-| key broker identity | project and KMS key policies, Cloud Run service | `secretAccessor` with the `sealed-*` condition, `cloudkms.signer` on the HMAC key only, runs as its own SA from a digest-pinned image |
+| key broker identity | project and KMS key policies, Cloud Run service | `secretAccessor` with the `sealed-*` condition plus `logging.logWriter` for its decision log and nothing else, `cloudkms.signer` on the HMAC key only, runs as its own SA from a digest-pinned image |
+| debug log writer (when present) | project policy | `sealed-debug-logs` holds `logging.logWriter` only |
 | firewall | firewall rules of `sealed-vpc` | ingress tcp 80/443 to `sealed-vm` only, egress 443 and 53 only, deny-all egress |
 | cannot read a secret | testIamPermissions and `versions/latest:access` on every `sealed-*` secret as the deployer | nothing granted; access is 403 (the response is discarded, never printed) |
 | cannot change the key broker | testIamPermissions on the service (and a label update with `--attempt-mutations`) | nothing granted; the update is 403 |
 | cannot attach a service account | testIamPermissions on the project, every SA and every sealed VM (and `setServiceAccount` with `--attempt-mutations`) | no `actAs`, `getAccessToken`, `setServiceAccount`; 403 |
 | no shell | testIamPermissions (OS Login, IAP, serial port), VM metadata, TCP to port 22 | nothing granted; serial port and OS Login off, project SSH keys blocked, no `ssh-keys`; port 22 closed |
+| VM identity | every sealed VM | no service account; the one exception (spec 5.8) is a VM labeled `sealed-variant=debug` with exactly `sealed-debug-logs` and only the `logging.write` scope |
 | positive controls | testIamPermissions as the deployer | it does hold its own permissions (the probes really ran as the deployer) |
 | non-confidential VM (D-036) | `POST /v1/release` with a simulated (non-TDX) quote | 403 `quote_invalid` |
 
@@ -38,9 +40,11 @@ go test ./scripts/iam-checks/
 ```
 
 - `check_test.go` runs `check.sh` against a fake Google Cloud (stub `gcloud` and `curl` on PATH, real bash and
-  jq): a compliant project passes; each of eleven misconfigurations fails with the right line; no secret value is
-  printed; no mutating request goes out without `--attempt-mutations`.
+  jq): a compliant project passes, with and without a debug VM; each of fifteen misconfigurations (a debug VM with
+  a broad scope, the log writer on an unlabeled VM or with an extra role, a key broker without its log writer role
+  among them) fails with the right line; no secret value is printed; no mutating request goes out without
+  `--attempt-mutations`.
 - `policy_test.go` renders `modules/iam` with `terraform plan` (no providers, no credentials, nothing applied),
   checks the permission lists against forbidden sets, evaluates the IAM conditions on sample resource names with a
   small evaluator that fails on any clause it does not understand, and checks that `check.sh` expects exactly the
-  module's lists. Needs terraform (skipped without it; `SEALED_REQUIRE_TERRAFORM=1` makes it fail instead).
+  module's lists, roles and the debug VM scope. Needs terraform (skipped without it; `SEALED_REQUIRE_TERRAFORM=1` makes it fail instead).

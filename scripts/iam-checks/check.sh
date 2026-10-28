@@ -4,6 +4,8 @@
 # Impersonates the deployer service account and expects every path to secrets, the key broker, service account
 # identities and a shell to be denied. It also reads (as you) the IAM policies, custom roles, firewall rules, the
 # key broker service and the sealed VMs, and checks that the key broker refuses a VM without a TDX quote.
+# Production VMs must have no service account. The one exception is a debug VM (label sealed-variant=debug):
+# exactly the optional sealed-debug-logs log writer with only the logging.write scope (spec 5.8).
 #
 # By default it changes nothing: denials are probed with testIamPermissions and read-only calls. With
 # --attempt-mutations it also tries real changes as the deployer (update the key broker, attach a service
@@ -33,6 +35,10 @@ FORBIDDEN_PROJECT="iam.serviceAccounts.actAs iam.serviceAccounts.getAccessToken 
 # Probed on every service account: none may be granted.
 FORBIDDEN_SA="iam.serviceAccounts.actAs iam.serviceAccounts.getAccessToken iam.serviceAccounts.signBlob iam.serviceAccounts.signJwt iam.serviceAccounts.implicitDelegation iam.serviceAccounts.setIamPolicy iam.serviceAccountKeys.create"
 FORBIDDEN_INSTANCE="compute.instances.setServiceAccount compute.instances.osLogin compute.instances.osAdminLogin compute.instances.getSerialPortOutput compute.instances.setIamPolicy"
+# Project roles of the bootstrap's identities, and the only scope a debug VM may have (modules/iam).
+KB_ROLES="roles/logging.logWriter roles/secretmanager.secretAccessor"
+DEBUG_ROLES="roles/logging.logWriter"
+DEBUG_SCOPES="https://www.googleapis.com/auth/logging.write"
 
 usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
@@ -55,6 +61,7 @@ for tool in gcloud curl jq; do
 done
 [ -n "$DEPLOYER" ] || DEPLOYER="sealed-deployer@${PROJECT}.iam.gserviceaccount.com"
 KB_SA="sealed-key-broker@${PROJECT}.iam.gserviceaccount.com"
+DEBUG_SA="sealed-debug-logs@${PROJECT}.iam.gserviceaccount.com"
 [ -n "$ZONE" ] || ZONE="${REGION}-a"
 
 PASS=0 FAIL=0 SKIP=0
@@ -141,10 +148,18 @@ if [ "$code" = 200 ]; then
   esac
   kb_roles="$(jq -r --arg m "serviceAccount:$KB_SA" '[(.bindings // [])[] | select(.members | index($m)) | .role] | sort | join(" ")' "$TMP/project-policy.json")"
   kb_cond="$(jq -r --arg m "serviceAccount:$KB_SA" '[(.bindings // [])[] | select(.role == "roles/secretmanager.secretAccessor" and (.members | index($m)))][0].condition.expression // ""' "$TMP/project-policy.json")"
-  if [ "$kb_roles" = "roles/secretmanager.secretAccessor" ] && printf '%s' "$kb_cond" | grep -q "resource.name.startsWith(\"projects/${NUMBER}/secrets/sealed-\")"; then
-    pass "key broker identity: secretAccessor on sealed-* secrets only"
+  if [ "$kb_roles" = "$KB_ROLES" ] && printf '%s' "$kb_cond" | grep -q "resource.name.startsWith(\"projects/${NUMBER}/secrets/sealed-\")"; then
+    pass "key broker identity: secretAccessor on sealed-* secrets only, and its decision log"
   else
-    fail "key broker project roles [$kb_roles] condition [${kb_cond:-none}]"
+    fail "key broker project roles [$kb_roles] (want [$KB_ROLES]) condition [${kb_cond:-none}]"
+  fi
+  debug_roles="$(jq -r --arg m "serviceAccount:$DEBUG_SA" '[(.bindings // [])[] | select(.members | index($m)) | .role] | sort | join(" ")' "$TMP/project-policy.json")"
+  if [ -n "$debug_roles" ]; then
+    if [ "$debug_roles" = "$DEBUG_ROLES" ]; then
+      pass "debug log writer identity: logging.logWriter only"
+    else
+      fail "debug log writer $DEBUG_SA holds [$debug_roles], want [$DEBUG_ROLES]"
+    fi
   fi
 else
   unreadable "$code" "the project IAM policy"
@@ -291,16 +306,23 @@ for vm in $instances; do
   code="$(api GET "$COMPUTE/zones/$ZONE/instances/$vm" "$ME")"
   if [ "$code" != 200 ]; then unreadable "$code" "VM $vm"; continue; fi
   cp "$TMP/body" "$TMP/vm.json"
-  problems="$(jq -r '
+  # A debug VM's only identity is the log writer with the logging.write scope; anything else is a failure.
+  problems="$(jq -r --arg dsa "$DEBUG_SA" --arg dscopes "$DEBUG_SCOPES" '
     (((.metadata.items // []) | map({(.key): (.value | ascii_upcase)}) | add) // {}) as $m
-    | [ (if ((.serviceAccounts // []) | length) > 0 then "has a service account" else empty end),
+    | ((.labels // {})["sealed-variant"] == "debug") as $debug
+    | (.serviceAccounts // []) as $sa
+    | [ (if ($debug | not) and ($sa | length) > 0 then "has a service account" else empty end),
+        (if $debug and (($sa | length) != 1 or $sa[0].email != $dsa or (($sa[0].scopes // []) | sort | join(" ")) != $dscopes)
+         then "debug VM identity is not exactly \($dsa) with \($dscopes)" else empty end),
         (if .confidentialInstanceConfig.confidentialInstanceType != "TDX" then "not TDX" else empty end),
         (if $m["serial-port-enable"] != "FALSE" then "serial port not off" else empty end),
         (if $m["enable-oslogin"] != "FALSE" then "OS Login not off" else empty end),
         (if $m["block-project-ssh-keys"] != "TRUE" then "project SSH keys not blocked" else empty end),
         (if $m["ssh-keys"] != null then "ssh-keys metadata set" else empty end) ]
     | join(", ")' "$TMP/vm.json")"
-  if [ -z "$problems" ]; then
+  if [ -z "$problems" ] && [ "$(jq -r '(.labels // {})["sealed-variant"] // ""' "$TMP/vm.json")" = debug ]; then
+    pass "VM $vm (debug): TDX, only the log writer with logging.write, serial port and OS Login off, project SSH keys blocked"
+  elif [ -z "$problems" ]; then
     pass "VM $vm: TDX, no service account, serial port and OS Login off, project SSH keys blocked"
   else
     fail "VM $vm: $problems"
