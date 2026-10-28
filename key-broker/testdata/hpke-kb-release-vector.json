@@ -1,0 +1,10 @@
+{
+  "description": "Key broker release (INTERFACES.md 9): HPKE base mode DHKEM(X25519,HKDF-SHA256)/HKDF-SHA256/AES-256-GCM, info sealed/kb-release/v1, aad = nonce, enc and ciphertext as separate fields. The recipient key is DeriveKeyPair(recipientIkm). Sealed by key-broker SealRelease with Go crypto/hpke under testing/cryptotest seed 4217. Regenerate with go test ./key-broker -run TestHPKEReleaseVector -update.",
+  "recipientIkm": "0101010101010101010101010101010101010101010101010101010101010101",
+  "ephemeralPub": "0x41852320ff367495fa522c94cb83af391e4e89018392725bbf2098dd931bc424",
+  "nonce": "0xabababababababababababababababababababababababababababababababab",
+  "info": "sealed/kb-release/v1",
+  "plaintext": "{\"diskKey\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"secrets\":{\"_gate\":{\"GATE_PASSWORD_BCRYPT\":\"$2a$04$abcdefghijklmnopqrstuuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0\"},\"crm\":{\"APP_SECRET\":\"crm secret ✓\"}},\"signerSeed\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"}",
+  "enc": "0x77b2809b235a9a4159c4c0807a742b4ba7096de3830ed56f52a88ab7848e194e",
+  "ciphertext": "0x1e40c8331575e028427307d2a8f9c53c9dd11db185f4dbd073dc8d33048aab0c4920b986fdd9c5ea64137d7b8a8835390978b261b46c6914c656267d5caa8502aea706f0095fabe382ccf710012c97a7e6478b975c81265bae7cd4765eb5f8cfd09a922aaf665157e909ed84aaf64723a50ed10432c5b93b131e8e4a1e85209933c5bd8879ff687c2c832b90d0181c21bab6df4fa8b7b0ba110674fdfd67b49b63c9cde5f3af7562789acac2c036e95a462e43d7a8dc7f65bdc4de1922d2c16fac8d3d4e8ea33361bf5f2ff8c15a54ba3a8055d0b673f8bea2fd0ef27c01796dc21fdec78c37158b744582f32e797f9d8b0501199ade372e36765f65f233310e95ded1123effcbc8a188074dc28e9377eff2477bbd95856d02070923ff073d793de530f52bc2e679bdbc832e0819cf3e58a8a672cf57a46aee046f7c8c1a81f5c36161685a"
+}
