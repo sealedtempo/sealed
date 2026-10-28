@@ -1,0 +1,40 @@
+# Docker test fixture (runtime/composer/docker_test.go). Not a catalog entry.
+schema: sealed-manifest/v1
+id: bravo
+name: Docker fixture bravo
+category: crm
+description: Stand-in app with a primary and a non-primary service for the docker compose up test.
+release_version: 0.0.1-docker.1
+upstream:
+  repo: https://github.com/sealedtempo/sealed
+  version: 0.0.1
+  license_spdx: GPL-2.0-only
+  source_url: https://github.com/sealedtempo/sealed/tree/main/runtime/composer/testdata/docker
+maintainer:
+  name: Sealed fixtures
+  payout_address: "0x00000000000000000000000000000000000000a1"
+maintainer_share_bps: 0
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: bravo-web
+images:
+  - name: standin
+    source: docker.io/library/busybox:1.37.0
+    digest: sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    license_spdx: GPL-2.0-only
+resources: {cpu: 1, memory_gb: 1, disk_gb: 1}
+routes:
+  - name: crm
+    service: bravo-web
+    internal_port: 8080
+    path_or_host: crm
+    auth: gate
+healthcheck:
+  service: bravo-web
+  http: /healthz
+  start_period_s: 5
+metering: {unit: app_hour, source: heartbeat}
+secrets: []
+telemetry_off_env:
+  DO_NOT_TRACK: "1"
+license_exclusions: []

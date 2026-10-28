@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,6 +15,10 @@ import (
 
 // ConfigSchema is the public deployment config schema id (INTERFACES section 5).
 const ConfigSchema = "sealed-config/v1"
+
+// RelayAttestPath is the path of endpoints.relayAttest: the relay
+// deployment's sealed-agent attestation endpoint.
+const RelayAttestPath = "/attest"
 
 // Config is the public deployment config. It never contains secrets.
 type Config struct {
@@ -214,9 +219,9 @@ func (c *Config) Validate() error {
 		if last := lastAddr(p); !last.IsPrivate() {
 			return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q extends beyond private address space", r)
 		}
-		for _, internal := range vmSubnets() {
+		for _, internal := range VMRanges {
 			if p.Overlaps(netip.MustParsePrefix(internal)) {
-				return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q overlaps the VM's internal network %s", r, internal)
+				return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q overlaps the VM's internal networks %s", r, internal)
 			}
 		}
 		vpc = append(vpc, p)
@@ -263,6 +268,15 @@ func (c *Config) Validate() error {
 		}
 		if _, err := endpointHostPort(field, val); err != nil {
 			return fmt.Errorf("config: %v", err)
+		}
+	}
+	if c.Endpoints.RelayAttest != "" {
+		// The relay deployment's agent serves /attest; any other path (the
+		// relay app's /v1/... on the same host) would not be the agent's
+		// attestation (review C-11).
+		u, _ := url.Parse(c.Endpoints.RelayAttest)
+		if u.Path != RelayAttestPath || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return fail("endpoints.relayAttest", "%q must be https://<relay attest host>%s without a query", c.Endpoints.RelayAttest, RelayAttestPath)
 		}
 	}
 	s := c.Settlement
@@ -314,16 +328,6 @@ func (c *Config) validateHostnames() error {
 		return fmt.Errorf("config: hostnames.scheme: must be sslip or custom")
 	}
 	return nil
-}
-
-// vmSubnets are every Docker network a stack can use: apps, edge and the
-// per-app networks of up to MaxConfigApps apps.
-func vmSubnets() []string {
-	out := []string{AppsSubnet, EdgeSubnet}
-	for n := 1; n <= MaxConfigApps; n++ {
-		out = append(out, AppSubnet(n))
-	}
-	return out
 }
 
 // routeNames are the Caddy routes a stack can expose (manifest route names plus attest).

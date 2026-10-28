@@ -7,8 +7,12 @@ Gated routes ask sealed-agent first (forward_auth, D-044). The agent answers
 200 for a valid sealed_gate cookie or Basic auth as user sealed (and sets the
 cookie on a Basic success), 401 with a Basic challenge otherwise, and 503
 until the app's bootstrap is done. Its Set-Cookie on a 200 is copied to the
-client response; Basic credentials of the gate user are stripped before the
-app sees the request, any other Authorization header passes through. The
+client response. Basic credentials of the gate user are stripped before the
+app sees the request: when the agent's 200 carries
+X-Sealed-Gate-Strip-Authorization: 1 (it parsed Basic credentials of the
+gate user, in whatever form it accepts), and when the header matches the
+gate user's Basic prefix; any other Authorization header passes through.
+Clients cannot supply either relay header. The
 sealed_gate cookie is removed from the Cookie header on every proxied app
 request, so no app can replay it against another app's route. Every app
 handle body is a route block, because inside a plain handle Caddy runs
@@ -74,6 +78,7 @@ same-named directives that have a matcher before those that have none.
 	@sealed_gate_no_cookie header Cookie ""
 {{- if $site.HasGate}}
 	@sealed_gate_basic header_regexp Authorization "{{$.GateBasicRegexp}}"
+	@sealed_gate_strip header X-Sealed-Gate-Strip-Authorization 1
 	@sealed_gate_cookie header X-Sealed-Gate-Set-Cookie *
 {{- end}}
 {{- range $r := $site.Routes}}
@@ -115,15 +120,18 @@ same-named directives that have a matcher before those that have none.
 {{- else}}
 		route {
 			request_header -X-Sealed-Gate-Set-Cookie
+			request_header -X-Sealed-Gate-Strip-Authorization
 			forward_auth {{$.GateUpstream}} {
 				uri {{$.GatePath}}?route={{$r.Name}}
-				copy_headers Set-Cookie>X-Sealed-Gate-Set-Cookie
+				copy_headers Set-Cookie>X-Sealed-Gate-Set-Cookie X-Sealed-Gate-Strip-Authorization
 				transport http {
 					network_proxy none
 				}
 			}
 			header @sealed_gate_cookie Set-Cookie {http.request.header.X-Sealed-Gate-Set-Cookie}
 			request_header -X-Sealed-Gate-Set-Cookie
+			request_header @sealed_gate_strip -Authorization
+			request_header -X-Sealed-Gate-Strip-Authorization
 			request_header @sealed_gate_basic -Authorization
 {{- template "cookie_strip_route" $.GateCookie}}
 			reverse_proxy {{$r.Upstream}} {

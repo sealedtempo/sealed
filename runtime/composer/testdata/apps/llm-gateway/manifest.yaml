@@ -41,6 +41,7 @@ secrets:
   - name: MASTER_KEY
     description: Gateway admin key
     generate: sk-hex32
+    share_with: [notes]
 telemetry_off_env:
   GATEWAY_TELEMETRY: "False"
 license_exclusions: ["enterprise/"]

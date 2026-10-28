@@ -62,7 +62,7 @@ func TestParseConfigRejects(t *testing.T) {
 		"checksummed address":   {`0x00000000000000000000000000000000000000c1`, `0x00000000000000000000000000000000000000C1`},
 		"short salt":            {`"salt": "0x5a5a`, `"salt": "0x5a`},
 		"zero image":            {`"imageId": "0x1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d"`, `"imageId": "0x0000000000000000000000000000000000000000000000000000000000000000"`},
-		"composer version":      {`"composerVersion": "1.2.0"`, `"composerVersion": "0.9.0"`},
+		"composer version":      {`"composerVersion": "1.3.0"`, `"composerVersion": "0.9.0"`},
 		"unsorted apps":         {`{ "id": "llm-gateway"`, `{ "id": "zz-gateway"`},
 		"bad scheme":            {`"scheme": "sslip"`, `"scheme": "nip"`},
 		"bad ip":                {`"ip": "34.1.2.3"`, `"ip": "34.1.2"`},
@@ -79,6 +79,19 @@ func TestParseConfigRejects(t *testing.T) {
 		"spend limit":           {`"spendLimitPerDay": "2000000"`, `"spendLimitPerDay": "2.5"`},
 		"endpoint creds":        {`https://rpc.tempo.xyz`, `https://user:pw@rpc.tempo.xyz`},
 		"endpoint scheme":       {`https://rpc.tempo.xyz`, `ftp://rpc.tempo.xyz`},
+		// Review C-4: every endpoint is https.
+		"http rpc":          {`https://rpc.tempo.xyz`, `http://rpc.tempo.xyz`},
+		"http key broker":   {`https://sealed-key-broker-xyz.a.run.app`, `http://sealed-key-broker-xyz.a.run.app`},
+		"http platform api": {`https://api.sealed.example`, `http://api.sealed.example`},
+		"http relay attest": {`"https://attest.relay.sealed.example/attest"`, `"http://attest.relay.sealed.example/attest"`},
+		"opaque endpoint":   {`https://rpc.tempo.xyz`, `https:rpc.tempo.xyz`},
+		// Review C-11: relayAttest is the relay agent's /attest.
+		"relay attest path":     {`relay.sealed.example/attest"`, `relay.sealed.example/v1/attest"`},
+		"relay attest slash":    {`relay.sealed.example/attest"`, `relay.sealed.example/attest/"`},
+		"relay attest query":    {`relay.sealed.example/attest"`, `relay.sealed.example/attest?x=1"`},
+		"relay attest empty q":  {`relay.sealed.example/attest"`, `relay.sealed.example/attest?"`},
+		"relay attest fragment": {`relay.sealed.example/attest"`, `relay.sealed.example/attest#x"`},
+		"relay attest root":     {`relay.sealed.example/attest"`, `relay.sealed.example"`},
 		"schema":                {`"sealed-config/v1"`, `"sealed-config/v2"`},
 	}
 	for name, c := range cases {

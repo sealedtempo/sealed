@@ -55,6 +55,16 @@ const (
 // example a Bearer token) passes through untouched.
 const gateBasicPrefix = "c2VhbGVkO"
 
+// GateBasicRegexp matches an Authorization header with Basic credentials of
+// the gate user. Spaces or tabs may separate the scheme from the
+// credentials, as sealed-agent's parser allows (review C-3); the agent's
+// X-Sealed-Gate-Strip-Authorization answer covers any other form it accepts.
+const GateBasicRegexp = `^[Bb][Aa][Ss][Ii][Cc][ \t]+` + gateBasicPrefix
+
+// GateStripHeader is sealed-agent's answer header asking Caddy to remove the
+// request's Authorization header before the app (value "1").
+const GateStripHeader = "X-Sealed-Gate-Strip-Authorization"
+
 // Route is one upstream on a site. Path is "" for the whole host or a
 // prefix such as /api (matching /api and /api/*). Name is the manifest
 // route name, passed to the gate as ?route=<name>.
@@ -132,7 +142,7 @@ func Render(in Input, paymentNeeded bool) ([]byte, error) {
 		return nil, err
 	}
 	v := view{Input: in, PaymentNeeded: paymentNeeded, PaymentMessage: PaymentMessage,
-		GateBasicRegexp: "^[Bb][Aa][Ss][Ii][Cc] +" + gateBasicPrefix, GateCookie: DefaultGateCookie}
+		GateBasicRegexp: GateBasicRegexp, GateCookie: DefaultGateCookie}
 	for _, s := range in.Sites {
 		v.Sites = append(v.Sites, newSiteView(s.Host, s.Routes, false))
 	}

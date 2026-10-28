@@ -169,14 +169,17 @@ func containsAddr(ranges []netip.Prefix, a netip.Addr) bool {
 	return false
 }
 
-// endpointHostPort turns an https or http URL into an allow entry.
+// endpointHostPort turns an https URL into an allow entry. Plain http is
+// refused (review C-4): the agent could not tell who answered a key release,
+// and relay prompts and payment vouchers would cross the network in clear
+// and could not be bound to the attested TLS key.
 func endpointHostPort(field, raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("%s: %v", field, err)
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return "", fmt.Errorf("%s: %q must be an http or https URL", field, raw)
+	if u.Scheme != "https" || u.Opaque != "" || u.Host == "" {
+		return "", fmt.Errorf("%s: %q must be an https URL", field, raw)
 	}
 	if u.User != nil {
 		return "", fmt.Errorf("%s: credentials in URLs are not allowed", field)
@@ -185,9 +188,6 @@ func endpointHostPort(field, raw string) (string, error) {
 	port := u.Port()
 	if port == "" {
 		port = "443"
-		if u.Scheme == "http" {
-			port = "80"
-		}
 	}
 	entry := host + ":" + port
 	if _, err := ParseHostPort(entry); err != nil {

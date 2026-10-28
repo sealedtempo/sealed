@@ -13,4 +13,4 @@ Other modes:
 - `envexec install <dir>`: copies itself to `<dir>/envexec` (mode 0755, atomic rename). `sealed-init` runs `/envexec install /sealed/bin` to fill the shared `sealed-bin` volume.
 - `envexec probe tcp://host:port` or `probe http://host:port/path`: image-independent healthcheck (exit 0 on connect, or on an HTTP status below 400); ignores proxy settings.
 
-Build the `sealed-init` image with `runtime/envexec/Dockerfile` (static, `FROM scratch`). Tests: `go test ./runtime/envexec`.
+Build the `sealed-init` image with `runtime/envexec/Dockerfile` from the repo root (static, `FROM scratch`): `docker buildx build --platform linux/amd64 -f runtime/envexec/Dockerfile .`. The build stage cross-compiles for BuildKit's `TARGETOS` and `TARGETARCH`, so an image built for another platform carries a binary for that platform. Tests: `go test ./runtime/envexec` (including a check of the Dockerfile).
