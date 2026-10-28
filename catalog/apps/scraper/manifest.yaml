@@ -69,6 +69,7 @@ license_exclusions:
   - "**/node_modules/idcac-playwright"
 notes: >-
   Metering: one usage event per batch of successful pages ({app: scraper, unit: pages,
-  quantity: N}) to sealed-agent. robots.txt is honoured by default with RFC 9309 failure
-  handling and is fetched through sealed-egress. The slim image in images/scraper-runner is a
+  quantity: N, id}) to sealed-agent; a retried batch keeps its id. robots.txt is honoured by
+  default with RFC 9309 failure handling and is fetched through sealed-egress. Only Caddy may
+  call the runner (SCRAPER_ALLOWED_CLIENTS). The slim image in images/scraper-runner is a
   Cheerio-only build of the same code for a lighter release.
