@@ -184,6 +184,7 @@ export class Agent {
     const store = this.store;
     this.bootstrap = new BootstrapTracker(ctx.stack, s.dataMount, {
       log,
+      now: () => this.clock.now() * 1000,
       reported: store.state.bootstrapDone,
       onReported: (app) => {
         store.state.bootstrapDone = [...new Set([...(store.state.bootstrapDone ?? []), app])].sort();
