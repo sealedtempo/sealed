@@ -36,7 +36,7 @@ ZFS has a different UKI, so it has a different RTMR1/RTMR2 and measurementsHash.
 | `expected.json` | the values `TestRealGCPGolden` asserts. `attestedAt` is the collateral recording time (18:06:45Z, 9 minutes after the capture at 17:57:45Z), because the collateral cache only serves entries fetched no more than a minute after "now" |
 | `pcs/` | Intel PCS collateral for `quote.dat` (TCB info, QE identity, PCK CRL, root CA CRL), recorded with `go run ./verifier/internal/tools/pcsrecord -out verifier/attest/testdata/gcp/pcs verifier/attest/testdata/gcp/quote.dat` |
 | `captures/` | every raw response: `boot{1,2}-getquote{1,2}.json` (full GetQuote JSON: quote, event_log, report_data, vm_config), `boot{1,2}-info.json`, and the nonce and report_data of each quote |
-| `tools/` | the scripts used: `server.py` (the in-CVM proxy, embedded verbatim in app-compose.json), `make_shared.py` (writes app-compose.json and the other shared-disk files), `capture.py` (nonces, report_data, the HTTP calls), `check_capture.py` (offline Python checks of one capture) |
+| `tools/` | the scripts used: `server.py` (the in-CVM proxy, embedded verbatim in app-compose.json), `make_shared.py` (writes app-compose.json and the other shared-disk files), `capture.py` (nonces, report_data, the HTTP calls), `check_capture.py` (offline Python checks of one capture), `predict_rtmr12.py` (computes RTMR1 and RTMR2 from `disk.raw` alone and compares them with a capture) |
 
 ## Values
 
@@ -60,6 +60,16 @@ RTMR3 events, in order (v1 digests, all recomputed and replayed equal to the quo
 `boot-mr-done`, `key-provider` (`{"name":"tpm","id":""}`), `storage-fs` (`ext4`), `storage-encrypted` (`1`),
 `system-ready`. This is the INTERFACES 6 sequence exactly. Replaying the RTMR0-2 digests of the CCEL entries from
 zero also gives the quote's RTMR0-2.
+
+RTMR1 and RTMR2 depend only on the boot disk image. `tools/predict_rtmr12.py <disk.raw> captures/boot1-getquote1.json`
+rebuilds every RTMR1 and RTMR2 event from the release `disk.raw` and gets the quote's values:
+- RTMR1 holds the "Calling EFI Application from Boot Option" action, a separator, the boot disk GPT, the SHA-384
+  Authenticode of `BOOTX64.EFI` (the UKI) and of its `.linux` PE, and the two ExitBootServices actions.
+- RTMR2 holds systemd-stub's name and content digests of the UKI sections `.linux`, `.osrel`, `.cmdline` (it
+  carries `dstack.rootfs_hash`), `.initrd`, `.uname` and `.sbat`.
+
+MRTD (Google's TDX firmware) and RTMR0 (firmware configuration, ACPI tables, boot variables) come from the
+platform, not from the image.
 
 Boot 2 (`gcloud compute instances stop` then `start`) gave byte-identical MRTD, RTMR0-3, MROWNER, MRSEAM,
 TD_ATTRIBUTES, XFAM and event log digests. Only REPORTDATA (a new nonce) and the signature differ. With
