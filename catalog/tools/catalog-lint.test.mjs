@@ -101,7 +101,10 @@ describe("composer lint wrapper", skip, () => {
 describe("compose helpers", skip, () => {
   test("sampleConfig names the composer version and the relay attest origin", () => {
     const cfg = sampleConfig(["notes", "llm-gateway"], composerVersion(composer));
-    assert.equal(cfg.composerVersion, "1.2.0");
+    // The composer's own Version constant, so a version bump needs no edit here.
+    const goVersion = /const Version = "([^"]+)"/.exec(readFileSync(join(REPO_ROOT, "runtime/composer/runtimeimages.go"), "utf8"))?.[1];
+    assert.ok(goVersion);
+    assert.equal(cfg.composerVersion, goVersion);
     assert.deepEqual(cfg.apps.map((a) => a.id), ["llm-gateway", "notes"]);
     assert.equal(new URL(cfg.endpoints.relayAttest).origin, cfg.endpoints.relay);
   });
