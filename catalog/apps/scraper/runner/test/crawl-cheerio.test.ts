@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -20,21 +21,71 @@ const pathOf = (url: string) => new URL(url).pathname;
 describe('Cheerio crawl of the fixture site through the egress proxy', () => {
   let site: StaticServer;
   let robots500: StaticServer;
+  let codes: StaticServer;
   let proxy: TestProxy;
+  const status = (code: number) => (_req: IncomingMessage, res: ServerResponse) =>
+    res.writeHead(code, { 'content-type': 'text/html' }).end(`<h1 class="product-name">${code}</h1>`);
 
   beforeAll(async () => {
     site = await startStaticServer(SITE);
     robots500 = await startStaticServer(SITE, { '/robots.txt': (_req, res) => res.writeHead(503).end('maintenance') });
-    proxy = await startTestProxy({
-      [`${FIXTURE_HOST}:80`]: site.port,
-      'down.test:80': robots500.port,
-      'other.test:80': site.port,
+    codes = await startStaticServer(SITE, {
+      '/401': status(401),
+      '/403': status(403),
+      '/404': status(404),
+      '/429': status(429),
+      '/500': status(500),
     });
+    proxy = await startTestProxy(
+      {
+        [`${FIXTURE_HOST}:80`]: site.port,
+        'down.test:80': robots500.port,
+        'other.test:80': site.port,
+        'codes.test:80': codes.port,
+        'busy.test:80': site.port,
+      },
+      { limitOnce: ['busy.test:80'] },
+    );
   });
 
   afterAll(async () => {
     await proxy.close();
-    await Promise.all([site.close(), robots500.close()]);
+    await Promise.all([site.close(), robots500.close(), codes.close()]);
+  });
+
+  it('fetches 401, 403, 404 and 429 once, and retries only 5xx', async () => {
+    const out = memorySink();
+    const paths = ['/401', '/403', '/404', '/429', '/500'];
+    await runCheerio(a6Job({ start_urls: paths.map((p) => `http://codes.test${p}`), respect_robots: false }), testDeps(proxy.url), out.sink, never);
+    const hits = (path: string) => codes.hits.filter((h) => h === path).length;
+    expect(Object.fromEntries(paths.map((p) => [p, hits(p)]))).toEqual({ '/401': 1, '/403': 1, '/404': 1, '/429': 1, '/500': 3 });
+    expect(out.items).toEqual([]);
+    const failed = Object.fromEntries(out.failed.map((f) => [pathOf(f.url), f.error]));
+    expect(failed).toEqual({ '/401': 'HTTP 401', '/403': 'HTTP 403', '/404': 'HTTP 404', '/429': 'HTTP 429', '/500': 'HTTP 500' });
+  });
+
+  it('does not retry destinations sealed-egress refuses, for https and http targets', async () => {
+    const before = proxy.log.length;
+    const out = memorySink();
+    await runCheerio(
+      a6Job({ start_urls: ['https://nowhere.test/', 'http://nowhere.test/x'], respect_robots: false }),
+      testDeps(proxy.url),
+      out.sink,
+      never,
+    );
+    const refused = proxy.log.slice(before).filter((t) => !t.allowed).map((t) => `${t.method} ${t.target}`);
+    expect(refused.sort()).toEqual(['CONNECT nowhere.test:443', 'GET http://nowhere.test/x']);
+    expect(Object.fromEntries(out.failed.map((f) => [f.url, f.error]))).toEqual({
+      'https://nowhere.test/': 'blocked by sealed-egress: nowhere.test:443 is not in egressAdditions.scraper',
+      'http://nowhere.test/x': 'blocked by sealed-egress: nowhere.test:80 is not in egressAdditions.scraper',
+    });
+  });
+
+  it('retries a page sealed-egress rate limited', async () => {
+    const out = memorySink();
+    await runCheerio(a6Job({ start_urls: ['http://busy.test/p02.html'], respect_robots: false, max_pages: 1 }), testDeps(proxy.url), out.sink, never);
+    expect(out.failed).toEqual([]);
+    expect(out.items.map((i) => i.data.sku)).toEqual(['FX-1002']);
   });
 
   it('crawls exactly the 10 pages, extracts every field and honours robots.txt', async () => {

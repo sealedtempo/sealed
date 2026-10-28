@@ -4,6 +4,7 @@ import { firefox } from 'playwright';
 import type { JobSpec } from '../job.js';
 import type { RobotsPolicy } from '../robots.js';
 import { handlePage, jobConfiguration, robotsPolicy, runWithAbort, sharedOptions } from './common.js';
+import { EGRESS_HEADER, egressVerdictFromHeader } from './egress.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
 
 // Playwright's Firefox (MPL-2.0), never Chromium: since Playwright 1.57 its Linux Chromium is Google's
@@ -73,7 +74,11 @@ export function playwrightOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSin
     ],
     requestHandler: async (ctx) => {
       const $ = await ctx.parseWithCheerio();
-      await handlePage(ctx, ctx.response?.status() ?? null, $, spec, sink);
+      const response = {
+        statusCode: ctx.response?.status() ?? null,
+        egress: egressVerdictFromHeader(ctx.response?.headers()[EGRESS_HEADER]),
+      };
+      await handlePage(ctx, response, $, spec, sink);
     },
   };
 }

@@ -5,6 +5,7 @@ import type { JobSpec } from '../job.js';
 import { errorMessage } from '../log.js';
 import { createProxyRobotsFetcher, RobotsPolicy } from '../robots.js';
 import { checkTargetUrl } from '../url-policy.js';
+import { egressMessage, egressVerdictFromError, type EgressVerdict } from './egress.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
 
 // Every job gets its own Configuration and an explicit non-persistent MemoryStorage: its own request
@@ -53,16 +54,30 @@ export function sharedOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink) {
     minConcurrency: 1,
     maxConcurrency: spec.max_concurrency,
     maxRequestsPerMinute: spec.max_requests_per_minute,
+    // Retries are for network errors, timeouts and 5xx. An honest bot does not retry or rotate
+    // sessions to get past 401, 403 or 429: with no blocked status codes, Crawlee hands those to
+    // handlePage, which fails them without a retry. Egress refusals are not retried either.
     maxRequestRetries: 2,
-    // Rotating sessions to get past 401/403/429 or a refusing proxy is not what an honest bot does.
     maxSessionRotations: 1,
+    sessionPoolOptions: { blockedStatusCodes: [] },
     requestHandlerTimeoutSecs: 60,
     retryOnBlocked: false,
     onSkippedRequest: skipReporter(sink),
+    errorHandler: ({ request }: { request: { noRetry: boolean } }, error: Error) => {
+      if (egressVerdictFromError(error) === 'blocked') request.noRetry = true;
+    },
     failedRequestHandler: async ({ request }: { request: { url: string } }, error: Error) => {
-      await sink.failed(request.url, errorMessage(error));
+      await sink.failed(request.url, describeFailure(request.url, error));
     },
   };
+}
+
+export function describeFailure(url: string, error: Error): string {
+  if (error instanceof HttpStatusError) return error.message;
+  const verdict = egressVerdictFromError(error);
+  if (verdict) return egressMessage(verdict, url);
+  // Crawlee prefixes session errors with its own retry notice.
+  return errorMessage(error).replace(/^Detected a session error, rotating session\.\.\.\s*/, '');
 }
 
 export function enqueueOptions(spec: JobSpec): EnqueueLinksOptions {
@@ -72,6 +87,7 @@ export function enqueueOptions(spec: JobSpec): EnqueueLinksOptions {
   };
 }
 
+// A page failure whose message is ready to show the user.
 export class HttpStatusError extends Error {}
 
 interface PageContext {
@@ -79,25 +95,43 @@ interface PageContext {
   enqueueLinks: (options: EnqueueLinksOptions) => Promise<unknown>;
 }
 
-// Successful pages only: a 4xx or 5xx final status is recorded as a failure, without retries for 4xx.
+export interface PageResponse {
+  statusCode: number | null;
+  // Set when sealed-egress itself answered (http targets), see egress.ts.
+  egress: EgressVerdict | null;
+}
+
+// What a final response means when it is not a usable page: a 4xx or 5xx status is a failure,
+// retried only for 5xx. An egress refusal is not retried; an egress rate limit is.
+export function responseFailure(url: string, { statusCode, egress }: PageResponse): { error: HttpStatusError; retry: boolean } | null {
+  if (egress) return { error: new HttpStatusError(egressMessage(egress, url)), retry: egress === 'limited' };
+  if (statusCode !== null && statusCode >= 400) return { error: new HttpStatusError(`HTTP ${statusCode}`), retry: statusCode >= 500 };
+  return null;
+}
+
+export function throwOnFailedResponse(request: { url: string; noRetry: boolean }, response: PageResponse): void {
+  const failure = responseFailure(request.url, response);
+  if (!failure) return;
+  request.noRetry = !failure.retry;
+  throw failure.error;
+}
+
+// Successful pages only (see responseFailure); stores the item after enqueueing its links.
 export async function handlePage(
   ctx: PageContext,
-  statusCode: number | null,
+  response: PageResponse,
   $: ParsedPage | undefined,
   spec: JobSpec,
   sink: CrawlSink,
 ): Promise<void> {
-  if (statusCode !== null && statusCode >= 400) {
-    ctx.request.noRetry = statusCode < 500;
-    throw new HttpStatusError(`HTTP ${statusCode}`);
-  }
+  throwOnFailedResponse(ctx.request, response);
   if (!$) {
     ctx.request.noRetry = true;
     throw new HttpStatusError('response is not HTML');
   }
   const url = ctx.request.loadedUrl ?? ctx.request.url;
   await ctx.enqueueLinks(enqueueOptions(spec));
-  await sink.item({ url, statusCode, data: extractFields($, spec.extract, url) });
+  await sink.item({ url, statusCode: response.statusCode, data: extractFields($, spec.extract, url) });
 }
 
 interface Stoppable {
