@@ -18,6 +18,7 @@ const (
 	MeasurementSize = 48
 	ReportDataSize  = 64
 	tdAttributesLen = 8
+	xfamLen         = 8
 	teeTcbSvnLen    = 16
 )
 
@@ -56,7 +57,9 @@ type Quote struct {
 	RTMR         [4]Measurement
 	ReportData   ReportData
 	TDAttributes [tdAttributesLen]byte
-	TeeTcbSvn    [teeTcbSvnLen]byte
+	// XFAM is the extended features the host enabled for the TD; like TD_ATTRIBUTES it is not in MRTD or RTMR0-2.
+	XFAM      [xfamLen]byte
+	TeeTcbSvn [teeTcbSvnLen]byte
 
 	proto any // *pb.QuoteV4 or *pb.QuoteV5; nil when simulated
 }
@@ -140,6 +143,7 @@ type tdBody interface {
 	GetRtmrs() [][]byte
 	GetReportData() []byte
 	GetTdAttributes() []byte
+	GetXfam() []byte
 	GetTeeTcbSvn() []byte
 }
 
@@ -174,6 +178,9 @@ func (q *Quote) extract(p any) error {
 		return err
 	}
 	if err := copyExact(q.TDAttributes[:], body.GetTdAttributes(), "td_attributes"); err != nil {
+		return err
+	}
+	if err := copyExact(q.XFAM[:], body.GetXfam(), "xfam"); err != nil {
 		return err
 	}
 	return copyExact(q.TeeTcbSvn[:], body.GetTeeTcbSvn(), "tee_tcb_svn")

@@ -72,17 +72,17 @@ func TestParseRealQuotes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var mrtd, rd, attrs []byte
+			var mrtd, rd, attrs, xfam []byte
 			var rtmrs [][]byte
 			switch v := p.(type) {
 			case *pb.QuoteV4:
 				b := v.GetTdQuoteBody()
-				mrtd, rd, attrs, rtmrs = b.GetMrTd(), b.GetReportData(), b.GetTdAttributes(), b.GetRtmrs()
+				mrtd, rd, attrs, xfam, rtmrs = b.GetMrTd(), b.GetReportData(), b.GetTdAttributes(), b.GetXfam(), b.GetRtmrs()
 			case *pb.QuoteV5:
 				b := v.GetTdQuoteBodyDescriptor().GetTdQuoteBodyV5()
-				mrtd, rd, attrs, rtmrs = b.GetMrTd(), b.GetReportData(), b.GetTdAttributes(), b.GetRtmrs()
+				mrtd, rd, attrs, xfam, rtmrs = b.GetMrTd(), b.GetReportData(), b.GetTdAttributes(), b.GetXfam(), b.GetRtmrs()
 			}
-			if !bytes.Equal(q.MRTD[:], mrtd) || !bytes.Equal(q.ReportData[:], rd) || !bytes.Equal(q.TDAttributes[:], attrs) {
+			if !bytes.Equal(q.MRTD[:], mrtd) || !bytes.Equal(q.ReportData[:], rd) || !bytes.Equal(q.TDAttributes[:], attrs) || !bytes.Equal(q.XFAM[:], xfam) {
 				t.Fatal("extracted fields differ from go-tdx-guest")
 			}
 			for i := range rtmrs {

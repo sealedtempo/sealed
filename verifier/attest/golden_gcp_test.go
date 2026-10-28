@@ -19,13 +19,18 @@ type gcpGolden struct {
 	RTMR3            string `json:"rtmr3"`
 	ComposeHash      string `json:"composeHash"`
 	ReportData       string `json:"reportData"`
+	// TDAttributes and XFAM (hex, as in the quote) are chosen by the host and not measured: the capture records
+	// what GCP sets for the Sealed image so a per-image pin can be added to PlatformRegistry or the policy.
+	TDAttributes string `json:"tdAttributes"`
+	XFAM         string `json:"xfam"`
 }
 
 // TestRealGCPGolden verifies a real quote and event log captured from a Sealed deployment on GCP C3 TDX.
 //
 // TODO(gcp): blocked by environment during the build (no GCP project, no TDX hardware). To fill the slot:
-//  1. On a booted Sealed CVM, save the raw quote from GetQuote as testdata/gcp/quote.dat and its event_log JSON
-//     as testdata/gcp/eventlog.json.
+//  1. On a booted Sealed CVM, save the quote bytes exactly as sealed-agent puts them in the evidence bundle as
+//     testdata/gcp/quote.dat (ParseQuote refuses trailing bytes, so this also checks that the agent sends the
+//     signed quote without buffer padding) and its event_log JSON as testdata/gcp/eventlog.json.
 //  2. Record collateral: go run ./verifier/internal/tools/pcsrecord -out verifier/attest/testdata/gcp/pcs \
 //     verifier/attest/testdata/gcp/quote.dat
 //  3. Write testdata/gcp/expected.json (gcpGolden) from the values the key broker logged for that boot.
@@ -68,6 +73,9 @@ func TestRealGCPGolden(t *testing.T) {
 	}
 	if err := res.Quote.CheckProductionAttributes(); err != nil {
 		t.Error(err)
+	}
+	if hex.EncodeToString(res.Quote.TDAttributes[:]) != exp.TDAttributes || hex.EncodeToString(res.Quote.XFAM[:]) != exp.XFAM {
+		t.Errorf("td_attributes %x xfam %x, want %s %s", res.Quote.TDAttributes, res.Quote.XFAM, exp.TDAttributes, exp.XFAM)
 	}
 	mh := res.Quote.MeasurementsHash()
 	if hex.EncodeToString(mh[:]) != exp.MeasurementsHash {

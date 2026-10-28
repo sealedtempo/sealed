@@ -152,11 +152,12 @@ func (s *session) checkQuote(raw []byte) {
 	if s.quote.Simulated {
 		s.rep.Simulated = true
 	}
+	data := map[string]any{"tdAttributes": hex0x(s.quote.TDAttributes[:]), "xfam": hex0x(s.quote.XFAM[:])}
 	if err := s.quote.CheckProductionAttributes(); err != nil {
-		s.rep.fail(CheckTDAttributes, err.Error(), map[string]any{"tdAttributes": hex0x(s.quote.TDAttributes[:])})
+		s.rep.fail(CheckTDAttributes, err.Error(), data)
 		return
 	}
-	s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits", map[string]any{"tdAttributes": hex0x(s.quote.TDAttributes[:])})
+	s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits", data)
 }
 
 // checkImage compares the quote's measurements with PlatformRegistry and requires an approved non-debug image.

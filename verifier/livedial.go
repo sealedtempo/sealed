@@ -125,9 +125,9 @@ func liveTransport(req *http.Request, tlsConf *tls.Config, allowPrivate bool) (*
 func hostPort(u *url.URL) string {
 	port := u.Port()
 	if port == "" {
-		port = "80"
-		if u.Scheme == "https" {
-			port = "443"
+		port = map[string]string{"https": "443", "socks5": "1080", "socks5h": "1080"}[u.Scheme]
+		if port == "" {
+			port = "80"
 		}
 	}
 	return net.JoinHostPort(u.Hostname(), port)

@@ -1,12 +1,16 @@
 # Verifier targets. Run from the repository root with `make -C verifier <target>`.
 ROOT := ..
 
-.PHONY: test test-short vet abi record-pcs build image
+.PHONY: test test-ci test-short vet abi record-pcs build image
 
 # Unit and integration tests. The anvil-based tests need anvil and forge on PATH and the contracts sources
 # (<repo>/contracts, or SEALED_CONTRACTS_DIR); they skip otherwise.
 test:
 	cd $(ROOT) && go test ./verifier/...
+
+# CI: the same, but a missing anvil, forge or contracts tree fails instead of skipping.
+test-ci:
+	cd $(ROOT) && SEALED_REQUIRE_ANVIL=1 go test -race ./verifier/...
 
 # Unit tests only (no local chain).
 test-short:
