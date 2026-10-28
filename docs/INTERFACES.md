@@ -219,6 +219,8 @@ Secret Manager naming: `sealed-<app>-<NAME>` (for example `sealed-crm-APP_SECRET
 |---|---|---|
 | POST | `/v1/usage-events` | apps: `{"app":"llm-gateway","unit":"tokens","quantity":123,"meta":{"model":"…","prompt_tokens":1,"completion_tokens":2,"key_alias":"…"}}` |
 | POST | `/v1/spend` | mpp-payer: spend counters |
+| POST | `/v1/spend/reserve` | mpp-payer: `{"amount","currency"?}` -> `{"ok","reservationId"?,"remaining","reason"?}`, its share of the shared budget after fee settlement (D-048); in access-key mode the budget is the key's onchain remaining limit and period |
+| POST | `/v1/spend/release` | mpp-payer: `{"reservationId","used"}` -> `{"ok","remaining"}` |
 | GET | `/attest?nonce=0x…` | public via Caddy: `{"quote","eventLog","config","releaseIds","appCompose","enclaveSigner","tlsPubKeyHash","reportData"}` |
 | GET | `/healthz`, `/v1/ready` | Caddy, apps |
 
