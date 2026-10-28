@@ -10,6 +10,8 @@ export
 TEMPO_RPC_URL ?=
 TEMPO_PUBLIC_RPC_URL ?= https://rpc.tempo.xyz
 RPC := $(if $(TEMPO_RPC_URL),$(TEMPO_RPC_URL),$(TEMPO_PUBLIC_RPC_URL))
+# Resolve foundry.toml's `tempo = "${TEMPO_RPC_URL}"` to the same fallback for every forge/cast call below.
+override TEMPO_RPC_URL := $(RPC)
 TEMPO_VERIFIER_URL ?= https://contracts.tempo.xyz
 FEE_TOKEN_ADDRESS ?= 0x20c0000000000000000000000000000000000000
 MAINNET_DEPLOYMENTS := deployments/tempo-mainnet.json

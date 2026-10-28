@@ -42,8 +42,11 @@ runs = 1000
 runs = 256
 depth = 100
 
+# Foundry has no "${VAR:-default}" syntax: `tempo` needs TEMPO_RPC_URL set. The Makefile exports it with a
+# fallback to the public RPC when it is unset or empty; outside make use `tempo_public` or export it yourself.
+# The fork tests fall back to the public RPC on their own.
 [rpc_endpoints]
-tempo = "${TEMPO_RPC_URL:-https://rpc.tempo.xyz}"
+tempo = "${TEMPO_RPC_URL}"
 tempo_public = "https://rpc.tempo.xyz"
 local = "http://127.0.0.1:8545"
 
