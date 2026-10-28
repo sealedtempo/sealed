@@ -22,7 +22,7 @@ sealed secrets set gate --generate                     # gate password, shown on
 sealed secrets list --config stack.yaml                # set, missing, optional, same as
 sealed secrets rm <app> <NAME> [--yes]
 
-sealed deploy --config stack.yaml [--plan] [--wait-approval 10m] [--write-config config.json]
+sealed deploy --config stack.yaml [--plan] [--wait-approval 10m] [--write-config config.json] [--replace]
 sealed verify --deployment <0x id | dep_ alias> [--evidence file] [--live https://attest.<ip>.sslip.io/attest] [--json]
 sealed catalog list | show <app> [--json]
 sealed release build <app> [--out bundle.tar] [--check <version|latest>]
@@ -70,6 +70,41 @@ service account and so no scopes, `enable-oslogin=FALSE`, `serial-port-enable=FA
 static IP. It reads the VM back and fails if the stored VM differs from spec 5.9. `--as-deployer` acts as the
 bootstrap's deployer account (only the platform service account can impersonate it, so this is for the operator;
 the deployer cannot create the shared disk image, see the build note).
+
+#### Salt, data disk and upgrades (D-058)
+
+The key broker derives the data disk key and the enclave signer seed from `(customer, salt)`, not from the
+deploymentId. The salt is `salt:` in the stack file, or by default `sha256("sealed/deploy-salt/v1\0" || project ||
+"\0" || name)`: it depends only on the project and the name, never on the apps, releases, image or config. So an
+upgrade (new releases, another image, a changed config) gets a new stackHash and a new deploymentId, but keeps the
+salt, and with it the disk key and the signer address. The broker still releases them only to a stack the wallet
+approved.
+
+A new salt means a fresh disk: the old disk cannot be opened with the new key. To start over, deploy under a new
+`name` (new disk `sealed-<name>-data`), or set a new `salt:` after removing the old disk yourself. Deploy labels
+the data disk with `sealed-disk-id` (the first 20 bytes of `sha256("sealed/data-disk/v1\0" || customer || "\0" ||
+salt)`, nothing secret) and `sealed-variant`, and refuses to attach a disk created for another wallet or salt,
+before it touches the running VM. A disk created before these labels gets a warning.
+
+When the VM `sealed-<name>` already runs this deploymentId, deploy changes nothing. When it runs another one,
+deploy stops and says so; `--replace` performs the upgrade: it checks that the old VM's `sealed-data` disk is the
+stack's data disk and is not auto-deleted, deletes the old VM (its boot, system and shared disks go with it),
+and creates the new VM on the same data disk and static IP. Approve the new stack first (exit 3 shows the
+`approveStack` arguments).
+
+#### Debug images (spec 5.8)
+
+A debug image (PlatformRegistry `isDebug`) is for development only. PlatformRegistry never approves it, so
+`approveStack` cannot name it and the key broker releases no secrets, disk key or signer seed to it. Deploy refuses
+a debug image unless the stack file sets `image.debug: true`, and refuses `image.debug: true` on a production
+image. For a debug image it skips the approval and secrets gates, sets `debug: true` in the config when the
+composer has that switch (the local logging driver the image's exporter reads), labels the VM and its data disk
+`sealed-variant=debug`, and attaches the bootstrap's `sealed-debug-logs` account (create it with
+`sealed bootstrap --debug-logging`) with only the `logging.write` scope. That is the one exception to "no service
+account"; a production VM never gets one, and the read-back check fails a production VM with any identity and a
+debug VM with any other identity or scope. A debug VM never gets a production deployment's data disk (use another
+name). Debug deploys run with your own credentials: the deployer cannot attach a service account (spec 8.6), so
+`--as-deployer` is refused.
 
 ### verify
 
