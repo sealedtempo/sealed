@@ -89,30 +89,30 @@ func (d *Deployer) logf(format string, a ...any) {
 	}
 }
 
-// resolveRelease turns "latest", a version or a 0x releaseId into the onchain release.
-func (d *Deployer) resolveRelease(ctx context.Context, a App) (bundles.Release, error) {
+// ResolveRelease turns "latest", a version or a 0x releaseId into the onchain release.
+func ResolveRelease(ctx context.Context, r registry.Reader, a App) (bundles.Release, error) {
 	appID := composer.AppID(a.ID)
-	if _, err := d.Chain.GetApp(ctx, appID); err != nil {
+	if _, err := r.GetApp(ctx, appID); err != nil {
 		return bundles.Release{}, fmt.Errorf("app %s: %w", a.ID, err)
 	}
 	var id [32]byte
 	var err error
 	switch {
 	case a.Release == "latest":
-		if id, err = d.Chain.LatestRelease(ctx, appID); err == nil && id == ([32]byte{}) {
+		if id, err = r.LatestRelease(ctx, appID); err == nil && id == ([32]byte{}) {
 			err = fmt.Errorf("no active release")
 		}
 	case strings.HasPrefix(a.Release, "0x"):
 		id, err = registry.ParseHash32(a.Release)
 	default:
-		if id, err = d.Chain.ReleaseByVersion(ctx, appID, a.Release); err == nil && id == ([32]byte{}) {
+		if id, err = r.ReleaseByVersion(ctx, appID, a.Release); err == nil && id == ([32]byte{}) {
 			err = fmt.Errorf("no release with version %q", a.Release)
 		}
 	}
 	if err != nil {
 		return bundles.Release{}, fmt.Errorf("app %s release %s: %w", a.ID, a.Release, err)
 	}
-	rel, err := d.Chain.GetRelease(ctx, id)
+	rel, err := r.GetRelease(ctx, id)
 	if err != nil {
 		return bundles.Release{}, fmt.Errorf("app %s release 0x%x: %w", a.ID, id, err)
 	}
@@ -141,7 +141,7 @@ func (d *Deployer) Prepare(ctx context.Context, s *StackFile, reserveIP bool) (*
 		return nil, fmt.Errorf("the RPC is chain %d, expected %d", id, d.Settings.ChainID)
 	}
 	for _, a := range s.Apps {
-		r, err := d.resolveRelease(ctx, a)
+		r, err := ResolveRelease(ctx, d.Chain, a)
 		if err != nil {
 			return nil, err
 		}

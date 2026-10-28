@@ -151,6 +151,12 @@ variable "key_broker_deletion_protection" {
   default     = true
 }
 
+variable "create_boot_bucket" {
+  type        = bool
+  description = "Create <project>-sealed-boot, where sealed deploy stages the dstack shared disk image."
+  default     = true
+}
+
 variable "enable_apis" {
   type        = bool
   description = "Enable the Google Cloud APIs the bootstrap needs. Turn off when they are managed elsewhere."

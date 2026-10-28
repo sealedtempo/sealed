@@ -60,3 +60,8 @@ output "kms_key_version" {
 output "secret_prefix" {
   value = local.secret_prefix
 }
+
+output "boot_bucket" {
+  description = "Bucket sealed deploy stages shared disk images in (empty when not created)."
+  value       = var.create_boot_bucket ? google_storage_bucket.boot[0].name : ""
+}

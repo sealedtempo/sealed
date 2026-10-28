@@ -190,6 +190,15 @@ run "deployer" {
   }
 }
 
+run "boot_bucket" {
+  command = plan
+
+  assert {
+    condition     = google_storage_bucket.boot[0].name == "sealed-test-1234-sealed-boot" && google_storage_bucket.boot[0].public_access_prevention == "enforced" && google_storage_bucket.boot[0].uniform_bucket_level_access == true
+    error_message = "the boot bucket is private"
+  }
+}
+
 run "rejects_tag_pinned_key_broker" {
   command = plan
 

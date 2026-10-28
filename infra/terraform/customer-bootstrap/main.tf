@@ -20,6 +20,7 @@ locals {
     "logging.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
   ])
 
   customer_address = lower(var.customer_address)
