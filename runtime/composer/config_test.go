@@ -1,6 +1,7 @@
 package composer
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ func TestParseConfigRejects(t *testing.T) {
 		"checksummed address":   {`0x00000000000000000000000000000000000000c1`, `0x00000000000000000000000000000000000000C1`},
 		"short salt":            {`"salt": "0x5a5a`, `"salt": "0x5a`},
 		"zero image":            {`"imageId": "0x1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d"`, `"imageId": "0x0000000000000000000000000000000000000000000000000000000000000000"`},
-		"composer version":      {`"composerVersion": "1.0.0"`, `"composerVersion": "0.9.0"`},
+		"composer version":      {`"composerVersion": "1.1.0"`, `"composerVersion": "0.9.0"`},
 		"unsorted apps":         {`{ "id": "llm-gateway"`, `{ "id": "zz-gateway"`},
 		"bad scheme":            {`"scheme": "sslip"`, `"scheme": "nip"`},
 		"bad ip":                {`"ip": "34.1.2.3"`, `"ip": "34.1.2"`},
@@ -69,6 +70,11 @@ func TestParseConfigRejects(t *testing.T) {
 		"bad addition":          {`smtp.example.com:587`, `smtp.example.com`},
 		"public vpc range":      {`"allowedVpcRanges": []`, `"allowedVpcRanges": ["8.8.8.0/24"]`},
 		"overlapping range":     {`"allowedVpcRanges": []`, `"allowedVpcRanges": ["172.30.0.0/16"]`},
+		"range beyond private":  {`"allowedVpcRanges": []`, `"allowedVpcRanges": ["10.0.0.0/7"]`},
+		"metadata addition":     {`smtp.example.com:587`, `169.254.169.254:80`},
+		"loopback addition":     {`smtp.example.com:587`, `127.0.0.1:25`},
+		"private addition":      {`smtp.example.com:587`, `10.1.2.3:25`},
+		"cgnat endpoint":        {`https://rpc.tempo.xyz`, `https://100.64.1.1`},
 		"settlement mode":       {`"mode": "access-key"`, `"mode": "card"`},
 		"spend limit":           {`"spendLimitPerDay": "2000000"`, `"spendLimitPerDay": "2.5"`},
 		"endpoint creds":        {`https://rpc.tempo.xyz`, `https://user:pw@rpc.tempo.xyz`},
@@ -128,5 +134,50 @@ func TestGoBuiltConfigMatchesParsed(t *testing.T) {
 	d, _ := c.CanonicalJSON()
 	if !strings.Contains(string(d), `"notes":[]`) {
 		t.Fatalf("nil list must encode as []: %s", d)
+	}
+}
+
+func TestPrivateAdditionsNeedVpcRange(t *testing.T) {
+	c := testConfig()
+	c.Apps = []ConfigApp{{ID: "notes", ReleaseID: "0x" + strings.Repeat("ab", 32)}}
+	c.EgressAdditions = map[string][]string{"notes": {"10.10.3.4:5432"}}
+	if err := c.Validate(); err == nil {
+		t.Fatal("private addition without allowedVpcRanges accepted")
+	}
+	c.AllowedVpcRanges = []string{"10.10.0.0/16"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.EgressAdditions["notes"] = []string{"10.20.3.4:5432"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("private addition outside allowedVpcRanges accepted")
+	}
+}
+
+func TestConfigCounts(t *testing.T) {
+	c := testConfig()
+	for i := 0; i <= MaxConfigApps; i++ {
+		c.Apps = append(c.Apps, ConfigApp{ID: fmt.Sprintf("app%02d", i), ReleaseID: "0x" + strings.Repeat("ab", 32)})
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "apps") {
+		t.Fatalf("too many apps: %v", err)
+	}
+	c.Apps = c.Apps[:5]
+	c.EgressAdditions = map[string][]string{}
+	for i, a := range c.Apps {
+		for j := 0; j < MaxEgressAdditionsPerApp; j++ {
+			c.EgressAdditions[a.ID] = append(c.EgressAdditions[a.ID], fmt.Sprintf("h%d-%d.example.com:443", i, j))
+		}
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "in total") {
+		t.Fatalf("too many additions in total: %v", err)
+	}
+	c.AllowedVpcRanges = nil
+	for i := 0; i <= MaxAllowedVpcRanges; i++ {
+		c.AllowedVpcRanges = append(c.AllowedVpcRanges, fmt.Sprintf("10.%d.0.0/16", i))
+	}
+	c.EgressAdditions = nil
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "allowedVpcRanges") {
+		t.Fatalf("too many ranges: %v", err)
 	}
 }

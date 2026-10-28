@@ -209,12 +209,75 @@ func (f *Fragment) checkReferences(m *Manifest) error {
 	if m.Bootstrap != nil && m.Bootstrap.Service != "" && !names[m.Bootstrap.Service] {
 		return missing("bootstrap.service", m.Bootstrap.Service)
 	}
+	if m.Bootstrap != nil && m.Bootstrap.DoneFile != "" {
+		if _, err := ResolveDoneFile(m, f); err != nil {
+			return err
+		}
+	}
 	if m.Healthcheck.Port == 0 {
 		if _, ok := routePort(m, m.Healthcheck.Service); !ok {
 			return &ManifestError{App: app, Field: "healthcheck.port", Msg: fmt.Sprintf("required because service %q has no route", m.Healthcheck.Service)}
 		}
 	}
 	return nil
+}
+
+// DataPath is the data-disk directory behind an app's named volume.
+func DataPath(app, volume string) string { return DataRoot + "/" + app + "/" + volume }
+
+// ResolveDoneFile maps bootstrap.done_file to its path on the data disk.
+// "<volume>/<path>" is relative to the app's data directory. An absolute
+// path is a path inside bootstrap.service and must lie under one of its
+// mounts: under a named volume it resolves to the data disk; under a tmpfs
+// (a marker the app's other services cannot forge) it stays inside the
+// container and ResolveDoneFile returns "", so sealed-agent relies on the
+// service's healthcheck instead. The result is always under DataRoot or "".
+func ResolveDoneFile(m *Manifest, f *Fragment) (string, error) {
+	fail := func(format string, args ...any) error {
+		return &ManifestError{App: m.ID, Field: "bootstrap.done_file", Msg: fmt.Sprintf(format, args...)}
+	}
+	if m.Bootstrap == nil || m.Bootstrap.DoneFile == "" {
+		return "", fail("not set")
+	}
+	p := m.Bootstrap.DoneFile
+	if err := checkDoneFileSyntax(p); err != nil {
+		return "", fail("%v", err)
+	}
+	if !strings.HasPrefix(p, "/") {
+		vol, rest, _ := strings.Cut(p, "/")
+		for _, v := range f.Volumes {
+			if v == vol {
+				return DataPath(m.ID, vol) + "/" + rest, nil
+			}
+		}
+		return "", fail("%q: %q is not a volume declared in compose.fragment.yaml", p, vol)
+	}
+	svc := f.Service(m.Bootstrap.Service)
+	if svc == nil {
+		return "", fail("%q: bootstrap.service %q is not defined", p, m.Bootstrap.Service)
+	}
+	best := Mount{}
+	consider := func(mnt Mount) {
+		if strings.HasPrefix(p, mnt.Target+"/") && len(mnt.Target) > len(best.Target) {
+			best = mnt
+		}
+	}
+	for _, mnt := range svc.Mounts {
+		consider(mnt)
+	}
+	for _, t := range svc.Tmpfs {
+		target, _, _ := strings.Cut(t, ":")
+		consider(Mount{Type: "tmpfs", Target: target})
+	}
+	switch {
+	case best.Target == "":
+		return "", fail("%q is not under a volume or tmpfs mount of %s", p, svc.Name)
+	case best.ReadOnly:
+		return "", fail("%q is on a read-only mount of %s", p, svc.Name)
+	case best.Type == "tmpfs":
+		return "", nil
+	}
+	return DataPath(m.ID, best.Source) + strings.TrimPrefix(p, best.Target), nil
 }
 
 func checkDependencyCycles(app string, svcs []*ServiceSpec) error {
@@ -358,10 +421,13 @@ func parseService(m *Manifest, name string, body map[string]any, declared map[st
 		if err != nil {
 			return nil, fail("tmpfs", "must be a path or a list of paths")
 		}
+		targets := map[string]bool{}
+		for _, m := range s.Mounts {
+			targets[m.Target] = true
+		}
 		for _, t := range list {
-			p, _, _ := strings.Cut(t, ":")
-			if !path.IsAbs(p) {
-				return nil, fail("tmpfs", "%q is not an absolute path", t)
+			if err := checkTmpfsEntry(t, targets); err != nil {
+				return nil, fail("tmpfs", "%v", err)
 			}
 		}
 		s.Tmpfs = list
@@ -775,7 +841,21 @@ func parseVolumes(v any, declared map[string]bool) ([]Mount, error) {
 							return nil, fmt.Errorf("item %d: tmpfs option %q is not allowed", i, k)
 						}
 					}
-					mnt.TmpfsSize = om["size"]
+					if raw, ok := om["size"]; ok {
+						switch sz := raw.(type) {
+						case int64:
+							if sz <= 0 {
+								return nil, fmt.Errorf("item %d: tmpfs size must be positive", i)
+							}
+						case string:
+							if !sizeRe.MatchString(sz) {
+								return nil, fmt.Errorf("item %d: tmpfs size %q is not a byte size such as 64m", i, sz)
+							}
+						default:
+							return nil, fmt.Errorf("item %d: tmpfs size must be a byte size such as 64m", i)
+						}
+						mnt.TmpfsSize = raw
+					}
 				}
 			case "bind":
 				return nil, fmt.Errorf("item %d: bind mounts are not allowed", i)
@@ -793,19 +873,60 @@ func parseVolumes(v any, declared map[string]bool) ([]Mount, error) {
 				return nil, fmt.Errorf("item %d: volume %q is not declared in the fragment's top-level volumes", i, mnt.Source)
 			}
 		}
-		if !path.IsAbs(mnt.Target) || path.Clean(mnt.Target) != mnt.Target || mnt.Target == "/" {
-			return nil, fmt.Errorf("item %d: target %q must be a clean absolute path", i, mnt.Target)
+		if err := checkMountTarget(mnt.Target, targets); err != nil {
+			return nil, fmt.Errorf("item %d: %v", i, err)
 		}
-		if strings.HasPrefix(mnt.Target+"/", "/run/sealed/") || strings.HasPrefix(mnt.Target+"/", "/sealed/") || mnt.Target == "/var/run/dstack.sock" {
-			return nil, fmt.Errorf("item %d: target %q is reserved", i, mnt.Target)
-		}
-		if targets[mnt.Target] {
-			return nil, fmt.Errorf("item %d: duplicate target %q", i, mnt.Target)
-		}
-		targets[mnt.Target] = true
 		out = append(out, mnt)
 	}
 	return out, nil
+}
+
+// checkMountTarget applies the target rules shared by volumes and tmpfs: a
+// clean absolute path that is not reserved and not mounted twice.
+func checkMountTarget(target string, targets map[string]bool) error {
+	if !path.IsAbs(target) || path.Clean(target) != target || target == "/" {
+		return fmt.Errorf("target %q must be a clean absolute path", target)
+	}
+	if strings.HasPrefix(target+"/", "/run/sealed/") || strings.HasPrefix(target+"/", "/sealed/") || target == DstackSocket {
+		return fmt.Errorf("target %q is reserved", target)
+	}
+	if targets[target] {
+		return fmt.Errorf("duplicate target %q", target)
+	}
+	targets[target] = true
+	return nil
+}
+
+var (
+	tmpfsModeRe = regexp.MustCompile(`^[0-7]{3,4}$`)
+	tmpfsSizeRe = regexp.MustCompile(`^[1-9][0-9]*[kmgKMG]?$`)
+)
+
+// checkTmpfsEntry validates a service-level tmpfs entry "<path>[:opts]".
+// Only size and mode are allowed, so Docker's noexec, nosuid and nodev
+// defaults cannot be relaxed.
+func checkTmpfsEntry(entry string, targets map[string]bool) error {
+	target, opts, hasOpts := strings.Cut(entry, ":")
+	if err := checkMountTarget(target, targets); err != nil {
+		return fmt.Errorf("%q: %v", entry, err)
+	}
+	if !hasOpts {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, o := range strings.Split(opts, ",") {
+		k, v, ok := strings.Cut(o, "=")
+		switch {
+		case !ok || seen[k]:
+			return fmt.Errorf("%q: options must be size=<bytes> and mode=<octal>, each at most once", entry)
+		case k == "size" && tmpfsSizeRe.MatchString(v):
+		case k == "mode" && tmpfsModeRe.MatchString(v):
+		default:
+			return fmt.Errorf("%q: option %q is not allowed (only size and mode)", entry, o)
+		}
+		seen[k] = true
+	}
+	return nil
 }
 
 func parseUlimits(v any) (map[string]any, error) {

@@ -33,6 +33,7 @@ type Manifest struct {
 	Metering           Metering          `json:"metering"`
 	Secrets            []Secret          `json:"secrets"`
 	TelemetryOffEnv    map[string]string `json:"telemetry_off_env"`
+	TelemetryNone      string            `json:"telemetry_none_reason,omitempty"`
 	LicenseExclusions  []string          `json:"license_exclusions"`
 	Bootstrap          *Bootstrap        `json:"bootstrap,omitempty"`
 	Notes              string            `json:"notes,omitempty"`
@@ -75,6 +76,15 @@ const (
 	AuthBearerPassthrough = "bearer-passthrough"
 	AuthPublic            = "public"
 )
+
+// routeAuthExceptions are the only routes that may skip the password gate
+// (spec 5.5, INTERFACES section 14): the gateway API authenticates with
+// LiteLLM bearer keys, and the platform relay is a paid public endpoint that
+// authenticates with MPP payments. Every other route uses AuthGate.
+var routeAuthExceptions = map[string]string{
+	"llm-gateway/gateway":   AuthBearerPassthrough,
+	"inference-relay/relay": AuthPublic,
+}
 
 type Route struct {
 	Name         string `json:"name"`
@@ -284,6 +294,10 @@ func (m *Manifest) validate() error {
 		if p := r.PathPrefix(); p != "" && !safePathRe.MatchString(p) {
 			return fail(f+".path_or_host", "%q contains characters not allowed in a route path", r.PathOrHost)
 		}
+		if r.Auth != AuthGate && routeAuthExceptions[m.ID+"/"+r.Name] != r.Auth {
+			return fail(f+".auth", "%q is not allowed for app %q route %q: every app UI sits behind the password gate (only llm-gateway/gateway may use %s and inference-relay/relay %s)",
+				r.Auth, m.ID, r.Name, AuthBearerPassthrough, AuthPublic)
+		}
 		key := r.Name + " " + r.PathPrefix()
 		if routeKeys[key] {
 			return fail(f, "duplicate route %q path %q", r.Name, r.PathPrefix())
@@ -324,7 +338,37 @@ func (m *Manifest) validate() error {
 	if m.Bootstrap != nil && m.Bootstrap.Service != "" && !strings.HasPrefix(m.Bootstrap.Service, m.ID+"-") {
 		return fail("bootstrap.service", "%q must be a service of this app", m.Bootstrap.Service)
 	}
+	if m.Bootstrap != nil && m.Bootstrap.DoneFile != "" {
+		if err := checkDoneFileSyntax(m.Bootstrap.DoneFile); err != nil {
+			return fail("bootstrap.done_file", "%v", err)
+		}
+		if strings.HasPrefix(m.Bootstrap.DoneFile, "/") && m.Bootstrap.Service == "" {
+			return fail("bootstrap.done_file", "an absolute path is a path in bootstrap.service, which is not set")
+		}
+	}
 	return nil
 }
+
+// checkDoneFileSyntax accepts the two forms of bootstrap.done_file:
+// "<volume>/<path>" (relative to the app's data directory) or an absolute
+// path inside bootstrap.service, which ResolveDoneFile checks against the
+// service's mounts. Both are clean paths without "." or ".." segments.
+func checkDoneFileSyntax(p string) error {
+	if !donePathRe.MatchString(p) {
+		return fmt.Errorf("%q contains characters not allowed in a path", p)
+	}
+	rel := strings.TrimPrefix(p, "/")
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("%q must be a clean path without empty, . or .. segments", p)
+		}
+	}
+	if !strings.Contains(rel, "/") {
+		return fmt.Errorf("%q must name a file inside a volume (<volume>/<path> or an absolute path under a volume mount)", p)
+	}
+	return nil
+}
+
+var donePathRe = regexp.MustCompile(`^/?[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
 
 var safePathRe = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)

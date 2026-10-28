@@ -79,7 +79,10 @@
           "service": { "type": "string" },
           "internal_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
           "path_or_host": { "type": "string", "description": "host label (route name) or a path prefix starting with /" },
-          "auth": { "enum": ["gate", "bearer-passthrough", "public"] }
+          "auth": {
+            "enum": ["gate", "bearer-passthrough", "public"],
+            "description": "gate (password gate) for every app UI. Only llm-gateway route gateway may use bearer-passthrough and only inference-relay route relay may use public; the composer rejects anything else."
+          }
         }
       }
     },
@@ -120,7 +123,12 @@
     "telemetry_off_env": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Env vars that disable telemetry and update checks; applied to every service of the app"
+      "description": "Env vars that disable telemetry and update checks; applied to every service of the app. Catalog lint requires at least one unless telemetry_none_reason is set."
+    },
+    "telemetry_none_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Set only when telemetry_off_env is empty: why the app needs no telemetry switches (what was checked: upstream source, update checks, crash reporting). Reviewed in catalog PRs."
     },
     "license_exclusions": {
       "type": "array",
@@ -133,7 +141,10 @@
       "description": "Optional one-shot job run inside the VM before the app's routes open (first admin, closing sign-up)",
       "properties": {
         "service": { "type": "string" },
-        "done_file": { "type": "string" }
+        "done_file": {
+          "type": "string",
+          "description": "File the bootstrap job writes when it is done: <volume>/<path> relative to the app's data directory, or an absolute path in bootstrap.service under one of its named-volume mounts. Clean path without . or .. segments."
+        }
       }
     },
     "notes": { "type": "string" }

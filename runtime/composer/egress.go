@@ -45,6 +45,9 @@ func ParseEgressPolicy(data []byte) (*EgressPolicy, Hash, error) {
 	if p.DefaultAllow == nil {
 		return nil, Hash{}, fmt.Errorf("egress.yaml: default_allow must be a list")
 	}
+	if len(p.DefaultAllow) > MaxEgressAllowEntries {
+		return nil, Hash{}, fmt.Errorf("egress.yaml: default_allow has %d entries (at most %d)", len(p.DefaultAllow), MaxEgressAllowEntries)
+	}
 	seen := map[string]bool{}
 	for i, e := range p.DefaultAllow {
 		if _, err := ParseHostPort(e); err != nil {
@@ -75,10 +78,35 @@ func (h HostPort) String() string { return h.Host + ":" + strconv.Itoa(h.Port) }
 
 var dnsLabelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// specialIPv4 are address ranges an allow entry may never name: this
+// network, loopback, link-local (cloud metadata), shared CGNAT space, IETF
+// protocol assignments, 6to4 relays, benchmarking, multicast, reserved and
+// broadcast. sealed-egress denies them anyway; the composer fails closed.
+var specialIPv4 = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
+// MaxEgressAllowEntries bounds egress.yaml default_allow.
+const MaxEgressAllowEntries = 256
+
 // ParseHostPort validates an allow entry. Hosts must be lowercase; DNS names
 // need at least two labels; wildcards cover exactly one label and need at
-// least two labels after "*.".
-func ParseHostPort(s string) (HostPort, error) {
+// least two labels after "*.". IPv4 literals must be public unicast
+// addresses; ParseHostPortIn also accepts private ones inside given ranges.
+func ParseHostPort(s string) (HostPort, error) { return ParseHostPortIn(s, nil) }
+
+// ParseHostPortIn is ParseHostPort that accepts private (RFC 1918) IPv4
+// literals contained in one of the given ranges (the config's
+// allowedVpcRanges).
+func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 	i := strings.LastIndexByte(s, ':')
 	if i <= 0 || i == len(s)-1 {
 		return HostPort{}, fmt.Errorf("%q must be host:port", s)
@@ -94,6 +122,17 @@ func ParseHostPort(s string) (HostPort, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		if !addr.Is4() {
 			return HostPort{}, fmt.Errorf("%q: only IPv4 literals are supported", s)
+		}
+		if addr.String() != host {
+			return HostPort{}, fmt.Errorf("%q: IPv4 literal is not in canonical dotted form", s)
+		}
+		for _, p := range specialIPv4 {
+			if p.Contains(addr) {
+				return HostPort{}, fmt.Errorf("%q: %s is a special-use address (%s)", s, host, p)
+			}
+		}
+		if addr.IsPrivate() && !containsAddr(private, addr) {
+			return HostPort{}, fmt.Errorf("%q: private address %s is allowed only inside allowedVpcRanges", s, host)
 		}
 		return HostPort{Host: host, Port: port, IP: true}, nil
 	}
@@ -119,6 +158,15 @@ func ParseHostPort(s string) (HostPort, error) {
 		return HostPort{}, fmt.Errorf("%q: numeric top-level label", s)
 	}
 	return hp, nil
+}
+
+func containsAddr(ranges []netip.Prefix, a netip.Addr) bool {
+	for _, p := range ranges {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // endpointHostPort turns an https or http URL into an allow entry.

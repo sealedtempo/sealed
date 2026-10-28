@@ -3,6 +3,7 @@ package composer
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -251,5 +252,182 @@ func TestParseEgressPolicy(t *testing.T) {
 		if _, _, err := ParseEgressPolicy([]byte(src)); err == nil {
 			t.Errorf("accepted %q", src)
 		}
+	}
+}
+
+func TestTmpfsKeyRules(t *testing.T) {
+	m := notesManifest(t)
+	bad := []string{
+		`    tmpfs: ["/run/sealed/ready"]`,
+		`    tmpfs: ["/run/sealed"]`,
+		`    tmpfs: ["/sealed/bin"]`,
+		`    tmpfs: ["/var/run/dstack.sock"]`,
+		`    tmpfs: ["/../run/sealed/secrets/notes"]`,
+		`    tmpfs: ["/tmp/../run/sealed"]`,
+		`    tmpfs: ["relative"]`,
+		`    tmpfs: ["/"]`,
+		`    tmpfs: ["/tmp:exec"]`,
+		`    tmpfs: ["/tmp:exec,suid,dev,size=100g"]`,
+		`    tmpfs: ["/tmp:size=1g,size=2g"]`,
+		`    tmpfs: ["/tmp:mode=999"]`,
+		`    tmpfs: ["/tmp:size=1.5g"]`,
+		`    tmpfs: ["/tmp:uid=0"]`,
+		`    tmpfs: ["/tmp", "/tmp"]`,
+		"    tmpfs: [\"/data\"]\n    volumes: [\"uploads:/data\"]",
+		"    volumes:\n      - {type: tmpfs, target: /tmp, tmpfs: {size: [1]}}",
+	}
+	for _, extra := range bad {
+		frag := append(fragmentWith(extra), []byte("volumes: {uploads: }\n")...)
+		_, err := ParseFragment(m, frag)
+		if err == nil {
+			t.Errorf("accepted %q", extra)
+			continue
+		}
+		var fe *FragmentError
+		if !errors.As(err, &fe) || fe.Service != "notes-web" || (fe.Key != "tmpfs" && fe.Key != "volumes") {
+			t.Errorf("%q: %v", extra, err)
+		}
+	}
+	for _, extra := range []string{`    tmpfs: ["/tmp:size=1g,mode=1777"]`, `    tmpfs: /run/app`, `    tmpfs: ["/tmp:size=65536k", "/var/cache"]`} {
+		if _, err := ParseFragment(m, fragmentWith(extra)); err != nil {
+			t.Errorf("%q rejected: %v", extra, err)
+		}
+	}
+}
+
+func TestRouteAuthMustBeGate(t *testing.T) {
+	notes := buildFixture(t, "notes")
+	base := string(notes.Files[ManifestFile])
+	for _, auth := range []string{AuthPublic, AuthBearerPassthrough} {
+		src := strings.Replace(base, "auth: gate", "auth: "+auth, 1)
+		_, err := ParseManifest([]byte(src))
+		var me *ManifestError
+		if !errors.As(err, &me) || me.Field != "routes[0].auth" {
+			t.Errorf("notes route with auth %s: %v", auth, err)
+		}
+	}
+	// The two exceptions: the gateway API and the platform relay.
+	gw := buildFixture(t, "llm-gateway").Manifest
+	if gw.Routes[0].Auth != AuthBearerPassthrough {
+		t.Fatal("fixture changed")
+	}
+	if err := gw.validate(); err != nil {
+		t.Fatal(err)
+	}
+	gw.Routes[0].Auth = AuthPublic
+	if err := gw.validate(); err == nil {
+		t.Error("public gateway route accepted")
+	}
+	relay := *notes.Manifest
+	relay.ID, relay.PrimaryService = "inference-relay", "inference-relay-front"
+	relay.Healthcheck.Service = "inference-relay-front"
+	relay.Routes = []Route{{Name: "relay", Service: "inference-relay-front", InternalPort: 8080, PathOrHost: "relay", Auth: AuthPublic}}
+	if err := relay.validate(); err != nil {
+		t.Fatalf("relay public route: %v", err)
+	}
+	relay.Routes[0].Auth = AuthBearerPassthrough
+	if err := relay.validate(); err == nil {
+		t.Error("relay bearer route accepted")
+	}
+	relay.Routes[0] = Route{Name: "tools", Service: "inference-relay-front", InternalPort: 8080, PathOrHost: "tools", Auth: AuthPublic}
+	if err := relay.validate(); err == nil {
+		t.Error("public route under another name accepted")
+	}
+}
+
+func TestBootstrapDoneFile(t *testing.T) {
+	base := string(buildFixture(t, "notes").Files[ManifestFile])
+	// notes-db also gets a service-level tmpfs, like the coding-agent bootstrap job.
+	frag := []byte(strings.Replace(string(buildFixture(t, "notes").Files[FragmentFile]),
+		"    shm_size: 128m", "    shm_size: 128m\n    tmpfs: [\"/run/bootstrap:size=1m,mode=1777\"]", 1))
+	parse := func(doneFile, service string) (*Manifest, error) {
+		src := base + "bootstrap:\n"
+		if service != "" {
+			src += "  service: " + service + "\n"
+		}
+		src += "  done_file: \"" + doneFile + "\"\n"
+		m, err := ParseManifest([]byte(src))
+		if err != nil {
+			return nil, err
+		}
+		_, err = ParseFragment(m, frag)
+		return m, err
+	}
+	for _, bad := range []struct{ file, service string }{
+		{"../../../../etc/shadow", "notes-web"},
+		{"pgdata/../../etc/shadow", "notes-web"},
+		{"pgdata/./x", "notes-web"},
+		{"pgdata//x", "notes-web"},
+		{"pgdata/", "notes-web"},
+		{"pgdata", "notes-web"},
+		{"/done", "notes-web"},
+		{"/etc/shadow", "notes-web"},
+		{"/run/bootstrap/done", "notes-web"},
+		{"/run/sealed/ready/ok", "notes-web"},
+		{"/var/lib/notes/uploads/../../../etc/shadow", "notes-web"},
+		{"other/done", "notes-web"},
+		{"pgdata/x y", "notes-web"},
+		{"/var/lib/postgresql/data/done", ""},
+	} {
+		if _, err := parse(bad.file, bad.service); err == nil {
+			t.Errorf("done_file %q accepted", bad.file)
+		}
+	}
+	for _, good := range []struct{ file, service, want string }{
+		{"pgdata/bootstrap/done.json", "notes-web", "/mnt/sealed-data/notes/pgdata/bootstrap/done.json"},
+		{"uploads/.sealed/done", "", "/mnt/sealed-data/notes/uploads/.sealed/done"},
+		{"/var/lib/postgresql/data/sealed.done", "notes-db", "/mnt/sealed-data/notes/pgdata/sealed.done"},
+		// On the bootstrap container's own tmpfs: not on the data disk.
+		{"/tmp/sealed/done", "notes-web", ""},
+		{"/run/bootstrap/done", "notes-db", ""},
+	} {
+		m, err := parse(good.file, good.service)
+		if err != nil {
+			t.Errorf("done_file %q: %v", good.file, err)
+			continue
+		}
+		f, _ := ParseFragment(m, frag)
+		if p, err := ResolveDoneFile(m, f); err != nil || p != good.want {
+			t.Errorf("done_file %q resolved to %q (%v), want %q", good.file, p, err, good.want)
+		}
+	}
+}
+
+func TestEgressRejectsSpecialUseLiterals(t *testing.T) {
+	for _, e := range []string{
+		"169.254.169.254:80", "127.0.0.1:80", "0.0.0.0:443", "10.0.0.1:443", "172.16.5.4:443", "192.168.1.1:443",
+		"100.64.0.1:443", "224.0.0.1:443", "255.255.255.255:443", "240.0.0.1:443", "198.18.0.1:443",
+		"192.0.0.8:443", "192.88.99.1:443", "01.2.3.4:443",
+	} {
+		if _, err := ParseHostPort(e); err == nil {
+			t.Errorf("%s accepted", e)
+		}
+		src := "version: 1\ndefault_allow: [\"" + e + "\"]\ncustomer_additions_allowed: false\n"
+		if _, _, err := ParseEgressPolicy([]byte(src)); err == nil {
+			t.Errorf("egress.yaml with %s accepted", e)
+		}
+	}
+	for _, e := range []string{"1.2.3.4:443", "8.8.8.8:53", "203.0.113.7:443"} {
+		if _, err := ParseHostPort(e); err != nil {
+			t.Errorf("%s: %v", e, err)
+		}
+	}
+	vpc := []netip.Prefix{netip.MustParsePrefix("10.10.0.0/16")}
+	if _, err := ParseHostPortIn("10.10.3.4:5432", vpc); err != nil {
+		t.Errorf("address inside allowedVpcRanges: %v", err)
+	}
+	if _, err := ParseHostPortIn("10.11.3.4:5432", vpc); err == nil {
+		t.Error("private address outside allowedVpcRanges accepted")
+	}
+	if _, err := ParseHostPortIn("169.254.169.254:80", []netip.Prefix{netip.MustParsePrefix("169.254.0.0/16")}); err == nil {
+		t.Error("metadata address accepted through a range")
+	}
+	many := make([]string, MaxEgressAllowEntries+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("\"h%d.example.com:443\"", i)
+	}
+	src := "version: 1\ndefault_allow: [" + strings.Join(many, ",") + "]\ncustomer_additions_allowed: false\n"
+	if _, _, err := ParseEgressPolicy([]byte(src)); err == nil {
+		t.Error("oversized default_allow accepted")
 	}
 }

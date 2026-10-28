@@ -75,12 +75,26 @@ type Settlement struct {
 
 var decimalRe = regexp.MustCompile(`^(0|[1-9][0-9]{0,77})$`)
 
+// Config size bounds. Configs reach the key broker and the preview API from
+// untrusted callers, and every egress addition is copied into the caller
+// entry of each of the app's services.
+const (
+	MaxConfigBytes           = 128 << 10
+	MaxConfigApps            = 16
+	MaxEgressAdditionsPerApp = 64
+	MaxEgressAdditionsTotal  = 256
+	MaxAllowedVpcRanges      = 32
+)
+
 // ParseConfig parses a public config document. It rejects unknown fields,
 // floats, duplicate keys and non-canonical encodings of values (mixed-case
 // hex, unsorted apps); absent egressAdditions and allowedVpcRanges are
 // normalized to empty values. Hostname coverage of routes is checked by
 // Compose, which knows the stack's routes.
 func ParseConfig(raw []byte) (*Config, error) {
+	if len(raw) > MaxConfigBytes {
+		return nil, fmt.Errorf("config: %d bytes, at most %d", len(raw), MaxConfigBytes)
+	}
 	v, err := cjson.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -170,8 +184,8 @@ func (c *Config) Validate() error {
 	if h, err := ParseHash(c.ImageID); err != nil || h.IsZero() {
 		return fail("imageId", "must be a non-zero 32-byte hex id")
 	}
-	if len(c.Apps) == 0 {
-		return fail("apps", "at least one app is required")
+	if len(c.Apps) == 0 || len(c.Apps) > MaxConfigApps {
+		return fail("apps", "between 1 and %d apps are required", MaxConfigApps)
 	}
 	for i, a := range c.Apps {
 		if i > 0 && c.Apps[i-1].ID >= a.ID {
@@ -184,17 +198,42 @@ func (c *Config) Validate() error {
 	if err := c.validateHostnames(); err != nil {
 		return err
 	}
+	if len(c.AllowedVpcRanges) > MaxAllowedVpcRanges {
+		return fail("allowedVpcRanges", "at most %d ranges", MaxAllowedVpcRanges)
+	}
+	var vpc []netip.Prefix
+	for i, r := range c.AllowedVpcRanges {
+		p, err := netip.ParsePrefix(r)
+		if err != nil || !p.Addr().Is4() || p.Masked() != p || !p.Addr().IsPrivate() {
+			return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q must be a canonical private IPv4 CIDR", r)
+		}
+		if last := lastAddr(p); !last.IsPrivate() {
+			return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q extends beyond private address space", r)
+		}
+		for _, internal := range []string{AppsSubnet, EdgeSubnet} {
+			if p.Overlaps(netip.MustParsePrefix(internal)) {
+				return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q overlaps the VM's internal network %s", r, internal)
+			}
+		}
+		vpc = append(vpc, p)
+	}
 	appIDs := map[string]bool{}
 	for _, a := range c.Apps {
 		appIDs[a.ID] = true
 	}
+	total := 0
 	for _, app := range sortedKeys(c.EgressAdditions) {
 		if !appIDs[app] {
 			return fail("egressAdditions", "%q is not an app in this stack", app)
 		}
+		list := c.EgressAdditions[app]
+		if len(list) > MaxEgressAdditionsPerApp {
+			return fail("egressAdditions."+app, "%d entries, at most %d per app", len(list), MaxEgressAdditionsPerApp)
+		}
+		total += len(list)
 		seen := map[string]bool{}
-		for i, e := range c.EgressAdditions[app] {
-			if _, err := ParseHostPort(e); err != nil {
+		for i, e := range list {
+			if _, err := ParseHostPortIn(e, vpc); err != nil {
 				return fail(fmt.Sprintf("egressAdditions.%s[%d]", app, i), "%v", err)
 			}
 			if seen[e] {
@@ -203,16 +242,8 @@ func (c *Config) Validate() error {
 			seen[e] = true
 		}
 	}
-	for i, r := range c.AllowedVpcRanges {
-		p, err := netip.ParsePrefix(r)
-		if err != nil || !p.Addr().Is4() || p.Masked() != p || !p.Addr().IsPrivate() {
-			return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q must be a canonical private IPv4 CIDR", r)
-		}
-		for _, internal := range []string{AppsSubnet, EdgeSubnet} {
-			if p.Overlaps(netip.MustParsePrefix(internal)) {
-				return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q overlaps the VM's internal network %s", r, internal)
-			}
-		}
+	if total > MaxEgressAdditionsTotal {
+		return fail("egressAdditions", "%d entries, at most %d in total", total, MaxEgressAdditionsTotal)
 	}
 	for field, val := range map[string]string{
 		"endpoints.keyBroker": c.Endpoints.KeyBroker, "endpoints.platformApi": c.Endpoints.PlatformAPI,
@@ -306,6 +337,14 @@ func (c *Config) AppIDs() []string {
 		ids[i] = a.ID
 	}
 	return ids
+}
+
+// lastAddr is the highest address of an IPv4 prefix.
+func lastAddr(p netip.Prefix) netip.Addr {
+	a := p.Addr().As4()
+	n := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
+	n |= ^uint32(0) >> p.Bits()
+	return netip.AddrFrom4([4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
 }
 
 // sortedStrings returns a sorted copy without duplicates.
