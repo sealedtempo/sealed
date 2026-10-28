@@ -174,7 +174,7 @@ describe("egress, waivers, licenses and docs", () => {
 
   test("docs and manifest text contain no em-dashes", async () => {
     for (const file of ["README.md", "LICENSE-NOTICE", "manifest.yaml", "egress.yaml", "compose.fragment.yaml", "images/tooljet-ce/Dockerfile"]) {
-      assert.ok(!(await readFile(join(appDir, file), "utf8")).includes("—"), `${file} has an em-dash`);
+      assert.ok(!(await readFile(join(appDir, file), "utf8")).includes("\u2014"), `${file} has an em-dash`);
     }
   });
 

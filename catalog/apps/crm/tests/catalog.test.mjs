@@ -227,7 +227,7 @@ describe("licenses and docs", () => {
   test("docs and manifest text contain no em-dashes", async () => {
     for (const file of ["README.md", "LICENSE-NOTICE", "manifest.yaml", "egress.yaml", "compose.fragment.yaml"]) {
       const text = await readFile(join(appDir, file), "utf8");
-      assert.ok(!text.includes("—"), `${file} has an em-dash`);
+      assert.ok(!text.includes("\u2014"), `${file} has an em-dash`);
     }
   });
 
