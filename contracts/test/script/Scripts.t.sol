@@ -144,7 +144,7 @@ contract ScriptsTest is Test {
 
         AppRegistry.App memory crm = d.appRegistry.getApp(keccak256("crm"));
         assertEq(crm.slug, "crm");
-        assertEq(crm.licenseSpdx, "AGPL-3.0-only");
+        assertEq(crm.licenseSpdx, "AGPL-3.0-or-later");
         assertEq(crm.maintainer, maintainer);
         assertEq(crm.maintainerShareBps, 2000);
 

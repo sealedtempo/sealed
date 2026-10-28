@@ -29,8 +29,8 @@
     },
     {
       "slug": "crm",
-      "name": "CRM (Twenty)",
-      "licenseSpdx": "AGPL-3.0-only",
+      "name": "CRM (EspoCRM)",
+      "licenseSpdx": "AGPL-3.0-or-later",
       "maintainerShareBps": 2000,
       "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/crm"
     },
