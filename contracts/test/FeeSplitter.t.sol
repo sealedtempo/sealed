@@ -73,6 +73,7 @@ contract FeeSplitterTest is SealedTest {
         assertEq(cfg.perPaymentCap, 5_000_000);
         assertEq(cfg.perDeploymentDailyCap, 20_000_000);
         assertTrue(splitter.isTokenAllowed(address(token)));
+        assertEq(splitter.TIP20_ADDRESS_PREFIX(), bytes12(0x20c000000000000000000000));
     }
 
     function test_constructor_emitsConfig() public {
@@ -101,6 +102,26 @@ contract FeeSplitterTest is SealedTest {
     function test_constructor_revertsOnZeroTreasury() public {
         vm.expectRevert(FeeSplitter.ZeroAddress.selector);
         new FeeSplitter(owner, registry, apps, address(token), address(0), 1, 2);
+    }
+
+    function test_constructor_revertsOnAppRegistryMismatch() public {
+        AppRegistry otherApps = new AppRegistry(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(FeeSplitter.AppRegistryMismatch.selector, address(apps), address(otherApps))
+        );
+        new FeeSplitter(owner, registry, otherApps, address(token), treasury, 1, 2);
+    }
+
+    function test_constructor_revertsOnSelfTreasury() public {
+        address next = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.InvalidTreasury.selector, next));
+        new FeeSplitter(owner, registry, apps, address(token), next, 1, 2);
+    }
+
+    function test_constructor_revertsOnTip20Treasury() public {
+        address pathUsd = 0x20C0000000000000000000000000000000000000;
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.InvalidTreasury.selector, pathUsd));
+        new FeeSplitter(owner, registry, apps, address(token), pathUsd, 1, 2);
     }
 
     function test_constructor_revertsOnZeroOwner() public {
@@ -134,8 +155,8 @@ contract FeeSplitterTest is SealedTest {
         assertEq(splitter.credited(address(token), treasury), 800_000);
         assertEq(splitter.totalCredited(address(token)), 1_000_000);
         assertEq(splitter.dailyPaid(deploymentId, address(token), block.timestamp / 1 days), 1_000_000);
-        assertTrue(splitter.usagePaid(USAGE, appA));
-        assertFalse(splitter.usagePaid(USAGE, appB));
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), 1_000_000, "records the amount paid");
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appB), 0);
         assertEq(splitter.remainingDailyAllowance(deploymentId, address(token)), 19_000_000);
         _assertInvariant(address(token));
     }
@@ -152,8 +173,8 @@ contract FeeSplitterTest is SealedTest {
     function test_payFees_sameUsageDifferentApps() public {
         _pay(customer, appA, 100, USAGE);
         _pay(customer, appB, 100, USAGE);
-        assertTrue(splitter.usagePaid(USAGE, appA));
-        assertTrue(splitter.usagePaid(USAGE, appB));
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), 100);
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appB), 100);
     }
 
     function test_payFees_exactCaps() public {
@@ -235,8 +256,23 @@ contract FeeSplitterTest is SealedTest {
     function test_payFees_revertsOnRepeatedUsage() public {
         _pay(customer, appA, 1, USAGE);
         vm.prank(enclaveSigner);
-        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageAlreadyPaid.selector, USAGE, appA));
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageAlreadyPaid.selector, deploymentId, USAGE, appA));
         splitter.payFees(deploymentId, appA, address(token), 1, USAGE);
+    }
+
+    /// @dev Review fix (logic-F1 / funds-F-01 / crypto-SEAL-02): the usage key includes the deployment, so a payment
+    ///      on one deployment never consumes another deployment's (usageHash, appId).
+    function test_payFees_usageKeyIsPerDeployment() public {
+        bytes32 other = _record(bytes32(uint256(2))).deploymentId;
+        _register(_record(bytes32(uint256(2))));
+        _pay(customer, appA, 7, USAGE);
+        vm.prank(customer);
+        splitter.payFees(other, appA, address(token), 9, USAGE);
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), 7);
+        assertEq(splitter.usagePaid(other, USAGE, appA), 9);
+        vm.prank(enclaveSigner);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageAlreadyPaid.selector, other, USAGE, appA));
+        splitter.payFees(other, appA, address(token), 1, USAGE);
     }
 
     function test_payFees_revertsAboveDailyCap() public {
@@ -346,6 +382,26 @@ contract FeeSplitterTest is SealedTest {
         apps.setMaintainer(appA, treasury);
         _pay(customer, appA, 1_000_000, USAGE);
         assertEq(splitter.credited(address(token), treasury), 1_000_000);
+        _assertInvariant(address(token));
+    }
+
+    /// @dev Review fix (funds-F-06): a maintainer address that can never withdraw gets no share, so nothing locks.
+    function test_payFees_unwithdrawableMaintainerShareGoesToTreasury() public {
+        vm.prank(maintainer);
+        apps.setMaintainer(appA, address(splitter));
+        vm.expectEmit(address(splitter));
+        emit Credited(treasury, address(token), appA, FeeSplitter.CreditKind.Treasury, 1_000_000, 1_000_000);
+        vm.expectEmit(address(splitter));
+        emit FeesPaid(deploymentId, appA, customer, address(token), 1_000_000, 0, USAGE);
+        _pay(customer, appA, 1_000_000, USAGE);
+        assertEq(splitter.credited(address(token), address(splitter)), 0);
+
+        address ousd = 0x20c0000000000000000000006a37DA5C996874BE;
+        vm.prank(owner);
+        apps.setMaintainer(appA, ousd);
+        _pay(customer, appA, 1_000_000, keccak256("u2"));
+        assertEq(splitter.credited(address(token), ousd), 0);
+        assertEq(splitter.credited(address(token), treasury), 2_000_000);
         _assertInvariant(address(token));
     }
 
@@ -547,6 +603,19 @@ contract FeeSplitterTest is SealedTest {
         vm.prank(owner);
         vm.expectRevert(FeeSplitter.ZeroAddress.selector);
         splitter.setTreasury(address(0));
+    }
+
+    function test_setTreasury_revertsOnUnwithdrawableAddress() public {
+        vm.startPrank(owner);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.InvalidTreasury.selector, address(splitter)));
+        splitter.setTreasury(address(splitter));
+        address pathUsd = 0x20C0000000000000000000000000000000000000;
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.InvalidTreasury.selector, pathUsd));
+        splitter.setTreasury(pathUsd);
+        vm.stopPrank();
+        // An address that merely starts with 0x20c0 is fine.
+        vm.prank(owner);
+        splitter.setTreasury(0x20c0000000000000000000010000000000000000);
     }
 
     function test_setTreasury_revertsForNonOwner() public {

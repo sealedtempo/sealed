@@ -17,6 +17,9 @@ import {OwnableNoRenounce} from "./utils/OwnableNoRenounce.sol";
 ///      nobody transfers tokens in directly (sweepUnaccounted credits such transfers to the treasury and restores
 ///      equality). Fee-on-transfer tokens are rejected by a balance-delta check. Pausing stops payFees only;
 ///      withdrawals always work.
+///      Usage dedupe (contract review): each (deploymentId, usageHash, appId) is paid once. A usageHash is the
+///      EIP-712 digest of a report that already names its deployment, so keying by deployment changes nothing for
+///      honest payers and stops the payer of one deployment from consuming another deployment's usage keys.
 contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -25,6 +28,9 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
 
     /// @notice Basis-point denominator.
     uint256 public constant BPS_DENOMINATOR = 10_000;
+
+    /// @notice Address prefix of Tempo TIP-20 tokens (pathUSD is 0x20c0000000000000000000000000000000000000).
+    bytes12 public constant TIP20_ADDRESS_PREFIX = 0x20c000000000000000000000;
 
     /// @notice Allowlist entry and caps for a payment token.
     /// @param allowed Whether payFees accepts the token.
@@ -64,8 +70,10 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     /// @notice Amount paid per (deployment, token, day), where day = timestamp / 1 days.
     mapping(bytes32 deploymentId => mapping(address token => mapping(uint256 day => uint256 amount))) public dailyPaid;
 
-    /// @notice Whether a (usageHash, appId) pair was already paid.
-    mapping(bytes32 usageHash => mapping(bytes32 appId => bool paid)) public usagePaid;
+    /// @notice Amount paid for (deploymentId, usageHash, appId); 0 when unpaid (payments are always > 0). Offchain
+    ///         settlement compares it with the fee of the signed usage report: the contract does not see the report.
+    mapping(bytes32 deploymentId => mapping(bytes32 usageHash => mapping(bytes32 appId => uint256 amount))) public
+        usagePaid;
 
     /// @notice Emitted for every payment.
     /// @param maintainerAmount The part credited to the maintainer; the rest went to the treasury.
@@ -122,14 +130,18 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     error AppNotInDeployment(bytes32 deploymentId, bytes32 appId);
     /// @notice The caller is neither the deployment's customer nor its enclave signer.
     error UnauthorizedPayer(address caller);
-    /// @notice This (usageHash, appId) pair was already paid.
-    error UsageAlreadyPaid(bytes32 usageHash, bytes32 appId);
+    /// @notice This (deploymentId, usageHash, appId) was already paid.
+    error UsageAlreadyPaid(bytes32 deploymentId, bytes32 usageHash, bytes32 appId);
     /// @notice The contract's balance did not grow by exactly the amount (fee-on-transfer or rebasing token).
     error TransferAmountMismatch(uint256 expected, uint256 received);
     /// @notice The caller has no credited balance for the token.
     error NothingToWithdraw(address token);
     /// @notice The contract holds no unaccounted balance for the token.
     error NothingToSweep(address token);
+    /// @notice The treasury cannot receive withdrawals: FeeSplitter itself or a TIP-20 token address.
+    error InvalidTreasury(address treasury);
+    /// @notice appRegistry_ is not the AppRegistry that deploymentRegistry_ resolves releases with.
+    error AppRegistryMismatch(address deploymentRegistryApps, address appRegistry);
 
     /// @param initialOwner The owner (OWNER).
     /// @param deploymentRegistry_ The DeploymentRegistry.
@@ -151,6 +163,11 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
             address(deploymentRegistry_) == address(0) || address(appRegistry_) == address(0) || feeToken == address(0)
                 || treasury_ == address(0)
         ) revert ZeroAddress();
+        // appInDeployment resolves apps through the registry's AppRegistry and payoutInfo through ours: they must
+        // be the same contract.
+        address registryApps = address(deploymentRegistry_.appRegistry());
+        if (registryApps != address(appRegistry_)) revert AppRegistryMismatch(registryApps, address(appRegistry_));
+        if (_cannotWithdraw(treasury_)) revert InvalidTreasury(treasury_);
         deploymentRegistry = deploymentRegistry_;
         appRegistry = appRegistry_;
         FEE_TOKEN = feeToken;
@@ -166,12 +183,15 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     /// @notice Pays a usage fee for one app of a deployment. The caller must be the deployment's customer or its
     ///         enclave signer and must have approved this contract for `amount` of `token`.
     /// @dev Credits amount * maintainerShareBps / 10000 (rounded down) to the app's current maintainer and the rest
-    ///      to the current treasury.
+    ///      to the current treasury. A maintainer address that could never withdraw (this contract or a TIP-20 token
+    ///      address) gets no share: the whole amount goes to the treasury (FeesPaid.maintainerAmount is 0), so no
+    ///      credit is locked forever. Zero credits emit no Credited event.
     /// @param deploymentId An Active deployment.
     /// @param appId An app of the deployment's approved stack.
     /// @param token An allowlisted token.
     /// @param amount Amount in token base units, 1..perPaymentCap.
-    /// @param usageHash EIP-712 digest of the usage report (non-zero); each (usageHash, appId) is paid once.
+    /// @param usageHash EIP-712 digest of the usage report (non-zero); each (deploymentId, usageHash, appId) is paid
+    ///        once.
     function payFees(bytes32 deploymentId, bytes32 appId, address token, uint256 amount, bytes32 usageHash)
         external
         whenNotPaused
@@ -181,7 +201,7 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         _recordPayment(deploymentId, appId, token, amount, usageHash);
 
         (address maintainer, uint16 shareBps) = appRegistry.payoutInfo(appId);
-        uint256 maintainerAmount = amount * shareBps / BPS_DENOMINATOR;
+        uint256 maintainerAmount = _cannotWithdraw(maintainer) ? 0 : amount * shareBps / BPS_DENOMINATOR;
 
         _pull(token, amount);
 
@@ -243,9 +263,10 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     }
 
     /// @notice Sets the treasury for future credits. Existing credits stay with the previous treasury. Owner only.
-    /// @param newTreasury The new treasury (non-zero).
+    /// @param newTreasury The new treasury (non-zero, not this contract, not a TIP-20 token address).
     function setTreasury(address newTreasury) external onlyOwner {
         if (newTreasury == address(0)) revert ZeroAddress();
+        if (_cannotWithdraw(newTreasury)) revert InvalidTreasury(newTreasury);
         address previous = treasury;
         treasury = newTreasury;
         emit TreasurySet(previous, newTreasury);
@@ -317,7 +338,7 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         if (!deploymentRegistry.appInDeployment(deploymentId, appId)) revert AppNotInDeployment(deploymentId, appId);
     }
 
-    /// @dev Checks token, amount, caps and usage uniqueness, then records the usage and the daily total.
+    /// @dev Checks token, amount, caps and usage uniqueness, then records the usage amount and the daily total.
     function _recordPayment(bytes32 deploymentId, bytes32 appId, address token, uint256 amount, bytes32 usageHash)
         private
     {
@@ -326,15 +347,22 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         if (amount > cfg.perPaymentCap) revert PerPaymentCapExceeded(amount, cfg.perPaymentCap);
         if (usageHash == bytes32(0)) revert ZeroUsageHash();
-        if (usagePaid[usageHash][appId]) revert UsageAlreadyPaid(usageHash, appId);
+        mapping(bytes32 appId => uint256 amount) storage paidForUsage = usagePaid[deploymentId][usageHash];
+        if (paidForUsage[appId] != 0) revert UsageAlreadyPaid(deploymentId, usageHash, appId);
 
         mapping(uint256 day => uint256 amount) storage paidByDay = dailyPaid[deploymentId][token];
         uint256 day = block.timestamp / 1 days;
         uint256 newDaily = paidByDay[day] + amount;
         if (newDaily > cfg.perDeploymentDailyCap) revert DailyCapExceeded(newDaily, cfg.perDeploymentDailyCap);
 
-        usagePaid[usageHash][appId] = true;
+        paidForUsage[appId] = amount;
         paidByDay[day] = newDaily;
+    }
+
+    /// @dev True for accounts that can never call withdraw or receive the token: this contract, and TIP-20 token
+    ///      addresses (TIP20_ADDRESS_PREFIX), which TIP-20 rejects as recipients.
+    function _cannotWithdraw(address account) private view returns (bool) {
+        return account == address(this) || bytes12(bytes20(account)) == TIP20_ADDRESS_PREFIX;
     }
 
     /// @dev Pulls exactly `amount` from the caller, rejecting tokens whose transfer delivers a different amount.
