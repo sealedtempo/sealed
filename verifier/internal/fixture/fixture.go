@@ -193,25 +193,54 @@ func (w *World) Compose() *verify.ComposeOutput {
 
 // RuntimeEvents returns the RTMR3 event log for a stack hash.
 func (w *World) RuntimeEvents(stackHash [32]byte) []attest.Event {
-	p := attest.RuntimeParams{ComposeHash: stackHash, InstanceID: w.InstanceID}
+	return SimRuntimeEvents(stackHash, w.InstanceID)
+}
+
+// SimRuntimeEvents is the event log the dev simulator emits for a stack: the exact INTERFACES section 6 sequence
+// with compose-hash = stackHash (app-id is the first 20 bytes of the stack hash, as the simulator derives it).
+func SimRuntimeEvents(stackHash [32]byte, instanceID [20]byte) []attest.Event {
+	p := attest.RuntimeParams{ComposeHash: stackHash, InstanceID: instanceID}
 	copy(p.AppID[:], stackHash[:20])
 	return attest.ExpectedRuntimeEvents(p)
 }
 
 // Bundle builds a self-consistent evidence bundle attested at attestedAt.
 func (w *World) Bundle(attestedAt uint64) *verify.Bundle {
-	out := w.Compose()
-	evs := w.RuntimeEvents(out.StackHash)
+	return SimEvidence(EvidenceParams{
+		ChainID: w.ChainID, Addrs: w.Addrs, Customer: w.Customer, EnclaveSigner: w.EnclaveSigner, ImageID: w.ImageID,
+		ReleaseIDs: w.ReleaseIDs(), Config: w.ConfigJSON(), Compose: w.Compose(), Nonce2: w.Nonce2, InstanceID: w.InstanceID,
+		AttestedAt: attestedAt, Debug: w.Debug,
+	})
+}
+
+// EvidenceParams describe one attestation of a composed stack.
+type EvidenceParams struct {
+	ChainID       uint64
+	Addrs         chain.Addresses
+	Customer      common.Address
+	EnclaveSigner common.Address
+	ImageID       [32]byte
+	ReleaseIDs    [][32]byte // config order
+	Config        json.RawMessage
+	Compose       *verify.ComposeOutput // the composer's output for Config
+	Nonce2        [32]byte
+	InstanceID    [20]byte
+	AttestedAt    uint64
+	Debug         bool // a debug sim quote (debug MRTD and attributes)
+}
+
+// SimEvidence is what sealed-agent produces with the dev simulator for a composed stack: the RTMR3 event log of the
+// app-compose, a simulated quote whose report_data is the evidence construction (attestedAt included, D-047) and
+// whose RTMR3 replays from that log, and the sealed-evidence/v1 bundle around them.
+func SimEvidence(p EvidenceParams) *verify.Bundle {
+	out := p.Compose
+	evs := SimRuntimeEvents(out.StackHash, p.InstanceID)
 	rtmr3, err := attest.ReplayAll(evs)
 	if err != nil {
 		panic(err)
 	}
-	rd := attest.EvidenceReportData(out.StackHash, out.ConfigHash, w.EnclaveSigner, w.Nonce2, attestedAt)
-	quote := attest.NewSimQuote(attest.SimQuoteParams{Debug: w.Debug, RTMR3: rtmr3, ReportData: rd})
-	return w.assemble(out, evs, quote, attestedAt)
-}
-
-func (w *World) assemble(out *verify.ComposeOutput, evs []attest.Event, quote []byte, attestedAt uint64) *verify.Bundle {
+	rd := attest.EvidenceReportData(out.StackHash, out.ConfigHash, p.EnclaveSigner, p.Nonce2, p.AttestedAt)
+	quote := attest.NewSimQuote(attest.SimQuoteParams{Debug: p.Debug, RTMR3: rtmr3, ReportData: rd})
 	evJSON, err := json.Marshal(evs)
 	if err != nil {
 		panic(err)
@@ -222,29 +251,28 @@ func (w *World) assemble(out *verify.ComposeOutput, evs []attest.Event, quote []
 	}
 	quoteHash := sha256.Sum256(quote)
 	evHash := sha256.Sum256(evCanon)
-	ids := w.ReleaseIDs()
-	releaseIDs := make([]string, len(ids))
-	for i, id := range ids {
+	releaseIDs := make([]string, len(p.ReleaseIDs))
+	for i, id := range p.ReleaseIDs {
 		releaseIDs[i] = hexb.Enc(id[:])
 	}
 	return &verify.Bundle{
 		Schema:  verify.EvidenceSchema,
-		ChainID: w.ChainID,
+		ChainID: p.ChainID,
 		Contracts: verify.BundleContracts{
-			PlatformRegistry: lower(w.Addrs.PlatformRegistry), AppRegistry: lower(w.Addrs.AppRegistry),
-			DeploymentRegistry: lower(w.Addrs.DeploymentRegistry),
+			PlatformRegistry: lower(p.Addrs.PlatformRegistry), AppRegistry: lower(p.Addrs.AppRegistry),
+			DeploymentRegistry: lower(p.Addrs.DeploymentRegistry),
 		},
 		DeploymentID:  hexb.Enc(out.DeploymentID[:]),
-		Customer:      lower(w.Customer),
-		ImageID:       hexb.Enc(w.ImageID[:]),
+		Customer:      lower(p.Customer),
+		ImageID:       hexb.Enc(p.ImageID[:]),
 		ReleaseIDs:    releaseIDs,
-		Config:        w.ConfigJSON(),
+		Config:        p.Config,
 		ConfigHash:    hexb.Enc(out.ConfigHash[:]),
 		AppCompose:    string(out.AppCompose),
 		StackHash:     hexb.Enc(out.StackHash[:]),
-		EnclaveSigner: lower(w.EnclaveSigner),
-		Nonce2:        hexb.Enc(w.Nonce2[:]),
-		AttestedAt:    attestedAt,
+		EnclaveSigner: lower(p.EnclaveSigner),
+		Nonce2:        hexb.Enc(p.Nonce2[:]),
+		AttestedAt:    p.AttestedAt,
 		Quote:         hexb.Enc(quote),
 		QuoteHash:     hexb.Enc(quoteHash[:]),
 		EventLog:      evCanon,

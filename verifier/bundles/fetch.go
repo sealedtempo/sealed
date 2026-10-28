@@ -30,7 +30,12 @@ type HTTPError struct {
 	Status int
 }
 
-func (e *HTTPError) Error() string { return fmt.Sprintf("GET %s: HTTP %d", e.URL, e.Status) }
+func (e *HTTPError) Error() string {
+	if errors.Is(e, ErrNotFound) {
+		return fmt.Sprintf("GET %s: HTTP %d (%v)", e.URL, e.Status, ErrNotFound)
+	}
+	return fmt.Sprintf("GET %s: HTTP %d", e.URL, e.Status)
+}
 
 // Unwrap maps 404 and 410 to ErrNotFound.
 func (e *HTTPError) Unwrap() error {

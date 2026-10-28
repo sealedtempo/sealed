@@ -61,6 +61,31 @@ func Build(t testing.TB, app string) *composer.Bundle {
 	return b
 }
 
+// CopyApp copies a fixture app directory into a temp dir so a test can change it, and returns the copy's path.
+func CopyApp(t testing.TB, app string) string {
+	t.Helper()
+	src := filepath.Join(RepoRoot(t), "runtime", "composer", "testdata", "apps", app)
+	dst := filepath.Join(t.TempDir(), app)
+	err := filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if info.IsDir() {
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, rel), b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dst
+}
+
 // Bundles builds every fixture app, sorted by id.
 func Bundles(t testing.TB) []*composer.Bundle {
 	t.Helper()
