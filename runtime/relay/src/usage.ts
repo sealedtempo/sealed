@@ -83,3 +83,52 @@ export function tapUsage(response: Response, onUsage: (usage: Usage | undefined)
   })
   return new Response(response.body.pipeThrough(tap), { status: response.status, headers: response.headers })
 }
+
+function isUsageOnlyEvent(event: string): boolean {
+  const data = event
+    .split('\n')
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .join('\n')
+  if (!data.includes('"usage"')) return false
+  try {
+    const chunk = JSON.parse(data) as { choices?: unknown; usage?: unknown }
+    return Array.isArray(chunk.choices) && chunk.choices.length === 0 && !!chunk.usage
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Drops the trailing usage-only chunk (`choices: []` with `usage`) from an OpenAI SSE stream.
+ * The relay always asks its upstream for usage on streams; a client that did not ask for it
+ * gets the stream it requested.
+ */
+export function stripUsageChunks(response: Response): Response {
+  if (!response.body || !(response.headers.get('content-type') ?? '').includes('text/event-stream')) return response
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let pending = ''
+  const emitComplete = (controller: TransformStreamDefaultController<Uint8Array>) => {
+    pending = pending.replace(/\r\n/g, '\n')
+    let end = pending.indexOf('\n\n')
+    while (end >= 0) {
+      const event = pending.slice(0, end + 2)
+      pending = pending.slice(end + 2)
+      if (!isUsageOnlyEvent(event)) controller.enqueue(encoder.encode(event))
+      end = pending.indexOf('\n\n')
+    }
+  }
+  const filter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true })
+      emitComplete(controller)
+    },
+    flush(controller) {
+      pending += decoder.decode()
+      emitComplete(controller)
+      if (pending && !isUsageOnlyEvent(pending)) controller.enqueue(encoder.encode(pending))
+    },
+  })
+  return new Response(response.body.pipeThrough(filter), { status: response.status, headers: response.headers })
+}

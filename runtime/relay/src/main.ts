@@ -3,11 +3,12 @@ import pg from 'pg'
 import { http, createClient, parseUnits, publicActions, walletActions } from 'viem'
 import { tempo as tempoChain } from 'viem/chains'
 import { Account, tempoActions } from 'viem/tempo'
-import { loadRelayConfig } from './config.js'
+import { PROVIDER_KEY_ENV, loadRelayConfig, readSecret } from './config.js'
 import { createPayments } from './payments.js'
 import { PgStore } from './pg-store.js'
 import { loadPriceTable } from './prices.js'
-import { ProviderGate } from './providers/gate.js'
+import { type GateEntry, ProviderGate } from './providers/gate.js'
+import { RateLimiter, clientKey } from './rate-limit.js'
 import { createRelayApp } from './server.js'
 import { SettlementSupervisor } from './supervisor.js'
 import { Upstream } from './upstream.js'
@@ -51,12 +52,23 @@ async function main(): Promise<void> {
     onSettlement: (event) => log({ event: 'session_settled', channelId: event.channelId, txHash: event.txHash }),
   })
 
+  const privatemodeModel = prices.models.find((m) => m.provider === 'privatemode')
   const gate = new ProviderGate(
-    config.providers.map((p) => ({
-      provider: p.provider,
-      enabled: p.enabled,
-      source: p.kind === 'probe' ? { kind: 'probe', probeUrl: p.statusUrl } : { kind: 'sidecar', statusUrl: p.statusUrl },
-    })),
+    config.providers.map((p): GateEntry => {
+      if (p.kind === 'sidecar') return { provider: p.provider, enabled: p.enabled, source: { kind: 'sidecar', statusUrl: p.statusUrl } }
+      return {
+        provider: p.provider,
+        enabled: p.enabled && privatemodeModel !== undefined,
+        source: {
+          kind: 'privatemode',
+          baseUrl: p.statusUrl,
+          apiKey: () => readSecret(PROVIDER_KEY_ENV.privatemode),
+          model: privatemodeModel?.upstreamModel ?? '',
+          workspaceDir: config.privatemodeWorkspace,
+          probeSeconds: config.privatemodeProbeSeconds,
+        },
+      }
+    }),
   )
   gate.start()
 
@@ -68,6 +80,14 @@ async function main(): Promise<void> {
     batchTokens: config.batchTokens,
     log,
     onUsage: agentUsageSink(config.usageUrl),
+    maxBodyBytes: config.maxBodyBytes,
+    unpaidLimiter: new RateLimiter({ perMinute: config.unpaidPerMinute }),
+    clientKey: (c) =>
+      clientKey(
+        (c.env as { incoming?: { socket?: { remoteAddress?: string } } })?.incoming?.socket?.remoteAddress,
+        c.req.header('x-forwarded-for') ?? null,
+        config.trustedProxies,
+      ),
   })
 
   let supervisor: SettlementSupervisor | undefined

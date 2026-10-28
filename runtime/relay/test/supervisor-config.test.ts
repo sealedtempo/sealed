@@ -69,13 +69,14 @@ describe('relay configuration', () => {
     expect(config.databaseUrl).toBe('postgresql://relay:p%40ss%2Fword@inference-relay-db:5432/relay')
     const enabled = config.providers.filter((p) => p.enabled).map((p) => p.provider)
     expect(enabled).toEqual(['nearai'])
-    expect(config.providers.find((p) => p.provider === 'privatemode')).toMatchObject({ kind: 'probe', statusUrl: 'http://inference-relay-privatemode:8080/v1/models' })
+    expect(config.providers.find((p) => p.provider === 'privatemode')).toMatchObject({ kind: 'privatemode', statusUrl: 'http://inference-relay-privatemode:8080' })
     expect(config.settlerKey).toBeUndefined()
   })
 
   it('rejects weak secrets and bad addresses', () => {
     expect(() => loadRelayConfig({ ...env, MPP_SECRET_KEY: 'short' })).toThrow(/32 bytes/)
     expect(() => loadRelayConfig({ ...env, TREASURY_ADDRESS: '0x1234' })).toThrow(/address/)
+    expect(() => loadRelayConfig({ ...env, TREASURY_ADDRESS: '0x' + '0'.repeat(40) })).toThrow(/zero-address placeholder/)
     expect(() => loadRelayConfig({ ...env, RELAY_SETTLER_KEY: '0xabc' })).toThrow(/32-byte/)
     expect(() => databaseUrl({ SEALED_SECRETS_DIR: '/nonexistent' })).toThrow(/DATABASE/)
   })

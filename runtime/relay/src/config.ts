@@ -74,7 +74,14 @@ export type RelayConfig = {
   settleIntervalMs: number
   superviseSeconds: number
   usageUrl: string
-  providers: { provider: ProviderId; enabled: boolean; statusUrl: string; kind: 'sidecar' | 'probe' }[]
+  providers: { provider: ProviderId; enabled: boolean; statusUrl: string; kind: 'sidecar' | 'privatemode' }[]
+  /** The Privatemode proxy's workspace, mounted read-only into the front for manifest evidence. */
+  privatemodeWorkspace?: string
+  privatemodeProbeSeconds: number
+  maxBodyBytes: number
+  unpaidPerMinute: number
+  /** Peers whose X-Forwarded-For names the client (the stack's Caddy). */
+  trustedProxies: string[]
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -88,22 +95,24 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
   const settler = rawSettler && !rawSettler.startsWith('0x') ? `0x${rawSettler}` : rawSettler
   if (settler && !/^0x[0-9a-fA-F]{64}$/.test(settler)) throw new Error('RELAY_SETTLER_KEY must be a 32-byte hex key')
   const providers = PROVIDERS.map((provider) => {
-    const probe = provider === 'privatemode'
+    const proxy = provider === 'privatemode'
     const host = `inference-relay-${provider}`
-    const statusUrl =
-      env[`${provider.toUpperCase()}_STATUS_URL`] ?? (probe ? `http://${host}:8080/v1/models` : `http://${host}:8100/v1/status`)
+    const statusUrl = env[`${provider.toUpperCase()}_STATUS_URL`] ?? (proxy ? `http://${host}:8080` : `http://${host}:8100/v1/status`)
     return {
       provider,
       enabled: readSecret(PROVIDER_KEY_ENV[provider], env) !== undefined,
       statusUrl,
-      kind: probe ? ('probe' as const) : ('sidecar' as const),
+      kind: proxy ? ('privatemode' as const) : ('sidecar' as const),
     }
   })
+  const recipient = address(requireEnv(env, 'TREASURY_ADDRESS'), 'TREASURY_ADDRESS')
+  if (/^0x0{40}$/.test(recipient))
+    throw new Error('TREASURY_ADDRESS is the zero-address placeholder; the release must pin the operator treasury')
   return {
     port: intEnv(env, 'PORT', 8080),
     realm: requireEnv(env, 'MPP_REALM'),
     secretKey,
-    recipient: address(requireEnv(env, 'TREASURY_ADDRESS'), 'TREASURY_ADDRESS'),
+    recipient,
     settlerKey: settler as `0x${string}` | undefined,
     rpcUrl: env.TEMPO_RPC_URL ?? 'https://rpc.tempo.xyz',
     chainId: intEnv(env, 'TEMPO_CHAIN_ID', 4217),
@@ -120,5 +129,13 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     superviseSeconds: intEnv(env, 'SUPERVISE_INTERVAL_SECONDS', 60),
     usageUrl: env.SEALED_USAGE_URL ?? 'http://sealed-agent:7070/v1/usage-events',
     providers,
+    privatemodeWorkspace: env.PRIVATEMODE_WORKSPACE || undefined,
+    privatemodeProbeSeconds: intEnv(env, 'PRIVATEMODE_PROBE_SECONDS', 120),
+    maxBodyBytes: intEnv(env, 'RELAY_MAX_BODY_BYTES', 4 * 1024 * 1024),
+    unpaidPerMinute: intEnv(env, 'RELAY_UNPAID_PER_MINUTE', 120),
+    trustedProxies: (env.TRUSTED_PROXY_IPS ?? '172.30.0.4')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   }
 }

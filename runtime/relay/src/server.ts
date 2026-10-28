@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { Hono } from 'hono'
+import { type Context, Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
+import { ChatRequestError, sanitizeChatRequest, upstreamBody as buildUpstreamBody } from './chat-request.js'
 import { SessionMeter } from './metering.js'
 import type { Payments } from './payments.js'
 import {
@@ -12,13 +14,17 @@ import {
   relayPricePer1M,
 } from './prices.js'
 import type { ProviderGate } from './providers/gate.js'
+import type { RateLimiter } from './rate-limit.js'
 import { estimatePromptTokens } from './tokens.js'
 import { type ChatChunk, type Upstream, sseData } from './upstream.js'
-import { type UsageEvent, tapUsage } from './usage.js'
+import { type UsageEvent, stripUsageChunks, tapUsage } from './usage.js'
+
+/** Large enough for the biggest priced context (128k tokens of text plus tools) with JSON overhead. */
+export const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
 
 export type RelayDeps = {
   prices: PriceTable
-  gate: Pick<ProviderGate, 'allows' | 'status' | 'all'>
+  gate: Pick<ProviderGate, 'allows' | 'status' | 'all'> & Partial<Pick<ProviderGate, 'refresh'>>
   upstream: Upstream
   payments: Payments
   batchTokens: number
@@ -26,6 +32,15 @@ export type RelayDeps = {
   log?: (event: Record<string, unknown>) => void
   /** Token metering callback to the relay deployment's sealed-agent. */
   onUsage?: (event: UsageEvent) => void
+  /** Request bodies above this are refused before they are read in full. */
+  maxBodyBytes?: number
+  /** Limits requests that carry no payment credential, per client. */
+  unpaidLimiter?: Pick<RateLimiter, 'take'>
+  clientKey?: (c: Context) => string
+}
+
+function hasPaymentCredential(request: Request): boolean {
+  return /^Payment\s+/i.test(request.headers.get('authorization') ?? '')
 }
 
 type ChatBody = Record<string, unknown> & { model?: unknown; max_tokens?: unknown; max_completion_tokens?: unknown; stream?: unknown }
@@ -44,7 +59,7 @@ export function boundedMaxTokens(body: ChatBody, model: ModelPrice): number {
 
 /** Per-request (charge intent) price: estimated prompt tokens plus the full max_tokens budget. */
 export function perRequestPrice(prices: PriceTable, model: ModelPrice, body: ChatBody): { amount: bigint; promptTokens: number; maxTokens: number } {
-  const promptTokens = estimatePromptTokens(body as { messages?: unknown })
+  const promptTokens = estimatePromptTokens(body)
   const maxTokens = boundedMaxTokens(body, model)
   return { amount: costInBaseUnits(model, prices.markupBps, BigInt(promptTokens), BigInt(maxTokens)), promptTokens, maxTokens }
 }
@@ -107,6 +122,23 @@ export function createRelayApp(deps: RelayDeps): Hono {
     c.req.raw.method === 'HEAD' ? management(c.req.raw) : errorResponse(405, 'method_not_allowed', 'use POST'),
   )
 
+  const maxBodyBytes = deps.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
+  app.post(
+    '/v1/chat/completions',
+    bodyLimit({
+      maxSize: maxBodyBytes,
+      onError: () => errorResponse(413, 'request_too_large', `request body exceeds ${maxBodyBytes} bytes`),
+    }),
+    async (c, next) => {
+      if (!deps.unpaidLimiter || hasPaymentCredential(c.req.raw)) return next()
+      if (deps.unpaidLimiter.take(deps.clientKey?.(c) ?? 'unknown')) return next()
+      return new Response(JSON.stringify({ error: { type: 'rate_limited', message: 'too many unpaid requests; retry later' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '10' },
+      })
+    },
+  )
+
   app.post('/v1/chat/completions', async (c) => {
     const request = c.req.raw
     const text = await request.clone().text()
@@ -118,13 +150,27 @@ export function createRelayApp(deps: RelayDeps): Hono {
     } catch {
       return errorResponse(400, 'invalid_request', 'body must be a JSON object')
     }
+    let sanitized: ReturnType<typeof sanitizeChatRequest>
+    try {
+      sanitized = sanitizeChatRequest(body)
+    } catch (error) {
+      if (error instanceof ChatRequestError) return errorResponse(400, error.type, error.message)
+      throw error
+    }
     const model =
       typeof body.model === 'string' ? findModel(deps.prices, body.model, (m) => deps.gate.allows(m.provider)) : undefined
     if (!model) return errorResponse(404, 'model_not_found', `unknown model ${String(body.model)}`)
-    if (!deps.gate.allows(model.provider)) {
+    const refuse = () => {
       const status = deps.gate.status(model.provider)
       const type = status.enabled ? 'attestation_failed' : 'provider_unavailable'
       return errorResponse(503, type, `provider ${model.provider} is not usable: ${status.detail}`, { provider: model.provider })
+    }
+    if (!deps.gate.allows(model.provider)) return refuse()
+    // A paid retry settles now: re-read the provider's attestation status first, so the window
+    // in which a charge is taken for a provider that just failed is as small as possible.
+    if (hasPaymentCredential(request) && deps.gate.refresh) {
+      await deps.gate.refresh(model.provider)
+      if (!deps.gate.allows(model.provider)) return refuse()
     }
 
     const quote = perRequestPrice(deps.prices, model, body)
@@ -135,10 +181,10 @@ export function createRelayApp(deps: RelayDeps): Hono {
     if (pay.status === 402) return pay.challenge
 
     const requestId = randomUUID()
-    const upstreamBody: Record<string, unknown> = { ...body, model: model.id, max_tokens: quote.maxTokens }
-    if ('max_completion_tokens' in body) upstreamBody.max_completion_tokens = quote.maxTokens
+    const upstreamBody = buildUpstreamBody(sanitized, model, quote.maxTokens, body)
 
     if (pay.intent === 'charge') {
+      // Per-request charges are final: the transfer settled before the upstream call (no refunds).
       const upstream = await deps.upstream.chatCompletions(upstreamBody, request.signal).catch(() => undefined)
       log({ requestId, model: model.id, provider: model.provider, intent: 'charge', charged: quote.amount.toString(), upstreamStatus: upstream?.status ?? 0 })
       if (!upstream) return pay.withReceipt(errorResponse(502, 'upstream_unreachable', 'relay upstream unavailable'))
@@ -147,7 +193,7 @@ export function createRelayApp(deps: RelayDeps): Hono {
         if (upstream.ok)
           onUsage({ model: model.id, promptTokens: usage?.prompt_tokens ?? quote.promptTokens, completionTokens: usage?.completion_tokens ?? 0 })
       })
-      return pay.withReceipt(tapped)
+      return pay.withReceipt(sanitized.stream && !sanitized.wantsUsage ? stripUsageChunks(tapped) : tapped)
     }
 
     const channelId = pay.channelId

@@ -25,19 +25,26 @@ function tokensForText(text: string): number {
   return Math.ceil(Buffer.byteLength(text, 'utf8') / BYTES_PER_TOKEN)
 }
 
-export function estimatePromptTokens(body: { messages?: unknown; tools?: unknown }): number {
+/** Request fields besides messages whose text the provider bills as prompt tokens. */
+const PROMPT_FIELDS = ['tools', 'functions', 'tool_choice', 'function_call', 'response_format', 'stop'] as const
+
+export function estimatePromptTokens(body: Record<string, unknown>): number {
   let total = REQUEST_OVERHEAD_TOKENS
   const messages = Array.isArray(body.messages) ? body.messages : []
   for (const message of messages) {
     total += MESSAGE_OVERHEAD_TOKENS
     if (message && typeof message === 'object') {
-      const m = message as Record<string, unknown>
-      total += tokensForText(textOf(m.content))
-      if (typeof m.name === 'string') total += tokensForText(m.name)
-      if (m.tool_calls !== undefined) total += tokensForText(JSON.stringify(m.tool_calls))
+      const { content, role: _role, ...rest } = message as Record<string, unknown>
+      total += tokensForText(textOf(content))
+      // name, tool_calls, tool_call_id and any other field reach the provider too.
+      if (Object.keys(rest).length > 0) total += tokensForText(JSON.stringify(rest))
     }
   }
-  if (body.tools !== undefined) total += tokensForText(JSON.stringify(body.tools))
+  for (const field of PROMPT_FIELDS) {
+    const value = body[field]
+    if (value === undefined || value === null) continue
+    total += tokensForText(typeof value === 'string' ? value : JSON.stringify(value))
+  }
   return total
 }
 
