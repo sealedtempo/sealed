@@ -141,8 +141,8 @@ if [ "$code" = 200 ]; then
   esac
   kb_roles="$(jq -r --arg m "serviceAccount:$KB_SA" '[(.bindings // [])[] | select(.members | index($m)) | .role] | sort | join(" ")' "$TMP/project-policy.json")"
   kb_cond="$(jq -r --arg m "serviceAccount:$KB_SA" '[(.bindings // [])[] | select(.role == "roles/secretmanager.secretAccessor" and (.members | index($m)))][0].condition.expression // ""' "$TMP/project-policy.json")"
-  if [ "$kb_roles" = "roles/secretmanager.secretAccessor" ] && printf '%s' "$kb_cond" | grep -q "resource.name.startsWith(\"projects/${NUMBER}/secrets/sealed-\")"; then
-    pass "key broker identity: secretAccessor on sealed-* secrets only"
+  if [ "$kb_roles" = "roles/logging.logWriter roles/secretmanager.secretAccessor" ] && printf '%s' "$kb_cond" | grep -q "resource.name.startsWith(\"projects/${NUMBER}/secrets/sealed-\")"; then
+    pass "key broker identity: secretAccessor on sealed-* secrets only, plus logWriter for its decision log"
   else
     fail "key broker project roles [$kb_roles] condition [${kb_cond:-none}]"
   fi

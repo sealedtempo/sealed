@@ -96,7 +96,7 @@ Optional API endpoint overrides (for example restricted VIPs): `SEALED_SECRETMAN
 - One instance only (`--max-instances 1`): nonces live in memory, so a nonce issued by one instance is unknown to
   another. Ingress all and unauthenticated invocations: the attestation is the authentication.
 - The broker's own service account: `roles/secretmanager.secretAccessor` on secrets named `sealed-*` (an IAM
-  condition on the resource name), `roles/cloudkms.signerVerifier` on the one MAC key, `roles/logging.logWriter`.
+  condition on the resource name), `roles/cloudkms.signer` on the one MAC key (`macSign` only), `roles/logging.logWriter` (the decision log); `infra/terraform/customer-bootstrap` grants exactly these.
 - The platform's deployer account gets nothing on the broker, its service account, the secrets or the key.
 
 ## Builds

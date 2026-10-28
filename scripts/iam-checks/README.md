@@ -20,7 +20,7 @@ Exit status is non-zero when any check fails.
 |---|---|---|
 | deployer identity | getIamPolicy on the deployer SA | only `roles/iam.serviceAccountTokenCreator` for the platform SA |
 | deployer roles | project, subnet getIamPolicy; custom roles | only `sealedDeployer` (condition on `sealed-*` instance, disk and image names), `sealedDeployerAddresses` and `sealedSubnetUser` on `sealed-subnet`, each with exactly its permissions |
-| key broker identity | project and KMS key policies, Cloud Run service | `secretAccessor` with the `sealed-*` condition, `cloudkms.signer` on the HMAC key only, runs as its own SA from a digest-pinned image |
+| key broker identity | project and KMS key policies, Cloud Run service | `secretAccessor` with the `sealed-*` condition and `logging.logWriter` (its decision log), `cloudkms.signer` on the HMAC key only, runs as its own SA from a digest-pinned image |
 | firewall | firewall rules of `sealed-vpc` | ingress tcp 80/443 to `sealed-vm` only, egress 443 and 53 only, deny-all egress |
 | cannot read a secret | testIamPermissions and `versions/latest:access` on every `sealed-*` secret as the deployer | nothing granted; access is 403 (the response is discarded, never printed) |
 | cannot change the key broker | testIamPermissions on the service (and a label update with `--attempt-mutations`) | nothing granted; the update is 403 |

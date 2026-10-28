@@ -124,6 +124,10 @@ locals {
     "resource.name.startsWith(\"projects/${var.project_number}/secrets/${local.prefix}\")",
   ])
 
+  # The key broker writes every release decision to Cloud Logging before it
+  # answers (entries.write); without this an allowed release is withheld.
+  key_broker_log_role = "roles/logging.logWriter"
+
   # The key broker uses the bootstrap's KMS HMAC key and nothing else in KMS.
   key_broker_kms_role = "roles/cloudkms.signer"
   key_broker_kms_policy = {
@@ -166,6 +170,10 @@ output "key_broker_sa_policy_json" {
 
 output "key_broker_secret_role" {
   value = local.key_broker_secret_role
+}
+
+output "key_broker_log_role" {
+  value = local.key_broker_log_role
 }
 
 output "key_broker_secret_condition" {

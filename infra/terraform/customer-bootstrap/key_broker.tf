@@ -32,6 +32,15 @@ resource "google_project_iam_member" "key_broker_secrets" {
   depends_on = [google_service_account.key_broker]
 }
 
+# The decision log (key-broker/gcp, Cloud Logging entries.write).
+resource "google_project_iam_member" "key_broker_logs" {
+  project = var.project_id
+  role    = module.iam.key_broker_log_role
+  member  = module.iam.key_broker_member
+
+  depends_on = [google_service_account.key_broker]
+}
+
 # Pull-through cache for ghcr.io (Cloud Run cannot pull from it directly).
 # Images keep their digests, which Cloud Run pins.
 resource "google_artifact_registry_repository" "ghcr" {
@@ -142,6 +151,7 @@ resource "google_cloud_run_v2_service" "key_broker" {
 
   depends_on = [
     google_project_iam_member.key_broker_secrets,
+    google_project_iam_member.key_broker_logs,
     google_kms_crypto_key_iam_policy.hmac,
     google_artifact_registry_repository.ghcr,
   ]

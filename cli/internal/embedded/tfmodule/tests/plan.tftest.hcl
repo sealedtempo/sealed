@@ -147,6 +147,11 @@ run "key_broker" {
   }
 
   assert {
+    condition     = google_project_iam_member.key_broker_logs.role == "roles/logging.logWriter" && google_project_iam_member.key_broker_logs.member == "serviceAccount:sealed-key-broker@sealed-test-1234.iam.gserviceaccount.com"
+    error_message = "the broker can write its decision log"
+  }
+
+  assert {
     condition     = jsondecode(google_service_account_iam_policy.key_broker.policy_data) == { bindings = [] }
     error_message = "nobody holds a role on the key broker identity"
   }

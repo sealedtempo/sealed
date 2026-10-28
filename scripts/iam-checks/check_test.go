@@ -100,6 +100,7 @@ func compliant(w *world, mutate map[string]bool) {
 		map[string]any{"role": "projects/" + project + "/roles/sealedDeployer", "members": []string{"serviceAccount:" + deployer}, "condition": map[string]string{"title": "sealed-named-resources", "expression": cond}},
 		map[string]any{"role": "projects/" + project + "/roles/sealedDeployerAddresses", "members": []string{"serviceAccount:" + deployer}},
 		map[string]any{"role": "roles/secretmanager.secretAccessor", "members": []string{"serviceAccount:" + kbSA}, "condition": map[string]string{"title": "sealed-secrets-only", "expression": `(resource.type == "secretmanager.googleapis.com/Secret" || resource.type == "secretmanager.googleapis.com/SecretVersion") && resource.name.startsWith("projects/123456789012/secrets/sealed-")`}},
+		map[string]any{"role": "roles/logging.logWriter", "members": []string{"serviceAccount:" + kbSA}},
 		map[string]any{"role": "roles/owner", "members": []string{"user:owner@example.com"}},
 	}
 	if mutate["deployer-editor"] {
@@ -232,7 +233,7 @@ func TestCheckScriptPassesOnACompliantProject(t *testing.T) {
 		"PASS  deployer identity: serviceAccountTokenCreator for the platform service account only",
 		"PASS  deployer project roles: sealedDeployer and sealedDeployerAddresses only",
 		"PASS  sealedDeployer is granted only on resources named sealed-*",
-		"PASS  key broker identity: secretAccessor on sealed-* secrets only",
+		"PASS  key broker identity: secretAccessor on sealed-* secrets only, plus logWriter for its decision log",
 		"PASS  firewall: ingress 80/443 to sealed-vm only",
 		"PASS  subnet sealed-subnet: the deployer may attach VMs to it",
 		"PASS  KMS HMAC key: only the key broker may use it",
