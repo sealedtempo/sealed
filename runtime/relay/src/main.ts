@@ -11,6 +11,7 @@ import { ProviderGate } from './providers/gate.js'
 import { createRelayApp } from './server.js'
 import { SettlementSupervisor } from './supervisor.js'
 import { Upstream } from './upstream.js'
+import { agentUsageSink } from './usage.js'
 
 const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), ...event }))
 
@@ -66,6 +67,7 @@ async function main(): Promise<void> {
     upstream: new Upstream({ baseURL: config.litellmUrl, apiKey: config.litellmKey }),
     batchTokens: config.batchTokens,
     log,
+    onUsage: agentUsageSink(config.usageUrl),
   })
 
   let supervisor: SettlementSupervisor | undefined

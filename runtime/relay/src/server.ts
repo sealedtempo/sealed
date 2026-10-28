@@ -14,6 +14,7 @@ import {
 import type { ProviderGate } from './providers/gate.js'
 import { estimatePromptTokens } from './tokens.js'
 import { type ChatChunk, type Upstream, sseData } from './upstream.js'
+import { type UsageEvent, tapUsage } from './usage.js'
 
 export type RelayDeps = {
   prices: PriceTable
@@ -23,6 +24,8 @@ export type RelayDeps = {
   batchTokens: number
   /** Content-free request log: model, provider, intent, token counts and amounts only. */
   log?: (event: Record<string, unknown>) => void
+  /** Token metering callback to the relay deployment's sealed-agent. */
+  onUsage?: (event: UsageEvent) => void
 }
 
 type ChatBody = Record<string, unknown> & { model?: unknown; max_tokens?: unknown; max_completion_tokens?: unknown; stream?: unknown }
@@ -81,6 +84,7 @@ export function modelsDocument(prices: PriceTable, gate: RelayDeps['gate']) {
 export function createRelayApp(deps: RelayDeps): Hono {
   const app = new Hono()
   const log = deps.log ?? (() => {})
+  const onUsage = deps.onUsage ?? (() => {})
 
   app.get('/healthz', (c) => c.json({ ok: true }))
   app.get('/v1/models', (c) => c.json(modelsDocument(deps.prices, deps.gate)))
@@ -139,7 +143,11 @@ export function createRelayApp(deps: RelayDeps): Hono {
       log({ requestId, model: model.id, provider: model.provider, intent: 'charge', charged: quote.amount.toString(), upstreamStatus: upstream?.status ?? 0 })
       if (!upstream) return pay.withReceipt(errorResponse(502, 'upstream_unreachable', 'relay upstream unavailable'))
       const headers = new Headers({ 'content-type': upstream.headers.get('content-type') ?? 'application/json' })
-      return pay.withReceipt(new Response(upstream.body, { status: upstream.status, headers }))
+      const tapped = tapUsage(new Response(upstream.body, { status: upstream.status, headers }), (usage) => {
+        if (upstream.ok)
+          onUsage({ model: model.id, promptTokens: usage?.prompt_tokens ?? quote.promptTokens, completionTokens: usage?.completion_tokens ?? 0 })
+      })
+      return pay.withReceipt(tapped)
     }
 
     const channelId = pay.channelId
@@ -180,6 +188,7 @@ export function createRelayApp(deps: RelayDeps): Hono {
       } finally {
         await meter.settleUnused().catch(() => {})
         const r = meter.result()
+        onUsage({ model: model.id, promptTokens: upstreamStatus === 200 ? r.promptTokens : 0, completionTokens: r.completionTokens })
         log({
           requestId,
           model: model.id,

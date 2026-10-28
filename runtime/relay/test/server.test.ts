@@ -75,6 +75,7 @@ function payments(intent: 'none' | 'charge' | 'session', recorded: Recorded): Pa
 function app(intent: 'none' | 'charge' | 'session', verified: Record<string, boolean> = { tinfoil: true, nearai: true }, llm = fakeLiteLLM()) {
   const recorded: Recorded = { offers: [], credits: [] }
   const logs: Record<string, unknown>[] = []
+  const usage: Record<string, unknown>[] = []
   const relay = createRelayApp({
     prices,
     gate: gate(verified),
@@ -82,8 +83,9 @@ function app(intent: 'none' | 'charge' | 'session', verified: Record<string, boo
     upstream: new Upstream({ baseURL: 'http://litellm:4000/v1', apiKey: 'sk-master', fetch: llm.fetch }),
     batchTokens: 8,
     log: (e) => logs.push(e),
+    onUsage: (e) => usage.push(e),
   })
-  return { relay, recorded, logs, llm }
+  return { relay, recorded, logs, llm, usage }
 }
 
 const chat = (body: unknown) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -133,20 +135,22 @@ describe('relay front', () => {
   })
 
   it('forwards a paid charge request with max_tokens bounded', async () => {
-    const { relay, llm, logs } = app('charge')
+    const { relay, llm, logs, usage } = app('charge')
     const res = await relay.request('/v1/chat/completions', chat({ model: 'tinfoil/gpt-oss-120b', messages, max_tokens: 9999 }))
     expect(res.status).toBe(200)
     expect(res.headers.get('payment-receipt')).toBe('charge-receipt')
     expect((await res.json()).choices[0].message.content).toBe('Hello from the relay')
+    expect(usage).toEqual([{ model: 'tinfoil/gpt-oss-120b', promptTokens: 10, completionTokens: 4 }])
     expect(llm.calls[0]).toMatchObject({ auth: 'Bearer sk-master', body: { model: 'tinfoil/gpt-oss-120b', max_tokens: 512 } })
     expect(JSON.stringify(logs)).not.toContain('Say hello')
   })
 
   it('meters a session stream per token and credits the unused prepaid amount', async () => {
-    const { relay, recorded, llm, logs } = app('session')
+    const { relay, recorded, llm, logs, usage } = app('session')
     const res = await relay.request('/v1/chat/completions', chat({ model: 'nearai/z-ai/glm-5.3', messages, stream: true }))
     expect(res.status).toBe(200)
     const text = await res.text()
+    expect(usage).toEqual([{ model: 'nearai/z-ai/glm-5.3', promptTokens: 10, completionTokens: 4 }])
     const data = [...text.matchAll(/event: message\ndata: (.*)\n/g)].map((m) => m[1]!)
     expect(data.at(-1)).toBe('[DONE]')
     const contents = data.slice(0, -1).map((d) => JSON.parse(d)).flatMap((c) => c.choices.map((x: any) => x.delta.content))

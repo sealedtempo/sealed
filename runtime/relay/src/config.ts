@@ -73,6 +73,7 @@ export type RelayConfig = {
   settleAmount: string
   settleIntervalMs: number
   superviseSeconds: number
+  usageUrl: string
   providers: { provider: ProviderId; enabled: boolean; statusUrl: string; kind: 'sidecar' | 'probe' }[]
 }
 
@@ -83,7 +84,8 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
   if (!secretKey || Buffer.byteLength(secretKey, 'utf8') < 32) throw new Error('MPP_SECRET_KEY must be at least 32 bytes')
   const litellmKey = readSecret('LITELLM_MASTER_KEY', env)
   if (!litellmKey) throw new Error('missing LITELLM_MASTER_KEY')
-  const settler = readSecret('RELAY_SETTLER_KEY', env)
+  const rawSettler = readSecret('RELAY_SETTLER_KEY', env)
+  const settler = rawSettler && !rawSettler.startsWith('0x') ? `0x${rawSettler}` : rawSettler
   if (settler && !/^0x[0-9a-fA-F]{64}$/.test(settler)) throw new Error('RELAY_SETTLER_KEY must be a 32-byte hex key')
   const providers = PROVIDERS.map((provider) => {
     const probe = provider === 'privatemode'
@@ -116,6 +118,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     settleAmount: env.SETTLE_EVERY_AMOUNT ?? '1',
     settleIntervalMs: intEnv(env, 'SETTLE_INTERVAL_MS', 5 * 60_000),
     superviseSeconds: intEnv(env, 'SUPERVISE_INTERVAL_SECONDS', 60),
+    usageUrl: env.SEALED_USAGE_URL ?? 'http://sealed-agent:7070/v1/usage-events',
     providers,
   }
 }
