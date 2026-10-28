@@ -1,6 +1,7 @@
 // Package chain is a read-only client for the Sealed registries on Tempo (PlatformRegistry, AppRegistry,
-// DeploymentRegistry). It only issues eth_call, eth_chainId and eth_blockNumber: go-ethereum cannot decode Tempo
-// 0x76 transactions, so it never fetches blocks or transactions (D-025).
+// DeploymentRegistry). It only issues eth_call, eth_chainId, eth_blockNumber and eth_getBlockByNumber without
+// transactions, of which it decodes only the number and timestamp: go-ethereum cannot decode Tempo 0x76
+// transactions, so it never fetches full blocks or transactions (D-025).
 package chain
 
 import (
@@ -70,13 +71,17 @@ func Dial(ctx context.Context, rpcURL string, addrs Addresses) (*Client, error) 
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", RedactURL(rpcURL), r.redact(err))
 	}
-	return New(redactingBackend{inner: ec, r: r}, addrs)
+	return New(redactingBackend{inner: newRPCBackend(ec), r: r}, addrs)
 }
 
-// New returns a reader over backend for the given registry addresses.
+// New returns a reader over backend for the given registry addresses. An *ethclient.Client backend also gets block
+// timestamps (BlockTimer).
 func New(backend Backend, addrs Addresses) (*Client, error) {
 	if err := addrs.Validate(); err != nil {
 		return nil, err
+	}
+	if ec, ok := backend.(*ethclient.Client); ok {
+		backend = newRPCBackend(ec)
 	}
 	abis, err := loadABIs()
 	if err != nil {
