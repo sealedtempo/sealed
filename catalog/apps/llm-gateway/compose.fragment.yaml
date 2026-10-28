@@ -51,7 +51,7 @@ services:
 
   llm-gateway-db:
     image: "{{image:postgres}}"
-    entrypoint: ["docker-entrypoint.sh"]
+    entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
     command: ["postgres", "-c", "max_connections=50"]
     x-sealed-secrets:
       - POSTGRES_PASSWORD

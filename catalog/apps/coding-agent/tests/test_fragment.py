@@ -58,7 +58,7 @@ class OpenHandsPackagingTest(unittest.TestCase):
         self.assertEqual(load_tool().main(["--check"]), 0)
 
     def test_scripts_embedded_verbatim(self):
-        self.assertEqual(self.server["entrypoint"][:3], ["python3", "-I", "-c"])
+        self.assertEqual(self.server["entrypoint"][:3], ["/usr/local/bin/python3", "-I", "-c"])
         self.assertEqual(self.server["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "dropuid.py")))
         self.assertEqual(self.boot["entrypoint"][3], read(os.path.join(APP_DIR, "bootstrap", "seed.py")))
 

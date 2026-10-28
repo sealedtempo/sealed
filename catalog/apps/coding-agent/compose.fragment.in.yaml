@@ -11,7 +11,7 @@ services:
     image: "{{image:openhands-agent-server}}"
     user: "0:0"
     entrypoint:
-      - python3
+      - /usr/local/bin/python3
       - -I
       - -c
       - |
@@ -43,7 +43,7 @@ services:
     healthcheck:
       test:
         - CMD
-        - python3
+        - /usr/local/bin/python3
         - -I
         - -c
         - "import sys, urllib.request as u; o = u.build_opener(u.ProxyHandler({})); sys.exit(0 if o.open('http://127.0.0.1:8000/ready', timeout=3).status == 200 else 1)"
@@ -58,7 +58,7 @@ services:
     image: "{{image:openhands-agent-server}}"
     user: "10001:10001"
     entrypoint:
-      - python3
+      - /usr/local/bin/python3
       - -I
       - -c
       - |
@@ -82,7 +82,7 @@ services:
     volumes:
       - coding-agent-workspace:/workspace
     healthcheck:
-      test: ["CMD", "python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/workspace/.sealed/bootstrap.done') else 1)"]
+      test: ["CMD", "/usr/local/bin/python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/workspace/.sealed/bootstrap.done') else 1)"]
       interval: 10s
       timeout: 5s
       retries: 90

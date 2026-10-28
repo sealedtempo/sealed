@@ -10,13 +10,13 @@ services:
     image: "{{image:opencode}}"
     user: "0:0"
     entrypoint:
-      - python3
+      - /usr/bin/python3
       - -I
       - -c
       - |
         @@include bootstrap/dropuid.py@@
     command:
-      - python3
+      - /usr/bin/python3
       - -I
       - -c
       - |
@@ -38,7 +38,7 @@ services:
     volumes:
       - coding-agent-workspace:/workspace
     healthcheck:
-      test: ["CMD", "python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/workspace/.sealed/bootstrap.done') else 1)"]
+      test: ["CMD", "/usr/bin/python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/workspace/.sealed/bootstrap.done') else 1)"]
       interval: 10s
       timeout: 5s
       retries: 90
@@ -50,7 +50,7 @@ services:
     image: "{{image:opencode}}"
     user: "10001:10001"
     entrypoint:
-      - python3
+      - /usr/bin/python3
       - -I
       - -c
       - "import os, sys; os.environ['LITELLM_API_KEY'] = open('/workspace/.sealed/llm-gateway-key').read().strip(); os.execvp(sys.argv[1], sys.argv[1:])"
@@ -100,7 +100,7 @@ services:
     healthcheck:
       test:
         - CMD
-        - python3
+        - /usr/bin/python3
         - -I
         - -c
         - "import base64, sys, urllib.request as u; p = open('/run/sealed/secrets/coding-agent/OPENCODE_SERVER_PASSWORD').read().rstrip('\\r\\n'); a = base64.b64encode(('sealed:' + p).encode()).decode(); r = u.Request('http://127.0.0.1:4096/global/health', headers={'Authorization': 'Basic ' + a}); sys.exit(0 if u.build_opener(u.ProxyHandler({})).open(r, timeout=3).status == 200 else 1)"
