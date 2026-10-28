@@ -96,8 +96,18 @@ export function makeStackInfo(config: Config, o: { payer?: boolean } = {}) {
         metering: k.metering,
         healthcheck: { service: primary, port: k.port, path: k.path },
         routes: [],
+        // crm declares an owner for its database volume (manifest x-sealed-owner, brief item 11).
+        volumes:
+          a.id === "crm"
+            ? [
+                { name: "db", path: "/mnt/sealed-data/crm/db", owner: "999:999" },
+                { name: "files", path: "/mnt/sealed-data/crm/files" },
+              ]
+            : [],
       };
     }),
+    dataRoot: "/mnt/sealed-data",
+    dataDirs: config.apps.some((a) => a.id === "crm") ? ["/mnt/sealed-data/crm/db", "/mnt/sealed-data/crm/files"] : [],
     sidecars: {
       caddy: IPS.caddy,
       "sealed-agent": IPS.agent,

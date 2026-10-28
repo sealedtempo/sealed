@@ -27,10 +27,10 @@ import { type SecretsLayout, writePayerSecrets, writeReadyFlag, writeSecrets } f
 import { type ApiHandlers, createApiServer, listen, UsageRejected } from "./server.js";
 import type { AgentSettings } from "./settings.js";
 import { parseSpendReport, type SpendCounters } from "./spend.js";
-import { COMPOSE_CONFIGS, COMPOSE_DATA_ROOT, measuredConfigs, requireMeasured } from "./stack.js";
+import { COMPOSE_CONFIGS, measuredConfigs, requireMeasured } from "./stack.js";
 import { StateStore } from "./state.js";
 import { ServedCertSource, type TlsKeySource } from "./tls.js";
-import { createVolumeDirs, volumeDirsFromAppCompose } from "./volumes.js";
+import { createVolumeDirs, volumeDirsFromStack } from "./volumes.js";
 
 export interface AgentDeps {
   settings: AgentSettings;
@@ -48,6 +48,8 @@ export interface AgentDeps {
   defaults?: Defaults;
   /** statfs f_type override for the tmpfs checks (tests). */
   fsType?: (path: string) => Promise<number>;
+  /** chown for the data-disk volume directories (tests record it; production uses fs.chown as root). */
+  chown?: (path: string, uid: number, gid: number) => Promise<void>;
   /** Caller address of a local API request (tests; production uses the socket peer). */
   peerOf?: (req: http.IncomingMessage) => string;
   /** Delay between denied release attempts (tests use a short one). */
@@ -133,7 +135,8 @@ export class Agent {
     } finally {
       keys.diskKey.fill(0);
     }
-    await createVolumeDirs(volumeDirsFromAppCompose(appCompose, COMPOSE_DATA_ROOT, s.dataMount));
+    // Brief item 11: every data bind source exists with its declared owner before the ready flag.
+    await createVolumeDirs(volumeDirsFromStack(ctx.stack, appCompose, s.dataMount), { chownFn: this.deps.chown });
 
     const stateDir = s.stateDir ?? join(s.dataMount, ".sealed-agent");
     await mkdir(stateDir, { recursive: true, mode: 0o700 });

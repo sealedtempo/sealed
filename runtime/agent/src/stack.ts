@@ -18,6 +18,25 @@ export const CADDY_SERVICE = "caddy";
 
 const ipv4 = z.string().regex(/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/, "IPv4 address");
 const hex32 = z.string().regex(/^0x[0-9a-f]{64}$/);
+/** "<uid>:<gid>" (brief item 11, manifest `x-sealed-owner`); 4294967295 means "unchanged" to chown, so ids stay below 2^31. */
+const ownerSpec = z
+  .string()
+  .regex(/^\d{1,10}:\d{1,10}$/, "owner must be <uid>:<gid>")
+  .refine((v) => v.split(":").every((n) => Number(n) < 2 ** 31), "uid and gid must be below 2^31");
+
+const stackVolumeSchema = z.object({ name: z.string().min(1), path: z.string().min(1), owner: ownerSpec.optional() }).loose();
+const stackRouteSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    host: z.string(),
+    path: z.string(),
+    service: z.string(),
+    port: z.number().int(),
+    auth: z.enum(["gate", "bearer-passthrough", "public"]),
+  })
+  .loose();
+/** The manifest's bootstrap job. donePath is the done file on the data disk, or "" when the job keeps it elsewhere. */
+const stackBootstrapSchema = z.object({ service: z.string().min(1), doneFile: z.string(), donePath: z.string() }).loose();
 
 const stackAppSchema = z
   .object({
@@ -30,6 +49,9 @@ const stackAppSchema = z
     secrets: z.array(z.object({ name: z.string(), optional: z.boolean() })),
     metering: z.object({ unit: z.enum(["tokens", "pages", "app_hour"]), source: z.enum(["callback", "heartbeat"]) }),
     healthcheck: z.object({ service: z.string(), port: z.number().int().min(0).max(65535), path: z.string() }),
+    routes: z.array(stackRouteSchema).default([]),
+    volumes: z.array(stackVolumeSchema).default([]),
+    bootstrap: stackBootstrapSchema.optional(),
   })
   .loose();
 
@@ -41,11 +63,19 @@ export const stackInfoSchema = z
     sidecars: z.record(z.string(), ipv4),
     attestHost: z.string().min(1),
     caddy: z.object({ adminSocket: z.string(), caddyfile: z.string(), caddyfilePaymentNeeded: z.string() }).loose(),
+    /** Host path of the data disk and every data bind source on it (composer 1.1+). */
+    dataRoot: z.string().startsWith("/").optional(),
+    dataDirs: z.array(z.string().startsWith("/")).optional(),
+    gate: z.object({ username: z.string().min(1), secretApp: z.string().min(1), secret: z.string().min(1) }).loose().optional(),
   })
   .loose();
 
 export type StackInfo = z.infer<typeof stackInfoSchema>;
 export type StackApp = z.infer<typeof stackAppSchema>;
+export type StackRoute = z.infer<typeof stackRouteSchema>;
+
+/** The gate's username and where its bcrypt hash is released (sealed-stack/v1 `gate`, INTERFACES 9). */
+export const GATE_DEFAULTS = { username: "sealed", secretApp: "_gate", secret: "GATE_PASSWORD_BCRYPT" } as const;
 
 /**
  * The inline `configs.<name>.content` strings of the composed document. The composer doubles every
