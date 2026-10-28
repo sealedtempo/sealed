@@ -207,7 +207,7 @@ describe("compose fragment", () => {
       assert.deepEqual(Object.keys(services).sort(), Object.keys(app.fragment.services).sort());
       assert.equal(
         services["crm-server"].image,
-        "ghcr.io/sealed-dev/twenty@sha256:20b1010a975c42954d9f90698564795daf106da964bc95028836b09a8f424839",
+        "ghcr.io/sealedtempo/twenty@sha256:20b1010a975c42954d9f90698564795daf106da964bc95028836b09a8f424839",
       );
       assert.equal(services["crm-worker"].depends_on["crm-server"].condition, "service_healthy");
       assert.equal(services["crm-server"].healthcheck.start_period, "5m0s");

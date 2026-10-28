@@ -65,7 +65,7 @@ ToolJet's docs pin PostgREST 12.2; 12.2.12 is the last patch of that line. Catal
 release while the tooljet digest is all zeros (D-028). After the image is built, check it with:
 
 ```sh
-crane export --platform linux/amd64 ghcr.io/sealed-dev/tooljet@<digest> - | tar -t \
+crane export --platform linux/amd64 ghcr.io/sealedtempo/tooljet@<digest> - | tar -t \
   | node catalog/apps/internal-tools/tools/check-image-paths.mjs
 ```
 

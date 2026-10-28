@@ -188,9 +188,9 @@ describe("compose fragment", () => {
       assert.deepEqual(Object.keys(result.config.services).sort(), Object.keys(services).sort());
       assert.equal(
         result.config.services["internal-tools-postgrest"].image,
-        "ghcr.io/sealed-dev/postgrest@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2",
+        "ghcr.io/sealedtempo/postgrest@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2",
       );
-      assert.match(result.config.services["internal-tools-server"].image, /^ghcr\.io\/sealed-dev\/tooljet@sha256:[0-9a-f]{64}$/);
+      assert.match(result.config.services["internal-tools-server"].image, /^ghcr\.io\/sealedtempo\/tooljet@sha256:[0-9a-f]{64}$/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

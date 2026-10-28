@@ -205,7 +205,7 @@ export function lintWaivers(waivers, manifest, today = new Date()) {
 }
 
 // Replaces {{image:<name>}} with a registry reference so docker compose can parse the fragment.
-export function substituteImages(fragmentText, manifest, registry = "ghcr.io/sealed-dev") {
+export function substituteImages(fragmentText, manifest, registry = "ghcr.io/sealedtempo") {
   const digests = new Map(manifest.images.map((i) => [i.name, i.digest]));
   return fragmentText.replace(/\{\{image:([a-z][a-z0-9-]*)\}\}/g, (_, name) => {
     const digest = digests.get(name);
@@ -317,7 +317,7 @@ export function composeStack(composer, appDirs, outDir) {
   const ids = appDirs.map((d) => parse(readFileSync(join(d, "manifest.yaml"), "utf8")).id);
   const configPath = join(outDir, "input-config.json");
   writeFileSync(configPath, JSON.stringify(sampleConfig(ids, composerVersion(composer))));
-  const args = ["compose", "--config", configPath, "--fill-release-ids", "--allow-missing-sbom", "--registry", "ghcr.io/sealed-dev"];
+  const args = ["compose", "--config", configPath, "--fill-release-ids", "--allow-missing-sbom", "--registry", "ghcr.io/sealedtempo"];
   for (const d of appDirs) args.push("--app-dir", d);
   args.push("--out", outDir);
   const res = runComposer(composer, args);
