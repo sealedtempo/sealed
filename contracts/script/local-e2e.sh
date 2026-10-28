@@ -115,14 +115,14 @@ expect_eq "$(call $PLATFORM 'imageByMeasurements(bytes32)(bytes32)' $MH)" "$IMAG
 send_fails $K_OWNER $PLATFORM "addImage(bytes32,string,string,bytes,bytes,bytes,bytes,bool,string)" \
   $(cast keccak other-image-id) sealed-os 1.0.0-again $MRTD $R0 $R1 $R2 false ""
 
-step "register apps (owner, cast) and the example catalog (script/RegisterCatalog.s.sol)"
+step "register apps (owner, cast) and the example catalog fixture (script/RegisterCatalog.s.sol)"
 APP_ID=$(cast keccak llm-gateway)
 send $K_OWNER $APPS "registerApp(bytes32,string,string,string,address,uint16,string)" \
   $APP_ID llm-gateway "LLM Gateway" MIT $MAINTAINER 2000 "https://example.invalid/llm-gateway"
 APP2_ID=$(cast keccak crm)
 send $K_OWNER $APPS "registerApp(bytes32,string,string,string,address,uint16,string)" \
   $APP2_ID crm "CRM" AGPL-3.0-only $MAINTAINER 5000 "https://example.invalid/crm"
-OWNER_PRIVATE_KEY=$K_OWNER CATALOG_FILE=catalog/catalog.example.json DEPLOYMENTS_FILE=$DEPLOYMENTS_FILE \
+OWNER_PRIVATE_KEY=$K_OWNER CATALOG_FILE=test/fixtures/catalog.example.json DEPLOYMENTS_FILE=$DEPLOYMENTS_FILE \
 MAINTAINER_DEFAULT_ADDRESS=$MAINTAINER \
   forge script script/RegisterCatalog.s.sol:RegisterCatalog --rpc-url "$RPC" --broadcast --slow "${FEE[@]}" \
   > "$WORK/catalog.log" 2>&1 || { cat "$WORK/catalog.log"; fail "catalog script"; }

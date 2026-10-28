@@ -1,5 +1,5 @@
 {
-  "_comment": "EXAMPLE catalog. Measurements are placeholders (sha384 of a label), not a real image. Replace with the values printed by the image build before registering on mainnet. Apps without a maintainer use MAINTAINER_DEFAULT_ADDRESS.",
+  "_comment": "TEST FIXTURE for test/script/Scripts.t.sol and script/local-e2e.sh, not a catalog to register. Measurements are placeholders (sha384 of a label), not a real image, and the app entries are an old example (crm is not Twenty any more). The mainnet catalog is catalog/catalog.mainnet.json. Apps without a maintainer use MAINTAINER_DEFAULT_ADDRESS.",
   "images": [
     {
       "name": "sealed-os",

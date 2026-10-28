@@ -15,12 +15,13 @@ override TEMPO_RPC_URL := $(RPC)
 TEMPO_VERIFIER_URL ?= https://contracts.tempo.xyz
 FEE_TOKEN_ADDRESS ?= 0x20c0000000000000000000000000000000000000
 MAINNET_DEPLOYMENTS := deployments/tempo-mainnet.json
+CATALOG_FILE ?= catalog/catalog.mainnet.json
 CONTRACTS := PlatformRegistry AppRegistry OracleSignatureVerifier DeploymentRegistry FeeSplitter
 # Toolchain pin. Older releases run Tempo T4 rules: forks read token policy ids as 0 and CREATE gas is ~2.3x mainnet.
 FOUNDRY_VERSION := 1.8.6
 
-.PHONY: help foundry-check deps build test test-ci test-fork local-e2e deploy-mainnet record-mainnet verify-mainnet \
-	fee-token-pref estimate-mainnet abi coverage gas-report fmt fmt-check clean
+.PHONY: help foundry-check deps build test test-ci test-fork local-e2e catalog-check rehearse-catalog deploy-mainnet \
+	record-mainnet verify-mainnet fee-token-pref estimate-mainnet abi coverage gas-report fmt fmt-check clean
 
 help:
 	@echo "deps            install pinned Soldeer dependencies (soldeer.lock)"
@@ -29,6 +30,8 @@ help:
 	@echo "test-ci         same with the ci profile (fuzz 1000 runs, invariant depth 100)"
 	@echo "test-fork       fork tests against Tempo mainnet (TEMPO_RPC_URL or $(TEMPO_PUBLIC_RPC_URL))"
 	@echo "local-e2e       full flow on a local anvil --network tempo node"
+	@echo "catalog-check   preflight of $(CATALOG_FILE) against ../catalog/apps manifests (read only)"
+	@echo "rehearse-catalog  RegisterCatalog.s.sol with $(CATALOG_FILE) on a local node, mainnet command shape, gas"
 	@echo "deploy-mainnet  dry run of script/Deploy.s.sol against mainnet; BROADCAST=1 sends it"
 	@echo "verify-mainnet  verify every contract of $(MAINNET_DEPLOYMENTS) at $(TEMPO_VERIFIER_URL)"
 	@echo "estimate-mainnet  eth_estimateGas of each contract creation on mainnet (read only)"
@@ -57,6 +60,14 @@ test-fork: foundry-check
 
 local-e2e: foundry-check
 	script/local-e2e.sh
+
+# The mainnet catalog (spec 6.8: registered by OWNER from a local machine, never from CI). CATALOG_STRICT=1 makes
+# catalog-check fail when the manifests are not checked out next to contracts/.
+catalog-check:
+	script/check-catalog.sh $(CATALOG_FILE)
+
+rehearse-catalog: foundry-check
+	CATALOG_FILE=$(CATALOG_FILE) script/rehearse-catalog.sh
 
 # Dry run by default: simulates against mainnet and writes deployments/tempo-mainnet.dry-run.json. Nothing is sent.
 # Its CREATE gas is within 3% of mainnet; the three wiring calls show ~22k gas because they are estimated before the

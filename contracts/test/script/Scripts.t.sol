@@ -127,7 +127,7 @@ contract ScriptsTest is Test {
         string memory file = "deployments/test-catalog.json";
         (Deploy.Deployed memory d,) = _deploy(file);
         RegisterCatalog script = new RegisterCatalog();
-        string memory catalog = vm.readFile("catalog/catalog.example.json");
+        string memory catalog = vm.readFile("test/fixtures/catalog.example.json");
 
         (uint256 images, uint256 appsAdded) =
             script.register(catalog, d.appRegistry, d.platformRegistry, ownerKey, maintainer);
@@ -156,9 +156,43 @@ contract ScriptsTest is Test {
 
     function test_registerCatalog_requiresMaintainer() public {
         RegisterCatalog script = new RegisterCatalog();
-        string memory catalog = vm.readFile("catalog/catalog.example.json");
+        string memory catalog = vm.readFile("test/fixtures/catalog.example.json");
         vm.expectRevert(abi.encodeWithSelector(RegisterCatalog.NoMaintainer.selector, "llm-gateway"));
         script.parseApps(catalog, address(0));
+    }
+
+    function _oneApp(string memory extra) internal pure returns (string memory) {
+        return string.concat(
+            '{"images":[],"apps":[{"slug":"crm","name":"CRM","licenseSpdx":"AGPL-3.0-or-later",',
+            '"maintainerShareBps":2000,"metadataURI":"https://example.invalid/crm"',
+            extra,
+            "}]}"
+        );
+    }
+
+    function test_registerCatalog_checksGivenAppId() public {
+        RegisterCatalog script = new RegisterCatalog();
+        bytes32 crmId = keccak256("crm");
+        RegisterCatalog.AppEntry[] memory list =
+            script.parseApps(_oneApp(string.concat(',"appId":"', vm.toString(crmId), '"')), maintainer);
+        assertEq(list.length, 1);
+        assertEq(list[0].slug, "crm");
+
+        bytes32 wrong = keccak256("scraper");
+        vm.expectRevert(abi.encodeWithSelector(RegisterCatalog.AppIdMismatch.selector, "crm", wrong, crmId));
+        script.parseApps(_oneApp(string.concat(',"appId":"', vm.toString(wrong), '"')), maintainer);
+    }
+
+    function test_registerCatalog_refusesPendingEntryBeforeSending() public {
+        string memory file = "deployments/test-catalog-pending.json";
+        (Deploy.Deployed memory d,) = _deploy(file);
+        RegisterCatalog script = new RegisterCatalog();
+        string memory catalog = _oneApp(',"_pending":"license not settled"');
+
+        vm.expectRevert(abi.encodeWithSelector(RegisterCatalog.PendingEntry.selector, "crm"));
+        script.register(catalog, d.appRegistry, d.platformRegistry, ownerKey, maintainer);
+        assertEq(d.appRegistry.appCount(), 0, "nothing registered");
+        vm.removeFile(file);
     }
 
     function test_transferAndAcceptOwnership() public {

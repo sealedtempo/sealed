@@ -23,6 +23,7 @@ auto_detect_remappings = false
 fs_permissions = [
     { access = "read-write", path = "./deployments" },
     { access = "read", path = "./catalog" },
+    { access = "read", path = "./test/fixtures" },
     { access = "read", path = "./broadcast" },
     { access = "read", path = "./out" },
 ]
