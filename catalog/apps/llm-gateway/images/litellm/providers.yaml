@@ -2,8 +2,9 @@
 #
 # Each entry becomes one wildcard route "<family>/<id>/*" -> "openai/*" at api_base, with
 # api_key "os.environ/<secret>". A route is rendered only when its secret exists in
-# /run/sealed/secrets/llm-gateway/<secret> (or the env var exported by envexec).
-# external routes additionally need the opt-in secret EXTERNAL_ROUTES_ENABLED=true.
+# /run/sealed/secrets/llm-gateway/<secret> (or the env var exported by envexec) and the
+# family's opt-in secret is "true": BYOK_ROUTES_ENABLED for byok, EXTERNAL_ROUTES_ENABLED
+# for external. Both families send prompts out of the customer's cloud.
 #
 # Every host here must also be added by the customer as an egress addition
 # ("llm-gateway": ["<host>:443"]); the release allows no egress by default.
@@ -11,8 +12,9 @@
 # api_base values are VERIFY-AT-BUILD (checked against provider docs on each bump).
 
 byok:
-  # Confidential-computing providers. The provider runs inference in a TEE, but this
-  # gateway does not verify the provider's attestation itself (the platform relay does).
+  # Confidential-computing providers. The provider says it runs inference in a TEE, but
+  # nothing in this VM verifies that attestation (only the platform relay path is verified),
+  # so these routes are labeled "data leaves your cloud" and need an explicit opt-in.
   - id: tinfoil
     name: Tinfoil
     secret: BYOK_TINFOIL_API_KEY

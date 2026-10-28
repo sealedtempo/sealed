@@ -5,7 +5,8 @@ category: ai
 description: >-
   OpenAI-compatible LLM gateway (LiteLLM proxy, MIT core) with its own Postgres for virtual keys,
   a local CPU model (Qwen3-4B-Instruct-2507 on Ollama) that keeps data in your VM, and paid relay
-  routes to attested providers. Prompts and outputs never leave the gateway for metering.
+  routes to attested providers. When the relay fails, relay/default answers from the local model.
+  Prompts and outputs never leave the gateway for metering.
 upstream:
   repo: https://github.com/BerriAI/litellm
   version: v1.106.5
@@ -31,12 +32,13 @@ images:
     digest: sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
     platform: linux/amd64
     license_spdx: PostgreSQL
-  # Built from runtime/images/local-model: Ollama 0.40.12 CPU only plus qwen3:4b-instruct-2507-q4_K_M.
+  # Built from runtime/images/local-model (images/local-model here is a symlink to it): Ollama
+  # 0.40.12 CPU only, qwen3:4b-instruct-2507-q4_K_M, and the sealed-ollama-gate peer gate (Go stdlib).
   - name: local-model
     source: build:images/local-model
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     platform: linux/amd64
-    license_spdx: MIT AND Apache-2.0
+    license_spdx: MIT AND Apache-2.0 AND BSD-3-Clause
 resources:
   cpu: 4
   memory_gb: 12
@@ -65,16 +67,34 @@ secrets:
   - name: POSTGRES_PASSWORD
     description: Password of the gateway's own Postgres (virtual keys and spend logs).
     generate: hex32
+  - name: APP_KEY_CODING_AGENT
+    description: >-
+      Virtual key the gateway provisions for coding-agent (alias coding-agent, models relay/* and local/*,
+      rate limited). Set coding-agent's LLM_GATEWAY_KEY to the same value. Leave unset without coding-agent.
+    generate: sk-hex32
+    optional: true
+  - name: BYOK_ROUTES_ENABLED
+    description: >-
+      Set to true to allow byok/<provider> routes. Data leaves your cloud on those routes: the provider says
+      it runs a TEE, but Sealed does not verify that provider's attestation.
+    generate: none
+    optional: true
   - name: BYOK_TINFOIL_API_KEY
-    description: Your Tinfoil API key. Enables byok/tinfoil/<model>. Also add inference.tinfoil.sh:443 to egress.
+    description: >-
+      Your Tinfoil API key for byok/tinfoil/<model> (data leaves your cloud). Needs BYOK_ROUTES_ENABLED and
+      egress inference.tinfoil.sh:443.
     generate: none
     optional: true
   - name: BYOK_REDPILL_API_KEY
-    description: Your Phala RedPill API key. Enables byok/redpill/<model>. Also add api.redpill.ai:443 to egress.
+    description: >-
+      Your Phala RedPill API key for byok/redpill/<model> (data leaves your cloud). Needs BYOK_ROUTES_ENABLED
+      and egress api.redpill.ai:443.
     generate: none
     optional: true
   - name: BYOK_NEARAI_API_KEY
-    description: Your NEAR AI Cloud API key. Enables byok/nearai/<model>. Also add cloud-api.near.ai:443 to egress.
+    description: >-
+      Your NEAR AI Cloud API key for byok/nearai/<model> (data leaves your cloud). Needs BYOK_ROUTES_ENABLED
+      and egress cloud-api.near.ai:443.
     generate: none
     optional: true
   - name: EXTERNAL_ROUTES_ENABLED
@@ -126,6 +146,8 @@ license_exclusions:
   - "/usr/lib/ollama/vulkan/**"
 notes: >-
   Routes: local/<model> (Ollama in the VM), relay/<model> (sealed-mpp-payer to the platform relay, paid
-  per token), byok/<provider>/<model> (only when the provider key secret exists), external/<provider>/<model>
-  (off unless EXTERNAL_ROUTES_ENABLED=true and a key exists; data leaves your cloud). Apps reach the gateway
-  at http://llm-gateway:4000. The usage callback posts token counts only.
+  per token; relay/default falls back to local/qwen3-4b), byok/<provider>/<model> and
+  external/<provider>/<model> (each off unless BYOK_ROUTES_ENABLED or EXTERNAL_ROUTES_ENABLED is true and a
+  key exists; data leaves your cloud). Apps reach the gateway at http://llm-gateway:4000 with a virtual key;
+  the llm-gateway-keys job provisions the keys of catalog apps (images/litellm/app_keys.yaml), so no other
+  app holds the master key. The usage callback posts token counts and the LiteLLM call id only.

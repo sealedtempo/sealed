@@ -1,7 +1,14 @@
 # llm-gateway compose fragment (INTERFACES section 14).
 # The composer adds networks, fixed IPs, DNS, proxy env, telemetry_off_env, envexec,
-# secret mounts, restart and logging. Only llm-gateway-litellm is reachable by other
-# apps (alias llm-gateway); Ollama and Postgres have no route out of the VM.
+# secret mounts, restart and logging. All services sit on the shared apps network, so
+# every app container can open a connection to them; none of them has a route out of
+# the VM. What protects each one:
+#   llm-gateway-litellm  LiteLLM virtual keys (the intended entry point, alias llm-gateway)
+#   llm-gateway-db       Postgres password (scram-sha-256)
+#   llm-gateway-ollama   sealed-ollama-gate: only llm-gateway-litellm (by DNS name) and
+#                        loopback get an answer, and only inference/read endpoints
+#   llm-gateway-keys     listens on nothing; provisions other apps' virtual keys so they
+#                        never need the master key (images/litellm/app_keys.yaml)
 services:
   llm-gateway-litellm:
     image: "{{image:litellm}}"
@@ -11,6 +18,7 @@ services:
       - LITELLM_MASTER_KEY
       - LITELLM_SALT_KEY
       - POSTGRES_PASSWORD
+      - BYOK_ROUTES_ENABLED
       - BYOK_TINFOIL_API_KEY
       - BYOK_REDPILL_API_KEY
       - BYOK_NEARAI_API_KEY
@@ -74,21 +82,58 @@ services:
 
   llm-gateway-ollama:
     image: "{{image:local-model}}"
-    entrypoint: ["/bin/ollama"]
-    command: ["serve"]
+    # Ollama on loopback; the gate answers on :11434 to llm-gateway-litellm only.
+    entrypoint: ["/usr/local/bin/sealed-ollama-gate"]
+    command: ["-listen", "0.0.0.0:11434", "-upstream", "127.0.0.1:11435", "-allow-peer", "llm-gateway-litellm", "--", "/bin/ollama", "serve"]
+    user: "10002:10002"
     read_only: true
+    environment:
+      HOME: /tmp/ollama
     tmpfs:
-      - /root/.ollama:size=1m,mode=0700
       - /tmp:size=64m,mode=1777
     healthcheck:
-      # 127.0.0.1 (loopback) so the Ollama client never goes through HTTP_PROXY.
-      test: ["CMD", "/usr/bin/env", "OLLAMA_HOST=127.0.0.1:11434", "/bin/ollama", "list"]
+      # Through the gate (loopback is admitted) to Ollama; the probe ignores HTTP_PROXY.
+      test: ["CMD", "/usr/local/bin/sealed-ollama-gate", "probe", "http://127.0.0.1:11434/healthz"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 60s
     mem_limit: 8g
     stop_grace_period: 10s
+
+  llm-gateway-keys:
+    image: "{{image:litellm}}"
+    entrypoint: ["/app/.venv/bin/python", "-I", "/etc/litellm/sealed_keys.py"]
+    user: "65534:65534"
+    read_only: true
+    x-sealed-secrets:
+      - LITELLM_MASTER_KEY
+      - APP_KEY_CODING_AGENT
+    environment:
+      SEALED_SECRETS_DIR: /run/sealed/secrets/llm-gateway
+      SEALED_GATEWAY_URL: http://llm-gateway-litellm:4000
+      SEALED_APP_KEYS_FILE: /etc/litellm/app_keys.yaml
+      SEALED_KEYS_STATUS_FILE: /run/sealed-keys/status.json
+      SEALED_KEYS_INTERVAL_S: "300"
+    tmpfs:
+      - /run/sealed-keys:size=1m,mode=1777
+      - /tmp:size=16m,mode=1777
+    depends_on:
+      llm-gateway-litellm:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -I
+        - -c
+        - "import json, sys; sys.exit(0 if json.load(open('/run/sealed-keys/status.json')).get('ok') is True else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 900s
+    mem_limit: 128m
+    stop_grace_period: 5s
 
 volumes:
   llm-gateway-pgdata: {}

@@ -2,8 +2,9 @@ llm-gateway: third-party license notice
 =========================================
 
 This catalog app packages the following upstream software. Sealed's own files in this
-directory (Dockerfiles, config, sealed_usage.py, sealed_entrypoint.py, tests) are
-Apache-2.0 like the rest of this repository.
+directory and in runtime/images/local-model (Dockerfiles, config, sealed_usage.py,
+sealed_entrypoint.py, sealed_keys.py, the sealed-ollama-gate source, tests) are Apache-2.0
+like the rest of this repository.
 
 1. LiteLLM proxy (image "litellm")
    License: MIT (root LICENSE of BerriAI/litellm; everything outside enterprise/)
@@ -17,9 +18,17 @@ Apache-2.0 like the rest of this repository.
             (License-Expression: LicenseRef-Proprietary). The image is flattened with
             FROM scratch so no layer contains them. No enterprise feature is enabled and
             LITELLM_LICENSE is never set.
-   Bundled: Python dependencies under permissive or LGPL licenses, plus PSF-2.0,
-            ZPL-2.1, Unlicense and CNRI-Python components (OSI-approved permissive,
-            D-021). The release SBOM lists every package and license.
+   Bundled: Python dependencies under rule 9 licenses, plus PSF-2.0 and Unlicense
+            components (D-021 additions). Three packages carry no license classifier in
+            their wheel metadata. Their upstream licenses, checked 2026-10-28 against the
+            latest PyPI release and the GitHub default branch (not yet against the exact
+            versions in the image): google-crc32c Apache-2.0 (PyPI license field,
+            googleapis/python-crc32c), aurelio-sdk MIT (aurelio-labs/aurelio-sdk LICENSE),
+            llm-sandbox MIT (vndee/llm-sandbox LICENSE). The release SBOM needs a manual
+            license override for them once the image versions are confirmed. Also present and NOT covered by
+            rule 9 or the D-021 additions: ZPL-2.1 and CNRI-Python components. They need a
+            recorded decision (or removal) before the release job; see the apps-ai build
+            note. The release SBOM lists every package and license.
 
 2. PostgreSQL 16.15 (image "postgres")
    License: PostgreSQL License
@@ -29,7 +38,10 @@ Apache-2.0 like the rest of this repository.
    Removed: nothing. Debian base packages are OS system components (D-021).
 
 3. Ollama 0.40.12 (image "local-model", built from runtime/images/local-model)
-   License: MIT
+   License: MIT; the added /usr/local/bin/sealed-ollama-gate is Sealed's own code
+            (Apache-2.0) compiled with the Go 1.27.3 standard library (BSD-3-Clause,
+            builder golang:1.27.3-trixie@sha256:7b072c590a326b9d2a43b165ae247f6e8eafff32e1ad154ab97139e89f053be9,
+            build stage only)
    Source:  https://github.com/ollama/ollama/tree/v0.40.12
             commit f067033f9126993b6172bdfffa71a74ad693fda4
    Base:    ollama/ollama:0.40.12

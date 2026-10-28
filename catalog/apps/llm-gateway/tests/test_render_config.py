@@ -109,6 +109,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(mode, 0o644)
 
     def test_no_enterprise_settings(self):
+        self.e.add("BYOK_ROUTES_ENABLED", "true")
         self.e.add("BYOK_TINFOIL_API_KEY", TINFOIL)
         self.e.add("EXTERNAL_ROUTES_ENABLED", "true")
         self.e.add("EXTERNAL_OPENAI_API_KEY", OPENAI)
@@ -120,9 +121,22 @@ class RenderTest(unittest.TestCase):
         callbacks |= set(config["litellm_settings"].get("success_callback", []))
         self.assertFalse(ENTERPRISE_CALLBACKS & callbacks)
 
+    def test_byok_needs_opt_in(self):
+        self.e.add("BYOK_TINFOIL_API_KEY", TINFOIL)
+        _, child, summary = self.e.prepare()
+        self.assertNotIn("byok/tinfoil/*", self.names(self.e.rendered()))
+        self.assertNotIn("BYOK_TINFOIL_API_KEY", child)
+        self.assertFalse(summary["byok_opt_in"])
+        self.e.add("BYOK_ROUTES_ENABLED", "1")
+        self.e.prepare()
+        self.assertNotIn("byok/tinfoil/*", self.names(self.e.rendered()))
+
     def test_byok_enabled_only_with_key(self):
+        self.e.add("BYOK_ROUTES_ENABLED", "true")
         self.e.add("BYOK_TINFOIL_API_KEY", TINFOIL + "\n")
-        argv, child, _ = self.e.prepare()
+        argv, child, summary = self.e.prepare()
+        self.assertTrue(summary["byok_opt_in"])
+        self.assertNotIn("BYOK_ROUTES_ENABLED", child)
         text = self.e.rendered()
         self.assertIn("byok/tinfoil/*", self.names(text))
         self.assertNotIn("byok/redpill/*", self.names(text))
@@ -133,6 +147,8 @@ class RenderTest(unittest.TestCase):
             "api_key": "os.environ/BYOK_TINFOIL_API_KEY",
         })
         self.assertEqual(entry["model_info"]["sealed_route"], "byok")
+        self.assertIn("data leaves your cloud", entry["model_info"]["sealed_data_location"])
+        self.assertIn("not verified", entry["model_info"]["sealed_data_location"])
         self.assertEqual(child["BYOK_TINFOIL_API_KEY"], TINFOIL)
         self.assertNotIn(TINFOIL, text)
 
@@ -163,12 +179,14 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn(OPENAI, text)
 
     def test_secrets_from_env_win_over_files(self):
+        self.e.env["BYOK_ROUTES_ENABLED"] = "true"
         self.e.env["BYOK_NEARAI_API_KEY"] = "near-from-env"
         _, child, _ = self.e.prepare()
         self.assertIn("byok/nearai/*", self.names(self.e.rendered()))
         self.assertEqual(child["BYOK_NEARAI_API_KEY"], "near-from-env")
 
     def test_empty_secret_counts_as_missing(self):
+        self.e.add("BYOK_ROUTES_ENABLED", "true")
         self.e.add("BYOK_TINFOIL_API_KEY", "  \n")
         self.e.prepare()
         self.assertNotIn("byok/tinfoil/*", self.names(self.e.rendered()))
@@ -191,6 +209,7 @@ class RenderTest(unittest.TestCase):
                          "postgresql://litellm:p%40ss%2Fw%3Ard%25%23%3F@llm-gateway-db:5432/litellm")
 
     def test_rendered_config_never_contains_secrets(self):
+        self.e.add("BYOK_ROUTES_ENABLED", "true")
         self.e.add("BYOK_TINFOIL_API_KEY", TINFOIL)
         self.e.prepare()
         text = self.e.rendered()
@@ -200,6 +219,25 @@ class RenderTest(unittest.TestCase):
     def test_config_flag_is_rejected(self):
         with self.assertRaises(ep.ConfigError):
             self.e.prepare(["--config", "/tmp/other.yaml"])
+
+    def test_relay_falls_back_to_local_in_the_gateway(self):
+        self.e.prepare()
+        config = yaml.safe_load(self.e.rendered())
+        self.assertEqual(config["router_settings"]["fallbacks"], [{"relay/default": ["local/qwen3-4b"]}])
+        names = set(self.names(self.e.rendered()))
+        for item in config["router_settings"]["fallbacks"]:
+            for source, targets in item.items():
+                self.assertIn(source, names)
+                self.assertTrue(all(t in names and t.startswith("local/") for t in targets))
+
+    def test_fallback_rules_are_enforced(self):
+        base = ep.load_yaml(os.path.join(IMAGE_DIR, "config.yaml"))
+        for bad in ([{"relay/default": ["external/openai/gpt-4o"]}], [{"relay/default": ["local/missing"]}],
+                    [{"relay/nope": ["local/qwen3-4b"]}], ["local/qwen3-4b"],
+                    [{"relay/default": ["local/qwen3-4b"], "relay/*": ["local/qwen3-4b"]}]):
+            config = dict(base, router_settings={"fallbacks": bad})
+            with self.assertRaises(ep.ConfigError, msg=bad):
+                ep.render(config, [])
 
 
 class BootChecksTest(unittest.TestCase):
@@ -240,6 +278,7 @@ class BootChecksTest(unittest.TestCase):
         self.assertEqual(args[:2], ["litellm", "--config"])
         self.assertEqual(args[3:], ["--port", "4000", "--num_workers", "2"])
         self.assertIn("routes=local/qwen3-4b,local/*,relay/default,relay/*", err)
+        self.assertIn("byok_opt_in=false external_opt_in=false", err)
         for value in (MASTER, SALT, "pw@"):
             self.assertNotIn(value, err)
 

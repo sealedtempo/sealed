@@ -3,7 +3,8 @@
 1. Reads secrets exported by envexec (or the files in /run/sealed/secrets/llm-gateway).
 2. Checks the master key, salt key and Postgres password, and builds DATABASE_URL.
 3. Renders the LiteLLM config from config.yaml plus the optional provider routes in
-   providers.yaml whose key secret exists (external routes also need an opt-in).
+   providers.yaml whose key secret exists and whose family is opted in
+   (BYOK_ROUTES_ENABLED=true for byok, EXTERNAL_ROUTES_ENABLED=true for external).
 4. Strips env vars that must never reach LiteLLM, then execs `litellm --config ...`.
 
 The rendered config holds no secret values, only os.environ/<NAME> references.
@@ -23,9 +24,13 @@ from typing import Any, Callable, Mapping, Optional
 import yaml
 
 APP_ID = "llm-gateway"
-EXTERNAL_OPT_IN = "EXTERNAL_ROUTES_ENABLED"
+FAMILIES = ("byok", "external")
+# Both families send prompts to a third party over plain TLS. byok providers claim a TEE,
+# but nothing in this VM verifies their attestation, so they need the same explicit opt-in.
+OPT_IN = {"byok": "BYOK_ROUTES_ENABLED", "external": "EXTERNAL_ROUTES_ENABLED"}
 EXTERNAL_LABEL = "data leaves your cloud"
-BYOK_LABEL = "provider confidential VM; attestation not verified by this gateway"
+BYOK_LABEL = "data leaves your cloud; provider TEE attestation not verified by Sealed"
+LABELS = {"byok": BYOK_LABEL, "external": EXTERNAL_LABEL}
 CALLBACK = "sealed_usage.usage_logger"
 WEAK_MASTER_KEYS = {"sk-1234", "sk-", ""}
 
@@ -114,7 +119,7 @@ def load_yaml(path: str) -> dict[str, Any]:
 
 
 def route_entry(family: str, provider: Mapping[str, Any]) -> dict[str, Any]:
-    label = EXTERNAL_LABEL if family == "external" else BYOK_LABEL
+    label = LABELS[family]
     return {
         "model_name": f"{family}/{provider['id']}/*",
         "litellm_params": {
@@ -131,29 +136,27 @@ def route_entry(family: str, provider: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def external_opted_in(secrets: Secrets) -> bool:
-    value = secrets.get(EXTERNAL_OPT_IN)
+def opted_in(secrets: Secrets, family: str) -> bool:
+    value = secrets.get(OPT_IN[family])
     return value is not None and value.strip().lower() == "true"
 
 
 def select_providers(providers: Mapping[str, Any], secrets: Secrets) -> list[tuple[str, dict[str, Any]]]:
     """Return (family, provider) pairs whose routes should be rendered, in file order."""
     selected: list[tuple[str, dict[str, Any]]] = []
-    allow_external = external_opted_in(secrets)
-    for family in ("byok", "external"):
+    for family in FAMILIES:
+        allowed = opted_in(secrets, family)
         for provider in providers.get(family) or []:
             for field in ("id", "name", "secret", "api_base"):
                 if not provider.get(field):
                     raise ConfigError(f"providers.yaml: {family} entry is missing {field}")
-            if family == "external" and not allow_external:
-                continue
-            if secrets.get(provider["secret"]) is not None:
+            if allowed and secrets.get(provider["secret"]) is not None:
                 selected.append((family, provider))
     return selected
 
 
 def provider_secret_names(providers: Mapping[str, Any]) -> list[str]:
-    return [p["secret"] for family in ("byok", "external") for p in providers.get(family) or []]
+    return [p["secret"] for family in FAMILIES for p in providers.get(family) or []]
 
 
 def render(base: Mapping[str, Any], selected: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
@@ -169,7 +172,21 @@ def render(base: Mapping[str, Any], selected: list[tuple[str, dict[str, Any]]]) 
     callbacks = (config.get("litellm_settings") or {}).get("callbacks") or []
     if CALLBACK not in callbacks:
         raise ConfigError(f"base config must register the {CALLBACK} callback")
+    check_fallbacks(config, names)
     return config
+
+
+def check_fallbacks(config: Mapping[str, Any], names: set[Any]) -> None:
+    """Every router fallback must go from a served route to served, local-only routes."""
+    for item in (config.get("router_settings") or {}).get("fallbacks") or []:
+        if not isinstance(item, dict) or len(item) != 1:
+            raise ConfigError("router_settings.fallbacks entries must be {route: [routes]}")
+        (source, targets), = item.items()
+        if source not in names:
+            raise ConfigError(f"fallback source {source} is not a route")
+        for target in targets or []:
+            if target not in names or not str(target).startswith("local/"):
+                raise ConfigError(f"fallback target {target} must be a served local/ route")
 
 
 def child_env(
@@ -184,7 +201,8 @@ def child_env(
         out.pop(name, None)  # only keys of rendered routes stay visible to LiteLLM
     for _, provider in selected:
         out[provider["secret"]] = secrets.get(provider["secret"]) or ""
-    out.pop(EXTERNAL_OPT_IN, None)
+    for name in OPT_IN.values():
+        out.pop(name, None)
     out["LITELLM_MASTER_KEY"] = require(secrets, "LITELLM_MASTER_KEY")
     out["LITELLM_SALT_KEY"] = require(secrets, "LITELLM_SALT_KEY")
     out["DATABASE_URL"] = db_url
@@ -239,7 +257,8 @@ def prepare(env: Mapping[str, str], args: list[str]) -> tuple[list[str], dict[st
     summary = {
         "config": path,
         "routes": [entry["model_name"] for entry in config["model_list"]],
-        "external_opt_in": external_opted_in(secrets),
+        "byok_opt_in": opted_in(secrets, "byok"),
+        "external_opt_in": opted_in(secrets, "external"),
     }
     return litellm_argv(args, path), child_env(env, secrets, providers, selected, db_url), summary
 
@@ -261,6 +280,7 @@ def main(
         return 2
     print(
         "sealed-entrypoint: routes=" + ",".join(summary["routes"])
+        + f" byok_opt_in={str(summary['byok_opt_in']).lower()}"
         + f" external_opt_in={str(summary['external_opt_in']).lower()} config={summary['config']}",
         file=sys.stderr,
     )

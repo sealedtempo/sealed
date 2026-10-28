@@ -8,7 +8,7 @@ USER root
 
 # Remove both copies of the enterprise code (source dir and the litellm_enterprise
 # wheel), then fail the build if anything enterprise is still present or importable.
-RUN set -eux; \
+RUN --network=none set -eux; \
     SP=/app/.venv/lib/python3.13/site-packages; \
     test -d "$SP/litellm"; \
     rm -rf /app/enterprise "$SP/litellm_enterprise" "$SP"/litellm_enterprise-*.dist-info; \
@@ -17,13 +17,17 @@ RUN set -eux; \
     /app/.venv/bin/python -I -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('litellm_enterprise') is None else 1)"; \
     cd /app && /app/.venv/bin/python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('enterprise') is None else 1)"
 
-COPY config.yaml providers.yaml sealed_usage.py sealed_entrypoint.py /etc/litellm/
+COPY config.yaml providers.yaml app_keys.yaml sealed_usage.py sealed_entrypoint.py sealed_keys.py /etc/litellm/
 
-# Build-time checks against the real LiteLLM: the proxy still imports without the
-# enterprise package (offline), the callback is a CustomLogger instance, and the
-# entrypoint renders a config with throwaway secrets. Nothing from this step is kept.
-RUN set -eux; \
-    export LITELLM_LOCAL_MODEL_COST_MAP=True HF_HUB_OFFLINE=1; \
+# Build-time checks against the real LiteLLM, with no network (--network=none), so any
+# outbound call at import time fails the build: the proxy still imports without the
+# enterprise package, the callback is a CustomLogger instance, the entrypoint renders a
+# config with throwaway secrets, and the keys job (which runs as uid 65534) can read its
+# config. Nothing from this step is kept.
+RUN --network=none set -eux; \
+    export LITELLM_LOCAL_MODEL_COST_MAP=True LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True \
+           LITELLM_LOCAL_AUTOROUTER_PRESETS=True LITELLM_LOCAL_POLICY_TEMPLATES=True LITELLM_LOCAL_BLOG_POSTS=True \
+           HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 CHECKPOINT_DISABLE=1 PRISMA_OFFLINE_MODE=true; \
     /app/.venv/bin/python -I -c "import litellm.proxy.proxy_server"; \
     /app/.venv/bin/python -I -c "import sys; sys.path.insert(0, '/etc/litellm'); import sealed_usage; from litellm.integrations.custom_logger import CustomLogger; assert isinstance(sealed_usage.usage_logger, CustomLogger)"; \
     d="$(mktemp -d)"; mkdir -p "$d/secrets"; \
@@ -32,7 +36,8 @@ RUN set -eux; \
     printf 'build-check' > "$d/secrets/POSTGRES_PASSWORD"; \
     SEALED_SECRETS_DIR="$d/secrets" SEALED_LITELLM_RENDER_DIR="$d/out" \
       /app/.venv/bin/python -I /etc/litellm/sealed_entrypoint.py --render-only --port 4000; \
-    /app/.venv/bin/python -I -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1])); assert c['litellm_settings']['callbacks'] == ['sealed_usage.usage_logger']" "$d/out/config.yaml"; \
+    /app/.venv/bin/python -I -c "import sys, yaml; c = yaml.safe_load(open(sys.argv[1])); assert c['litellm_settings']['callbacks'] == ['sealed_usage.usage_logger']; assert c['router_settings']['fallbacks'] == [{'relay/default': ['local/qwen3-4b']}]" "$d/out/config.yaml"; \
+    /app/.venv/bin/python -I -c "import os, subprocess, sys; os.setgroups([]); os.setgid(65534); os.setuid(65534); sys.exit(subprocess.call(['/app/.venv/bin/python', '-I', '/etc/litellm/sealed_keys.py', '--check-config']))"; \
     rm -rf "$d" /etc/litellm/__pycache__ /root/.cache
 
 FROM scratch
