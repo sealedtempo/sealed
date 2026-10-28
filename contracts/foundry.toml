@@ -15,6 +15,9 @@ via_ir = false
 bytecode_hash = "ipfs"
 # Tempo network features in forge/cast/anvil (TIP-20 precompiles, Tempo gas schedule, Tempo transactions).
 network = "tempo"
+# Execute tests with the Tempo mainnet gas schedule (TIP-1010: 250k gas per new storage slot, 1000 gas per
+# deployed byte). t4 is the newest Tempo hardfork this Foundry release knows; mainnet is on T12 (see README).
+hardfork = "tempo:t4"
 auto_detect_remappings = false
 fs_permissions = [
     { access = "read-write", path = "./deployments" },
@@ -30,7 +33,7 @@ seed = "0x5ea1ed"
 [profile.default.invariant]
 runs = 128
 depth = 64
-fail_on_revert = false
+fail_on_revert = true
 
 [profile.ci.fuzz]
 runs = 1000
