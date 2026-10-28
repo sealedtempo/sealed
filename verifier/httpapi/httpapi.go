@@ -8,8 +8,8 @@
 //	GET  /healthz
 //
 // Verification results are always HTTP 200 with the report (check "ok"); 400 means the request itself was
-// unusable and 429 that MaxInFlight verifications are already running. Add ?format=text for the human-readable
-// report.
+// unusable, 403 that the caller's address is not an allowed client (or that this server does not fetch attest URLs)
+// and 429 that MaxInFlight verifications are already running. Add ?format=text for the human-readable report.
 package httpapi
 
 import (
@@ -19,7 +19,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,7 +57,15 @@ type Server struct {
 	VerifyTimeout time.Duration
 	// MaxInFlight bounds concurrent verifications and compositions; 0 means DefaultMaxInFlight.
 	MaxInFlight int
-	Log         *slog.Logger
+	// AllowedClients, when non-empty, are the only source addresses served (D-061: in a stack, the payer's
+	// address). The TCP peer address is used, never a forwarded header. Loopback may also call GET /healthz.
+	AllowedClients []netip.Prefix
+	// DisableLiveFetch refuses POST /v1/verify/live with a URL, so the server never fetches for a caller; only
+	// caller-fetched attestations are verified (the in-CVM sidecar, review V-1).
+	DisableLiveFetch bool
+	// MaxChainHeadAge bounds the age of the head block of every verification (D-060); 0 means the library default.
+	MaxChainHeadAge time.Duration
+	Log             *slog.Logger
 
 	slotsOnce sync.Once
 	slots     chan struct{}
@@ -67,7 +78,82 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/verify/live", s.limited(s.verifyLive))
 	mux.HandleFunc("POST /v1/compose", s.limited(s.compose))
 	mux.HandleFunc("GET /healthz", s.healthz)
-	return mux
+	if len(s.AllowedClients) == 0 {
+		return mux
+	}
+	return s.clientsOnly(mux)
+}
+
+// clientsOnly serves only requests whose TCP peer is in AllowedClients (D-061), before any body is read or a slot
+// is taken. Loopback (the daemon's own container) may also read GET /healthz.
+func (s *Server) clientsOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		addr, ok := peerAddr(r)
+		if ok && (s.allowedClient(addr) || (addr.IsLoopback() && r.Method == http.MethodGet && r.URL.Path == "/healthz")) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		s.log().Warn("refused request from a source that is not an allowed client", "remote", r.RemoteAddr, "path", r.URL.Path)
+		writeError(w, http.StatusForbidden, "this verifier serves only its configured clients")
+	})
+}
+
+func (s *Server) allowedClient(a netip.Addr) bool {
+	for _, p := range s.AllowedClients {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// peerAddr is the request's TCP peer address (r.RemoteAddr), with IPv4-mapped IPv6 addresses unmapped.
+func peerAddr(r *http.Request) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return a.Unmap(), true
+}
+
+// ParseClients parses a comma-separated list of IP addresses and CIDR prefixes (--allowed-clients).
+func ParseClients(list string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, item := range strings.Split(list, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(item); err == nil {
+			if p != p.Masked() {
+				return nil, fmt.Errorf("client prefix %q has host bits set (use %s)", item, p.Masked())
+			}
+			if p.Addr().Is4In6() && p.Bits() < 96 {
+				return nil, fmt.Errorf("client prefix %q is wider than the IPv4-mapped range", item)
+			}
+			out = append(out, netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-unmapBits(p.Addr())))
+			continue
+		}
+		a, err := netip.ParseAddr(item)
+		if err != nil || a.Zone() != "" {
+			return nil, fmt.Errorf("invalid client address %q (an IP address or a CIDR prefix)", item)
+		}
+		a = a.Unmap()
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	return out, nil
+}
+
+// unmapBits is 96 for an IPv4-mapped IPv6 address, whose prefix length shrinks by 96 bits once unmapped.
+func unmapBits(a netip.Addr) int {
+	if a.Is4In6() {
+		return 96
+	}
+	return 0
 }
 
 // limited runs h only when one of MaxInFlight slots is free, and answers 429 otherwise: the API is unauthenticated,
@@ -110,7 +196,13 @@ type RequestOptions struct {
 }
 
 func (s *Server) options(o RequestOptions) (verify.Options, error) {
-	opts := verify.Options{ChainID: s.ChainID, RequireOnchainRecord: true}
+	// A simulated quote can only pass on a dev daemon (--dev-allow-simulated with SEALED_DEV_SIM=1). Such a daemon
+	// opts in for every request; its consumers (the payer, the oracle) refuse simulated reports themselves unless
+	// they run in dev mode too, and every such report says simulated.
+	opts := verify.Options{
+		ChainID: s.ChainID, RequireOnchainRecord: true, MaxChainHeadAge: s.MaxChainHeadAge,
+		AcceptSimulated: s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated(),
+	}
 	if o.RequireRecord != nil {
 		opts.RequireOnchainRecord = *o.RequireRecord
 	}
@@ -260,6 +352,10 @@ func (s *Server) verifyLive(w http.ResponseWriter, r *http.Request) {
 		}
 		rep, err = verify.VerifyLiveSubmission(ctx, sub, s.Deps, opts)
 	} else {
+		if s.DisableLiveFetch {
+			writeError(w, http.StatusForbidden, `this verifier does not fetch attest URLs; send a caller-fetched attestation {"nonce", "attest", "observedTlsPubKeyHash", ...}`)
+			return
+		}
 		rep, err = verify.VerifyLive(ctx, req.URL, s.Deps, verify.LiveOptions{
 			Options: opts, Timeout: s.LiveTimeout, InsecureSkipTLSVerify: s.LiveInsecureTLS,
 			AllowedHosts: s.LiveAllowedHosts, AllowPrivateAddresses: s.LiveAllowPrivate,
@@ -329,6 +425,7 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 		"chainId":        s.ChainID,
 		"allowSimulated": s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated(),
 		"composer":       s.Deps.Composer != nil,
+		"liveFetch":      !s.DisableLiveFetch,
 	})
 }
 

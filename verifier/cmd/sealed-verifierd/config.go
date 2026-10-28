@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/sealed-dev/sealed/runtime/composer"
+	verify "github.com/sealed-dev/sealed/verifier"
 	"github.com/sealed-dev/sealed/verifier/attest"
 	"github.com/sealed-dev/sealed/verifier/bundles"
 	"github.com/sealed-dev/sealed/verifier/chain"
@@ -35,6 +37,13 @@ type config struct {
 	CacheTTL        time.Duration
 	LiveTimeout     time.Duration
 	LiveHosts       []string
+	// LiveFetch lets POST /v1/verify/live fetch a caller's attest URL. Off by default in a stack (--stack-config),
+	// where the payer submits what it fetched itself (review V-1).
+	LiveFetch bool
+	// AllowedClients are the only source addresses served when set (D-061: the payer's address in a stack).
+	AllowedClients []netip.Prefix
+	// MaxChainHeadAge bounds the age of the chain head of every verification (D-060).
+	MaxChainHeadAge time.Duration
 	MaxInFlight     int
 	AllowSimulated  bool
 	InsecureLiveTLS bool
@@ -66,7 +75,7 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	fs := flag.NewFlagSet("sealed-verifierd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	c := &config{}
-	var platform, apps, deployments, feeSplitter, chainID, ttl, liveHosts, maxInFlight, bases string
+	var platform, apps, deployments, feeSplitter, chainID, ttl, liveHosts, maxInFlight, bases, liveFetch, clients, headAge string
 	defaultListen := ":8088"
 	if p := env("PORT"); p != "" {
 		defaultListen = ":" + p // the composer's sealed-verifierd sidecar sets PORT
@@ -87,6 +96,9 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	fs.StringVar(&ttl, "collateral-ttl", or(env("SEALED_COLLATERAL_TTL"), attest.DefaultCollateralTTL.String()), "collateral cache TTL (SEALED_COLLATERAL_TTL)")
 	fs.DurationVar(&c.LiveTimeout, "live-timeout", 30*time.Second, "timeout of a live /attest round trip")
 	fs.StringVar(&liveHosts, "live-allowed-hosts", env("SEALED_VERIFIERD_LIVE_HOSTS"), "comma-separated attest hosts live verification may fetch, exact or *.domain (for example *.sslip.io,relay.example.com); any public host when empty (SEALED_VERIFIERD_LIVE_HOSTS)")
+	fs.StringVar(&liveFetch, "live-fetch", env("SEALED_VERIFIERD_LIVE_FETCH"), "true to let POST /v1/verify/live fetch a caller's attest URL, false to verify only caller-fetched attestations (SEALED_VERIFIERD_LIVE_FETCH); default false with --stack-config (the in-VM sidecar), else true")
+	fs.StringVar(&clients, "allowed-clients", env("SEALED_VERIFIERD_ALLOWED_CLIENTS"), "comma-separated source IP addresses or CIDR prefixes that may call the API, for example the payer's 172.30.0.5 in a stack (SEALED_VERIFIERD_ALLOWED_CLIENTS); every source when empty; loopback may always read /healthz")
+	fs.StringVar(&headAge, "max-chain-head-age", or(env("SEALED_VERIFIERD_MAX_CHAIN_HEAD_AGE"), verify.DefaultMaxChainHeadAge.String()), "oldest chain head a verification accepts, at most 5m; a staler RPC fails the chain check (SEALED_VERIFIERD_MAX_CHAIN_HEAD_AGE)")
 	fs.StringVar(&maxInFlight, "max-in-flight", or(env("SEALED_VERIFIERD_MAX_IN_FLIGHT"), strconv.Itoa(httpapi.DefaultMaxInFlight)), "concurrent verifications before answering 429 (SEALED_VERIFIERD_MAX_IN_FLIGHT)")
 	fs.BoolVar(&c.AllowSimulated, "dev-allow-simulated", false, "DEV ONLY: accept dev simulator quotes; requires SEALED_DEV_SIM=1")
 	fs.BoolVar(&c.InsecureLiveTLS, "dev-insecure-live-tls", false, "DEV ONLY: skip WebPKI checks of /attest certificates; requires SEALED_DEV_SIM=1")
@@ -110,6 +122,23 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 			c.LiveHosts = append(c.LiveHosts, h)
 		}
 	}
+	var err error
+	if c.AllowedClients, err = httpapi.ParseClients(clients); err != nil {
+		return nil, fmt.Errorf("--allowed-clients: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(liveFetch)) {
+	case "":
+		c.LiveFetch = c.StackConfigFile == ""
+	case "1", "true", "yes", "on":
+		c.LiveFetch = true
+	case "0", "false", "no", "off":
+		c.LiveFetch = false
+	default:
+		return nil, fmt.Errorf("--live-fetch: %q is not true or false", liveFetch)
+	}
+	if c.MaxChainHeadAge, err = time.ParseDuration(headAge); err != nil || c.MaxChainHeadAge <= 0 || c.MaxChainHeadAge > verify.MaxChainHeadAgeLimit {
+		return nil, fmt.Errorf("--max-chain-head-age: %q must be a duration above 0 and at most %s (D-060)", headAge, verify.MaxChainHeadAgeLimit)
+	}
 	var stack *stackConfig
 	if c.StackConfigFile != "" {
 		var err error
@@ -129,7 +158,6 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if c.RPCURL == "" {
 		c.RPCURL = "https://rpc.tempo.xyz"
 	}
-	var err error
 	if c.ChainID, err = strconv.ParseUint(chainID, 10, 64); err != nil || c.ChainID == 0 {
 		return nil, fmt.Errorf("invalid chain id %q", chainID)
 	}

@@ -205,11 +205,15 @@ func TestVerifyLiveEndpoint(t *testing.T) {
 	if rep := decodeReport(t, raw); rep.OK || len(rep.Failed()) != 1 || rep.Failed()[0] != verify.CheckDeploymentID {
 		t.Fatalf("another deployment's attestation accepted: %v", rep.Failed())
 	}
-	// Production servers refuse loopback and private destinations.
+	// Production servers refuse loopback and private destinations, and ports other than 443.
 	prod := h.variant(t, func(s *httpapi.Server) { s.LiveAllowPrivate = false })
-	_, raw = post(t, prod.URL+"/v1/verify/live", map[string]any{"url": attestSrv.URL + "/attest"})
+	_, raw = post(t, prod.URL+"/v1/verify/live", map[string]any{"url": "https://127.0.0.1/attest"})
 	if rep := decodeReport(t, raw); rep.OK || rep.Failed()[0] != verify.CheckLiveFetch || !strings.Contains(rep.Checks[0].Detail, "not a public address") {
 		t.Fatalf("loopback fetched: %+v", rep.Checks[0])
+	}
+	_, raw = post(t, prod.URL+"/v1/verify/live", map[string]any{"url": attestSrv.URL + "/attest"})
+	if rep := decodeReport(t, raw); rep.OK || rep.Failed()[0] != verify.CheckLiveFetch || !strings.Contains(rep.Checks[0].Detail, "port must be 443") {
+		t.Fatalf("port %s fetched: %+v", attestSrv.URL, rep.Checks[0])
 	}
 	allow := h.variant(t, func(s *httpapi.Server) { s.LiveAllowedHosts = []string{"*.sslip.io"} })
 	_, raw = post(t, allow.URL+"/v1/verify/live", map[string]any{"url": attestSrv.URL + "/attest"})
@@ -222,7 +226,8 @@ func TestVerifyLiveEndpoint(t *testing.T) {
 func (h *harness) variant(t *testing.T, edit func(*httpapi.Server)) *httptest.Server {
 	t.Helper()
 	s := &httpapi.Server{Deps: h.srv.Deps, ChainID: h.srv.ChainID, LiveInsecureTLS: h.srv.LiveInsecureTLS, LiveAllowPrivate: h.srv.LiveAllowPrivate,
-		LiveTimeout: h.srv.LiveTimeout, Log: h.srv.Log}
+		LiveTimeout: h.srv.LiveTimeout, Log: h.srv.Log, AllowedClients: h.srv.AllowedClients, DisableLiveFetch: h.srv.DisableLiveFetch,
+		MaxChainHeadAge: h.srv.MaxChainHeadAge}
 	edit(s)
 	api := httptest.NewServer(s.Handler())
 	t.Cleanup(api.Close)
