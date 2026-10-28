@@ -21,6 +21,8 @@ export interface AssetServer {
   /** Request paths served or refused, in order. */
   hits: Array<{ path: string; status: number }>;
   add(slug: string, version: string, bundle: Uint8Array): string;
+  /** Serves `bytes` at an absolute URL below the base (for example one `sealed release build` printed). */
+  addUrl(url: string, bytes: Uint8Array): void;
   url(slug: string, version: string): string;
   close(): Promise<void>;
 }
@@ -55,6 +57,10 @@ export async function startAssetServer(port = 0, host = "127.0.0.1"): Promise<As
     add(slug, version, bundle) {
       files.set(PREFIX + bundleAssetPath(slug, version), bundle);
       return base + bundleAssetPath(slug, version);
+    },
+    addUrl(url, bytes) {
+      if (!url.startsWith(`${base}/`)) throw new Error(`${url} is not below ${base}`);
+      files.set(new URL(url).pathname, bytes);
     },
     url: (slug, version) => base + bundleAssetPath(slug, version),
     close: () =>

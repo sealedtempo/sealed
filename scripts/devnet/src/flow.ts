@@ -60,6 +60,15 @@ export interface DevnetOptions {
   settleSeconds: number;
 }
 
+interface ReleaseAssetUrls {
+  tag: string;
+  bundle: string;
+  signature: string;
+  certificate: string;
+  provenance: string;
+  sbom: Record<string, string>;
+}
+
 interface Release {
   app: string;
   appId: Hex;
@@ -70,6 +79,30 @@ interface Release {
   releaseId: Hex;
   bundle: Uint8Array;
   unbuilt: string[];
+  /** Where release CI publishes this release's assets (runtime/composer's rule, printed by sealed release build). */
+  assets: ReleaseAssetUrls;
+}
+
+/** The SLSA builder id the devnet's provenance names (release CI uses the slsa-github-generator). */
+const DEVNET_BUILDER = "https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@refs/tags/v2.1.0";
+
+/** A one-line .intoto.jsonl: a DSSE envelope around an in-toto statement with a SLSA v1 predicate (unsigned). */
+function provenanceJsonl(name: string, sha256: Hex): Uint8Array {
+  const statement = {
+    _type: "https://in-toto.io/Statement/v1",
+    subject: [{ name, digest: { sha256: sha256.slice(2) } }],
+    predicateType: "https://slsa.dev/provenance/v1",
+    predicate: {
+      buildDefinition: {
+        buildType: "https://github.com/slsa-framework/slsa-github-generator/generic@v1",
+        externalParameters: { workflow: { repository: "https://github.com/sealedtempo/sealed", ref: "refs/heads/main", path: ".github/workflows/release.yml" } },
+        resolvedDependencies: [{ uri: "git+https://github.com/sealedtempo/sealed@refs/heads/main", digest: { gitCommit: "0".repeat(40) } }],
+      },
+      runDetails: { builder: { id: DEVNET_BUILDER } },
+    },
+  };
+  const env = { payloadType: "application/vnd.in-toto+json", payload: Buffer.from(JSON.stringify(statement)).toString("base64"), signatures: [] };
+  return new TextEncoder().encode(`${JSON.stringify(env)}\n`);
 }
 
 interface Composed {
@@ -239,15 +272,23 @@ export class Devnet {
       const out = join(bundleDir, `${app}.tar`);
       // The catalog's images are not built yet (all-zero digests, D-028): only a dev build of the bundle is possible.
       const json = await this.sup.runOk(`release-build-${app}`, this.o.bins.sealed, [
-        "release", "build", app, "--catalog", join(this.o.repo, "catalog", "apps"), "--out", out, "--allow-missing-sbom", "--dev-allow-unbuilt", "--json",
+        "release", "build", app, "--catalog", join(this.o.repo, "catalog", "apps"), "--out", out, "--allow-missing-sbom", "--dev-allow-unbuilt",
+        "--release-asset-base", this.assets.base, "--json",
       ], { cleanEnv: true, env: { PATH: process.env.PATH, HOME: this.path("home"), SEALED_DEV_SIM: "1" } });
-      const doc = JSON.parse(json) as { release: { appId: Hex; slug: string; version: string; bundleHash: Hex; egressPolicyHash: Hex; sbomHash: Hex; releaseId: Hex }; unbuilt?: string[] };
+      const doc = JSON.parse(json) as {
+        release: { appId: Hex; slug: string; version: string; bundleHash: Hex; egressPolicyHash: Hex; sbomHash: Hex; releaseId: Hex };
+        unbuilt?: string[];
+        assets: ReleaseAssetUrls;
+      };
       const r = doc.release;
       const bundle = new Uint8Array(readFileSync(out));
       checkEq(sha256Hex(bundle), r.bundleHash, `${app} bundleHash = sha256(bundle.tar)`);
       checkEq(r.appId, computeAppId(app), `${app} appId`);
       checkEq(r.releaseId, computeReleaseId(r.appId, r.version, r.bundleHash), `${app} releaseId`);
-      this.releases.set(app, { app, appId: r.appId, version: r.version, bundleHash: r.bundleHash, egressPolicyHash: r.egressPolicyHash, sbomHash: r.sbomHash, releaseId: r.releaseId, bundle, unbuilt: doc.unbuilt ?? [] });
+      // The composer's asset rule (Go) and the devnet's copy agree; the bundle is served where the Go rule says.
+      checkEq(doc.assets.bundle, this.assets.url(app, r.version), `${app} bundle URL (D-046)`);
+      checkEq(doc.assets.provenance, `${doc.assets.bundle}.intoto.jsonl`, `${app} provenance URL`);
+      this.releases.set(app, { app, appId: r.appId, version: r.version, bundleHash: r.bundleHash, egressPolicyHash: r.egressPolicyHash, sbomHash: r.sbomHash, releaseId: r.releaseId, bundle, unbuilt: doc.unbuilt ?? [], assets: doc.assets });
     }
     this.log.ok(`built ${this.releases.size} bundles (${[...this.releases.values()].map((r) => `${r.app} ${r.version}`).join(", ")})`);
     const unbuilt = [...this.releases.values()].filter((r) => r.unbuilt.length > 0).map((r) => r.app);
@@ -255,8 +296,13 @@ export class Devnet {
 
     for (const r of this.releases.values()) {
       await this.chain.write(KEYS.owner, "AppRegistry", "registerApp", [r.appId, r.app, `${r.app} (devnet)`, "Apache-2.0", ADDR.maintainer, MAINTAINER_SHARE_BPS, `https://example.invalid/${r.app}`]);
-      const url = this.assets.add(r.app, r.version, r.bundle);
-      await this.chain.write(KEYS.ops, "AppRegistry", "publishRelease", [r.appId, r.version, r.bundleHash, r.egressPolicyHash, r.sbomHash, `${url}.intoto.jsonl`, `${url}.sig`]);
+      // The release's assets where release CI publishes them: bundle, provenance, one (empty) SBOM per image.
+      this.assets.addUrl(r.assets.bundle, r.bundle);
+      this.assets.addUrl(r.assets.provenance, provenanceJsonl(`${r.app}-${r.version}.bundle.tar`, r.bundleHash));
+      for (const [image, url] of Object.entries(r.assets.sbom)) {
+        this.assets.addUrl(url, new TextEncoder().encode(JSON.stringify({ spdxVersion: "SPDX-2.3", name: image, packages: [] })));
+      }
+      await this.chain.write(KEYS.ops, "AppRegistry", "publishRelease", [r.appId, r.version, r.bundleHash, r.egressPolicyHash, r.sbomHash, r.assets.provenance, r.assets.signature]);
       checkEq(await this.chain.read<Hex>("AppRegistry", "latestRelease", [r.appId]), r.releaseId, `${r.app} latestRelease`);
       check(await this.chain.read<boolean>("AppRegistry", "isApprovableRelease", [r.releaseId]), `${r.app} release approvable`);
       const app = await this.chain.read<{ maintainer: Address; maintainerShareBps: number }>("AppRegistry", "getApp", [r.appId]);
@@ -420,6 +466,29 @@ export class Devnet {
     this.apiUrl = api.url;
     this.log.ok(`platform api ${api.url} (oracle key = the local test oracle signer, OPS = the registrar key, indexer from block ${this.chain.c.deployBlock})`);
     void a;
+    await this.checkCatalog();
+  }
+
+  /** The api's catalog (indexer plus release assets by the D-046 rule) as the console shows it. */
+  private async checkCatalog(): Promise<void> {
+    await waitFor("the api indexer has every release", async () => (await this.pg.psql("SELECT count(*) FROM releases WHERE status = 'active'")) === String(CATALOG_APPS.length) || undefined, { timeoutMs: 30_000 });
+    checkEq(await this.pg.psql("SELECT count(*) || ' ' || count(*) FILTER (WHERE is_debug) FROM images"), "2 1", "indexed images (one debug)");
+    const list = await http<Array<{ id: string; latestRelease: { releaseId: Hex } | null }>>(`${this.apiUrl}/v1/catalog/apps`);
+    checkEq(list.status, 200, "GET /v1/catalog/apps");
+    checkEq(list.body.map((x) => x.id).sort().join(","), [...STACK_APPS].sort().join(","), "the customer catalog lists the five apps (the relay stays hidden)");
+    for (const app of list.body) checkEq(app.latestRelease?.releaseId ?? "", (this.releases.get(app.id) as Release).releaseId, `${app.id} latest release in the catalog`);
+    for (const r of this.releases.values()) {
+      const rels = await http<Array<{ releaseId: Hex; assetsError?: string; provenance: { url: string; builder: string; sourceRepo: string }; sbom: { url: string } }>>(`${this.apiUrl}/v1/catalog/apps/${r.app}/releases`);
+      const rel = rels.body.find((x) => lower(x.releaseId) === r.releaseId);
+      check(rel, `${r.app} release listed`);
+      check(rel.assetsError === undefined, `${r.app}: the api fetched the bundle by the asset rule and checked bundleHash (${rel.assetsError})`);
+      checkEq(rel.provenance.url, r.assets.provenance, `${r.app} provenance link`);
+      checkEq(rel.provenance.builder, DEVNET_BUILDER, `${r.app}: the api read the provenance where release CI publishes it`);
+      checkEq(rel.provenance.sourceRepo, "https://github.com/sealedtempo/sealed", `${r.app} provenance source`);
+      check(Object.values(r.assets.sbom).includes(rel.sbom.url), `${r.app}: the SBOM link is a published asset (${rel.sbom.url})`);
+      checkEq((await fetch(rel.sbom.url)).status, 200, `${r.app} SBOM link resolves`);
+    }
+    this.log.ok(`the api indexed ${CATALOG_APPS.length} releases and 2 images; GET /v1/catalog/apps lists the five apps; every release's bundle, provenance (builder, source) and SBOM link resolve at the composer's asset URLs`);
   }
 
   // --- 6. boot ---------------------------------------------------------------------------------------------------
@@ -1061,6 +1130,7 @@ export class Devnet {
     const a = run.composed;
     await this.chain.write(KEYS.customer, "DeploymentRegistry", "revokeStack", [a.stackHash]);
     check(!(await this.chain.read<boolean>("DeploymentRegistry", "isStackApproved", [ADDR.customer, a.stackHash])), "stack no longer approved");
+    await waitFor("the api indexer sees the revoked approval", async () => (await this.pg.psql(`SELECT revoked FROM stack_approvals WHERE stack_hash = '${a.stackHash}'`)) === "t" || undefined, { timeoutMs: 20_000 });
     await run.proc.stop();
     this.clearTmpfs(run.paths);
     const denied = await this.deniedBoot(a, run.name, this.simEndpoints.get(a.name) as string, "stack_not_approved", run.paths, run.port);
@@ -1091,7 +1161,11 @@ export class Devnet {
     check(!(await this.chain.read<boolean>("AppRegistry", "isApprovableRelease", [rel.releaseId])), "release revoked");
     check(!(await this.chain.read<boolean>("DeploymentRegistry", "isStackApproved", [ADDR.customer, a.stackHash])), "a stack with a revoked release is no longer approved");
     check(await this.chain.reverts(KEYS.customer, "DeploymentRegistry", "approveStack", [a.stackHash, a.releaseIds, a.imageId, 0n]), "re-approving cannot undo a revoked release");
-    this.log.ok(`owner revoked llm-gateway ${rel.version} (${rel.releaseId}); the approval cannot be restored`);
+    const indexed = await waitFor("the api indexer sees the revoked release", async () => (await this.pg.psql(`SELECT status || ' ' || revoke_reason FROM releases WHERE release_id = '${rel.releaseId}'`)).startsWith("revoked") ? true : undefined, { timeoutMs: 20_000 });
+    check(indexed, "release indexed as revoked");
+    const listed = await http<Array<{ releaseId: Hex; revocation?: { reason: string } }>>(`${this.apiUrl}/v1/catalog/apps/llm-gateway/releases`);
+    checkEq(listed.body.find((x) => lower(x.releaseId) === rel.releaseId)?.revocation?.reason ?? "", "devnet incident drill", "the catalog shows the revocation and its reason");
+    this.log.ok(`owner revoked llm-gateway ${rel.version} (${rel.releaseId}); the approval cannot be restored; the api's catalog shows the revocation`);
     await run.proc.stop();
     this.clearTmpfs(run.paths);
     const denied = await this.deniedBoot(a, run.name, this.simEndpoints.get(a.name) as string, "stack_not_approved", run.paths, run.port);
