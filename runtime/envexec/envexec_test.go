@@ -101,6 +101,26 @@ func TestLoadSecrets(t *testing.T) {
 	}
 }
 
+// TestEmptySecretFiles covers the per-file mounts (D-042): sealed-agent
+// writes an empty file for an optional secret the customer did not set.
+func TestEmptySecretFiles(t *testing.T) {
+	dir := t.TempDir()
+	app := filepath.Join(dir, "crm")
+	_ = os.MkdirAll(app, 0o755)
+	_ = os.WriteFile(filepath.Join(app, "SMTP"), nil, 0o444)
+	_ = os.WriteFile(filepath.Join(app, "APP_SECRET"), []byte("v"), 0o444)
+	got, err := loadSecrets(&runOptions{App: "crm", SecretsDir: dir, Required: []string{"APP_SECRET"}, Optional: []string{"SMTP"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["SMTP"]; ok || got["APP_SECRET"] != "v" {
+		t.Fatalf("empty optional secret exported: %q", got)
+	}
+	if _, err := loadSecrets(&runOptions{App: "crm", SecretsDir: dir, Required: []string{"SMTP"}}); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty required secret accepted: %v", err)
+	}
+}
+
 func TestBuildEnv(t *testing.T) {
 	env := buildEnv([]string{"PATH=/bin", "APP_SECRET=old", "X=1"}, map[string]string{"APP_SECRET": "new", "B": "2"})
 	want := "PATH=/bin X=1 APP_SECRET=new B=2"
