@@ -42,7 +42,7 @@ Docker gives containers CAP_NET_RAW by default and the bridge has no ARP or IP a
 - Proxy requests: `Proxy-Authorization: Basic base64(<caller>:<token>)`, which HTTP clients send for a proxy URL `http://<caller>:<token>@172.30.0.2:3128`. Missing or wrong credentials get `407` with `Proxy-Authenticate: Basic realm="sealed-egress"` and `X-Sealed-Egress: auth-required`, and count as `unauthenticated:0`. The header is stripped before plain HTTP requests are forwarded.
 - `GET /v1/stats` from a reader that is a `proxyAuth` caller needs `Authorization: Bearer <token>`.
 - Composer wiring: one named volume mounted read-write at `/run/sealed-egress/auth` in sealed-egress (the image creates that directory owned by nonroot, so a new volume inherits the owner), and read-only in each `proxyAuth` caller with `volume.subpath: <caller>` (or the whole volume where subpaths are unsupported; only platform sidecars ever mount it). The caller reads its token at startup, and re-reads it after a 407.
-- DNS cannot carry credentials. A spoofer can only resolve names already on that caller's allowlist and receives no answers without also poisoning ARP, which is why app services should also run with `cap_drop: [NET_RAW]`.
+- DNS cannot carry credentials. A spoofer can only resolve names already on that caller's allowlist and receives no answers without also poisoning ARP. It can use up that caller's DNS query budget (UDP needs no reply), which does not affect proxied traffic since the proxy resolves names itself, and with ARP poisoning it could hold the caller's reserved connection slots or simply drop its packets. Credentials protect what a spoofer can reach, not availability, which is why app services should also run with `cap_drop: [NET_RAW]`.
 
 ## Destination checks
 
