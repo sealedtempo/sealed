@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  type DstackEvent,
   decodeSimQuote,
   encodeSimQuote,
   eventDigestV1,
@@ -9,10 +12,12 @@ import {
   replayRtmr3,
   SIM_MEASUREMENTS,
   sealedEventLog,
+  signedQuoteLength,
+  trimQuote,
   verifySealedEventLog,
 } from "../src/dstack.js";
 import { bytesToBareHex, hexToBytes, utf8 } from "../src/hex.js";
-import { sha256Hex } from "../src/ids.js";
+import { eventLogHash, quoteHash, sha256Hex } from "../src/ids.js";
 
 // Golden vectors from runtime/composer/testdata/dstack (docs/notes/dstack.md 6.3).
 const SAMPLE_COMPOSE =
@@ -70,5 +75,68 @@ describe("simulated quotes (INTERFACES 15)", () => {
     expect(isSimQuote(q)).toBe(true);
     expect(decodeSimQuote(q).rtmr3).toBe("aa".repeat(48));
     expect(isSimQuote(utf8("\x04\x00real quote"))).toBe(false);
+  });
+});
+
+// Real quotes: the runtime spike's dstack 0.6.1 capture on GCP C3 TDX and go-tdx-guest's samples, shared with the Go
+// verifier (verifier/attest/testdata, see its README.md). The Go golden test asserts the same expected.json values.
+const attestData = join(import.meta.dirname, "../../../verifier/attest/testdata");
+const gcp = (f: string) => readFileSync(join(attestData, "gcp", f));
+const gcpExpected = JSON.parse(gcp("expected.json").toString()) as {
+  signedQuoteLength: number;
+  getQuoteLength: number;
+  quoteHash: string;
+  eventLogHash: string;
+  rtmr3: string;
+};
+
+describe("trimQuote on real TDX quotes", () => {
+  const raw = hexToBytes(gcp("quote-raw.hex").toString().trim());
+  const signed = new Uint8Array(gcp("quote.dat"));
+
+  it("cuts dstack's zero padding to the signed quote the verifier accepts", () => {
+    expect(raw.length).toBe(gcpExpected.getQuoteLength);
+    expect(signedQuoteLength(raw)).toBe(gcpExpected.signedQuoteLength);
+    const trimmed = trimQuote(raw);
+    expect(bytesToBareHex(trimmed)).toBe(bytesToBareHex(signed));
+    expect(quoteHash(trimmed)).toBe(`0x${gcpExpected.quoteHash}`);
+    expect(quoteHash(raw)).not.toBe(`0x${gcpExpected.quoteHash}`);
+    expect(trimQuote(signed)).toBe(signed);
+  });
+
+  it("refuses non-zero trailing bytes and truncated quotes", () => {
+    const junk = raw.slice();
+    junk[junk.length - 1] = 1;
+    expect(() => trimQuote(junk)).toThrow("not zero padding");
+    expect(() => trimQuote(signed.slice(0, signed.length - 1))).toThrow("signature data ends");
+    expect(() => trimQuote(signed.slice(0, 600))).toThrow("truncated");
+    const sgx = signed.slice();
+    sgx[4] = 0; // tee type SGX
+    expect(() => trimQuote(sgx)).toThrow("not a TDX quote");
+    const v3 = signed.slice();
+    v3[0] = 3;
+    expect(() => trimQuote(v3)).toThrow("version 3");
+  });
+
+  it("matches the Go verifier on go-tdx-guest's v4 and v5 samples", () => {
+    const sample = (n: string) => new Uint8Array(readFileSync(join(attestData, "quotes", `${n}.dat`)));
+    const v5 = sample("v5_sample"); // exactly signed
+    expect(trimQuote(v5)).toBe(v5);
+    const gce = sample("v4_gce_cos113"); // GCE COS 113: also an 8000-byte zero-padded buffer
+    expect(gce.length).toBe(8000);
+    expect(trimQuote(gce).length).toBe(4935); // the Go side: gceQuote() in verifier/attest/quote_test.go
+    expect(() => trimQuote(sample("v4_spr_e4"))).toThrow("not zero padding"); // 39 non-zero unsigned bytes
+  });
+
+  it("leaves simulated quotes alone", () => {
+    const q = encodeSimQuote({ ...SIM_MEASUREMENTS, rtmr3: "aa".repeat(48), reportData: "bb".repeat(64), debug: false });
+    expect(trimQuote(q)).toBe(q);
+  });
+
+  it("hashes and replays the real event log like the verifier", () => {
+    const log = JSON.parse(gcp("eventlog.json").toString()) as DstackEvent[];
+    expect(eventLogHash(log)).toBe(`0x${gcpExpected.eventLogHash}`);
+    const appCompose = gcp("app-compose.json").toString();
+    expect(bytesToBareHex(verifySealedEventLog(log, appCompose))).toBe(gcpExpected.rtmr3);
   });
 });

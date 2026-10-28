@@ -17,7 +17,13 @@ import (
 // recordedTime returns the time the PCS responses in testdata/pcs/<name> were recorded.
 func recordedTime(t *testing.T, name string) time.Time {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("testdata", "pcs", name, "recorded.json"))
+	return recordedTimeDir(t, filepath.Join("testdata", "pcs", name))
+}
+
+// recordedTimeDir returns the time the PCS responses in the collateral cache directory dir were recorded.
+func recordedTimeDir(t *testing.T, dir string) time.Time {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "recorded.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,9 +40,16 @@ func recordedTime(t *testing.T, name string) time.Time {
 // `after`.
 func recordedVerifier(t *testing.T, name string, policy TCBPolicy, after time.Duration) *Verifier {
 	t.Helper()
-	at := recordedTime(t, name)
+	return recordedVerifierDir(t, filepath.Join("testdata", "pcs", name), policy, after)
+}
+
+// recordedVerifierDir is recordedVerifier for the collateral cache directory dir. The cache serves the recorded
+// entries at their recording time; the verifier checks certificates, CRLs and collateral at that time plus after.
+func recordedVerifierDir(t *testing.T, dir string, policy TCBPolicy, after time.Duration) *Verifier {
+	t.Helper()
+	at := recordedTimeDir(t, dir)
 	getter, err := NewCachingGetter(CacheOptions{
-		Dir:   filepath.Join("testdata", "pcs", name),
+		Dir:   dir,
 		TTL:   100 * 365 * 24 * time.Hour,
 		Inner: offlineGetter{},
 		Now:   func() time.Time { return at },

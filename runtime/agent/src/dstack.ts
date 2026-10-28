@@ -1,11 +1,12 @@
 // Client for the dstack guest agent (v0 API) on /var/run/dstack.sock (DSTACK_SOCKET), or the dev
 // simulator (DSTACK_SIMULATOR_ENDPOINT, a unix socket path or http URL, honored only with SEALED_DEV_SIM=1).
-import { bytesToBareHex, type DstackEvent, equalBytes, hexToBytes } from "@sealed/core";
+import { bytesToBareHex, type DstackEvent, equalBytes, hexToBytes, trimQuote } from "@sealed/core";
 import { type Endpoint, localJson, parseEndpoint } from "./http.js";
 
 export const DEFAULT_DSTACK_SOCKET = "/var/run/dstack.sock";
 
 export interface Quote {
+  /** Exactly the signed quote: the guest agent's zero padding is cut, so quoteHash = sha256(quote). */
   quote: Uint8Array;
   eventLog: DstackEvent[];
   reportData: Uint8Array;
@@ -38,7 +39,9 @@ export class DstackClient implements QuoteProvider {
     if (!equalBytes(echoed, reportData)) throw new Error("guest agent returned a different report_data");
     const eventLog = JSON.parse(res.event_log) as DstackEvent[];
     if (!Array.isArray(eventLog)) throw new Error("event_log is not an array");
-    return { quote: hexToBytes(res.quote), eventLog, reportData: echoed, vmConfig: res.vm_config };
+    // dstack 0.6.1 returns the quote in a zero-filled 8000-byte buffer; the verifier and the key broker refuse
+    // the unsigned padding (verifier/attest/testdata/gcp).
+    return { quote: trimQuote(hexToBytes(res.quote)), eventLog, reportData: echoed, vmConfig: res.vm_config };
   }
 
   async appCompose(): Promise<string> {
