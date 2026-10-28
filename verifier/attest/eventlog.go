@@ -5,9 +5,10 @@ import (
 	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/sealed-dev/sealed/verifier/internal/strictjson"
 )
 
 // DstackRuntimeEventType is the event_type of dstack runtime (RTMR3) events.
@@ -55,7 +56,7 @@ type RuntimeParams struct {
 // ParseEventLog parses a dstack event log JSON array.
 func ParseEventLog(raw []byte) ([]Event, error) {
 	var evs []Event
-	if err := json.Unmarshal(raw, &evs); err != nil {
+	if err := strictjson.Unmarshal(raw, &evs); err != nil {
 		return nil, fmt.Errorf("%w: event log: %v", ErrRTMR3Replay, err)
 	}
 	return evs, nil
