@@ -365,7 +365,7 @@ func caddyInput(cfg *Config, routes []plannedRoute) (caddy.Input, error) {
 }
 
 func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte, error) {
-	hp := func(field, raw string) (string, error) { return endpointHostPort(field, raw) }
+	hp := endpointHostPort
 	keyBroker, err := hp("endpoints.keyBroker", cfg.Endpoints.KeyBroker)
 	if err != nil {
 		return nil, err
