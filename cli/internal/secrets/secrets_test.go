@@ -345,7 +345,7 @@ func TestRealCatalogManifests(t *testing.T) {
 			}
 		}
 	}
-	if _, ok := p.Find("crm", "ENCRYPTION_KEY"); !ok {
+	if _, ok := p.Find("crm", "PG_DATABASE_PASSWORD"); !ok {
 		t.Fatal("crm secrets missing from the plan")
 	}
 }

@@ -137,7 +137,7 @@ func ConfigDocAt(addrs chain.Addresses, customer common.Address, imageID [32]byt
 		"egressAdditions": map[string]any{}, "allowedVpcRanges": []any{},
 		"endpoints": map[string]any{
 			"keyBroker": "https://sealed-key-broker-xyz.a.run.app", "platformApi": "https://api.sealed.example",
-			"tempoRpc": "https://rpc.tempo.xyz", "relay": "https://relay.sealed.example",
+			"tempoRpc": "https://rpc.tempo.xyz", "relay": "https://attest.relay.sealed.example",
 			"relayAttest": "https://attest.relay.sealed.example/attest",
 		},
 		"contracts": map[string]any{
@@ -213,7 +213,7 @@ func (w *World) Evidence(t testing.TB) map[string]any {
 	t.Helper()
 	stack := w.Result.StackHash
 	evs, rtmr3 := w.runtimeEvents(t)
-	rd := attest.EvidenceReportData(stack, w.Result.ConfigHash, w.EnclaveSigner, w.Nonce2)
+	rd := attest.EvidenceReportData(stack, w.Result.ConfigHash, w.EnclaveSigner, w.Nonce2, w.AttestedAt)
 	quote := attest.NewSimQuote(attest.SimQuoteParams{RTMR3: rtmr3, ReportData: rd})
 	evJSON, _ := json.Marshal(evs)
 	evCanon, err := cjson.Canonicalize(evJSON)

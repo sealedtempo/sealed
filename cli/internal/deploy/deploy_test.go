@@ -140,7 +140,7 @@ apps:
     release: 2.3.4
 endpoints:
   platformApi: https://api.sealed.example
-  relay: https://relay.sealed.example
+  relay: https://attest.relay.sealed.example
   relayAttest: https://attest.relay.sealed.example/attest
 relayOwner: "0x00000000000000000000000000000000000000b1"
 egressAdditions:
