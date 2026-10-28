@@ -2,9 +2,11 @@ package composer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,38 @@ func TestReleaseAssetBaseMatchesDefaults(t *testing.T) {
 	}
 	if _, err := NewReleaseAssets(d.Catalog.ReleaseAssetBase, "crm", "1.0.0"); err != nil {
 		t.Fatalf("catalog.release_asset_base: %v", err)
+	}
+}
+
+// sealed-verifierd fetches relay bundles from catalog.release_asset_base, so its egress names that host.
+func TestReleaseAssetHostsMatchDefaults(t *testing.T) {
+	d, err := LoadDefaults(filepath.Join("..", "..", "config", "defaults.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(d.Catalog.ReleaseAssetBase)
+	if err != nil || u.Scheme != "https" {
+		t.Fatalf("catalog.release_asset_base %q: %v", d.Catalog.ReleaseAssetBase, err)
+	}
+	if releaseAssetHosts[0] != u.Hostname()+":443" {
+		t.Fatalf("verifierd egress %v does not name the release asset host %s", releaseAssetHosts, u.Hostname())
+	}
+}
+
+// The in-VM verifierd's live checks may fetch only the relay's attest host.
+func TestVerifierdLiveHosts(t *testing.T) {
+	cfg, bundles := fixtureStack(t)
+	r := mustCompose(t, cfg, bundles...)
+	var doc struct {
+		Services map[string]struct {
+			Environment map[string]string `json:"environment"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(r.ComposeJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Services["sealed-verifierd"].Environment["SEALED_VERIFIERD_LIVE_HOSTS"]; got != "attest.relay.sealed.example" {
+		t.Fatalf("SEALED_VERIFIERD_LIVE_HOSTS = %q", got)
 	}
 }
 

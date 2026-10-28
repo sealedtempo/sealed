@@ -97,6 +97,12 @@ const (
 // Intel PCS hosts the in-VM verifier needs for quote collateral and CRLs.
 var intelPCSHosts = []string{"api.trustedservices.intel.com:443", "certificates.trustedservices.intel.com:443"}
 
+// releaseAssetHosts are where sealed-verifierd fetches the relay stack's release bundles to recompute
+// it (D-046): the host of catalog.release_asset_base and the host GitHub redirects release asset
+// downloads to (observed 2026-10-28). Without them stack_recompute fails closed and the payer never
+// opens the relay. TestReleaseAssetHostsMatchDefaults keeps the first in step with config/defaults.yaml.
+var releaseAssetHosts = []string{"github.com:443", "release-assets.githubusercontent.com:443"}
+
 // Compose builds the stack for a config and its release bundles using the
 // embedded runtime images.
 func Compose(cfg *Config, bundles []*Bundle) (*Result, error) {
@@ -589,7 +595,7 @@ func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte
 		}
 		callers = append(callers,
 			caller{svcPayer, PayerIP, []string{relay, tempoRPC}},
-			caller{svcVerifierd, VerifierdIP, append([]string{tempoRPC, relayAttest}, intelPCSHosts...)})
+			caller{svcVerifierd, VerifierdIP, append(append([]string{tempoRPC, relayAttest}, intelPCSHosts...), releaseAssetHosts...)})
 	}
 	for _, a := range apps {
 		allow := append(append([]string{}, a.bundle.Egress.DefaultAllow...), a.additions...)

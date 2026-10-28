@@ -636,7 +636,7 @@ func TestEgressConfigCallers(t *testing.T) {
 		"sealed-agent--app-notes@172.30.2.3":       agent,
 		"caddy@172.30.0.4":                         "acme-v02.api.letsencrypt.org:443",
 		"sealed-mpp-payer@172.30.0.5":              "attest.relay.sealed.example:443 rpc.tempo.xyz:443",
-		"sealed-verifierd@172.30.0.6":              "api.trustedservices.intel.com:443 attest.relay.sealed.example:443 certificates.trustedservices.intel.com:443 rpc.tempo.xyz:443",
+		"sealed-verifierd@172.30.0.6":              "api.trustedservices.intel.com:443 attest.relay.sealed.example:443 certificates.trustedservices.intel.com:443 github.com:443 release-assets.githubusercontent.com:443 rpc.tempo.xyz:443",
 		"llm-gateway-proxy--apps@172.30.0.16":      "",
 		"llm-gateway-proxy@172.30.1.16":            "",
 		"notes-web--apps@172.30.0.17":              notes,

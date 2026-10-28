@@ -1,8 +1,8 @@
 {
   "composerVersion": "1.2.0",
-  "stackHash": "0x4f10b1218540ab86f50973eb5fde3d3350bd32a595abf9c9e066b0c58cffc375",
+  "stackHash": "0xafa301f71e2b345d0dd6cfb51c3d86025c2c62d3b689d2109bc97ac637667c70",
   "configHash": "0x0e39d2181f11cab8c4eb266e53b9f27b6d04216bf9415dd49aa15d000de51e44",
-  "deploymentId": "0xa27e8fa0010d1ab69d40f09aa7ba55163dfdf5e6271dca74aa5b6a87bbcd59f0",
+  "deploymentId": "0xaf2663bb25f72d5fb41449e9fc777c34b23879c5cfb1c78e178873aa90fa3153",
   "releases": [
     {
       "appId": "0x55fd8d795c5b9d2a906e1540ade043a6fb75de555aeb3800c4dd8cf3079b5dda",
@@ -26,9 +26,9 @@
   "files": {
     "Caddyfile": "0x2c2028faa448330b258698d751d01ea8fa9d53680f7d4bce36bdb22f7b6996cf",
     "Caddyfile.payment-needed": "0xe80b6124dcf5116781f99b5e581907b6f718a84d5309b1a9e99a7ea626b3cfdb",
-    "app-compose.json": "0x4f10b1218540ab86f50973eb5fde3d3350bd32a595abf9c9e066b0c58cffc375",
+    "app-compose.json": "0xafa301f71e2b345d0dd6cfb51c3d86025c2c62d3b689d2109bc97ac637667c70",
     "config.json": "0x0e39d2181f11cab8c4eb266e53b9f27b6d04216bf9415dd49aa15d000de51e44",
-    "egress.json": "0x427f04e81219c6a5ba6809fd804d489ee7b790e85f6c29e4883a3da1903cc868",
+    "egress.json": "0xe8765bc18d5785a426560da35dcb6810dc04b0fe61e69ef3124b6ef0c6a831f8",
     "pre-launch.sh": "0x88cf133454284f9dadc1f2b473d73cec523821e1b6a51ce697f2c6f0c00018db",
     "stack.json": "0x5da8944e0d5764d88c434ca114528a96359c966db3f2365305ba83edc04255d1"
   }

@@ -2,6 +2,7 @@ package composer
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -193,6 +194,13 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri 
 		vdEnv := proxyEnv(ProxyURL, noProxy)
 		vdEnv["PORT"] = strconv.Itoa(VerifierdPort)
 		vdEnv["SEALED_CONFIG_FILE"] = ConfigPath
+		// Live checks only ever fetch the relay's attest host, so no app on the apps network can use
+		// verifierd as an HTTP client to the other hosts its egress allows.
+		attest, err := url.Parse(cfg.Endpoints.RelayAttest)
+		if err != nil || attest.Hostname() == "" {
+			return nil, fmt.Errorf("endpoints.relayAttest: %q is not a URL", cfg.Endpoints.RelayAttest)
+		}
+		vdEnv["SEALED_VERIFIERD_LIVE_HOSTS"] = attest.Hostname()
 		services[svcVerifierd] = harden(map[string]any{
 			"image":       img(imgVerifierd),
 			"networks":    map[string]any{"apps": map[string]any{"ipv4_address": VerifierdIP}},
