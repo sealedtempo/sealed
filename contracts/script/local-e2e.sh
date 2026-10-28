@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end run on a local Tempo node (anvil --network tempo): deploy with script/Deploy.s.sol, then drive the
 # whole lifecycle with cast: add image, register app, publish release, approve stack as a customer, register a
-# deployment with an oracle signature, heartbeat, pay fees (customer and enclave signer), withdraw, close, and the
-# contract-review fixes (fixed approval content, unique measurements and bundles, quote reuse, per-deployment usage).
+# deployment with an oracle signature, heartbeat, pay fees (customer and enclave signer), top up a short leg,
+# withdraw, close, and the contract-review fixes (fixed approval content, unique measurements and bundles, quote
+# reuse, per-deployment usage, short legs topped up to the report's fee).
 # Every step is checked; the script exits non-zero on the first mismatch.
 #
 #   script/local-e2e.sh            # from the contracts directory, or: make local-e2e
@@ -193,15 +194,29 @@ send $K_ENCLAVE $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes32)" $DE
 send_fails $K_CUSTOMER $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 1 $(cast keccak usage-1)
 send_fails $K_CUSTOMER $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 5000001 $(cast keccak usage-9)
 send_fails $K_MAINTAINER $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 1 $(cast keccak usage-8)
-expect_eq "$(echo "$(bal $SPLITTER) - $S0" | bc)" "3500000" "FeeSplitter received exactly 3.5 pathUSD"
-expect_eq "$(echo "$C0 - $(bal $CUSTOMER)" | bc)" "2500000" "customer paid 2.5 pathUSD"
-expect_eq "$(echo "$E0 - $(bal $ENCLAVE)" | bc)" "1000000" "enclave signer paid 1 pathUSD"
 expect_eq "$(call $SPLITTER 'usagePaid(bytes32,bytes32,bytes32)(uint256)' $DEPLOYMENT_ID $(cast keccak usage-1) $APP_ID | first)" \
   "2500000" "usage paid amount per (deployment, usageHash, app)"
+
+step "a short leg is topped up to the report's fee (review fix for logic-F1 b / funds-F-02)"
+# The customer opens the usage-3 leg with 0.1 of a 0.5 fee. payFees cannot repeat it; topUpFees raises it to 0.5
+# and pulls only the 0.4 shortfall from the enclave signer, which approves exactly that.
+send $K_CUSTOMER $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 100000 $(cast keccak usage-3)
+send_fails $K_ENCLAVE $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 500000 $(cast keccak usage-3)
+send_fails $K_ENCLAVE $SPLITTER "topUpFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 500000 $(cast keccak usage-4)
+send $K_ENCLAVE $PATH_USD "approve(address,uint256)" $SPLITTER 400000
+send $K_ENCLAVE $SPLITTER "topUpFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 500000 $(cast keccak usage-3)
+send_fails $K_ENCLAVE $SPLITTER "topUpFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 500000 $(cast keccak usage-3)
+send_fails $K_MAINTAINER $SPLITTER "topUpFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 600000 $(cast keccak usage-3)
+expect_eq "$(call $SPLITTER 'usagePaid(bytes32,bytes32,bytes32)(uint256)' $DEPLOYMENT_ID $(cast keccak usage-3) $APP_ID | first)" \
+  "500000" "short leg raised to the fee"
+expect_eq "$(call $PATH_USD 'allowance(address,address)(uint256)' $ENCLAVE $SPLITTER | first)" "0" "exact top-up approval used up"
+expect_eq "$(echo "$(bal $SPLITTER) - $S0" | bc)" "4000000" "FeeSplitter received exactly 4.0 pathUSD"
+expect_eq "$(echo "$C0 - $(bal $CUSTOMER)" | bc)" "2600000" "customer paid 2.6 pathUSD"
+expect_eq "$(echo "$E0 - $(bal $ENCLAVE)" | bc)" "1400000" "enclave signer paid 1.4 pathUSD"
 send_fails $K_OWNER $SPLITTER "setTreasury(address)" $SPLITTER
-# llm-gateway 20% of 2.5 = 0.5; crm 50% of 1.0 = 0.5 -> maintainer 1.0, treasury 2.5
-expect_eq "$(call $SPLITTER 'credited(address,address)(uint256)' $PATH_USD $MAINTAINER | first)" "1000000" "maintainer credit"
-expect_eq "$(call $SPLITTER 'credited(address,address)(uint256)' $PATH_USD $TREASURY | first)" "2500000" "treasury credit"
+# llm-gateway 20% of (2.5 + 0.1 + 0.4) = 0.6; crm 50% of 1.0 = 0.5 -> maintainer 1.1, treasury 2.9
+expect_eq "$(call $SPLITTER 'credited(address,address)(uint256)' $PATH_USD $MAINTAINER | first)" "1100000" "maintainer credit"
+expect_eq "$(call $SPLITTER 'credited(address,address)(uint256)' $PATH_USD $TREASURY | first)" "2900000" "treasury credit"
 expect_eq "$(call $SPLITTER 'totalCredited(address)(uint256)' $PATH_USD | first)" "$(bal $SPLITTER)" "totalCredited == balance"
 
 step "withdraw (maintainer, treasury)"
@@ -209,8 +224,8 @@ M0=$(bal $MAINTAINER); T0=$(bal $TREASURY)
 send $K_MAINTAINER $SPLITTER "withdraw(address)" $PATH_USD
 send $K_TREASURY $SPLITTER "withdraw(address)" $PATH_USD
 send_fails $K_TREASURY $SPLITTER "withdraw(address)" $PATH_USD
-expect_eq "$(echo "$(bal $MAINTAINER) - $M0" | bc)" "1000000" "maintainer received 1 pathUSD"
-expect_eq "$(echo "$(bal $TREASURY) - $T0" | bc)" "2500000" "treasury received 2.5 pathUSD"
+expect_eq "$(echo "$(bal $MAINTAINER) - $M0" | bc)" "1100000" "maintainer received 1.1 pathUSD"
+expect_eq "$(echo "$(bal $TREASURY) - $T0" | bc)" "2900000" "treasury received 2.9 pathUSD"
 expect_eq "$(bal $SPLITTER)" "0" "FeeSplitter empty"
 expect_eq "$(call $SPLITTER 'totalCredited(address)(uint256)' $PATH_USD | first)" "0" "totalCredited 0"
 
@@ -227,6 +242,7 @@ send $K_OWNER $REGISTRY "unpause()"
 PARTIES=$(call $REGISTRY 'deploymentParties(bytes32)(uint8,address,address)' $DEPLOYMENT_ID | tr '\n' ' ')
 expect_eq "$(echo $PARTIES | awk '{print $1}')" "2" "deployment Closed"
 send_fails $K_CUSTOMER $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 1 $(cast keccak usage-2)
+send_fails $K_CUSTOMER $SPLITTER "topUpFees(bytes32,bytes32,address,uint256,bytes32)" $DEPLOYMENT_ID $APP_ID $PATH_USD 2600000 $(cast keccak usage-1)
 
 step "incident response: revoke a release"
 send $K_OWNER $APPS "revokeRelease(bytes32,string)" $RELEASE2_ID "e2e incident"

@@ -8,9 +8,9 @@ import {DeploymentRegistry} from "../../src/DeploymentRegistry.sol";
 import {FeeSplitter} from "../../src/FeeSplitter.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 
-/// @notice Drives FeeSplitter with random payments, withdrawals, maintainer/treasury/share changes, direct
-///         transfers (followed by a sweep), cap changes and time jumps, while tracking every address that can
-///         hold a credit and ghost totals of what went in and out.
+/// @notice Drives FeeSplitter with random payments, top-ups of earlier legs, withdrawals, maintainer/treasury/share
+///         changes, direct transfers (followed by a sweep), cap changes and time jumps, while tracking every address
+///         that can hold a credit, every opened leg and ghost totals of what went in and out.
 contract FeeSplitterHandler is Test {
     FeeSplitter public immutable splitter;
     AppRegistry public immutable apps;
@@ -31,6 +31,17 @@ contract FeeSplitterHandler is Test {
     mapping(address token => uint256) public ghostSwept;
     mapping(address token => uint256) public ghostWithdrawn;
     mapping(bytes32 key => uint256) public ghostDaily; // keccak(deploymentId, token, day)
+
+    /// @notice A (deploymentId, usageHash, appId) opened by payFees, with the token it was opened in.
+    struct Leg {
+        bytes32 deploymentId;
+        bytes32 usageHash;
+        bytes32 appId;
+        MockERC20 token;
+    }
+
+    Leg[] internal _legs;
+    mapping(bytes32 legKey => uint256) public ghostLegPaid; // keccak(deploymentId, usageHash, appId)
 
     uint256 public usageNonce;
     bool public capViolated;
@@ -88,6 +99,18 @@ contract FeeSplitterHandler is Test {
         return deploymentIds.length;
     }
 
+    function legCount() external view returns (uint256) {
+        return _legs.length;
+    }
+
+    function leg(uint256 i) external view returns (Leg memory) {
+        return _legs[i];
+    }
+
+    function legKey(bytes32 deploymentId, bytes32 usageHash, bytes32 appId) public pure returns (bytes32) {
+        return keccak256(abi.encode(deploymentId, usageHash, appId));
+    }
+
     // ------------------------------------------------------------------------------------------------------
     // Actions
     // ------------------------------------------------------------------------------------------------------
@@ -112,9 +135,36 @@ contract FeeSplitterHandler is Test {
         vm.prank(payer);
         splitter.payFees(id, appId, address(token), amount, usageHash);
 
+        _legs.push(Leg(id, usageHash, appId, token));
+        ghostLegPaid[legKey(id, usageHash, appId)] = amount;
         ghostPaidIn[address(token)] += amount;
         ghostDaily[keccak256(abi.encode(id, address(token), block.timestamp / 1 days))] += amount;
         calls["payFees"]++;
+    }
+
+    /// @dev Raises an opened leg to a random higher total within the per-payment cap and the day's allowance.
+    function topUpFees(uint256 legSeed, uint256 total, bool bySigner) external {
+        if (_legs.length == 0) return;
+        Leg memory l = _legs[legSeed % _legs.length];
+        FeeSplitter.TokenConfig memory cfg = splitter.tokenConfig(address(l.token));
+        uint256 paid = splitter.usagePaid(l.deploymentId, l.usageHash, l.appId);
+        uint256 remaining = splitter.remainingDailyAllowance(l.deploymentId, address(l.token));
+        uint256 maxTotal = paid + remaining < cfg.perPaymentCap ? paid + remaining : cfg.perPaymentCap;
+        if (!cfg.allowed || maxTotal <= paid) return;
+        total = bound(total, paid + 1, maxTotal);
+        uint256 amount = total - paid;
+
+        address payer = _payers[l.deploymentId][bySigner ? 1 : 0];
+        l.token.mint(payer, amount);
+        vm.prank(payer);
+        l.token.approve(address(splitter), amount);
+        vm.prank(payer);
+        splitter.topUpFees(l.deploymentId, l.appId, address(l.token), total, l.usageHash);
+
+        ghostLegPaid[legKey(l.deploymentId, l.usageHash, l.appId)] += amount;
+        ghostPaidIn[address(l.token)] += amount;
+        ghostDaily[keccak256(abi.encode(l.deploymentId, address(l.token), block.timestamp / 1 days))] += amount;
+        calls["topUpFees"]++;
     }
 
     /// @dev Tries to pay more than the day's remaining allowance (within the per-payment cap) and records a

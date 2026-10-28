@@ -140,18 +140,25 @@ allowed. The digest is the EIP-712 digest itself: no re-hashing, no EIP-191 pref
   `appRegistry == deploymentRegistry.appRegistry()` (`AppRegistryMismatch`).
 - `payFees(deploymentId, appId, token, amount, usageHash)` whenNotPaused, nonReentrant: deployment Active, caller is
   its customer or enclave signer, app in the deployment, token allowed, `0 < amount <= perPaymentCap`, the
-  deployment's total for `(token, block.timestamp / 1 days)` stays within the daily cap, **each `(deploymentId,
-  usageHash, appId)` paid once**, `usageHash != 0`. Pulls with `safeTransferFrom` and requires the balance to grow
-  by exactly `amount` (rejects fee-on-transfer tokens and TIP-20 receive-policy redirects). Credits
+  deployment's total for `(token, block.timestamp / 1 days)` stays within the daily cap, **payFees opens each
+  `(deploymentId, usageHash, appId)` once** (`UsageAlreadyPaid`), `usageHash != 0`. Pulls with `safeTransferFrom`
+  and requires the balance to grow by exactly `amount` (rejects fee-on-transfer tokens and TIP-20 receive-policy
+  redirects). Credits
   `amount * shareBps / 10000` (rounded down) to the app's current maintainer and the rest to the current treasury;
   a maintainer address that could never withdraw (FeeSplitter itself or a TIP-20 token address) gets no share and
   the treasury gets the whole amount. Emits `Credited` per non-zero credit (with the new balance; none for a zero
   maintainer part) and `FeesPaid`.
+- `topUpFees(deploymentId, appId, token, total, usageHash)` whenNotPaused, nonReentrant: raises an opened leg to
+  `total` and pulls only `total - usagePaid` (approve that difference). Same payer, deployment, app, token and cap
+  checks as `payFees`; `total` is at most `perPaymentCap`, the difference counts against the daily cap and is split
+  and emitted as `FeesPaid` like a payment. Reverts `UsageNotPaid` on a leg payFees has not opened and
+  `NothingToTopUp` when `total <= usagePaid`, so a retried top-up never pays twice.
 - `usagePaid(deploymentId, usageHash, appId)` returns the amount paid (0 = unpaid). The usage key includes the
   deployment, so the payer of one deployment cannot consume another deployment's key (a usageHash already names
-  its deployment). FeeSplitter does not see the signed report: settlement must compare the recorded amount with the
-  report's fee and carry a shortfall into the next report. Indexers match `FeesPaid` on `(deploymentId,
-  usageHash, appId)`.
+  its deployment). FeeSplitter does not see the signed report, so the deployment's own payer can open a leg with
+  less than its fee: settlement compares the recorded amount with the report's fee and tops a short leg up with
+  `topUpFees`. Indexers sum the `FeesPaid` amounts per `(deploymentId, usageHash, appId)`; the sum equals
+  `usagePaid`.
 - `withdraw(token)` nonReentrant, works while paused and after a token is disallowed: pays the caller's full credit
   to the caller only. There is deliberately no `withdrawTo`: a TIP-403-blacklisted account must not be able to
   move its credit to a clean address.
@@ -165,8 +172,9 @@ allowed. The digest is the EIP-712 digest itself: no re-hashing, no EIP-191 pref
 ## Contract review (2026-10-28)
 
 Three independent auditor agents (logic and state machine, funds and FeeSplitter, attestation and signatures)
-reviewed the contracts. The two medium issues and the cheap low ones are fixed; every PoC is replayed in
-`test/audit/`. Changes against the original interface spec, all small:
+reviewed the contracts. The two medium issues and the cheap low ones are fixed, and a verification pass over the
+fixes added `topUpFees` (item 7); every PoC is replayed in `test/audit/`. Changes against the original interface
+spec, all small:
 
 1. FeeSplitter dedupes usage per `(deploymentId, usageHash, appId)` (spec: per `(usageHash, appId)`) and
    `usagePaid` returns the amount paid. A usageHash already names its deployment, so honest flows are unchanged.
@@ -179,13 +187,18 @@ reviewed the contracts. The two medium issues and the cheap low ones are fixed; 
 5. PlatformRegistry registers each measurement set once; AppRegistry publishes each `(appId, bundleHash)` once.
 6. FeeSplitter's constructor requires `appRegistry == deploymentRegistry.appRegistry()`; the treasury cannot be
    FeeSplitter or a TIP-20 token address; a maintainer share owed to such an address goes to the treasury.
+7. FeeSplitter adds `topUpFees` (found when the fixes were verified): the deployment's own payer can still open a
+   leg with 1 base unit, and `payFees` cannot repeat a leg, so without a top-up a short leg could never be
+   completed. The agent now settles a leg only at `usagePaid >= fee` and tops up the shortfall.
 
 Rules this leaves to offchain components:
 - The oracle checks D-014 (config releaseIds and imageId equal the approval's) and recomputes deploymentId from
   `config.customer` and `config.salt` before signing a Record or Heartbeat. With fixed approval content the check
   stays valid for the approval's lifetime.
-- Settlement treats a `(deploymentId, usageHash, appId)` as settled only when `usagePaid` equals the report's fee;
-  a shortfall goes into the next report. `UsageAlreadyPaid` is handled per leg of a batch.
+- Settlement treats a `(deploymentId, usageHash, appId)` as settled only when `usagePaid` reaches the report's
+  fee and tops a short leg up with `topUpFees(total = fee)`; a top-up that cannot be paid is a payment failure, so
+  the grace period and the payment-needed page apply. `UsageAlreadyPaid` and `NothingToTopUp` revert the batch and
+  the next settlement re-reads `usagePaid`. Access keys must be scoped to both `payFees` and `topUpFees`.
 - The stop flow settles the last period before `closeDeployment` (Closed deployments cannot pay).
 - go-ethereum `crypto.Sign` returns v in {0, 1}; the Go oracle adds 27.
 - `lastAttestedAt` may be up to 5 minutes ahead of block time, so liveness math (`now - lastAttestedAt`) clamps at
@@ -237,7 +250,7 @@ nor time. Method 2 needs a report_data v2 binding first (contract review, crypto
 ```bash
 make deps          # forge soldeer install (from soldeer.lock)
 make build
-make test          # 367 tests, no network: unit, fuzz (256 runs), invariants (128 runs x depth 64), scripts, audit
+make test          # 380 tests, no network: unit, fuzz (256 runs), invariants (128 runs x depth 64), scripts, audit
 make test-ci       # FOUNDRY_PROFILE=ci: fuzz 1000 runs, invariants 256 runs x depth 100
 make test-fork     # 6 tests against Tempo mainnet (TEMPO_RPC_URL or https://rpc.tempo.xyz)
 make local-e2e     # anvil --network tempo, deploy, full flow with cast
@@ -258,8 +271,8 @@ revert). Suites:
 | `test/DeploymentRegistry.t.sol` | 113: approvals (fixed content, re-approval rules), expiry, revocations, registration and heartbeat checks (attested before approval, quote reuse), close, admin, fuzzed freshness window, approval boundary and release count |
 | `test/DeploymentRegistryEIP712.t.sol` | 14: typehashes, domain, hand-rolled digests (fuzzed), vm.sign with a generated oracle key, cross-chain and cross-contract replay, cast vector |
 | `test/ZkMethod.t.sol` | 7: method 2 unset, pluggable, coexisting with method 1 |
-| `test/FeeSplitter.t.sol` | 66: payments, per-deployment usage keys, caps, day rollover, fee-on-transfer, reentrancy, withdraw, sweep, admin (treasury and registry checks); fuzzed split math and caps |
-| `test/invariant/*` | 11: 6 FeeSplitter invariants (credits == total == balance, ghost flows, daily cap, exact withdrawals), 4 approval invariants (isStackApproved and approveStack outcomes equal an independent model, including fixed approval content; never true after revoke / expiry / release revoke / image revoke), 1 handler sanity test |
+| `test/FeeSplitter.t.sol` | 78: payments, top-ups of short legs (retry safety, caps, daily cap, exact approval, reentrancy), per-deployment usage keys, caps, day rollover, fee-on-transfer, reentrancy, withdraw, sweep, admin (treasury and registry checks); fuzzed split math (payments and top-ups) and caps |
+| `test/invariant/*` | 12: 7 FeeSplitter invariants (credits == total == balance, ghost flows, daily cap, exact withdrawals, each leg's usagePaid == what payFees and topUpFees pulled), 4 approval invariants (isStackApproved and approveStack outcomes equal an independent model, including fixed approval content; never true after revoke / expiry / release revoke / image revoke), 1 handler sanity test |
 | `test/script/Scripts.t.sol` | 7: Deploy, RegisterCatalog (idempotent), Transfer/AcceptOwnership in-process |
 | `test/Integration.t.sol` | 1: whole lifecycle including an incident revoke |
 | `test/audit/*` | 27: every PoC of the contract review replayed; fixed findings assert the fix, acknowledged ones pin the documented behavior |
@@ -289,10 +302,10 @@ registry binding. Fork gas numbers are T4 numbers, not mainnet numbers.
 deploys with `Deploy.s.sol` (`--broadcast`), records the deployment, registers two apps and an image with `cast`
 and the example catalog with `RegisterCatalog.s.sol`, publishes releases as ops, approves a stack as the
 customer, registers a deployment with an oracle signature made by `cast wallet sign --no-hash`, heartbeats, pays
-fees as customer and as enclave signer, withdraws as maintainer and treasury, pauses, closes and revokes a
-release, checking every result (including expected reverts and the contract-review fixes: fixed approval content,
-unique measurements and bundles, quote reuse, per-deployment usage keys, treasury checks). It uses only anvil's
-public dev keys.
+fees as customer and as enclave signer, tops up a leg the customer paid short, withdraws as maintainer and
+treasury, pauses, closes and revokes a release, checking every result (including expected reverts and the
+contract-review fixes: fixed approval content, unique measurements and bundles, quote reuse, per-deployment usage
+keys, short legs topped up to the fee, treasury checks). It uses only anvil's public dev keys.
 
 Local-node specifics handled by the script:
 - The local genesis pre-deploys pathUSD, AlphaUSD, BetaUSD and ThetaUSD and gives every dev account `u64::MAX` of
@@ -343,9 +356,9 @@ floor; FeeSplitter's estimate uses a state override for the placeholder registry
 | AppRegistry | 10,383,069 |
 | OracleSignatureVerifier | 3,117,473 |
 | DeploymentRegistry | 12,166,190 |
-| FeeSplitter | 8,807,043 |
+| FeeSplitter | 9,079,491 |
 | 3 wiring calls (upper bound from T4 gas) | ~1,090,000 |
-| **Total** | **~41.3M gas = ~$0.025 at the floor, ~$0.50 at the 1.2e10 cap** |
+| **Total** | **~41.6M gas = ~$0.025 at the floor, ~$0.50 at the 1.2e10 cap** |
 
 ## Catalog
 
@@ -377,8 +390,8 @@ published by the release CI with the ops key (`publishRelease`), not by this scr
 - Gas: every new storage slot costs 250,000 gas, contract creation 500,000 + 1,000 per deployed byte, at most 30M
   gas per transaction. At the base-fee floor (6e8 attodollars/gas) 1M gas costs $0.0006. Typical calls on the
   Tempo schedule (gas report, T4): `registerDeployment` 2.6M, `approveStack` 1.3M (2 releases), `publishRelease`
-  2.8M, `addImage` 2.3M, `payFees` 0.37M (1.6M the first time a deployment pays), `withdraw` 0.29M, `heartbeat`
-  62k.
+  2.8M, `addImage` 2.3M, `payFees` 0.37M (1.6M the first time a deployment pays), `topUpFees` 0.12M, `withdraw`
+  0.29M, `heartbeat` 62k.
 - TIP-20 transfers revert (not return false) on failure and return true on success, so SafeERC20 works. Recipients
   `address(0)` and `0x20c0…`-prefixed token addresses are rejected by the token.
 - TIP-403 policy 2 on pathUSD is a blacklist: a blacklisted payer cannot pay, a blacklisted maintainer or treasury

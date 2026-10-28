@@ -8,6 +8,7 @@ import {FeeSplitterHandler} from "./FeeSplitterHandler.sol";
 
 /// @notice For every token: sum of credited balances == totalCredited == balanceOf(FeeSplitter), and the balance
 ///         equals paid in + swept - withdrawn. Payments above the day's remaining allowance are always rejected.
+///         Every leg's usagePaid equals what payFees and topUpFees pulled for it.
 contract FeeSplitterInvariantTest is SealedTest {
     FeeSplitterHandler internal handler;
     MockERC20 internal token2;
@@ -58,7 +59,7 @@ contract FeeSplitterInvariantTest is SealedTest {
 
         handler = new FeeSplitterHandler(splitter, apps, registry, owner, ts, ids, payers, appIds, initial);
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](9);
+        bytes4[] memory selectors = new bytes4[](10);
         selectors[0] = FeeSplitterHandler.payFees.selector;
         selectors[1] = FeeSplitterHandler.withdraw.selector;
         selectors[2] = FeeSplitterHandler.setMaintainer.selector;
@@ -68,6 +69,7 @@ contract FeeSplitterInvariantTest is SealedTest {
         selectors[6] = FeeSplitterHandler.directTransferAndSweep.selector;
         selectors[7] = FeeSplitterHandler.warp.selector;
         selectors[8] = FeeSplitterHandler.payFeesOverDailyCap.selector;
+        selectors[9] = FeeSplitterHandler.topUpFees.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -117,6 +119,19 @@ contract FeeSplitterInvariantTest is SealedTest {
                 uint256 paid = splitter.dailyPaid(id, tk, day);
                 assertEq(paid, handler.ghostDaily(keccak256(abi.encode(id, tk, day))), "daily total tracked");
             }
+        }
+    }
+
+    function invariant_legPaidMatchesPulls() public view {
+        uint256 n = handler.legCount();
+        for (uint256 i; i < n; ++i) {
+            FeeSplitterHandler.Leg memory l = handler.leg(i);
+            assertEq(
+                splitter.usagePaid(l.deploymentId, l.usageHash, l.appId),
+                handler.ghostLegPaid(handler.legKey(l.deploymentId, l.usageHash, l.appId)),
+                "usagePaid == payFees amount + top-up differences"
+            );
+            assertGt(splitter.usagePaid(l.deploymentId, l.usageHash, l.appId), 0, "an opened leg is never 0");
         }
     }
 

@@ -54,9 +54,9 @@ contract AuditLogicTest is SealedTest {
         assertEq(splitter.usagePaid(attackerDep, usageHash, appA), 1);
     }
 
-    /// logic-F1 (b) / funds-F-02 (acknowledged): a deployment's own payer can still settle a report first with a
-    /// smaller amount. The amount is now recorded onchain, so settlement sees the shortfall and carries it into
-    /// the next report; the payer is the deployment's own customer.
+    /// logic-F1 (b) / funds-F-02 (fixed with topUpFees and the agent's settlement rule): a deployment's own payer
+    /// can still open a leg first with a smaller amount. The amount is recorded onchain, settlement treats the leg as
+    /// unpaid until usagePaid reaches the report's fee, and topUpFees pulls the shortfall on the same leg.
     function test_F1b_customerUnderpaysUsage() public {
         bytes32 dep = _deployDefault();
         _fund(customer, 1);
@@ -68,6 +68,10 @@ contract AuditLogicTest is SealedTest {
         vm.prank(enclaveSigner);
         vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageAlreadyPaid.selector, dep, usageHash, appA));
         splitter.payFees(dep, appA, address(token), 4_000_000, usageHash);
+        vm.prank(enclaveSigner);
+        splitter.topUpFees(dep, appA, address(token), 4_000_000, usageHash);
+        assertEq(splitter.usagePaid(dep, usageHash, appA), 4_000_000, "shortfall collected on the same leg");
+        assertEq(splitter.totalCredited(address(token)), 4_000_000);
     }
 
     /// logic-F3 (acknowledged, spec: "deployment Active"): fees for an Active deployment stay payable after its

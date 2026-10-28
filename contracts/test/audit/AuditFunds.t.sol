@@ -91,9 +91,10 @@ contract AuditFundsTest is SealedTest {
         assertEq(splitter.credited(address(token), maintainer), 800_000);
     }
 
-    /// funds-F-02 (acknowledged): the deployment's own customer can settle a report first with a smaller amount.
-    /// The recorded amount exposes the shortfall; the agent carries it into its next report.
-    function test_PoC_customerUnderpaysAndBlocksEnclave() public {
+    /// funds-F-02 (fixed with topUpFees and the agent's settlement rule): the deployment's own customer can still
+    /// open a leg first with a smaller amount, and payFees cannot repeat it, but the leg is not settled: the enclave
+    /// signer tops it up to the report's fee and the maintainer gets the full share.
+    function test_PoC_customerUnderpaysThenEnclaveTopsUp() public {
         bytes32 h = keccak256("report-with-fee-5000000");
         vm.prank(customer);
         splitter.payFees(victimDeployment, appA, address(token), 1, h);
@@ -101,7 +102,20 @@ contract AuditFundsTest is SealedTest {
         vm.prank(enclaveSigner);
         vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageAlreadyPaid.selector, victimDeployment, h, appA));
         splitter.payFees(victimDeployment, appA, address(token), 5_000_000, h);
-        assertEq(splitter.credited(address(token), maintainer), 0);
+
+        uint256 before = IERC20(address(token)).balanceOf(enclaveSigner);
+        vm.prank(enclaveSigner);
+        splitter.topUpFees(victimDeployment, appA, address(token), 5_000_000, h);
+        assertEq(splitter.usagePaid(victimDeployment, h, appA), 5_000_000, "leg raised to the report's fee");
+        assertEq(before - IERC20(address(token)).balanceOf(enclaveSigner), 4_999_999, "only the shortfall is pulled");
+        assertEq(splitter.credited(address(token), maintainer), 999_999, "0 of the 1-unit payment + 20% of 4_999_999");
+        assertEq(splitter.credited(address(token), treasury), 4_000_001);
+        // The customer cannot undo or repeat it: the leg is at the fee.
+        vm.prank(customer);
+        vm.expectRevert(
+            abi.encodeWithSelector(FeeSplitter.NothingToTopUp.selector, victimDeployment, h, appA, 5_000_000)
+        );
+        splitter.topUpFees(victimDeployment, appA, address(token), 5_000_000, h);
     }
 
     /// funds-F-04 (acknowledged, spec formula day = timestamp / 1 days): up to 2x the daily cap around midnight UTC.

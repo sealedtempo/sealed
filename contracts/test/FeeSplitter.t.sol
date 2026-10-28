@@ -416,6 +416,194 @@ contract FeeSplitterTest is SealedTest {
     }
 
     // ------------------------------------------------------------------------------------------------------
+    // topUpFees (verification fix for logic-F1 b / funds-F-02: a short leg can be raised to the report's fee)
+    // ------------------------------------------------------------------------------------------------------
+
+    function _topUp(address payer, bytes32 appId, uint256 total, bytes32 usageHash) internal {
+        vm.prank(payer);
+        splitter.topUpFees(deploymentId, appId, address(token), total, usageHash);
+    }
+
+    function test_topUpFees_raisesShortLegToTotal() public {
+        _pay(customer, appA, 100_000, USAGE);
+        uint256 before = token.balanceOf(enclaveSigner);
+        vm.expectEmit(address(splitter));
+        emit Credited(maintainer, address(token), appA, FeeSplitter.CreditKind.Maintainer, 180_000, 200_000);
+        vm.expectEmit(address(splitter));
+        emit Credited(treasury, address(token), appA, FeeSplitter.CreditKind.Treasury, 720_000, 800_000);
+        vm.expectEmit(address(splitter));
+        emit FeesPaid(deploymentId, appA, enclaveSigner, address(token), 900_000, 180_000, USAGE);
+        _topUp(enclaveSigner, appA, 1_000_000, USAGE);
+
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), 1_000_000, "leg raised to the total");
+        assertEq(token.balanceOf(enclaveSigner), before - 900_000, "pulls only the difference");
+        assertEq(splitter.dailyPaid(deploymentId, address(token), block.timestamp / 1 days), 1_000_000);
+        assertEq(splitter.credited(address(token), maintainer), 200_000);
+        assertEq(splitter.credited(address(token), treasury), 800_000);
+        _assertInvariant(address(token));
+    }
+
+    function test_topUpFees_repeatedTopUpsPullOnlyTheRest() public {
+        _pay(customer, appB, 1, USAGE);
+        _topUp(customer, appB, 10, USAGE);
+        uint256 before = token.balanceOf(enclaveSigner);
+        vm.expectEmit(address(splitter));
+        emit FeesPaid(deploymentId, appB, enclaveSigner, address(token), 999_990, 199_998, USAGE);
+        _topUp(enclaveSigner, appB, 1_000_000, USAGE);
+        assertEq(token.balanceOf(enclaveSigner), before - 999_990);
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appB), 1_000_000);
+        assertEq(splitter.totalCredited(address(token)), 1_000_000, "the leg's FeesPaid amounts sum to usagePaid");
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), 0, "other legs untouched");
+        _assertInvariant(address(token));
+    }
+
+    function test_topUpFees_retryDoesNotPayTwice() public {
+        _pay(customer, appA, 1, USAGE);
+        _topUp(enclaveSigner, appA, 1_000_000, USAGE);
+        vm.prank(enclaveSigner);
+        vm.expectRevert(
+            abi.encodeWithSelector(FeeSplitter.NothingToTopUp.selector, deploymentId, USAGE, appA, 1_000_000)
+        );
+        splitter.topUpFees(deploymentId, appA, address(token), 1_000_000, USAGE);
+        vm.prank(customer);
+        vm.expectRevert(
+            abi.encodeWithSelector(FeeSplitter.NothingToTopUp.selector, deploymentId, USAGE, appA, 1_000_000)
+        );
+        splitter.topUpFees(deploymentId, appA, address(token), 999_999, USAGE);
+        vm.prank(enclaveSigner);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageAlreadyPaid.selector, deploymentId, USAGE, appA));
+        splitter.payFees(deploymentId, appA, address(token), 1_000_000, USAGE);
+        assertEq(splitter.totalCredited(address(token)), 1_000_000);
+    }
+
+    function test_topUpFees_revertsOnUnopenedLeg() public {
+        vm.prank(enclaveSigner);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageNotPaid.selector, deploymentId, USAGE, appA));
+        splitter.topUpFees(deploymentId, appA, address(token), 1_000_000, USAGE);
+        // The leg key is per deployment and app: opening it elsewhere does not open it here.
+        IDeploymentRegistry.Record memory r2 = _record(bytes32(uint256(2)));
+        _register(r2);
+        vm.prank(customer);
+        splitter.payFees(r2.deploymentId, appA, address(token), 1, USAGE);
+        _pay(customer, appB, 1, USAGE);
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageNotPaid.selector, deploymentId, USAGE, appA));
+        splitter.topUpFees(deploymentId, appA, address(token), 1_000_000, USAGE);
+    }
+
+    function test_topUpFees_revertsWhenPaused() public {
+        _pay(customer, appA, 1, USAGE);
+        vm.prank(owner);
+        splitter.pause();
+        vm.prank(customer);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        splitter.topUpFees(deploymentId, appA, address(token), 2, USAGE);
+    }
+
+    function test_topUpFees_checksTokenAmountCapAndUsageHash() public {
+        _pay(customer, appA, 1, USAGE);
+        MockERC20 other = new MockERC20("Other", "OTH");
+        vm.startPrank(customer);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.TokenNotAllowed.selector, address(other)));
+        splitter.topUpFees(deploymentId, appA, address(other), 2, USAGE);
+        vm.expectRevert(FeeSplitter.ZeroAmount.selector);
+        splitter.topUpFees(deploymentId, appA, address(token), 0, USAGE);
+        vm.expectRevert(
+            abi.encodeWithSelector(FeeSplitter.PerPaymentCapExceeded.selector, PER_PAYMENT_CAP + 1, PER_PAYMENT_CAP)
+        );
+        splitter.topUpFees(deploymentId, appA, address(token), PER_PAYMENT_CAP + 1, USAGE);
+        vm.expectRevert(FeeSplitter.ZeroUsageHash.selector);
+        splitter.topUpFees(deploymentId, appA, address(token), 2, bytes32(0));
+        vm.stopPrank();
+        _topUp(customer, appA, PER_PAYMENT_CAP, USAGE);
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), PER_PAYMENT_CAP, "a leg tops up to the cap exactly");
+    }
+
+    function test_topUpFees_checksPayerDeploymentAndApp() public {
+        _pay(customer, appA, 1, USAGE);
+        _fund(stranger, 1_000_000);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UnauthorizedPayer.selector, stranger));
+        splitter.topUpFees(deploymentId, appA, address(token), 2, USAGE);
+        bytes32 appC = _registerApp("scraper", 1000);
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.AppNotInDeployment.selector, deploymentId, appC));
+        splitter.topUpFees(deploymentId, appC, address(token), 2, USAGE);
+        vm.prank(customer);
+        registry.closeDeployment(deploymentId);
+        vm.prank(customer);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.DeploymentNotActive.selector, deploymentId));
+        splitter.topUpFees(deploymentId, appA, address(token), 2, USAGE);
+    }
+
+    function test_topUpFees_differenceCountsAgainstDailyCap() public {
+        for (uint256 i; i < 3; ++i) {
+            _pay(customer, appA, PER_PAYMENT_CAP, keccak256(abi.encode(i)));
+        }
+        _pay(customer, appA, 1, keccak256("x"));
+        _pay(customer, appB, 1, keccak256("y"));
+        vm.prank(enclaveSigner);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.DailyCapExceeded.selector, DAILY_CAP + 1, DAILY_CAP));
+        splitter.topUpFees(deploymentId, appA, address(token), PER_PAYMENT_CAP, keccak256("x"));
+        _topUp(enclaveSigner, appA, PER_PAYMENT_CAP - 1, keccak256("x"));
+        assertEq(splitter.dailyPaid(deploymentId, address(token), block.timestamp / 1 days), DAILY_CAP);
+        uint256 nextDay = (block.timestamp / 1 days + 1) * 1 days;
+        vm.warp(nextDay);
+        _topUp(enclaveSigner, appA, PER_PAYMENT_CAP, keccak256("x"));
+        assertEq(splitter.dailyPaid(deploymentId, address(token), nextDay / 1 days), 1, "counted on the day it is paid");
+    }
+
+    function test_topUpFees_needsOnlyTheDifferenceApproved() public {
+        _pay(customer, appA, 400_000, USAGE);
+        address payer = enclaveSigner;
+        vm.prank(payer);
+        token.approve(address(splitter), 599_999);
+        vm.prank(payer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector, address(splitter), 599_999, 600_000
+            )
+        );
+        splitter.topUpFees(deploymentId, appA, address(token), 1_000_000, USAGE);
+        vm.prank(payer);
+        token.approve(address(splitter), 600_000);
+        _topUp(payer, appA, 1_000_000, USAGE);
+        assertEq(token.allowance(payer, address(splitter)), 0, "an exact approval ends at zero");
+    }
+
+    function test_topUpFees_blocksReentrancy() public {
+        ReentrantERC20 evil = new ReentrantERC20();
+        vm.prank(owner);
+        splitter.setToken(address(evil), true, PER_PAYMENT_CAP, DAILY_CAP);
+        evil.mint(customer, 1_000_000);
+        vm.prank(customer);
+        evil.approve(address(splitter), type(uint256).max);
+        vm.prank(customer);
+        splitter.payFees(deploymentId, appA, address(evil), 1, USAGE);
+        evil.arm(
+            address(splitter),
+            abi.encodeCall(FeeSplitter.topUpFees, (deploymentId, appA, address(evil), 3, USAGE)),
+            true,
+            false
+        );
+        vm.prank(customer);
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        splitter.topUpFees(deploymentId, appA, address(evil), 2, USAGE);
+    }
+
+    function test_topUpFees_unwithdrawableMaintainerShareGoesToTreasury() public {
+        _pay(customer, appA, 1, USAGE);
+        vm.prank(maintainer);
+        apps.setMaintainer(appA, address(splitter));
+        vm.expectEmit(address(splitter));
+        emit FeesPaid(deploymentId, appA, customer, address(token), 999_999, 0, USAGE);
+        _topUp(customer, appA, 1_000_000, USAGE);
+        assertEq(splitter.credited(address(token), address(splitter)), 0);
+        assertEq(splitter.credited(address(token), treasury), 1_000_000);
+        _assertInvariant(address(token));
+    }
+
+    // ------------------------------------------------------------------------------------------------------
     // withdraw
     // ------------------------------------------------------------------------------------------------------
 
@@ -673,6 +861,25 @@ contract FeeSplitterTest is SealedTest {
         assertEq(splitter.credited(address(token), maintainer), m);
         assertEq(splitter.credited(address(token), treasury), amount - m);
         assertEq(token.balanceOf(customer), payerBefore - amount);
+        _assertInvariant(address(token));
+    }
+
+    function testFuzz_topUpFees_split(uint256 first, uint256 total, uint16 bps) public {
+        first = bound(first, 1, PER_PAYMENT_CAP - 1);
+        total = bound(total, first + 1, PER_PAYMENT_CAP);
+        bps = uint16(bound(bps, 0, 5000));
+        vm.prank(owner);
+        apps.setMaintainerShare(appA, bps);
+        uint256 customerBefore = token.balanceOf(customer);
+        uint256 signerBefore = token.balanceOf(enclaveSigner);
+        _pay(customer, appA, first, USAGE);
+        _topUp(enclaveSigner, appA, total, USAGE);
+        uint256 m = first * bps / 10_000 + (total - first) * bps / 10_000;
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), total);
+        assertEq(splitter.credited(address(token), maintainer), m);
+        assertEq(splitter.credited(address(token), treasury), total - m);
+        assertEq(customerBefore - token.balanceOf(customer) + signerBefore - token.balanceOf(enclaveSigner), total);
+        assertEq(splitter.dailyPaid(deploymentId, address(token), block.timestamp / 1 days), total);
         _assertInvariant(address(token));
     }
 

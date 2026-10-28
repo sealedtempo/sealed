@@ -15,11 +15,13 @@ import {OwnableNoRenounce} from "./utils/OwnableNoRenounce.sol";
 ///         between the app's maintainer and the platform treasury. Recipients withdraw with a pull pattern.
 /// @dev Invariant, per token: sum of credited balances == totalCredited[token] == token.balanceOf(this), as long as
 ///      nobody transfers tokens in directly (sweepUnaccounted credits such transfers to the treasury and restores
-///      equality). Fee-on-transfer tokens are rejected by a balance-delta check. Pausing stops payFees only;
+///      equality). Fee-on-transfer tokens are rejected by a balance-delta check. Pausing stops payments only;
 ///      withdrawals always work.
-///      Usage dedupe (contract review): each (deploymentId, usageHash, appId) is paid once. A usageHash is the
+///      Usage dedupe (contract review): payFees opens each (deploymentId, usageHash, appId) once. A usageHash is the
 ///      EIP-712 digest of a report that already names its deployment, so keying by deployment changes nothing for
 ///      honest payers and stops the payer of one deployment from consuming another deployment's usage keys.
+///      FeeSplitter does not see the signed report, so a deployment's own payer can open a leg with less than the
+///      report's fee; topUpFees raises an open leg to a higher total, which settlement does for every short leg.
 contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -33,8 +35,8 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     bytes12 public constant TIP20_ADDRESS_PREFIX = 0x20c000000000000000000000;
 
     /// @notice Allowlist entry and caps for a payment token.
-    /// @param allowed Whether payFees accepts the token.
-    /// @param perPaymentCap Maximum amount of one payFees call, in token base units.
+    /// @param allowed Whether payFees and topUpFees accept the token.
+    /// @param perPaymentCap Maximum amount of one payFees call (and of a leg after topUpFees), in token base units.
     /// @param perDeploymentDailyCap Maximum total per deployment per UTC day (block.timestamp / 1 days).
     struct TokenConfig {
         bool allowed;
@@ -71,7 +73,8 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     mapping(bytes32 deploymentId => mapping(address token => mapping(uint256 day => uint256 amount))) public dailyPaid;
 
     /// @notice Amount paid for (deploymentId, usageHash, appId); 0 when unpaid (payments are always > 0). Offchain
-    ///         settlement compares it with the fee of the signed usage report: the contract does not see the report.
+    ///         settlement compares it with the fee of the signed usage report (the contract does not see the report)
+    ///         and tops a short leg up to the fee with topUpFees.
     mapping(bytes32 deploymentId => mapping(bytes32 usageHash => mapping(bytes32 appId => uint256 amount))) public
         usagePaid;
 
@@ -132,6 +135,10 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     error UnauthorizedPayer(address caller);
     /// @notice This (deploymentId, usageHash, appId) was already paid.
     error UsageAlreadyPaid(bytes32 deploymentId, bytes32 usageHash, bytes32 appId);
+    /// @notice topUpFees on a (deploymentId, usageHash, appId) that payFees has not opened.
+    error UsageNotPaid(bytes32 deploymentId, bytes32 usageHash, bytes32 appId);
+    /// @notice topUpFees with a total that is not above the amount already paid.
+    error NothingToTopUp(bytes32 deploymentId, bytes32 usageHash, bytes32 appId, uint256 paid);
     /// @notice The contract's balance did not grow by exactly the amount (fee-on-transfer or rebasing token).
     error TransferAmountMismatch(uint256 expected, uint256 received);
     /// @notice The caller has no credited balance for the token.
@@ -190,25 +197,40 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     /// @param appId An app of the deployment's approved stack.
     /// @param token An allowlisted token.
     /// @param amount Amount in token base units, 1..perPaymentCap.
-    /// @param usageHash EIP-712 digest of the usage report (non-zero); each (deploymentId, usageHash, appId) is paid
-    ///        once.
+    /// @param usageHash EIP-712 digest of the usage report (non-zero); payFees opens each (deploymentId, usageHash,
+    ///        appId) once, and topUpFees completes a short one.
     function payFees(bytes32 deploymentId, bytes32 appId, address token, uint256 amount, bytes32 usageHash)
         external
         whenNotPaused
         nonReentrant
     {
         _checkPayer(deploymentId, appId);
-        _recordPayment(deploymentId, appId, token, amount, usageHash);
+        _recordPayment(deploymentId, appId, token, amount, usageHash, false);
+        _collect(deploymentId, appId, token, amount, usageHash);
+    }
 
-        (address maintainer, uint16 shareBps) = appRegistry.payoutInfo(appId);
-        uint256 maintainerAmount = _cannotWithdraw(maintainer) ? 0 : amount * shareBps / BPS_DENOMINATOR;
-
-        _pull(token, amount);
-
-        _credit(token, maintainer, appId, CreditKind.Maintainer, maintainerAmount);
-        _credit(token, treasury, appId, CreditKind.Treasury, amount - maintainerAmount);
-
-        emit FeesPaid(deploymentId, appId, msg.sender, token, amount, maintainerAmount, usageHash);
+    /// @notice Raises the amount paid for an opened (deploymentId, usageHash, appId) to `total` and pulls the
+    ///         difference. Settlement uses it when a leg was paid less than its report's fee (contract review
+    ///         logic-F1 b / funds-F-02): FeeSplitter cannot see the report, the deployment's own payer can open a
+    ///         leg with any amount, and payFees cannot be repeated. Same callers, caps and split as payFees; the
+    ///         difference counts against the daily cap and emits FeesPaid with that difference as `amount`, so the
+    ///         FeesPaid amounts of a leg sum to usagePaid.
+    /// @dev Retry-safe: a second call with the same total reverts NothingToTopUp instead of paying twice, and a
+    ///      payer's own earlier top-up only lowers the difference pulled. The caller approves at least
+    ///      `total - usagePaid(deploymentId, usageHash, appId)` of `token`.
+    /// @param deploymentId An Active deployment.
+    /// @param appId An app of the deployment's approved stack.
+    /// @param token An allowlisted token.
+    /// @param total The leg's new amount paid (the report's fee), above usagePaid and at most perPaymentCap.
+    /// @param usageHash A usage key that payFees already opened for this deployment and app.
+    function topUpFees(bytes32 deploymentId, bytes32 appId, address token, uint256 total, bytes32 usageHash)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        _checkPayer(deploymentId, appId);
+        uint256 amount = _recordPayment(deploymentId, appId, token, total, usageHash, true);
+        _collect(deploymentId, appId, token, amount, usageHash);
     }
 
     /// @notice Withdraws the caller's full credited balance of a token to the caller. Works while paused.
@@ -243,7 +265,7 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
 
     /// @notice Adds, updates or disables a payment token. Owner only.
     /// @param token The token (non-zero).
-    /// @param allowed Whether payFees accepts it.
+    /// @param allowed Whether payFees and topUpFees accept it.
     /// @param perPaymentCap Per-payment cap in base units.
     /// @param perDeploymentDailyCap Per-deployment daily cap in base units.
     function setToken(address token, bool allowed, uint256 perPaymentCap, uint256 perDeploymentDailyCap)
@@ -272,7 +294,7 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         emit TreasurySet(previous, newTreasury);
     }
 
-    /// @notice Pauses payFees. Owner only. Withdrawals keep working.
+    /// @notice Pauses payFees and topUpFees. Owner only. Withdrawals keep working.
     function pause() external onlyOwner {
         _pause();
     }
@@ -293,7 +315,7 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         return _tokenConfigs[token];
     }
 
-    /// @notice Whether payFees accepts a token.
+    /// @notice Whether payFees and topUpFees accept a token.
     /// @param token The token.
     /// @return True when allowlisted.
     function isTokenAllowed(address token) external view returns (bool) {
@@ -338,25 +360,52 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         if (!deploymentRegistry.appInDeployment(deploymentId, appId)) revert AppNotInDeployment(deploymentId, appId);
     }
 
-    /// @dev Checks token, amount, caps and usage uniqueness, then records the usage amount and the daily total.
-    function _recordPayment(bytes32 deploymentId, bytes32 appId, address token, uint256 amount, bytes32 usageHash)
-        private
-    {
+    /// @dev Checks token, amount, caps and the leg's state, then records the leg's new total and the daily total.
+    ///      For payFees (topUp false) `total` is the payment and the leg must be unpaid. For topUpFees the leg must be
+    ///      open and `total` above its amount. Returns the amount to pull: total minus what the leg already had.
+    function _recordPayment(
+        bytes32 deploymentId,
+        bytes32 appId,
+        address token,
+        uint256 total,
+        bytes32 usageHash,
+        bool topUp
+    ) private returns (uint256 amount) {
         TokenConfig storage cfg = _tokenConfigs[token];
         if (!cfg.allowed) revert TokenNotAllowed(token);
-        if (amount == 0) revert ZeroAmount();
-        if (amount > cfg.perPaymentCap) revert PerPaymentCapExceeded(amount, cfg.perPaymentCap);
+        if (total == 0) revert ZeroAmount();
+        if (total > cfg.perPaymentCap) revert PerPaymentCapExceeded(total, cfg.perPaymentCap);
         if (usageHash == bytes32(0)) revert ZeroUsageHash();
         mapping(bytes32 appId => uint256 amount) storage paidForUsage = usagePaid[deploymentId][usageHash];
-        if (paidForUsage[appId] != 0) revert UsageAlreadyPaid(deploymentId, usageHash, appId);
+        uint256 paid = paidForUsage[appId];
+        if (topUp) {
+            if (paid == 0) revert UsageNotPaid(deploymentId, usageHash, appId);
+            if (total <= paid) revert NothingToTopUp(deploymentId, usageHash, appId, paid);
+        } else if (paid != 0) {
+            revert UsageAlreadyPaid(deploymentId, usageHash, appId);
+        }
+        amount = total - paid;
 
         mapping(uint256 day => uint256 amount) storage paidByDay = dailyPaid[deploymentId][token];
         uint256 day = block.timestamp / 1 days;
         uint256 newDaily = paidByDay[day] + amount;
         if (newDaily > cfg.perDeploymentDailyCap) revert DailyCapExceeded(newDaily, cfg.perDeploymentDailyCap);
 
-        paidForUsage[appId] = amount;
+        paidForUsage[appId] = total;
         paidByDay[day] = newDaily;
+    }
+
+    /// @dev Pulls `amount`, splits it between the app's maintainer and the treasury, and emits FeesPaid.
+    function _collect(bytes32 deploymentId, bytes32 appId, address token, uint256 amount, bytes32 usageHash) private {
+        (address maintainer, uint16 shareBps) = appRegistry.payoutInfo(appId);
+        uint256 maintainerAmount = _cannotWithdraw(maintainer) ? 0 : amount * shareBps / BPS_DENOMINATOR;
+
+        _pull(token, amount);
+
+        _credit(token, maintainer, appId, CreditKind.Maintainer, maintainerAmount);
+        _credit(token, treasury, appId, CreditKind.Treasury, amount - maintainerAmount);
+
+        emit FeesPaid(deploymentId, appId, msg.sender, token, amount, maintainerAmount, usageHash);
     }
 
     /// @dev True for accounts that can never call withdraw or receive the token: this contract, and TIP-20 token
