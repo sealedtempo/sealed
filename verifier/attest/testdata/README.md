@@ -33,7 +33,10 @@ Expected results at the recording time (tests assert these):
 (docs/notes/dstack.md section 6.3, key provider `none`), the exact Sealed sequence (key provider `tpm`) and the
 three report_data constructions. `vectors.json` is its output (`python3 -I vectors.py > vectors.json`).
 
-## gcp/ (empty slot)
+## gcp/ (real capture, upstream dstack 0.6.1 image)
 
-Real quotes and event logs captured from a Sealed CVM on Google Cloud go here once a deployment boots (blocked
-by environment during the build). See `TestRealGCPGolden` in `golden_gcp_test.go`.
+A real quote, event log and `/Info` output from a hello-world stack on Google Cloud `c3-standard-4` TDX in
+`us-central1-a`, captured 2026-10-28 by the runtime spike, plus a second boot of the same VM. The OS image is the
+upstream dstack 0.6.1 prod image (D-016: spike only, never registered). `TestRealGCPGolden` in
+`golden_gcp_test.go` verifies it offline: TDX TCB `UpToDate`, measurementsHash, TD attributes and XFAM,
+report_data, and the RTMR3 sequence with key provider `tpm`. Details and capture steps: `gcp/README.md`.
