@@ -1,8 +1,11 @@
 package cjson
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -154,5 +157,51 @@ func FuzzCanonicalize(f *testing.F) {
 		if !json.Valid(out) {
 			t.Fatalf("invalid JSON output %q", out)
 		}
+		// Differential oracle: encoding/json must accept the input too and
+		// decode input and output to the same value.
+		if !json.Valid(in) {
+			t.Fatalf("accepted input that encoding/json rejects: %q", in)
+		}
+		a, errA := decodeStd(in)
+		b, errB := decodeStd(out)
+		if errA != nil || errB != nil || !reflect.DeepEqual(a, b) {
+			t.Fatalf("value changed: %q -> %q (%v, %v)", in, out, errA, errB)
+		}
 	})
+}
+
+// decodeStd decodes with encoding/json, keeping numbers exact (CJSON allows
+// only integers, so -0 and 0 compare equal).
+func decodeStd(b []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return normalizeNumbers(v)
+}
+
+func normalizeNumbers(v any) (any, error) {
+	switch t := v.(type) {
+	case json.Number:
+		return strconv.ParseInt(t.String(), 10, 64)
+	case []any:
+		for i := range t {
+			n, err := normalizeNumbers(t[i])
+			if err != nil {
+				return nil, err
+			}
+			t[i] = n
+		}
+	case map[string]any:
+		for k := range t {
+			n, err := normalizeNumbers(t[k])
+			if err != nil {
+				return nil, err
+			}
+			t[k] = n
+		}
+	}
+	return v, nil
 }
