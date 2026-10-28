@@ -194,6 +194,8 @@ func TestBlockedKeyNeverCarriesChosenData(t *testing.T) {
 		{"127.0.0.1", 443, "ip-loopback:443", false},
 		{"10.1.2.3", 443, "ip-private:443", false},
 		{"172.30.0.3", 7070, "ip-vm-internal:other", false},
+		{"172.30.2.17", 5432, "ip-vm-internal:other", false},
+		{"172.30.1.1", 8090, "ip-vm-internal:other", false},
 		{"com", 443, "invalid:443", false},
 		{"bad host", 443, "invalid:443", false},
 	}

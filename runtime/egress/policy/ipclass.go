@@ -22,7 +22,8 @@ const (
 	ClassIPv4Embedded // NAT64, 6to4, Teredo: they can carry any IPv4, metadata included
 	ClassReserved
 	// ClassVMInternal is the VM's own Docker networks (apps 172.30.0.0/24,
-	// edge 172.31.0.0/24, INTERFACES sections 6 and 15), bridge gateways
+	// the per-app networks 172.30.<n>.0/24, the verifier network and edge
+	// 172.31.0.0/24, INTERFACES sections 6 and 15), bridge gateways
 	// included. Denied even when a broader allowedPrivateCidrs covers them.
 	ClassVMInternal
 )
@@ -53,8 +54,11 @@ func (c IPClass) String() string {
 	return fmt.Sprintf("class(%d)", int(c))
 }
 
-// VMInternalPrefixes are the fixed Docker networks of a deployment VM.
-var VMInternalPrefixes = []string{"172.30.0.0/24", "172.31.0.0/24"}
+// VMInternalPrefixes are the fixed Docker networks of a deployment VM: all
+// of 172.30.0.0/16 (the apps network, up to 16 app networks since D-041 and
+// the verifier network) and the edge network. The composer's VMRanges are
+// the same list (D-064, docker-checks bug 6).
+var VMInternalPrefixes = []string{"172.30.0.0/16", "172.31.0.0/24"}
 
 // Metadata server addresses: GCE/AWS IPv4, GCE IPv6, AWS IPv6.
 var metadataAddrs = []netip.Addr{

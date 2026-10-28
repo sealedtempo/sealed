@@ -205,3 +205,59 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+func TestRoundDown2(t *testing.T) {
+	for in, want := range map[uint64]uint64{
+		0: 0, 1: 1, 99: 99, 100: 100, 101: 100, 109: 100, 110: 110, 999: 990, 1000: 1000, 1234: 1200,
+		9999: 9900, 10000: 10000, 123456: 120000, 1<<64 - 1: 18000000000000000000,
+	} {
+		if got := RoundDown2(in); got != want {
+			t.Errorf("RoundDown2(%d) = %d, want %d", in, got, want)
+		}
+		if RoundDown2(RoundDown2(in)) != RoundDown2(in) {
+			t.Errorf("RoundDown2 is not idempotent at %d", in)
+		}
+	}
+}
+
+// TestHandlerRoundsCounts is D-065: the counts that leave the VM are
+// rounded down to two significant figures, aggregates after summing the
+// exact per-caller values; the counter and the in-VM log stay exact.
+func TestHandlerRoundsCounts(t *testing.T) {
+	c := New(time.Unix(1730000000, 0), 0)
+	for i := 0; i < 1234; i++ {
+		c.Block("a", "unlisted:443")
+	}
+	for i := 0; i < 57; i++ {
+		c.Block("b", "unlisted:443")
+		c.Allow("b", "x.example:443")
+	}
+	for i := 0; i < 105; i++ {
+		c.BlockEntry("b", "y.example:443")
+	}
+	h := Handler(c, func(*http.Request) bool { return true })
+	r := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	var s Snapshot
+	if err := json.Unmarshal(w.Body.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	want := Snapshot{
+		Since:   1730000000,
+		Allowed: Counts{"x.example:443": 57},
+		Blocked: Counts{"unlisted:443": 1200, "y.example:443": 100}, // 1234 + 57 = 1291
+		Callers: map[string]CallerCounts{
+			"a": {Allowed: Counts{}, Blocked: Counts{"unlisted:443": 1200}},
+			"b": {Allowed: Counts{"x.example:443": 57}, Blocked: Counts{"unlisted:443": 57, "y.example:443": 100}},
+		},
+	}
+	got, _ := json.Marshal(s)
+	exp, _ := json.Marshal(want)
+	if !bytes.Equal(got, exp) {
+		t.Errorf("served %s\nwant   %s", got, exp)
+	}
+	if exact := c.Snapshot(); exact.Blocked["unlisted:443"] != 1291 || exact.Callers["a"].Blocked["unlisted:443"] != 1234 {
+		t.Errorf("counter lost exact values: %+v", exact.Blocked)
+	}
+}

@@ -7,16 +7,24 @@
 #     --output type=image,name=sealed-egress,rewrite-timestamp=true .
 # Base images are pinned by index digest (rechecked with `crane digest` on
 # 2026-10-28). The binary is reproducible: CGO off, -trimpath,
-# -buildvcs=false, empty build id, and only go.mod, go.sum and
-# runtime/egress are copied in.
+# -buildvcs=false, empty build id, and only go.mod, go.sum, runtime/egress
+# and the one other package of this module it imports (runtime/composer/cjson)
+# are copied in. dockerfile_test.go checks that list against go list.
+#
+# The build stage runs on the build machine and cross-compiles for the
+# requested platform: TARGETOS and TARGETARCH come from BuildKit
+# (--platform, default the daemon's), so they must not have defaults here,
+# which would override them (docker-checks bug 4). Production images are
+# built with --platform linux/amd64.
 FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:7b072c590a326b9d2a43b165ae247f6e8eafff32e1ad154ab97139e89f053be9 AS build
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 ARG SOURCE_DATE_EPOCH
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY runtime/egress/ runtime/egress/
+COPY runtime/composer/cjson/ runtime/composer/cjson/
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
       -trimpath -buildvcs=false \
       -tags smokescreen_no_prometheus \

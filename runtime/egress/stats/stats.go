@@ -141,6 +141,38 @@ func build(since time.Time, set map[string]*tally) Snapshot {
 	return s
 }
 
+// RoundDown2 rounds n down to two significant figures: 0 to 99 stay exact,
+// 100 to 999 lose their last digit, 1000 to 9999 their last two, and so on.
+func RoundDown2(n uint64) uint64 {
+	scale := uint64(1)
+	for n/scale >= 100 {
+		scale *= 10
+	}
+	return n / scale * scale
+}
+
+// Rounded returns the snapshot with every count rounded down to two
+// significant figures (D-065). Counts leave the VM: sealed-agent forwards
+// them to the platform, and an app chooses how often it is blocked, so exact
+// values would let it signal a few bits per key and interval. Rounding the
+// served values (aggregates are summed exactly first) narrows that channel;
+// it is an accepted residual (THREAT_MODEL), not closed. Rounding twice
+// gives the same values.
+func (s Snapshot) Rounded() Snapshot {
+	round := func(in Counts) Counts {
+		out := make(Counts, len(in))
+		for k, n := range in {
+			out[k] = RoundDown2(n)
+		}
+		return out
+	}
+	r := Snapshot{Since: s.Since, Allowed: round(s.Allowed), Blocked: round(s.Blocked), Callers: make(map[string]CallerCounts, len(s.Callers))}
+	for name, cc := range s.Callers {
+		r.Callers[name] = CallerCounts{Allowed: round(cc.Allowed), Blocked: round(cc.Blocked)}
+	}
+	return r
+}
+
 // Total sums all counts in a Counts map.
 func (m Counts) Total() uint64 {
 	var t uint64

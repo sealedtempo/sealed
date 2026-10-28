@@ -148,6 +148,14 @@ func TestParseRejectsBadFields(t *testing.T) {
 		"overlapping cidrs":       func(c *Config) { c.AllowedPrivateCIDRs = []string{"10.0.0.0/8", "10.1.0.0/16"} },
 		"cidr inside apps net":    func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.30.0.0/25"} },
 		"cidr is edge net":        func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.31.0.0/24"} },
+		"cidr is an app net":      func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.30.1.0/24"} },
+		"cidr in app net space":   func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.30.128.0/20"} },
+		"cidr is verifier net":    func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.30.250.0/24"} },
+		"cidr is all of 172.30":   func(c *Config) { c.AllowedPrivateCIDRs = []string{"172.30.0.0/16"} },
+		"app-net ip entry": func(c *Config) {
+			c.AllowedPrivateCIDRs = []string{"172.16.0.0/12"}
+			c.Callers[0].Allow = []string{"172.30.2.17:5432"}
+		},
 		"vm-internal ip entry": func(c *Config) {
 			c.AllowedPrivateCIDRs = []string{"172.16.0.0/12"}
 			c.Callers[0].Allow = []string{"172.30.0.1:22"}
