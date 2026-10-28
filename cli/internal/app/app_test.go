@@ -45,6 +45,8 @@ type harness struct {
 	answers []string
 	// real, when set, replaces the in-memory chain (anvil tests).
 	real registry.Reader
+	// dial, when set, makes commands dial the RPC and registries of their own settings, as the binary does.
+	dial bool
 	// now, when set, replaces the fixed clock testkit.HarnessNow (anvil tests use the node's head time).
 	now func() time.Time
 }
@@ -98,7 +100,10 @@ func (h *harness) run(args ...string) (int, string, string) {
 			return a, nil
 		},
 		NewTokens: func(string) (gcp.TokenSource, error) { return gcp.StaticToken("ya29.test"), nil },
-		NewChain: func(context.Context, *settings.Settings) (registry.Reader, error) {
+		NewChain: func(ctx context.Context, s *settings.Settings) (registry.Reader, error) {
+			if h.dial {
+				return registry.Dial(ctx, s.RPCURL, s.Registries)
+			}
 			if h.real != nil {
 				return h.real, nil
 			}

@@ -85,8 +85,15 @@ type Node struct {
 
 // Start launches anvil, builds and deploys PlatformRegistry, AppRegistry, OracleSignatureVerifier and
 // DeploymentRegistry, and wires them like contracts/script/Deploy.s.sol (Ops is registrar, Oracle a signer, method
-// 1 the oracle verifier).
+// 1 the oracle verifier). The node runs chain id 4217 as on mainnet, so configs and evidence carry the production
+// chain id.
 func Start(t testing.TB) *Node {
+	t.Helper()
+	return StartOn(t, 4217)
+}
+
+// StartOn is Start on another chain id (a testnet or a local network of the customer's).
+func StartOn(t testing.TB, chainID uint64) *Node {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("-short")
@@ -102,8 +109,7 @@ func Start(t testing.TB) *Node {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
-	// Chain id 4217 as on mainnet, so configs and evidence carry the production chain id.
-	cmd := exec.Command(bin, "--network", "tempo", "--hardfork", localtempo.Hardfork, "--chain-id", "4217", "--port", fmt.Sprint(port), "--gas-limit", "500000000", "--silent")
+	cmd := exec.Command(bin, "--network", "tempo", "--hardfork", localtempo.Hardfork, "--chain-id", fmt.Sprint(chainID), "--port", fmt.Sprint(port), "--gas-limit", "500000000", "--silent")
 	var logs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
 	if err := cmd.Start(); err != nil {

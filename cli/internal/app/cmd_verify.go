@@ -20,6 +20,7 @@ import (
 	"github.com/sealed-dev/sealed/cli/internal/registry"
 	verify "github.com/sealed-dev/sealed/verifier"
 	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealed-dev/sealed/verifier/chain"
 )
 
 var aliasRe = regexp.MustCompile(`^dep_[0-9A-Za-z]{8}$`)
@@ -144,6 +145,10 @@ func runVerify(ctx context.Context, args []string, e *Env) error {
 	s, err := c.settings(e)
 	if err != nil {
 		return err
+	}
+	if s.Derived {
+		// A deployments file for another chain is enough: its chain id and registries are what every check uses.
+		e.errorf("Checking on chain %d (%s) with the registries of the deployments file, through %s.\n", s.ChainID, s.Defaults.Chain.Name, chain.RedactURL(s.RPCURL))
 	}
 
 	// The deployment to check.

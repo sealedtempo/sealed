@@ -122,6 +122,11 @@ func ConfigDoc(customer common.Address, imageID [32]byte, bs ...*composer.Bundle
 
 // ConfigDocAt is ConfigDoc for other registry addresses.
 func ConfigDocAt(addrs chain.Addresses, customer common.Address, imageID [32]byte, bs ...*composer.Bundle) map[string]any {
+	return ConfigDocOn(chain.MainnetChainID, addrs, customer, imageID, bs...)
+}
+
+// ConfigDocOn is ConfigDocAt on another chain.
+func ConfigDocOn(chainID uint64, addrs chain.Addresses, customer common.Address, imageID [32]byte, bs ...*composer.Bundle) map[string]any {
 	sorted := append([]*composer.Bundle(nil), bs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Manifest.ID < sorted[j].Manifest.ID })
 	var apps []any
@@ -130,7 +135,7 @@ func ConfigDocAt(addrs chain.Addresses, customer common.Address, imageID [32]byt
 	}
 	salt := sha256.Sum256([]byte("testkit salt"))
 	return map[string]any{
-		"schema": "sealed-config/v1", "chainId": 4217, "customer": lowerAddr(customer),
+		"schema": "sealed-config/v1", "chainId": chainID, "customer": lowerAddr(customer),
 		"salt": "0x" + hex.EncodeToString(salt[:]), "imageId": "0x" + hex.EncodeToString(imageID[:]),
 		"composerVersion": composer.Version, "apps": apps,
 		"hostnames":       map[string]any{"scheme": "sslip", "ip": "34.1.2.3"},
@@ -154,6 +159,8 @@ func lowerAddr(a common.Address) string { return "0x" + hex.EncodeToString(a[:])
 
 // World is one deployment with real bundles and the real composer.
 type World struct {
+	// ChainID is the chain of the config and the evidence (4217 unless NewWorldOn).
+	ChainID       uint64
 	Addrs         chain.Addresses
 	Customer      common.Address
 	EnclaveSigner common.Address
@@ -173,7 +180,14 @@ func NewWorld(t testing.TB) *World {
 // NewWorldAt composes the stack for customer on the given registries.
 func NewWorldAt(t testing.TB, addrs chain.Addresses, customer common.Address) *World {
 	t.Helper()
+	return NewWorldOn(t, chain.MainnetChainID, addrs, customer)
+}
+
+// NewWorldOn composes the stack for customer on the given registries of chain chainID.
+func NewWorldOn(t testing.TB, chainID uint64, addrs chain.Addresses, customer common.Address) *World {
+	t.Helper()
 	w := &World{
+		ChainID:       chainID,
 		Addrs:         addrs,
 		Customer:      customer,
 		EnclaveSigner: common.HexToAddress("0x00000000000000000000000000000000000000d5"),
@@ -182,7 +196,7 @@ func NewWorldAt(t testing.TB, addrs chain.Addresses, customer common.Address) *W
 		Nonce2:        sha256.Sum256([]byte("nonce2")),
 		AttestedAt:    1793200000,
 	}
-	cfgJSON, err := cjson.Marshal(ConfigDocAt(addrs, w.Customer, w.ImageID, w.Bundles...))
+	cfgJSON, err := cjson.Marshal(ConfigDocOn(chainID, addrs, w.Customer, w.ImageID, w.Bundles...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +240,7 @@ func (w *World) Evidence(t testing.TB) map[string]any {
 		ids = append(ids, "0x"+hex.EncodeToString(id[:]))
 	}
 	return map[string]any{
-		"schema": verify.EvidenceSchema, "chainId": 4217,
+		"schema": verify.EvidenceSchema, "chainId": w.ChainID,
 		"contracts": map[string]any{
 			"platformRegistry": lowerAddr(w.Addrs.PlatformRegistry), "appRegistry": lowerAddr(w.Addrs.AppRegistry),
 			"deploymentRegistry": lowerAddr(w.Addrs.DeploymentRegistry),

@@ -144,13 +144,15 @@ func (e *Env) httpClient() *http.Client {
 // common holds the flags shared by commands that read the chain or the catalog.
 type commonFlags struct {
 	rpc, defaultsFile, deploymentsFile, assetBase, bundleCache string
+	chainID                                                    uint64
 	json, devHTTPAssets                                        bool
 }
 
 func (c *commonFlags) register(fs *flag.FlagSet) {
-	fs.StringVar(&c.rpc, "rpc", "", "Tempo JSON-RPC URL (TEMPO_RPC_URL; default chain.public_rpc_url)")
+	fs.StringVar(&c.rpc, "rpc", "", "Tempo JSON-RPC URL (TEMPO_RPC_URL; default chain.public_rpc_url, mainnet only)")
 	fs.StringVar(&c.defaultsFile, "defaults", "", "config/defaults.yaml to use instead of the embedded copy (SEALED_DEFAULTS_FILE)")
-	fs.StringVar(&c.deploymentsFile, "deployments", "", "contracts/deployments/<network>.json instead of the embedded mainnet file (SEALED_DEPLOYMENTS_FILE)")
+	fs.StringVar(&c.deploymentsFile, "deployments", "", "contracts/deployments/<network>.json instead of the embedded mainnet file (SEALED_DEPLOYMENTS_FILE); a file for another chain sets the chain id and fee token, and then needs --rpc")
+	fs.Uint64Var(&c.chainID, "chain-id", 0, "the Tempo chain id you expect (TEMPO_CHAIN_ID); must match the deployments file (default its chainId, else 4217)")
 	fs.StringVar(&c.assetBase, "release-asset-base", "", "release asset base URL (default catalog.release_asset_base)")
 	fs.StringVar(&c.bundleCache, "bundle-cache", "", "content-addressed bundle cache directory (default the user cache dir)")
 	fs.BoolVar(&c.json, "json", false, "print JSON")
@@ -161,7 +163,7 @@ func (c *commonFlags) settings(e *Env) (*settings.Settings, error) {
 	if c.devHTTPAssets && e.getenv("SEALED_DEV_SIM") != "1" {
 		return nil, usagef("--dev-allow-http-assets needs SEALED_DEV_SIM=1 (never for a production check)")
 	}
-	return settings.Load(settings.Options{DefaultsFile: c.defaultsFile, DeploymentsFile: c.deploymentsFile, RPCURL: c.rpc}.FromEnv(e.getenv))
+	return settings.Load(settings.Options{DefaultsFile: c.defaultsFile, DeploymentsFile: c.deploymentsFile, RPCURL: c.rpc, ChainID: c.chainID}.FromEnv(e.getenv))
 }
 
 func (c *commonFlags) fetcher(e *Env, s *settings.Settings) *bundles.Fetcher {
@@ -234,6 +236,7 @@ Usage:
   sealed secrets rm <app> <NAME> | gate [--yes]
   sealed deploy --config stack.yaml [--plan]
   sealed verify --deployment <0x id | dep_ alias> [--evidence <file>] [--live <attest url>] [--json]
+  sealed verify ... --deployments <network>.json --rpc <url>   another chain: its deployments file and an RPC of it
   sealed catalog list [--json]
   sealed catalog show <app> [--json]
   sealed release build <app> [--catalog <dir>] [--out <file>] [--check <version|latest>]

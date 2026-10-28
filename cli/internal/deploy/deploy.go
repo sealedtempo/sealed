@@ -276,6 +276,10 @@ func (d *Deployer) buildConfig(s *StackFile, p *Plan) (*composer.Config, error) 
 	if cfg.Endpoints.TempoRPC == "" {
 		cfg.Endpoints.TempoRPC = st.Defaults.Chain.PublicRPCURL
 	}
+	if cfg.Endpoints.TempoRPC == "" {
+		// A deployments file for another chain has no public RPC the VM could use (settings.Derived).
+		return nil, fmt.Errorf("endpoints.tempoRpc is required: chain %d has no public RPC in the defaults", st.ChainID)
+	}
 	if s.Settlement != nil {
 		if s.Settlement.Mode != "" {
 			cfg.Settlement.Mode = s.Settlement.Mode

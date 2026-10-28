@@ -5,6 +5,13 @@ One Go binary (spec 8.4). Build it with `go build -o sealed ./cli/cmd/sealed`. I
 outside a checkout (Cloud Shell included). `--defaults`, `--deployments` and `--rpc` (or `SEALED_DEFAULTS_FILE`,
 `SEALED_DEPLOYMENTS_FILE`, `TEMPO_RPC_URL`) point it elsewhere.
 
+A deployments file for another chain (a testnet, a local node) is enough on its own: without `--defaults`, the
+chain id, network name and fee token come from that file (`chainId`, `network`, `config.feeToken`) instead of the
+embedded mainnet defaults, and the mainnet public RPC no longer applies, so `--rpc` (or `TEMPO_RPC_URL`) must name
+an RPC of that chain. `--chain-id` (or `TEMPO_CHAIN_ID`) states the chain you expect; it must equal the file's
+`chainId` (or supplies it when the file has none), and a chain other than 4217 needs that chain's deployments
+file. A `--defaults` file is never overridden: its `chain.chain_id` must match the deployments.
+
 Google Cloud calls use your own credentials: `SEALED_GCP_ACCESS_TOKEN` (or `GOOGLE_OAUTH_ACCESS_TOKEN`), else
 `gcloud auth print-access-token`, else an `authorized_user` application default credentials file. Tokens are
 never printed. The CLI only reads Tempo (eth_call); it holds no keys and sends no transactions.
@@ -13,7 +20,8 @@ never printed. The CLI only reads Tempo (eth_call); it holds no keys and sends n
 
 ```sh
 sealed bootstrap --project <id> --customer-address <0x...> --platform-sa <email> \
-  --key-broker-image ghcr.io/sealedtempo/sealed-key-broker@sha256:<digest> [--region us-central1] [--plan] [--yes]
+  --key-broker-image ghcr.io/sealedtempo/sealed-key-broker@sha256:<digest> [--region us-central1] [--plan] [--yes] \
+  [--allowed-images 0x<imageId>,...] [--fee-splitter 0x... --fee-token 0x...]
 sealed connect gcp --project <id> ...                  # the same command (D-032)
 
 sealed secrets set --config stack.yaml --missing       # generate or ask for every required secret, once
@@ -24,6 +32,7 @@ sealed secrets rm <app> <NAME> [--yes]
 
 sealed deploy --config stack.yaml [--plan] [--wait-approval 10m] [--write-config config.json] [--replace]
 sealed verify --deployment <0x id | dep_ alias> [--evidence file] [--live https://attest.<ip>.sslip.io/attest] [--json]
+sealed verify ... --deployments tempo-testnet.json --rpc <url>     # another chain: its deployments file and an RPC
 sealed catalog list | show <app> [--json]
 sealed release build <app> [--out bundle.tar] [--check <version|latest>]
 ```
@@ -39,7 +48,13 @@ a key broker image that is not pinned by digest or still has the all-zero placeh
 through `--tempo-rpc`, else the RPC the command was given (`--rpc` or `TEMPO_RPC_URL`), else the public RPC; the
 RPC and chain are printed before Terraform runs and the RPC again in the summary, so your choice is never replaced
 silently. The broker's Cloud Run environment is fixed by `modules/key-broker-env` and checked against the broker's
-own parser (see the module README). `--debug-logging` also creates `sealed-debug-logs`, the log writer identity
+own parser (see the module README). The broker checks every config's FeeSplitter and fee token against its
+settings, which default to mainnet's: when the deployments file names other ones, bootstrap passes them
+(`SEALED_FEE_SPLITTER`, `SEALED_FEE_TOKEN`), and it stops when the registries are not mainnet's and the file names no
+FeeSplitter (or, on another chain, no `config.feeToken`). `--fee-splitter` and `--fee-token` set them explicitly,
+and `--allowed-images 0x<imageId>,...` gives the broker your own imageId allowlist on top of PlatformRegistry
+approval (`SEALED_ALLOWED_IMAGES`); the CLI also reads all three from its environment under those names.
+`--debug-logging` also creates `sealed-debug-logs`, the log writer identity
 that only debug VMs get (spec 5.8). The output is the `sct_`
 token: `sct_` + base64url(JSON) with `v`, `project`, `region`, `deployerAccount`, `keyBrokerUrl`, `customer`,
 `subnetwork` and `issuedAt`. It holds no secret.
@@ -122,8 +137,10 @@ evidence is downloaded from `--api` (`SEALED_API_KEY` as bearer). The platform i
 deployment id it resolves is required to match the evidence and the chain. Prints a readable report, or JSON
 with `--json`; `--report <file>` writes the JSON too. `--dev-*` flags (simulated quotes, self-signed or private
 attest hosts, `--dev-allow-http-assets` for a local devnet's plain http release asset host) need
-`SEALED_DEV_SIM=1` and reports then say simulated. A chain without embedded defaults (a local devnet) needs
-`--deployments` and a `--defaults` file naming its chain id and release asset base.
+`SEALED_DEV_SIM=1` and reports then say simulated. On another chain (a testnet, a local devnet) pass that chain's
+deployments file and an RPC of it: `sealed verify --deployments tempo-testnet.json --rpc <url> --deployment <id>
+--evidence <file>` (see the top of this README; `--release-asset-base` if its bundles live elsewhere). The RPC must
+then serve that chain id, the evidence and config must name it, and the config's FeeSplitter must be the file's.
 
 ### catalog, release build
 
