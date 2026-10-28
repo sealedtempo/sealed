@@ -23,6 +23,11 @@ type Composer struct {
 
 var _ verify.Composer = (*Composer)(nil)
 
+// ComposerVersion is the runtime/composer version this composer recomputes stacks with. Configs must name exactly
+// this composerVersion (composer.ParseConfig refuses any other), so sealed-verifierd reports it in GET /healthz for
+// the platform api to read.
+func (c *Composer) ComposerVersion() string { return composer.Version }
+
 // Compose implements verify.Composer. The config is parsed (strict, normalized) before any download, and each
 // release must belong to its config.apps entry: keccak256(slug) = appId, releaseId = keccak256(abi.encode(appId,
 // version, bundleHash)), and the bundle's manifest id and version are the release's.

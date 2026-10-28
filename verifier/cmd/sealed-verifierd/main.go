@@ -58,7 +58,7 @@ func run(args []string, getenv func(string) string, log *slog.Logger) error {
 	go func() { errc <- hs.ListenAndServe() }()
 	log.Info("listening", "addr", c.Listen, "chainId", c.ChainID, "rpc", chain.RedactURL(c.RPCURL), "allowSimulated", c.AllowSimulated,
 		"addresses", c.AddrSource, "deploymentRegistry", c.Addrs.DeploymentRegistry.Hex(),
-		"composer", srv.Deps.Composer != nil, "releaseAssetBases", c.ReleaseAssetBases, "bundleCache", orMemory(c.BundleCacheDir),
+		"composer", srv.Deps.Composer != nil, "composerVersion", srv.ComposerVersion(), "maxBodyBytes", httpapi.MaxBodyBytes, "releaseAssetBases", c.ReleaseAssetBases, "bundleCache", orMemory(c.BundleCacheDir),
 		"liveAllowedHosts", c.LiveHosts, "liveFetch", c.LiveFetch, "allowedClients", c.AllowedClients,
 		"maxChainHeadAge", c.MaxChainHeadAge.String(), "maxInFlight", c.MaxInFlight)
 	select {

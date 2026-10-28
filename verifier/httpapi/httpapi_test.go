@@ -147,8 +147,8 @@ func TestVerifyEvidenceBadRequests(t *testing.T) {
 		})
 	}
 	big := bytes.Repeat([]byte("a"), httpapi.MaxBodyBytes+1)
-	if resp, _ := post(t, h.api.URL+"/v1/verify/evidence", big); resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized body: %d", resp.StatusCode)
+	if resp, raw := post(t, h.api.URL+"/v1/verify/evidence", big); resp.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(string(raw), "body_too_large") {
+		t.Fatalf("oversized body: %d %s", resp.StatusCode, raw)
 	}
 	resp, err := http.Get(h.api.URL + "/v1/verify/evidence")
 	if err != nil {
