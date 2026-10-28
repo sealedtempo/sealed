@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,69 +15,8 @@ import (
 	keybroker "github.com/sealed-dev/sealed/key-broker"
 	"github.com/sealed-dev/sealed/key-broker/internal/anvil"
 	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
-	"github.com/sealed-dev/sealed/runtime/composer"
 	"github.com/sealed-dev/sealed/verifier/attest"
 )
-
-// bundleServer serves release bundles at the release asset URL rule's paths, like GitHub release downloads.
-type bundleServer struct {
-	srv   *httptest.Server
-	mu    sync.Mutex
-	files map[string][]byte
-	hits  map[string]int
-	down  bool
-}
-
-func newBundleServer(t testing.TB) *bundleServer {
-	s := &bundleServer{files: map[string][]byte{}, hits: map[string]int{}}
-	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.hits[r.URL.Path]++
-		b, ok := s.files[r.URL.Path]
-		if s.down || !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		_, _ = w.Write(b)
-	}))
-	t.Cleanup(s.srv.Close)
-	return s
-}
-
-func (s *bundleServer) base() string { return s.srv.URL + "/releases/download" }
-
-func (s *bundleServer) path(t testing.TB, app, version string) string {
-	t.Helper()
-	u, err := keybroker.BundleURL(s.base(), app, version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := url.Parse(u)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p.Path
-}
-
-func (s *bundleServer) put(t testing.TB, b *composer.Bundle) {
-	s.serve(t, b.Manifest.ID, b.Version(), b.Tar)
-}
-
-func (s *bundleServer) serve(t testing.TB, app, version string, data []byte) {
-	p := s.path(t, app, version)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.files[p] = data
-}
-
-func (s *bundleServer) hitCount(t testing.TB, app, version string) int {
-	p := s.path(t, app, version)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.hits[p]
-}
 
 // harness is a broker over a world.
 type harness struct {
@@ -87,7 +24,7 @@ type harness struct {
 	b       *keybroker.Broker
 	log     *keybroker.MemoryLog
 	nonces  *keybroker.NonceStore
-	bundles *bundleServer
+	bundles *kbtest.BundleServer
 	clock   *clock
 }
 
@@ -139,12 +76,12 @@ func simVerifier(t testing.TB) *attest.Verifier {
 func newHarness(t testing.TB, w *kbtest.World, o harnessOpts) *harness {
 	t.Helper()
 	h := &harness{w: w, log: &keybroker.MemoryLog{}, clock: &clock{t: time.Unix(1_800_000_000, 0)}}
-	h.bundles = newBundleServer(t)
+	h.bundles = kbtest.NewBundleServer(t)
 	for _, b := range w.Bundles {
-		h.bundles.put(t, b)
+		h.bundles.Put(t, b)
 	}
 	h.nonces = keybroker.NewNonceStore(keybroker.NonceOptions{Now: h.clock.now})
-	src, err := keybroker.NewHTTPBundleSource(keybroker.HTTPBundleSourceOptions{Base: h.bundles.base()})
+	src, err := keybroker.NewHTTPBundleSource(keybroker.HTTPBundleSourceOptions{Base: h.bundles.Base()})
 	if err != nil {
 		t.Fatal(err)
 	}

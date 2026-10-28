@@ -125,7 +125,7 @@ func TestReleaseHappyPath(t *testing.T) {
 				t.Fatal("two deployments share a disk key")
 			}
 			// Bundles are fetched once and then served from the content-addressed cache.
-			if n := h.bundles.hitCount(t, "notes", w.Bundles["notes"].Version()); n != 1 {
+			if n := h.bundles.Hits(t, "notes", w.Bundles["notes"].Version()); n != 1 {
 				t.Fatalf("notes bundle fetched %d times, want 1", n)
 			}
 		})
@@ -255,9 +255,9 @@ func TestDenials(t *testing.T) {
 			junkHash := sha256.Sum256(junk)
 			junkRelease := w.Reg.PublishRelease(t, "notes", "9.9.9", junkHash)
 			for _, b := range []*composer.Bundle{unpublished, revocable, otherRelease} {
-				shared.bundles.put(t, b)
+				shared.bundles.Put(t, b)
 			}
-			shared.bundles.serve(t, "notes", "9.9.9", junk)
+			shared.bundles.Serve(t, "notes", "9.9.9", junk)
 
 			salt := func(b byte) func(c *composer.Config) {
 				return func(c *composer.Config) { c.Salt = "0x" + strings.Repeat(hex.EncodeToString([]byte{b}), 32) }
@@ -465,7 +465,7 @@ func TestDenials(t *testing.T) {
 				{name: "catalog serves other bytes", status: s403, reason: keybroker.ReasonBundleHashMismatch, check: keybroker.CheckStackRecompute,
 					opts: &harnessOpts{},
 					build: func(t *testing.T, h *harness) *kbtest.Attempt {
-						h.bundles.serve(t, "notes", w.Bundles["notes"].Version(), otherRelease.Tar)
+						h.bundles.Serve(t, "notes", w.Bundles["notes"].Version(), otherRelease.Tar)
 						return h.attempt(t, base)
 					}},
 				// customer and chain
@@ -494,7 +494,7 @@ func TestDenials(t *testing.T) {
 					if tc.opts != nil {
 						h = newHarness(t, w, *tc.opts)
 						for _, b := range []*composer.Bundle{unpublished, revocable, otherRelease} {
-							h.bundles.put(t, b)
+							h.bundles.Put(t, b)
 						}
 					}
 					var out *keybroker.Outcome
@@ -641,7 +641,7 @@ func TestUnavailable(t *testing.T) {
 		expectDenied(t, run(t, harnessOpts{mac: failingMAC{}}, nil), s503, keybroker.ReasonUnavailable)
 	})
 	t.Run("catalog down", func(t *testing.T) {
-		out := run(t, harnessOpts{}, func(h *harness) { h.bundles.down = true })
+		out := run(t, harnessOpts{}, func(h *harness) { h.bundles.Down = true })
 		expectDenied(t, out, s503, keybroker.ReasonUnavailable)
 	})
 	t.Run("RPC down", func(t *testing.T) {
