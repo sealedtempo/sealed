@@ -87,6 +87,8 @@ function sendGate(res: http.ServerResponse, d: GateDecision): void {
         ...(d.stripAuthorization ? { [GATE_STRIP_HEADER]: "1" } : {}),
         ...(d.setCookie ? { "set-cookie": d.setCookie } : {}),
       });
+    case 303:
+      return send(res, 303, "", { location: d.location, "set-cookie": d.setCookie });
     case 401:
       return send(res, 401, "unauthorized", { "www-authenticate": GATE_REALM });
     case 429:
@@ -142,6 +144,9 @@ export function createApiServer(h: ApiHandlers, log: Logger, opts: ApiServerOpti
               cookie: first(req.headers.cookie),
               authorization: first(req.headers.authorization),
               client: attestClient(req, peer, opts.trustedProxy?.()),
+              method: first(req.headers["x-forwarded-method"]),
+              uri: first(req.headers["x-forwarded-uri"]),
+              fetchMode: first(req.headers["sec-fetch-mode"]),
             },
             peer,
           );

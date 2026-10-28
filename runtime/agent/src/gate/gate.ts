@@ -3,7 +3,8 @@
 //
 // - 200 when the request carries a valid `sealed_gate` cookie, or Basic credentials for user `sealed`
 //   that match the released bcrypt hash. A Basic success also sets `sealed_gate` (HMAC-SHA256 with a
-//   key made at boot, over route-independent session data, 12 h). The app's own Authorization header
+//   key made at boot, over route-independent session data, 12 h); for a browser navigation it does so
+//   with a 303 back to the same URL, which forward_auth passes to the browser as it is. The app's own Authorization header
 //   is not the gate's business when the cookie is used (Twenty sends a Bearer header); when the header
 //   holds the gate's own Basic credentials the answer says so, so Caddy can drop it before the app.
 // - 401 with `WWW-Authenticate: Basic realm="sealed"` otherwise.
@@ -23,6 +24,8 @@ const MAX_COOKIES_CHECKED = 8;
 
 export type GateDecision =
   | { status: 200; via: "cookie" | "basic"; setCookie?: string; stripAuthorization: boolean }
+  /** A Basic success on a top-level GET navigation: set the cookie and send the browser back to the same URL. */
+  | { status: 303; location: string; setCookie: string }
   | { status: 401 }
   | { status: 429; retryAfterSec: number }
   | { status: 503; reason: "starting" | "not_configured" | "busy" }
@@ -34,6 +37,21 @@ export interface GateRequest {
   authorization?: string;
   /** The internet client (Caddy's X-Forwarded-For), for the per-client failure budget. */
   client: string;
+  /** The original request's method and URI (forward_auth's X-Forwarded-Method and X-Forwarded-Uri). */
+  method?: string;
+  uri?: string;
+  /** The browser's Sec-Fetch-Mode. */
+  fetchMode?: string;
+}
+
+/**
+ * Where a navigation that just passed Basic auth is sent back to: its own path and query. Only a
+ * same-origin absolute path is accepted (no scheme, no `//host`, no backslashes or controls).
+ */
+export function sameOriginPath(uri: string | undefined): string | undefined {
+  if (!uri || uri.length > 4096 || !uri.startsWith("/") || uri.startsWith("//")) return undefined;
+  if (/[\\\u0000-\u001f\u007f]/.test(uri)) return undefined;
+  return uri;
 }
 
 /** Token bucket with refunds, on an injectable millisecond clock. */
@@ -238,9 +256,7 @@ export class Gate {
     if (this.hasValidCookie(req.cookie)) return { status: 200, via: "cookie", stripAuthorization };
     if (!basic) return { status: 401 };
     const authorization = req.authorization as string;
-    if (stripAuthorization && this.cached(authorization)) {
-      return { status: 200, via: "basic", setCookie: this.setCookieHeader(this.mintCookie()), stripAuthorization };
-    }
+    if (stripAuthorization && this.cached(authorization)) return this.admitted(req, stripAuthorization);
 
     const client = this.bucket(req.client);
     if (!client.take()) return { status: 429, retryAfterSec: client.retryAfterSec() };
@@ -266,6 +282,19 @@ export class Gate {
     client.give();
     this.global.give();
     this.remember(authorization);
-    return { status: 200, via: "basic", setCookie: this.setCookieHeader(this.mintCookie()), stripAuthorization };
+    return this.admitted(req, stripAuthorization);
+  }
+
+  /**
+   * A Basic success. forward_auth copies nothing from a 2xx answer onto the client's response, while
+   * it passes any other answer through as it is; so a browser navigation (GET, Sec-Fetch-Mode
+   * navigate) gets 303 back to the same URL with the cookie, and comes back with it. Other requests
+   * get 200 with Set-Cookie for Caddy to copy, and keep working with Basic (cached) if it does not.
+   */
+  private admitted(req: GateRequest, stripAuthorization: boolean): GateDecision {
+    const setCookie = this.setCookieHeader(this.mintCookie());
+    const location = sameOriginPath(req.uri);
+    if (location && (req.method ?? "GET").toUpperCase() === "GET" && req.fetchMode === "navigate") return { status: 303, location, setCookie };
+    return { status: 200, via: "basic", setCookie, stripAuthorization };
   }
 }

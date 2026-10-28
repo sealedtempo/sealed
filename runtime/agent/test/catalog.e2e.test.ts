@@ -296,6 +296,16 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
     expect(viaCookie.headers["x-sealed-gate"]).toBe("cookie");
     expect(viaCookie.headers["x-sealed-gate-strip-authorization"]).toBeUndefined();
     expect(viaCookie.headers["set-cookie"]).toBeUndefined();
+    // A browser navigation gets the cookie with a 303 back to where it was going.
+    const nav = await localRequestWithHeaders(ep(), "/v1/gate?route=scraper", {
+      ...fromPeer(caddyIp),
+      authorization: basic(GATE_PASSWORD),
+      "x-forwarded-method": "GET",
+      "x-forwarded-uri": "/jobs?page=2",
+      "sec-fetch-mode": "navigate",
+    });
+    expect([nav.status, nav.headers.location]).toEqual([303, "/jobs?page=2"]);
+    expect(String(nav.headers["set-cookie"])).toMatch(/^sealed_gate=v1\./);
     const challenge = await localRequestWithHeaders(ep(), "/v1/gate?route=gateway", { ...fromPeer(caddyIp), authorization: "Bearer sk-litellm" });
     expect(challenge.status).toBe(401);
     expect(challenge.headers["www-authenticate"]).toBe('Basic realm="sealed"');

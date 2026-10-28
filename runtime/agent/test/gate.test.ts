@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { BcryptWorker, GateBusyError } from "../src/gate/bcrypt.js";
-import { GATE_COOKIE_TTL_SEC, Gate, type GateDecision, type GateOptions, TokenBucket } from "../src/gate/gate.js";
+import { GATE_COOKIE_TTL_SEC, Gate, type GateDecision, type GateOptions, sameOriginPath, TokenBucket } from "../src/gate/gate.js";
 
 const vectors = (await readFile(join(import.meta.dirname, "fixtures/bcrypt-go-vectors.jsonl"), "utf8"))
   .trim()
@@ -14,7 +14,7 @@ const gateVector = vectors.find((v) => v.password === Buffer.from("sealed-gate-p
 const PASSWORD = "sealed-gate-password";
 const HASH = gateVector.hash;
 const basic = (user: string, pw: string) => `Basic ${Buffer.from(`${user}:${pw}`).toString("base64")}`;
-const cookieOf = (d: GateDecision) => (d.status === 200 && d.setCookie ? (d.setCookie.split(";")[0] as string) : "");
+const cookieOf = (d: GateDecision) => ((d.status === 200 || d.status === 303) && d.setCookie ? (d.setCookie.split(";")[0] as string) : "");
 
 function makeGate(over: Partial<GateOptions> & { t?: { now: number }; done?: Set<string> } = {}) {
   const t = over.t ?? { now: 1_800_000_000_000 };
@@ -54,6 +54,21 @@ describe("password gate (/v1/gate)", () => {
       via: "cookie",
       stripAuthorization: true,
     });
+  });
+
+  it("sends a browser navigation back to the same URL with the cookie, since forward_auth passes 3xx answers through", async () => {
+    const { gate } = makeGate();
+    const nav = { route: "crm", authorization: basic("sealed", PASSWORD), client: "c", method: "GET", uri: "/objects/companies?view=all", fetchMode: "navigate" };
+    const d = await gate.check(nav);
+    expect(d).toMatchObject({ status: 303, location: "/objects/companies?view=all" });
+    expect(await gate.check({ route: "crm", cookie: cookieOf(d), client: "c", method: "GET", uri: "/objects/companies?view=all", fetchMode: "navigate" })).toMatchObject({ status: 200, via: "cookie" });
+    // Not for API calls, form posts or URIs that could leave the origin.
+    expect((await gate.check({ ...nav, fetchMode: "cors" })).status).toBe(200);
+    expect((await gate.check({ ...nav, method: "POST" })).status).toBe(200);
+    for (const uri of ["//evil.example/x", "https://evil.example/", "/\\evil.example", "/a\r\nSet-Cookie: x=1", "", undefined]) {
+      expect((await gate.check({ ...nav, uri })).status, String(uri)).toBe(200);
+    }
+    expect(sameOriginPath("/ok/path?q=1#f")).toBe("/ok/path?q=1#f");
   });
 
   it("answers 401 for missing, wrong or non-Basic credentials and for other users", async () => {
