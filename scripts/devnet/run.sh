@@ -24,7 +24,7 @@ BIN="$ROOT/tmp/devnet/bin"
 t0=$(date +%s)
 log() { printf '[devnet-e2e] %s\n' "$*"; }
 
-for tool in go node pnpm anvil forge jq; do
+for tool in go node pnpm anvil forge jq openssl; do
 	command -v "$tool" >/dev/null || { echo "devnet-e2e needs $tool on PATH" >&2; exit 1; }
 done
 [ -d "$ROOT/contracts/dependencies" ] || { echo "contracts/dependencies is missing: run (cd contracts && forge soldeer install)" >&2; exit 1; }

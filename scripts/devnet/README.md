@@ -15,7 +15,7 @@ caller (for example the workspace `.env` a Makefile includes) reaches forge, anv
 public dev keys sign, on chain 31337, so nothing signed here is valid on Tempo mainnet.
 
 Prerequisites: Go 1.27, Node 22.18 or later (the orchestrator runs as TypeScript with Node's type stripping) and
-pnpm, Foundry (anvil with `--network tempo`, forge) with `contracts/dependencies` installed, jq, PostgreSQL 17
+pnpm, Foundry (anvil with `--network tempo`, forge) with `contracts/dependencies` installed, jq, openssl, PostgreSQL 17
 binaries (`PG_BIN`, default `/opt/homebrew/opt/postgresql@17/bin`), and the private repo's `services/api`
 (`SEALED_API_DIR`, else `../sealed-platform/services/api`, else the `../platform-integration` worktree).
 
