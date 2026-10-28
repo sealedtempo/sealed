@@ -21,10 +21,18 @@ const (
 	teeTcbSvnLen    = 16
 )
 
-// TD_ATTRIBUTES bits (little-endian uint64).
+// TD_ATTRIBUTES bits (little-endian uint64, Intel TDX module ABI).
 const (
-	tdAttrDebug      = uint64(1) << 0
-	tdAttrMigratable = uint64(1) << 29
+	tdAttrDebug         = uint64(1) << 0
+	tdAttrTUD           = uint64(0xff) // TD under debug: DEBUG and bits 1-7, reserved for future debug features
+	tdAttrLASS          = uint64(1) << 27
+	tdAttrSeptVEDisable = uint64(1) << 28
+	tdAttrMigratable    = uint64(1) << 29
+	tdAttrPKS           = uint64(1) << 30
+	tdAttrKL            = uint64(1) << 31
+	tdAttrPerfmon       = uint64(1) << 63
+	// tdAttrOptional are feature bits a production TD may have; every other bit outside TUD is reserved.
+	tdAttrOptional = tdAttrLASS | tdAttrPKS | tdAttrKL | tdAttrPerfmon
 )
 
 // Errors that callers map to reason codes (INTERFACES.md section 9). Every error returned by this package wraps
@@ -32,7 +40,7 @@ const (
 var (
 	ErrQuoteInvalid        = errors.New("quote_invalid")
 	ErrTCBStatus           = errors.New("tcb_status")
-	ErrSimulatedNotAllowed = errors.New("quote_invalid: simulated quote not allowed")
+	ErrSimulatedNotAllowed = fmt.Errorf("%w: simulated quote not allowed", ErrQuoteInvalid)
 	ErrRTMR3Replay         = errors.New("rtmr3_replay")
 )
 
@@ -60,6 +68,10 @@ type ParseOptions struct {
 }
 
 // ParseQuote parses raw quote bytes. Simulated quotes are rejected unless opts.AllowSimulated is set.
+//
+// raw must be exactly the signed quote: header, body and signature data. Bytes after the signature data are covered
+// by no signature, so accepting them would let anyone derive new quoteHash values from one real quote; producers
+// strip padding with TrimQuote.
 func ParseQuote(raw []byte, opts ParseOptions) (*Quote, error) {
 	if IsSimulatedQuote(raw) {
 		if !opts.AllowSimulated {
@@ -74,11 +86,51 @@ func ParseQuote(raw []byte, opts ParseOptions) (*Quote, error) {
 	if err := abi.CheckQuote(p); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrQuoteInvalid, err)
 	}
+	if extra := extraBytes(p); len(extra) > 0 {
+		kind := "non-zero"
+		if allZero(extra) {
+			kind = "zero padding"
+		}
+		return nil, fmt.Errorf("%w: %d unsigned bytes (%s) after the signature data; send exactly the signed quote", ErrQuoteInvalid, len(extra), kind)
+	}
 	q := &Quote{Raw: bytes.Clone(raw), proto: p}
 	if err := q.extract(p); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrQuoteInvalid, err)
 	}
 	return q, nil
+}
+
+func extraBytes(p any) []byte {
+	if v, ok := p.(interface{ GetExtraBytes() []byte }); ok {
+		return v.GetExtraBytes()
+	}
+	return nil
+}
+
+func allZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// TrimQuote returns raw without the zero padding some quote generation interfaces append after the signature data
+// (a fixed-size buffer). It refuses non-zero trailing bytes. Simulated quotes are returned unchanged.
+func TrimQuote(raw []byte) ([]byte, error) {
+	if IsSimulatedQuote(raw) {
+		return raw, nil
+	}
+	p, err := abi.QuoteToProto(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrQuoteInvalid, err)
+	}
+	extra := extraBytes(p)
+	if !allZero(extra) {
+		return nil, fmt.Errorf("%w: %d trailing bytes after the signature data are not zero padding", ErrQuoteInvalid, len(extra))
+	}
+	return raw[:len(raw)-len(extra)], nil
 }
 
 // tdBody is the subset of the v4 and v5 TD quote bodies we read. go-tdx-guest's rtmr helpers only accept v4,
@@ -136,6 +188,9 @@ func copyExact(dst, src []byte, name string) error {
 }
 
 func (q *Quote) tdAttributes() uint64 { return binary.LittleEndian.Uint64(q.TDAttributes[:]) }
+
+// TDAttributesValue is TD_ATTRIBUTES as a little-endian integer.
+func (q *Quote) TDAttributesValue() uint64 { return q.tdAttributes() }
 
 // Debug reports TD_ATTRIBUTES.DEBUG (bit 0). A debug TD can be inspected by the host.
 func (q *Quote) Debug() bool { return q.tdAttributes()&tdAttrDebug != 0 }

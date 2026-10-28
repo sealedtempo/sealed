@@ -46,6 +46,13 @@ func (s *session) callCtx() (context.Context, context.CancelFunc) {
 
 func hex0x(b []byte) string { return hexb.Enc(b) }
 
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
 // checkChain requires the RPC, the bundle and the config to agree on the chain and on the registry addresses the
 // verifier is configured with (it never reads addresses from the bundle).
 func (s *session) checkChain(claimedChainID uint64, claimed *BundleContracts) {
@@ -113,9 +120,15 @@ func (s *session) checkQuote(raw []byte) {
 		} else {
 			data["quoteVersion"] = res.Quote.Version
 			data["fmspc"] = res.FMSPC
+			data["platformTcbStatus"] = res.PlatformTCBStatus
 			data["tcbDate"] = res.TCBDate
+			if res.ModuleTCBStatus != "" {
+				data["moduleTcbStatus"] = res.ModuleTCBStatus
+				data["moduleTcbDate"] = res.ModuleTCBDate
+			}
 			data["advisoryIds"] = res.AdvisoryIDs
-			s.rep.pass(CheckQuote, fmt.Sprintf("TDX quote v%d verified with Intel collateral, TCB %s, QE %s", res.Quote.Version, res.TCBStatus, res.QETCBStatus), data)
+			s.rep.pass(CheckQuote, fmt.Sprintf("TDX quote v%d verified with Intel collateral, TCB %s (platform %s, module %s), QE %s",
+				res.Quote.Version, res.TCBStatus, res.PlatformTCBStatus, orNone(res.ModuleTCBStatus), res.QETCBStatus), data)
 		}
 	}
 	if s.quote == nil {
@@ -129,7 +142,7 @@ func (s *session) checkQuote(raw []byte) {
 		s.rep.fail(CheckTDAttributes, err.Error(), map[string]any{"tdAttributes": hex0x(s.quote.TDAttributes[:])})
 		return
 	}
-	s.rep.pass(CheckTDAttributes, "not a debug TD, not migratable", map[string]any{"tdAttributes": hex0x(s.quote.TDAttributes[:])})
+	s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits", map[string]any{"tdAttributes": hex0x(s.quote.TDAttributes[:])})
 }
 
 // checkImage compares the quote's measurements with PlatformRegistry and requires an approved non-debug image.

@@ -86,9 +86,12 @@ func parseSimQuote(raw []byte) (*Quote, error) {
 		}
 		copy(f.dst, b)
 	}
+	// The format carries only the debug flag; the attributes are those of a production Linux TD (plus DEBUG).
+	attrs := tdAttrSeptVEDisable
 	if body.Debug {
-		binary.LittleEndian.PutUint64(q.TDAttributes[:], tdAttrDebug)
+		attrs |= tdAttrDebug
 	}
+	binary.LittleEndian.PutUint64(q.TDAttributes[:], attrs)
 	return q, nil
 }
 

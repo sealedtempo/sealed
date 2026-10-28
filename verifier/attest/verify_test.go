@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -56,7 +57,8 @@ func TestVerifyRecordedV5UpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Simulated || res.TCBStatus != "UpToDate" || res.QETCBStatus != "UpToDate" || res.FMSPC != "90c06f000000" {
+	if res.Simulated || res.TCBStatus != "UpToDate" || res.PlatformTCBStatus != "UpToDate" || res.ModuleTCBStatus != "UpToDate" ||
+		res.QETCBStatus != "UpToDate" || res.FMSPC != "90c06f000000" {
 		t.Fatalf("result %+v", res)
 	}
 	if res.Quote.Version != 5 {
@@ -65,7 +67,7 @@ func TestVerifyRecordedV5UpToDate(t *testing.T) {
 }
 
 func TestVerifyRecordedGCEQuoteTCBPolicy(t *testing.T) {
-	raw := readQuote(t, "v4_gce_cos113")
+	raw := gceQuote(t)
 	// The real GCE quote verifies, but its TDX TCB is OutOfDate today: the default policy rejects it.
 	_, err := recordedVerifier(t, "v4_gce_cos113", DefaultTCBPolicy(), 0).VerifyQuote(context.Background(), raw)
 	if !errors.Is(err, ErrTCBStatus) {
@@ -76,8 +78,16 @@ func TestVerifyRecordedGCEQuoteTCBPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.TCBStatus != "OutOfDate" || len(res.AdvisoryIDs) == 0 || res.FMSPC != "00806f050000" {
+	if res.TCBStatus != "OutOfDate" || res.PlatformTCBStatus != "OutOfDate" || res.ModuleTCBStatus != "OutOfDate" || res.FMSPC != gceFMSPC {
 		t.Fatalf("result %+v", res)
+	}
+	// The platform level's advisories are reported (and policed), not only the TDX module's.
+	if !slices.Equal(res.AdvisoryIDs, gcePlatformAdvisories) || res.TCBDate == "" || res.ModuleTCBDate == "" {
+		t.Fatalf("advisories %v dates %q %q", res.AdvisoryIDs, res.TCBDate, res.ModuleTCBDate)
+	}
+	// With the zero padding of the capture buffer the quote is not canonical and fails before any network use.
+	if _, err := recordedVerifier(t, "v4_gce_cos113", lenient, 0).VerifyQuote(context.Background(), readQuote(t, "v4_gce_cos113")); !errors.Is(err, ErrQuoteInvalid) {
+		t.Fatalf("padded quote accepted: %v", err)
 	}
 	strictAdvisories := TCBPolicy{AllowedStatuses: lenient.AllowedStatuses, AllowedAdvisoryIDs: []string{"INTEL-SA-00000"}}
 	if _, err := recordedVerifier(t, "v4_gce_cos113", strictAdvisories, 0).VerifyQuote(context.Background(), raw); !errors.Is(err, ErrTCBStatus) {
@@ -86,7 +96,7 @@ func TestVerifyRecordedGCEQuoteTCBPolicy(t *testing.T) {
 }
 
 func TestVerifyRecordedNoMatchingTCBLevel(t *testing.T) {
-	_, err := recordedVerifier(t, "v4_spr_e4", DefaultTCBPolicy(), 0).VerifyQuote(context.Background(), readQuote(t, "v4_spr_e4"))
+	_, err := recordedVerifier(t, "v4_spr_e4", DefaultTCBPolicy(), 0).VerifyQuote(context.Background(), signedQuote(t, "v4_spr_e4"))
 	if !errors.Is(err, ErrTCBStatus) {
 		t.Fatalf("err = %v, want ErrTCBStatus", err)
 	}
@@ -128,7 +138,7 @@ func TestVerifyLibrarySampleCollateral(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.VerifyQuote(context.Background(), readQuote(t, "v4_spr_e4")); !errors.Is(err, ErrTCBStatus) {
+	if _, err := v.VerifyQuote(context.Background(), signedQuote(t, "v4_spr_e4")); !errors.Is(err, ErrTCBStatus) {
 		t.Fatalf("err = %v, want ErrTCBStatus", err)
 	}
 }

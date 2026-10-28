@@ -63,26 +63,39 @@ func (p TCBPolicy) Validate() error {
 	return nil
 }
 
-// Check applies the policy to the matched TDX and QE TCB levels. It fails closed on empty statuses.
-func (p TCBPolicy) Check(tdx, qe pcs.TcbLevel) error {
+// Check applies the policy to an evaluation: the converged TDX status with the union of the platform and module
+// advisories, each matched level on its own (platform, TDX module when present) and the QE identity level. It fails
+// closed on empty statuses.
+func (p TCBPolicy) Check(ev *TCBEvaluation) error {
 	if err := p.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrTCBStatus, err)
 	}
-	if err := p.checkLevel("TDX", tdx); err != nil {
+	if ev == nil {
+		return fmt.Errorf("%w: no TCB evaluation", ErrTCBStatus)
+	}
+	if err := p.checkStatus("TDX", ev.Status, ev.AdvisoryIDs); err != nil {
 		return err
 	}
-	return p.checkLevel("QE", qe)
+	if err := p.checkStatus("TDX platform", ev.Platform.TcbStatus, ev.Platform.AdvisoryIDs); err != nil {
+		return err
+	}
+	if ev.Module != nil {
+		if err := p.checkStatus("TDX module", ev.Module.TcbStatus, ev.Module.AdvisoryIDs); err != nil {
+			return err
+		}
+	}
+	return p.checkStatus("QE", ev.QE.TcbStatus, ev.QE.AdvisoryIDs)
 }
 
-func (p TCBPolicy) checkLevel(what string, l pcs.TcbLevel) error {
-	status := string(l.TcbStatus)
+func (p TCBPolicy) checkStatus(what string, s pcs.TcbComponentStatus, advisories []string) error {
+	status := string(s)
 	if !slices.Contains(p.AllowedStatuses, status) {
-		return fmt.Errorf("%w: %s TCB status %q is not allowed (allowed %v, advisories %v)", ErrTCBStatus, what, status, p.AllowedStatuses, l.AdvisoryIDs)
+		return fmt.Errorf("%w: %s TCB status %q is not allowed (allowed %v, advisories %v)", ErrTCBStatus, what, status, p.AllowedStatuses, advisories)
 	}
 	if status == string(pcs.TcbComponentStatusUpToDate) || len(p.AllowedAdvisoryIDs) == 0 {
 		return nil
 	}
-	for _, a := range l.AdvisoryIDs {
+	for _, a := range advisories {
 		if !slices.Contains(p.AllowedAdvisoryIDs, a) {
 			return fmt.Errorf("%w: %s TCB status %q carries advisory %s, which is not allowed", ErrTCBStatus, what, status, a)
 		}

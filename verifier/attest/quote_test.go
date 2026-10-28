@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -22,21 +23,43 @@ func readQuote(t *testing.T, name string) []byte {
 	return raw
 }
 
+// signedQuote returns fixture `name` cut to its signed length (some fixtures carry unsigned trailing bytes).
+func signedQuote(t *testing.T, name string) []byte {
+	t.Helper()
+	raw := readQuote(t, name)
+	p, err := abi.QuoteToProto(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw[:len(raw)-len(extraBytes(p))]
+}
+
+// gceQuote is the real GCE C3 quote without the zero padding of its 8000-byte buffer.
+func gceQuote(t *testing.T) []byte {
+	t.Helper()
+	q, err := TrimQuote(readQuote(t, "v4_gce_cos113"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return q
+}
+
 // Offset of TD_ATTRIBUTES in a v4 quote: header(48) + tee_tcb_svn(16) + mrseam(48) + mrsignerseam(48) +
 // seam_attributes(8).
 const v4TDAttributesOffset = 48 + 16 + 48 + 48 + 8
 
 func TestParseRealQuotes(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		version uint32
+		name       string
+		version    uint32
+		production bool // TD_ATTRIBUTES of a production Linux TD
 	}{
-		{"v4_spr_e4", 4},
-		{"v5_sample", 5},
-		{"v4_gce_cos113", 4},
+		{"v4_spr_e4", 4, false}, // PKS without SEPT_VE_DISABLE
+		{"v5_sample", 5, true},
+		{"v4_gce_cos113", 4, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := readQuote(t, tc.name)
+			raw := signedQuote(t, tc.name)
 			q, err := ParseQuote(raw, ParseOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -74,10 +97,46 @@ func TestParseRealQuotes(t *testing.T) {
 			if q.Debug() {
 				t.Fatal("fixture quote unexpectedly has DEBUG set")
 			}
-			if err := q.CheckProductionAttributes(); err != nil {
-				t.Fatal(err)
+			if err := q.CheckProductionAttributes(); (err == nil) != tc.production {
+				t.Fatalf("CheckProductionAttributes = %v, want production=%v", err, tc.production)
 			}
 		})
+	}
+}
+
+func TestParseRejectsTrailingBytes(t *testing.T) {
+	// The fixtures as captured: v4_spr_e4 carries 39 non-zero unsigned bytes, the GCE quote 3065 bytes of zeros.
+	for _, name := range []string{"v4_spr_e4", "v4_gce_cos113"} {
+		if _, err := ParseQuote(readQuote(t, name), ParseOptions{}); !errors.Is(err, ErrQuoteInvalid) || !strings.Contains(err.Error(), "unsigned bytes") {
+			t.Fatalf("%s with trailing bytes: %v", name, err)
+		}
+	}
+	signed := signedQuote(t, "v5_sample")
+	for name, tail := range map[string][]byte{
+		"junk":         []byte("appended bytes change the sha256"),
+		"zero padding": make([]byte, 64),
+		"one byte":     {0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := append(bytes.Clone(signed), tail...)
+			if _, err := ParseQuote(raw, ParseOptions{}); !errors.Is(err, ErrQuoteInvalid) {
+				t.Fatalf("quote with %d trailing bytes accepted: %v", len(tail), err)
+			}
+			trimmed, err := TrimQuote(raw)
+			if allZero(tail) {
+				if err != nil || !bytes.Equal(trimmed, signed) {
+					t.Fatalf("TrimQuote: %v", err)
+				}
+			} else if !errors.Is(err, ErrQuoteInvalid) {
+				t.Fatalf("TrimQuote removed non-zero bytes: %v", err)
+			}
+		})
+	}
+	if out, err := TrimQuote(signed); err != nil || !bytes.Equal(out, signed) {
+		t.Fatalf("TrimQuote of a signed quote: %v", err)
+	}
+	if _, err := TrimQuote([]byte("short")); !errors.Is(err, ErrQuoteInvalid) {
+		t.Fatalf("TrimQuote of garbage: %v", err)
 	}
 }
 
@@ -103,27 +162,40 @@ func TestParseRejectsMalformed(t *testing.T) {
 	}
 }
 
-func TestDebugAttribute(t *testing.T) {
-	raw := bytes.Clone(readQuote(t, "v4_spr_e4"))
-	raw[v4TDAttributesOffset] |= 0x01
-	q, err := ParseQuote(raw, ParseOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !q.Debug() {
-		t.Fatal("Debug() = false")
-	}
-	if err := q.CheckProductionAttributes(); !errors.Is(err, ErrTDAttributes) {
-		t.Fatalf("err = %v", err)
-	}
-	raw[v4TDAttributesOffset] &^= 0x01
-	raw[v4TDAttributesOffset+3] |= 0x20 // bit 29: MIGRATABLE
-	q, err = ParseQuote(raw, ParseOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !q.Migratable() || q.CheckProductionAttributes() == nil {
-		t.Fatal("migratable TD accepted")
+func TestTDAttributes(t *testing.T) {
+	base := gceQuote(t) // 0x10000000: SEPT_VE_DISABLE only
+	for _, tc := range []struct {
+		name  string
+		attrs uint64
+		ok    bool
+	}{
+		{"gce production", tdAttrSeptVEDisable, true},
+		{"with optional features", tdAttrSeptVEDisable | tdAttrPKS | tdAttrKL | tdAttrLASS | tdAttrPerfmon, true},
+		{"debug", tdAttrSeptVEDisable | tdAttrDebug, false},
+		{"reserved TUD bit", tdAttrSeptVEDisable | 1<<3, false},
+		{"migratable", tdAttrSeptVEDisable | tdAttrMigratable, false},
+		{"SEPT_VE_DISABLE cleared", 0, false},
+		{"reserved SEC bit", tdAttrSeptVEDisable | 1<<12, false},
+		{"reserved OTHER bit", tdAttrSeptVEDisable | 1<<40, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := bytes.Clone(base)
+			binary.LittleEndian.PutUint64(raw[v4TDAttributesOffset:], tc.attrs)
+			q, err := ParseQuote(raw, ParseOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if q.TDAttributesValue() != tc.attrs || q.Debug() != (tc.attrs&tdAttrDebug != 0) || q.Migratable() != (tc.attrs&tdAttrMigratable != 0) {
+				t.Fatalf("decoded 0x%x", q.TDAttributesValue())
+			}
+			err = q.CheckProductionAttributes()
+			if (err == nil) != tc.ok {
+				t.Fatalf("CheckProductionAttributes(0x%x) = %v, want ok=%v", tc.attrs, err, tc.ok)
+			}
+			if err != nil && !errors.Is(err, ErrTDAttributes) {
+				t.Fatalf("error %v does not wrap ErrTDAttributes", err)
+			}
+		})
 	}
 }
 

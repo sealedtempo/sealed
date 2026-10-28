@@ -23,8 +23,8 @@ func TestSimQuoteRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected encoding: %s", raw)
 	}
 
-	if _, err := ParseQuote(raw, ParseOptions{}); !errors.Is(err, ErrSimulatedNotAllowed) {
-		t.Fatalf("simulated quote parsed without AllowSimulated: %v", err)
+	if _, err := ParseQuote(raw, ParseOptions{}); !errors.Is(err, ErrSimulatedNotAllowed) || !errors.Is(err, ErrQuoteInvalid) {
+		t.Fatalf("simulated quote parsed without AllowSimulated (or not a quote_invalid error): %v", err)
 	}
 	q, err := ParseQuote(raw, ParseOptions{AllowSimulated: true})
 	if err != nil {
@@ -32,6 +32,9 @@ func TestSimQuoteRoundTrip(t *testing.T) {
 	}
 	if !q.Simulated || q.Version != 0 || q.Debug() {
 		t.Fatalf("flags: %+v", q)
+	}
+	if err := q.CheckProductionAttributes(); err != nil {
+		t.Fatalf("non-debug sim quote should carry production attributes: %v", err)
 	}
 	if q.MRTD != SimMRTD || q.RTMR[0] != SimRTMR0 || q.RTMR[1] != SimRTMR1 || q.RTMR[2] != SimRTMR2 || q.RTMR[3] != rtmr3 {
 		t.Fatal("measurements differ")
