@@ -1,0 +1,12 @@
+{
+  "schema": "sealed-extra-images/v1",
+  "registry": "ghcr.io/sealedtempo",
+  "images": {
+    "sealed-key-broker": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "source": "build:key-broker",
+      "license_spdx": "Apache-2.0",
+      "unbuilt": true
+    }
+  }
+}

@@ -1,0 +1,149 @@
+package main
+
+import (
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/sealed-dev/sealed/runtime/composer"
+)
+
+// releaseVersionRe is the manifest schema's release_version pattern without "+": GitHub renames release
+// assets whose names contain characters other than letters, digits, ".", "-" and "_", which would break
+// the asset URL rule.
+var releaseVersionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`)
+
+// AssetNames are the GitHub Release tag and asset file names of one app release (D-046, brief item 18):
+//
+//	<base>/<appId>-v<version>/<appId>-<version>.bundle.tar
+//
+// plus .sig, .crt and .intoto.jsonl next to the bundle. GitHub release assets cannot contain "/", so the
+// SBOM that the rule places at sbom/<image>.spdx.json is the asset sbom.<image>.spdx.json (GitHub itself
+// would rename a "/" to "."), and Grype reports are scan.<image>.json. The same files sit inside the
+// bundle at sbom/<image>.spdx.json and scan/<image>.json.
+type AssetNames struct {
+	Tag            string            `json:"tag"`
+	BaseURL        string            `json:"baseUrl"` // <release_asset_base>/<tag>
+	Bundle         string            `json:"bundle"`
+	Signature      string            `json:"signature"`      // base64 signature extracted from the Sigstore bundle
+	Certificate    string            `json:"certificate"`    // PEM Fulcio certificate
+	SigstoreBundle string            `json:"sigstoreBundle"` // cosign --bundle output (signature, certificate, Rekor proof)
+	Provenance     string            `json:"provenance"`     // SLSA provenance (in-toto, slsa-github-generator)
+	ReleaseJSON    string            `json:"releaseJson"`    // machine-readable summary (sealed-release/v1)
+	SBOM           map[string]string `json:"sbom"`           // image -> asset
+	Scan           map[string]string `json:"scan"`           // image -> asset
+}
+
+// URL returns the download URL of an asset of this release.
+func (a AssetNames) URL(asset string) string { return a.BaseURL + "/" + asset }
+
+// All lists every asset name, sorted.
+func (a AssetNames) All() []string {
+	out := []string{a.Bundle, a.Signature, a.Certificate, a.SigstoreBundle, a.Provenance, a.ReleaseJSON}
+	for _, v := range a.SBOM {
+		out = append(out, v)
+	}
+	for _, v := range a.Scan {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CheckReleaseVersion rejects versions that cannot be released under the asset URL rule. A leading "v"
+// is rejected too: the tag would read <appId>-vv<...>, forever, because the version is part of releaseId.
+func CheckReleaseVersion(version string) error {
+	if !releaseVersionRe.MatchString(version) {
+		return fmt.Errorf("release version %q must match %s", version, releaseVersionRe)
+	}
+	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') && version[1] >= '0' && version[1] <= '9' {
+		return fmt.Errorf("release version %q starts with %q; set release_version without it (the tag would be <appId>-v%s)", version, version[:1], version)
+	}
+	return nil
+}
+
+// Assets computes the release names for an app version.
+func Assets(d Defaults, app, version string, images []string) (AssetNames, error) {
+	if err := CheckReleaseVersion(version); err != nil {
+		return AssetNames{}, err
+	}
+	stem := app + "-" + version
+	a := AssetNames{
+		Tag:            app + "-v" + version,
+		Bundle:         stem + ".bundle.tar",
+		SBOM:           map[string]string{},
+		Scan:           map[string]string{},
+		ReleaseJSON:    stem + ".release.json",
+		Signature:      stem + ".bundle.tar.sig",
+		Certificate:    stem + ".bundle.tar.crt",
+		SigstoreBundle: stem + ".bundle.tar.sigstore.json",
+		Provenance:     stem + ".bundle.tar.intoto.jsonl",
+	}
+	a.BaseURL = d.ReleaseAssetBase + "/" + a.Tag
+	for _, img := range images {
+		a.SBOM[img] = "sbom." + img + ".spdx.json"
+		a.Scan[img] = "scan." + img + ".json"
+	}
+	return a, nil
+}
+
+// PlannedRelease is one app the release job releases.
+type PlannedRelease struct {
+	App     string     `json:"app"`
+	Dir     string     `json:"dir"`
+	Version string     `json:"version"`
+	AppID   string     `json:"appId"`
+	Tag     string     `json:"tag"`
+	Images  []string   `json:"images"`
+	Unbuilt []string   `json:"unbuilt"`
+	Assets  AssetNames `json:"assets"`
+	Problem string     `json:"problem,omitempty"` // set when the app cannot be released as is
+}
+
+// Plan lists the releases for the given app ids (all top-level apps when ids is empty and all is set).
+// An app whose version cannot be released gets Problem set instead of failing the whole plan, so the
+// caller can report every problem at once.
+func Plan(d Defaults, apps []App, ids []string, all bool) ([]PlannedRelease, error) {
+	if all {
+		ids = nil
+		for _, a := range apps {
+			if !a.Nested {
+				ids = append(ids, a.ID)
+			}
+		}
+	}
+	sort.Strings(ids)
+	var out []PlannedRelease
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		a, ok := FindApp(apps, id)
+		if !ok {
+			return nil, fmt.Errorf("no app %q under %s", id, CatalogDir)
+		}
+		p := PlannedRelease{App: a.ID, Dir: a.Dir, Version: a.Version(), AppID: composer.AppID(a.ID).Hex(),
+			Images: []string{}, Unbuilt: []string{}}
+		for _, img := range a.Manifest.Images {
+			p.Images = append(p.Images, img.Name)
+			if img.Unbuilt() {
+				p.Unbuilt = append(p.Unbuilt, img.Name)
+			}
+		}
+		assets, err := Assets(d, a.ID, p.Version, p.Images)
+		if err != nil {
+			p.Problem = err.Error()
+		} else {
+			p.Assets, p.Tag = assets, assets.Tag
+		}
+		if p.Problem == "" && len(p.Unbuilt) > 0 {
+			p.Problem = fmt.Sprintf("images %s still have the all-zero placeholder digest (run the runtime image workflow and merge its pin PR)", strings.Join(p.Unbuilt, ", "))
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}

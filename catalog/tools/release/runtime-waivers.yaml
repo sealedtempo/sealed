@@ -1,0 +1,10 @@
+# Grype findings accepted for the sidecar images in runtime/composer/runtime-images.json and the images in
+# extra-images.json (spec 6.8). The runtime image workflow fails on any critical finding that is not listed
+# here, or whose waiver has expired. Same format as catalog/apps/<id>/waivers.yaml:
+#   - id: CVE-2026-12345            # or GHSA-...
+#     image: sealed-agent           # runtime image name
+#     package: libexample
+#     reason: why it does not apply or why it cannot be fixed yet
+#     expires: 2026-12-31           # YYYY-MM-DD, at most 90 days out
+version: 1
+waivers: []
