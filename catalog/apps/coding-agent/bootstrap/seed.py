@@ -1,14 +1,16 @@
 """Sealed coding-agent bootstrap job (stdlib only; embedded verbatim in the compose fragment).
 
-Runs once per data disk, before the code route opens:
-1. waits for llm-gateway (GET /health/readiness) and, in openhands mode, for the agent server;
-2. creates a LiteLLM virtual key for this app with the gateway master key (any older key with
-   the same alias is deleted first, so a re-run rotates it);
-3. picks the default model: the relay model if the gateway serves it, else the local model;
-4. openhands mode: stores {model, base_url, api_key} through PATCH /api/settings;
-   key-file mode (OpenCode fallback): writes the key to a 0600 file for the server to read;
-5. writes the done file (no secrets in it) and then idles, so the composer's
-   restart: unless-stopped policy does not loop the job.
+Runs at every start of the job, so a changed key or a reset agent store is fixed by a restart.
+Its done file lives on the job's own volume, which the agent's container does not mount:
+1. waits for llm-gateway (GET /health/readiness) and for the agent server (GET /ready);
+2. waits until the gateway accepts this app's virtual key LLM_GATEWAY_KEY (GET /v1/models).
+   llm-gateway's keys job creates that key from its secret APP_KEY_CODING_AGENT, so a 401 is
+   retried until the wait timeout. This app never holds the gateway master key;
+3. stores {model, base_url, api_key} through PATCH /api/settings. A litellm_proxy/ model the
+   customer already chose on this gateway is kept; otherwise the default (relay/default) is
+   used. When the relay fails, the gateway answers relay/default from the local model
+   (router_settings.fallbacks), so no client-side fallback is needed;
+4. writes the done file (no secrets in it) and idles.
 Secret values are never printed.
 """
 import json
@@ -32,25 +34,19 @@ def log(message):
 
 class Config:
     def __init__(self, env):
-        self.mode = env.get("SEALED_BOOTSTRAP_MODE", "openhands")
-        if self.mode not in ("openhands", "key-file"):
-            raise BootstrapError("SEALED_BOOTSTRAP_MODE must be openhands or key-file")
         self.gateway_url = env.get("SEALED_GATEWAY_URL", "http://llm-gateway:4000").rstrip("/")
         self.agent_url = env.get("SEALED_AGENT_SERVER_URL", "http://coding-agent-server:8000").rstrip("/")
-        self.key_alias = env.get("SEALED_LLM_KEY_ALIAS", "coding-agent")
-        self.key_models = [m.strip() for m in env.get("SEALED_LLM_KEY_MODELS", "relay/*,local/*").split(",") if m.strip()]
-        self.primary = env.get("SEALED_MODEL_PRIMARY", "relay/default")
-        self.fallback = env.get("SEALED_MODEL_FALLBACK", "local/qwen3-4b")
-        self.done_file = env.get("SEALED_DONE_FILE", "/workspace/.sealed/bootstrap.done")
-        self.key_file = env.get("SEALED_KEY_FILE", "/workspace/.sealed/llm-gateway-key")
+        self.model = env.get("SEALED_MODEL_DEFAULT", "relay/default")
+        self.usage_id = env.get("SEALED_LLM_USAGE_ID", "coding-agent")
+        self.done_file = env.get("SEALED_DONE_FILE", "/var/lib/sealed-bootstrap/done")
         self.wait_timeout = float(env.get("SEALED_WAIT_TIMEOUT_S", "900"))
         self.poll_interval = float(env.get("SEALED_POLL_INTERVAL_S", "3"))
         self.idle = env.get("SEALED_BOOTSTRAP_IDLE", "1") == "1"
-        self.master_key = (env.get("LITELLM_MASTER_KEY") or "").strip()
+        self.llm_key = (env.get("LLM_GATEWAY_KEY") or "").strip()
         self.session_key = (env.get("OH_SESSION_API_KEYS_0") or "").strip()
-        if not self.master_key:
-            raise BootstrapError("LITELLM_MASTER_KEY is not set (secret of this app)")
-        if self.mode == "openhands" and not self.session_key:
+        if not self.llm_key:
+            raise BootstrapError("LLM_GATEWAY_KEY is not set (secret of this app)")
+        if not self.session_key:
             raise BootstrapError("OH_SESSION_API_KEYS_0 is not set (secret of this app)")
 
 
@@ -97,40 +93,20 @@ def wait_for(what, check, timeout, interval, sleep=time.sleep, clock=time.monoto
 
 
 class Gateway:
-    def __init__(self, http, base_url, master_key):
+    def __init__(self, http, base_url, llm_key):
         self.http = http
         self.base = base_url
-        self.auth = {"Authorization": "Bearer " + master_key}
+        self.auth = {"Authorization": "Bearer " + llm_key}
+        self.last_status = None
 
     def ready(self):
         status, _ = self.http.call("GET", self.base + "/health/readiness")
         return status == 200
 
-    def delete_alias(self, alias):
-        status, _ = self.http.call("POST", self.base + "/key/delete", {"key_aliases": [alias]}, self.auth)
-        if status in (401, 403):
-            raise BootstrapError("gateway rejected the master key (HTTP " + str(status) + ")")
-        return status < 300
-
-    def generate_key(self, alias, models):
-        body = {
-            "key_alias": alias,
-            "models": models,
-            "key_type": "llm_api",
-            "duration": None,
-            "metadata": {"sealed_app": "coding-agent"},
-        }
-        status, payload = self.http.call("POST", self.base + "/key/generate", body, self.auth)
-        key = payload.get("key") if isinstance(payload, dict) else None
-        if status >= 300 or not isinstance(key, str) or not key.startswith("sk-"):
-            raise BootstrapError("key generation failed (HTTP " + str(status) + ")")
-        return key
-
-    def model_names(self):
-        status, payload = self.http.call("GET", self.base + "/v1/model/info", None, self.auth)
-        if status != 200 or not isinstance(payload, dict):
-            raise BootstrapError("could not list gateway models (HTTP " + str(status) + ")")
-        return {m.get("model_name") for m in payload.get("data") or [] if isinstance(m, dict)}
+    def accepts_key(self):
+        status, _ = self.http.call("GET", self.base + "/v1/models", None, self.auth)
+        self.last_status = status
+        return status == 200
 
 
 class AgentServer:
@@ -143,83 +119,68 @@ class AgentServer:
         status, _ = self.http.call("GET", self.base + "/ready")
         return status == 200
 
+    def stored_llm(self):
+        status, payload = self.http.call("GET", self.base + "/api/settings", None, self.auth)
+        if status == 409:
+            raise BootstrapError("agent settings are encrypted with a different OH_SECRET_KEY (HTTP 409)")
+        if status != 200 or not isinstance(payload, dict):
+            raise BootstrapError("GET /api/settings failed (HTTP " + str(status) + ")")
+        llm = (payload.get("agent_settings") or {}).get("llm")
+        return llm if isinstance(llm, dict) else {}
+
     def patch_llm(self, llm):
         return self.http.call("PATCH", self.base + "/api/settings", {"agent_settings_diff": {"llm": llm}}, self.auth)
 
 
-def choose_model(available, primary, fallback):
-    if primary in available:
-        return primary
-    if fallback in available:
-        return fallback
-    raise BootstrapError("gateway serves neither " + primary + " nor " + fallback)
+def choose_model(cfg, stored):
+    """Keep a gateway model the customer chose earlier; otherwise use the default."""
+    model = stored.get("model")
+    if stored.get("base_url") == cfg.gateway_url and isinstance(model, str) and model.startswith(LITELLM_PREFIX):
+        if len(model) > len(LITELLM_PREFIX):
+            return model
+    return LITELLM_PREFIX + cfg.model
 
 
-def llm_settings(cfg, model, key):
-    llm = {
-        "model": LITELLM_PREFIX + model,
-        "base_url": cfg.gateway_url,
-        "api_key": key,
-        "usage_id": "coding-agent",
-    }
-    if model == cfg.primary and cfg.fallback and cfg.fallback != model:
-        # Per-request fallback at the gateway when the relay refuses (attestation, spend limit).
-        llm["litellm_extra_body"] = {"fallbacks": [cfg.fallback]}
-    return llm
-
-
-def seed_openhands(cfg, agent, model, key):
-    llm = llm_settings(cfg, model, key)
+def seed_openhands(cfg, agent, model):
+    llm = {"model": model, "base_url": cfg.gateway_url, "api_key": cfg.llm_key, "usage_id": cfg.usage_id}
     status, _ = agent.patch_llm(llm)
-    if status == 422 and "litellm_extra_body" in llm:
-        log("settings rejected litellm_extra_body; storing without gateway fallback")
-        llm.pop("litellm_extra_body")
-        status, _ = agent.patch_llm(llm)
     if status == 409:
         raise BootstrapError("agent settings are encrypted with a different OH_SECRET_KEY (HTTP 409)")
     if status >= 300:
         raise BootstrapError("PATCH /api/settings failed (HTTP " + str(status) + ")")
 
 
-def write_private(path, text, mode):
+def write_done(path, summary):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    try:
-        os.write(fd, text.encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.chmod(tmp, mode)
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(summary, sort_keys=True) + "\n")
+    os.chmod(tmp, 0o644)
     os.replace(tmp, path)
 
 
 def run(cfg, http, sleep=time.sleep, clock=time.monotonic):
-    if os.path.exists(cfg.done_file) and (cfg.mode != "key-file" or os.path.exists(cfg.key_file)):
-        log("already bootstrapped (" + cfg.done_file + ")")
-        return {"skipped": True}
-    gateway = Gateway(http, cfg.gateway_url, cfg.master_key)
+    if os.path.exists(cfg.done_file):
+        os.unlink(cfg.done_file)  # healthy only after this run succeeds
+    gateway = Gateway(http, cfg.gateway_url, cfg.llm_key)
+    agent = AgentServer(http, cfg.agent_url, cfg.session_key)
     log("waiting for llm-gateway at " + cfg.gateway_url)
     wait_for("llm-gateway", gateway.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
-    agent = None
-    if cfg.mode == "openhands":
-        agent = AgentServer(http, cfg.agent_url, cfg.session_key)
-        wait_for("agent server", agent.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
+    try:
+        wait_for("llm-gateway to accept LLM_GATEWAY_KEY", gateway.accepts_key, cfg.wait_timeout,
+                 cfg.poll_interval, sleep, clock)
+    except BootstrapError:
+        if gateway.last_status in (401, 403):
+            raise BootstrapError("llm-gateway rejects LLM_GATEWAY_KEY (HTTP " + str(gateway.last_status) + "): "
+                                 "it must equal llm-gateway's secret APP_KEY_CODING_AGENT")
+        raise
+    wait_for("agent server", agent.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
 
-    gateway.delete_alias(cfg.key_alias)
-    key = gateway.generate_key(cfg.key_alias, cfg.key_models)
-    model = choose_model(gateway.model_names(), cfg.primary, cfg.fallback)
-    if model != cfg.primary:
-        log("relay model unavailable, using " + model)
-
-    if agent is not None:
-        seed_openhands(cfg, agent, model, key)
-    else:
-        write_private(cfg.key_file, key, 0o600)
-
-    summary = {"mode": cfg.mode, "model": LITELLM_PREFIX + model, "key_alias": cfg.key_alias, "at": int(time.time())}
-    write_private(cfg.done_file, json.dumps(summary, sort_keys=True) + "\n", 0o644)
-    log("done: model " + summary["model"] + ", key alias " + cfg.key_alias)
+    model = choose_model(cfg, agent.stored_llm())
+    seed_openhands(cfg, agent, model)
+    summary = {"model": model, "base_url": cfg.gateway_url, "at": int(time.time())}
+    write_done(cfg.done_file, summary)
+    log("done: model " + model)
     return summary
 
 

@@ -1,8 +1,10 @@
-"""In-process fake servers for coding-agent tests: LiteLLM proxy, OpenHands agent-server, OpenCode.
+"""In-process fake servers for coding-agent tests: OpenHands agent-server and OpenCode.
 
 They implement only the endpoints the bootstrap job and the A6 helper use, with the auth and
-status codes documented in docs/notes/litellm.md and docs/notes/openhands.md. Files the fake
-agents "write" land in a real temp directory, and test commands really run there.
+status codes documented in docs/notes/openhands.md. Files the fake agents "write" land in a real
+temp directory, and test commands really run there. The LiteLLM fake is shared with llm-gateway
+(catalog/apps/llm-gateway/tests/fake_litellm.py), so the gateway's keys job and this app's
+bootstrap are tested against the same gateway.
 """
 from __future__ import annotations
 
@@ -17,6 +19,9 @@ import sys
 import threading
 import urllib.parse
 from typing import Any, Callable
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "llm-gateway", "tests"))
+from fake_litellm import FakeLiteLLM  # noqa: E402,F401
 
 
 class FakeServer:
@@ -74,9 +79,10 @@ class FakeServer:
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                if self.command != "HEAD":
+                    self.wfile.write(data)
 
-            do_GET = do_POST = do_PATCH = do_DELETE = do_PUT = _serve
+            do_GET = do_HEAD = do_POST = do_PATCH = do_DELETE = do_PUT = _serve
 
             def log_message(self, *args):
                 pass
@@ -84,60 +90,17 @@ class FakeServer:
         return Handler
 
 
-class FakeGateway(FakeServer):
-    """LiteLLM proxy subset: readiness, /key/delete, /key/generate, /v1/model/info."""
-
-    def __init__(self, master_key: str, models=("local/qwen3-4b", "local/*", "relay/default", "relay/*"),
-                 not_ready_polls: int = 0) -> None:
-        super().__init__()
-        self.master_key = master_key
-        self.models = list(models)
-        self.not_ready_polls = not_ready_polls
-        self.keys: dict[str, dict[str, Any]] = {}
-        self.counter = 0
-
-    def route(self, method, path, query, body, headers):
-        if method == "GET" and path == "/health/readiness":
-            if self.not_ready_polls > 0:
-                self.not_ready_polls -= 1
-                return 503, {"status": "unhealthy", "db": "Not connected"}
-            return 200, {"status": "healthy", "db": "connected"}
-        if headers.get("authorization") != "Bearer " + self.master_key:
-            return 401, {"error": {"message": "Authentication Error"}}
-        if method == "POST" and path == "/key/delete":
-            aliases = body.get("key_aliases") or []
-            found = [a for a in aliases if a in self.keys]
-            if not found:
-                return 404, {"detail": "keys not found"}
-            for alias in found:
-                del self.keys[alias]
-            return 200, {"deleted_keys": found}
-        if method == "POST" and path == "/key/generate":
-            alias = body.get("key_alias")
-            if alias in self.keys:
-                return 400, {"error": {"message": "Unique key aliases across all keys are required"}}
-            self.counter += 1
-            key = "sk-virtual-%04d" % self.counter
-            self.keys[alias] = {"key": key, **body}
-            return 200, {"key": key, "key_alias": alias, "token_id": "t%d" % self.counter}
-        if method == "GET" and path == "/v1/model/info":
-            return 200, {"data": [{"model_name": m, "litellm_params": {}, "model_info": {}} for m in self.models]}
-        return 404, {"detail": "Not Found"}
-
-
 class FakeOpenHands(FakeServer):
     """agent-server subset with a fake agent that writes the A6 files when a conversation runs."""
 
     def __init__(self, session_key: str, root: str, running_polls: int = 2, final_status: str = "finished",
-                 reject_extra_body: bool = False, settings_status: int | None = None,
-                 agent_writes: Callable[[str], None] | None = None, record_tokens: bool = True,
-                 not_ready_polls: int = 0) -> None:
+                 settings_status: int | None = None, agent_writes: Callable[[str], None] | None = None,
+                 record_tokens: bool | str = True, not_ready_polls: int = 0) -> None:
         super().__init__()
         self.session_key = session_key
         self.root = root
         self.running_polls = running_polls
         self.final_status = final_status
-        self.reject_extra_body = reject_extra_body
         self.settings_status = settings_status
         self.agent_writes = agent_writes or write_good_files
         self.record_tokens = record_tokens
@@ -162,8 +125,6 @@ class FakeOpenHands(FakeServer):
             if self.settings_status:
                 return self.settings_status, {"detail": "settings error"}
             llm = (body.get("agent_settings_diff") or {}).get("llm") or {}
-            if self.reject_extra_body and "litellm_extra_body" in llm:
-                return 422, {"detail": "Settings validation failed"}
             self.settings["agent_settings"]["llm"].update(llm)
             return 200, self.view_settings(False)
         if path == "/api/settings" and method == "GET":
@@ -198,6 +159,8 @@ class FakeOpenHands(FakeServer):
                     self.agent_writes(self.local(conv["body"]["workspace"]["working_dir"]))
                     conv["written"] = True
             usage = {"accumulated_token_usage": {"prompt_tokens": 321, "completion_tokens": 45}}
+            if self.record_tokens == "unknown-shape":
+                usage = {"accumulated_cost": 0.0}
             stats = {"usage_to_metrics": {"coding-agent-a6": usage} if self.record_tokens else {}}
             return 200, {"id": match.group(1), "execution_status": status, "stats": stats}
         if match and method == "DELETE":
@@ -232,11 +195,14 @@ def write_broken_files(directory: str) -> None:
 class FakeOpenCode(FakeServer):
     """OpenCode server subset with HTTP basic auth on every route."""
 
-    def __init__(self, user: str, password: str, root: str, exit_override: int | None = None) -> None:
+    def __init__(self, user: str, password: str, root: str, exit_override: int | None = None,
+                 record_tokens: bool = True, on_message: Callable[[], None] | None = None) -> None:
         super().__init__()
         self.expected = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
         self.root = root
         self.exit_override = exit_override
+        self.record_tokens = record_tokens
+        self.on_message = on_message
         self.sessions: dict[str, Any] = {}
 
     def local(self, directory: str, rel: str = "") -> str:
@@ -246,7 +212,7 @@ class FakeOpenCode(FakeServer):
         if headers.get("authorization") != self.expected:
             return 401, "Unauthorized"
         directory = query.get("directory", "/workspace")
-        if path == "/global/health":
+        if path == "/global/health" and method in ("GET", "HEAD"):
             return 200, {"healthy": True, "version": "1.19.5"}
         if path == "/session" and method == "POST":
             sid = "ses_%d" % (len(self.sessions) + 1)
@@ -258,7 +224,12 @@ class FakeOpenCode(FakeServer):
             if match.group(2) == "message":
                 sub = re.search(r"Create (a6-\d+)/calc.py", body["parts"][0]["text"]).group(1)
                 write_good_files(self.local(directory, sub))
-                return 200, {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "done"}]}
+                if self.on_message:
+                    self.on_message()
+                info = {"role": "assistant"}
+                if self.record_tokens:
+                    info["tokens"] = {"input": 1200, "output": 80, "reasoning": 0, "cache": {"read": 0, "write": 0}}
+                return 200, {"info": info, "parts": [{"type": "text", "text": "done"}]}
             proc = subprocess.run(body["command"].replace("python3", shlex.quote(sys.executable)), shell=True,
                                   cwd=self.local(directory), capture_output=True, text=True, timeout=60)
             code = proc.returncode if self.exit_override is None else self.exit_override

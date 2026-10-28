@@ -3,9 +3,13 @@
 # telemetry_off_env, envexec, secret mounts, restart and logging.
 #
 # coding-agent-server starts as root only to hand the workspace volume to uid 10001
-# (bootstrap/dropuid.py, embedded below), then runs agent-server as 10001.
-# coding-agent-bootstrap (manifest bootstrap job) creates the gateway virtual key and seeds the
-# agent's LLM settings (bootstrap/seed.py, embedded below), then idles.
+# (bootstrap/dropuid.py, embedded below), then runs agent-server as 10001 with no_new_privs.
+# coding-agent-bootstrap (manifest bootstrap job) checks that llm-gateway accepts this app's
+# virtual key LLM_GATEWAY_KEY and seeds the agent's LLM settings (bootstrap/seed.py, embedded
+# below), then idles. It starts as root only to hand its own state volume to uid 10003
+# (dropuid.py again); that volume holds the done file and is not mounted into the agent's
+# container, so the agent cannot forge or delete it. No service of this app holds the gateway
+# master key (llm-gateway provisions LLM_GATEWAY_KEY).
 services:
   coding-agent-server:
     image: "{{image:openhands-agent-server}}"
@@ -22,7 +26,7 @@ services:
       - OH_SECRET_KEY
     environment:
       SEALED_RUN_AS: "10001:10001"
-      SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/conversations,/workspace/bash_events,/workspace/.openhands,/workspace/.sealed
+      SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/conversations,/workspace/bash_events,/workspace/.openhands
       OH_CONVERSATION_RUNTIME: local
       OH_CONVERSATION_RUNTIME_SELECTABLE: "false"
       OH_ENABLE_VSCODE: "false"
@@ -56,33 +60,40 @@ services:
 
   coding-agent-bootstrap:
     image: "{{image:openhands-agent-server}}"
-    user: "10001:10001"
+    user: "0:0"
     entrypoint:
       - /usr/local/bin/python3
       - -I
       - -c
       - |
+        @@include bootstrap/dropuid.py@@
+    command:
+      - /usr/local/bin/python3
+      - -I
+      - -c
+      - |
         @@include bootstrap/seed.py@@
+    read_only: true
     x-sealed-secrets:
-      - LITELLM_MASTER_KEY
+      - LLM_GATEWAY_KEY
       - OH_SESSION_API_KEYS_0
     environment:
-      SEALED_BOOTSTRAP_MODE: openhands
+      SEALED_RUN_AS: "10003:10003"
+      SEALED_OWNED_DIRS: /var/lib/sealed-bootstrap
       SEALED_GATEWAY_URL: http://llm-gateway:4000
       SEALED_AGENT_SERVER_URL: http://coding-agent-server:8000
-      SEALED_LLM_KEY_ALIAS: coding-agent
-      SEALED_LLM_KEY_MODELS: relay/*,local/*
-      SEALED_MODEL_PRIMARY: relay/default
-      SEALED_MODEL_FALLBACK: local/qwen3-4b
-      SEALED_DONE_FILE: /workspace/.sealed/bootstrap.done
+      SEALED_MODEL_DEFAULT: relay/default
+      SEALED_DONE_FILE: /var/lib/sealed-bootstrap/done
       SEALED_WAIT_TIMEOUT_S: "900"
     depends_on:
       coding-agent-server:
         condition: service_healthy
     volumes:
-      - coding-agent-workspace:/workspace
+      - coding-agent-bootstrap:/var/lib/sealed-bootstrap
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     healthcheck:
-      test: ["CMD", "/usr/local/bin/python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/workspace/.sealed/bootstrap.done') else 1)"]
+      test: ["CMD", "/usr/local/bin/python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/var/lib/sealed-bootstrap/done') else 1)"]
       interval: 10s
       timeout: 5s
       retries: 90
@@ -92,3 +103,4 @@ services:
 
 volumes:
   coding-agent-workspace: {}
+  coding-agent-bootstrap: {}

@@ -2,14 +2,19 @@
 
 The composer turns named volumes into bind mounts that start out owned by root, while the
 agent runs as uid 10001. This runs first (as root, after envexec), creates the directories
-in SEALED_OWNED_DIRS, hands them to SEALED_RUN_AS, drops every privilege and execs argv.
+in SEALED_OWNED_DIRS, hands them to SEALED_RUN_AS, drops every privilege, sets
+no_new_privs (so setuid binaries in the image cannot regain root) and execs argv.
 Symlinks planted inside the volume are removed, never followed. Embedded verbatim in the
 compose fragment.
 """
+import ctypes
 import os
 import pwd
 import stat
 import sys
+
+PR_SET_NO_NEW_PRIVS = 38
+PR_GET_NO_NEW_PRIVS = 39
 
 
 class DropError(Exception):
@@ -64,6 +69,17 @@ def drop(uid, gid):
     raise DropError("could regain root after the drop")
 
 
+def set_no_new_privs():
+    """prctl(PR_SET_NO_NEW_PRIVS, 1): exec can no longer grant privileges (setuid, file caps)."""
+    if not sys.platform.startswith("linux"):
+        raise DropError("no_new_privs needs Linux")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        raise DropError("prctl(PR_SET_NO_NEW_PRIVS) failed: errno " + str(ctypes.get_errno()))
+    if libc.prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1:
+        raise DropError("no_new_privs did not take effect")
+
+
 def home_of(uid):
     try:
         return pwd.getpwuid(uid).pw_dir
@@ -71,7 +87,7 @@ def home_of(uid):
         return "/tmp"
 
 
-def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid):
+def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid, no_new_privs=set_no_new_privs):
     argv = list(sys.argv if argv is None else argv)
     env = os.environ if env is None else env
     if len(argv) < 2:
@@ -86,7 +102,8 @@ def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid):
             drop(uid, gid)
         elif current != uid:
             raise DropError("started as uid " + str(current) + "; expected root or " + str(uid))
-    except (DropError, OSError) as err:
+        no_new_privs()
+    except (DropError, OSError, AttributeError) as err:
         print("dropuid: " + str(err), file=sys.stderr)
         return 1
     env["HOME"] = home_of(uid)

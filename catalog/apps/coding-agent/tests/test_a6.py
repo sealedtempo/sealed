@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import io
 import json
@@ -9,21 +10,53 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from fakes import FakeOpenCode, FakeOpenHands, write_broken_files  # noqa: E402
+from fakes import FakeLiteLLM, FakeOpenCode, FakeOpenHands, write_broken_files  # noqa: E402
 
 SCRIPTS = os.path.normpath(os.path.join(HERE, "..", "scripts"))
-spec = importlib.util.spec_from_file_location("a6", os.path.join(SCRIPTS, "a6_coding_agent.py"))
-a6 = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(a6)
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+a6 = load("a6", os.path.join(SCRIPTS, "a6_coding_agent.py"))
+authproxy = load("authproxy_for_a6", os.path.join(HERE, "..", "bootstrap", "authproxy.py"))
 
 SESSION = "session-key-0123456789"
-VKEY = "sk-virtual-0001"
+VKEY = "sk-" + "f6" * 32
+MASTER = "sk-" + "a1" * 32
+OC_PASSWORD = "opencode-password-fedcba9876543210"
+
+
+class OpenCodeBehindProxy:
+    """FakeOpenCode on loopback behind the real authproxy, as in the OpenCode fragment."""
+
+    def __init__(self, root, **kwargs):
+        self.oc = FakeOpenCode("opencode", OC_PASSWORD, root, **kwargs)
+
+    def __enter__(self):
+        self.oc.__enter__()
+        settings = authproxy.Settings(("127.0.0.1", self.oc.httpd.server_port), SESSION, "opencode", OC_PASSWORD)
+        self.server = authproxy.make_server(("127.0.0.1", 0), settings)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.oc.__exit__(*exc)
 
 
 def seeded(oh):
@@ -123,21 +156,51 @@ class A6Test(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("HTTP 401", err)
 
-    def test_opencode_success(self):
-        with FakeOpenCode("sealed", "gatepw", self.tmp.name) as oc:
-            code, out, err = self.run_a6(["--target", "opencode", "--url", oc.url, "--gate-password", "gatepw",
-                                          "--timeout", "10"])
+    def opencode_args(self, proxy, *extra):
+        return ["--target", "opencode", "--url", proxy.url, "--session-key", SESSION, "--timeout", "10", *extra]
+
+    def test_opencode_success_through_the_session_key_proxy(self):
+        with OpenCodeBehindProxy(self.tmp.name) as proxy:
+            code, out, err = self.run_a6(self.opencode_args(proxy, "--gate-password", "gatepw"))
             self.assertEqual(code, 0, err)
             summary = json.loads(out)
-            self.assertEqual(summary["target"], "opencode")
-            message = [c for c in oc.calls if c[1].endswith("/message")][0][2]
-            self.assertEqual(message["model"], {"providerID": "litellm", "modelID": "relay-default"})
+            self.assertEqual((summary["target"], summary["tokens"]), ("opencode", 1280))
+            message = [c for c in proxy.oc.calls if c[1].endswith("/message")][0]
+            self.assertEqual(message[2]["model"], {"providerID": "litellm", "modelID": "relay-default"})
+            # OpenCode saw only its own password, never the gate password or the session key.
+            self.assertEqual(message[3]["authorization"],
+                             "Basic " + base64.b64encode(f"opencode:{OC_PASSWORD}".encode()).decode())
+            self.assertNotIn("x-session-api-key", message[3])
+
+    def test_opencode_wrong_session_key(self):
+        with OpenCodeBehindProxy(self.tmp.name) as proxy:
+            args = self.opencode_args(proxy)
+            args[args.index(SESSION)] = "wrong-key"
+            code, _, err = self.run_a6(args)
+            self.assertEqual(code, 1)
+            self.assertIn("HTTP 401", err)
+            self.assertEqual([c[1] for c in proxy.oc.calls], ["/global/health"])
 
     def test_opencode_failing_test(self):
-        with FakeOpenCode("sealed", "gatepw", self.tmp.name, exit_override=1) as oc:
-            code, _, err = self.run_a6(["--target", "opencode", "--url", oc.url, "--gate-password", "gatepw"])
+        with OpenCodeBehindProxy(self.tmp.name, exit_override=1) as proxy:
+            code, _, err = self.run_a6(self.opencode_args(proxy))
             self.assertEqual(code, 1)
             self.assertIn("exit 1", err)
+
+    def test_opencode_without_token_counters_needs_the_gateway(self):
+        with OpenCodeBehindProxy(self.tmp.name, record_tokens=False) as proxy:
+            code, _, err = self.run_a6(self.opencode_args(proxy))
+            self.assertEqual(code, 1)
+            self.assertIn("recorded no LLM usage", err)
+        with FakeLiteLLM(MASTER) as gw:
+            gw.add_key(VKEY, key_alias="coding-agent")
+            with OpenCodeBehindProxy(self.tmp.name, record_tokens=False,
+                                     on_message=lambda: gw.record_usage(VKEY, 900, 50)) as proxy:
+                code, out, err = self.run_a6(self.opencode_args(
+                    proxy, "--gateway-admin-key", MASTER, "--gateway-check-url", gw.url))
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["gateway_tokens"], 950)
+                self.assertNotIn(MASTER, err)
 
     def test_required_args(self):
         with redirect_stderr(io.StringIO()):
@@ -145,6 +208,51 @@ class A6Test(unittest.TestCase):
                 a6.parse_args(["--url", "http://x"])
             with self.assertRaises(SystemExit):
                 a6.parse_args(["--target", "opencode", "--url", "http://x"])
+
+    def gateway_args(self, oh, gw, *extra):
+        return self.base_args(oh, "--gateway-admin-key", MASTER, "--gateway-check-url", gw.url, *extra)
+
+    def test_unknown_usage_shape_fails_without_gateway_evidence(self):
+        with seeded(FakeOpenHands(SESSION, self.tmp.name, record_tokens="unknown-shape")) as oh:
+            code, _, err = self.run_a6(self.base_args(oh))
+            self.assertEqual(code, 1)
+            self.assertIn("unknown shape", err)
+
+    def test_gateway_corroborates_unknown_usage_shape(self):
+        with FakeLiteLLM(MASTER) as gw, seeded(FakeOpenHands(SESSION, self.tmp.name, record_tokens="unknown-shape")) as oh:
+            gw.add_key(VKEY, key_alias="coding-agent")
+            gw.add_key("sk-" + "99" * 32, key_alias="other-app")
+            gw.record_usage(VKEY, 400, 20, at=time.time() + 1)
+            gw.record_usage("sk-" + "99" * 32, 7000, 7000, at=time.time() + 1)
+            code, out, err = self.run_a6(self.gateway_args(oh, gw))
+            self.assertEqual(code, 0, err)
+            summary = json.loads(out)
+            self.assertEqual((summary["prompt_tokens"], summary["gateway_tokens"]), (None, 420))
+            logs = [c for c in gw.calls if c[1].startswith("/spend/logs")]
+            self.assertIn("api_key=" + hashlib.sha256(VKEY.encode()).hexdigest(), logs[0][1])
+            self.assertNotIn(VKEY, logs[0][1])
+
+    def test_gateway_without_tokens_for_this_run_fails(self):
+        with FakeLiteLLM(MASTER) as gw, seeded(FakeOpenHands(SESSION, self.tmp.name)) as oh:
+            gw.add_key(VKEY, key_alias="coding-agent")
+            gw.record_usage(VKEY, 400, 20, at=time.time() - 3600)  # an earlier run
+            code, _, err = self.run_a6(self.gateway_args(oh, gw))
+            self.assertEqual(code, 1)
+            self.assertIn("llm-gateway logged no tokens", err)
+
+    def test_gateway_rejecting_the_admin_key_fails(self):
+        with FakeLiteLLM("sk-" + "00" * 32) as gw, seeded(FakeOpenHands(SESSION, self.tmp.name)) as oh:
+            code, _, err = self.run_a6(self.gateway_args(oh, gw))
+            self.assertEqual(code, 1)
+            self.assertIn("/spend/logs: HTTP 401", err)
+
+    def test_time_parsing(self):
+        self.assertEqual(a6.parse_time("1970-01-01T00:00:10Z"), 10.0)
+        self.assertEqual(a6.parse_time("1970-01-01T00:00:10.500000+00:00"), 10.5)
+        self.assertEqual(a6.parse_time("1970-01-01T00:00:10"), 10.0)
+        self.assertIsNone(a6.parse_time("yesterday"))
+        self.assertIsNone(a6.parse_time(None))
+        self.assertEqual(a6.row_tokens({"total_tokens": 0, "prompt_tokens": 3, "completion_tokens": 4}), 7)
 
     def test_token_counting_shapes(self):
         self.assertEqual(a6.total_prompt_tokens({"stats": {"usage_to_metrics": {}}}), None)

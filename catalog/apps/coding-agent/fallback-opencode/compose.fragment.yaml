@@ -1,13 +1,15 @@
 # GENERATED from compose.fragment.in.yaml by tools/build_fragment.py. Edit the template or bootstrap/*.py, then rerun the tool.
 # coding-agent compose fragment, OpenCode fallback (not in the default release; see README.md).
-# Same service names as the OpenHands fragment, so it swaps in without changing routes.
+# Same primary service and route as the OpenHands fragment, so it swaps in without changing routes.
 #
-# coding-agent-bootstrap starts as root to hand the workspace to uid 10001 (bootstrap/dropuid.py),
-# then creates the gateway virtual key and writes it to /workspace/.sealed/llm-gateway-key
-# (bootstrap/seed.py, key-file mode). coding-agent-server waits for it, exports the key as
-# LITELLM_API_KEY and runs `opencode serve` with OPENCODE_CONFIG_CONTENT wired to llm-gateway.
+# coding-agent-server starts as root only to hand the workspace volume to uid 10001
+# (bootstrap/dropuid.py), then runs bootstrap/authproxy.py, which starts OpenCode on loopback
+# (127.0.0.1:4097, Basic auth with its own generated password) and serves the API on :4096 to
+# callers that send X-Session-API-Key. Caddy's password gate strips Authorization, which is why
+# OpenCode's own auth sits behind this proxy. OpenCode reads its gateway key from LLM_GATEWAY_KEY
+# ({env:LLM_GATEWAY_KEY}); this app holds no gateway master key.
 services:
-  coding-agent-bootstrap:
+  coding-agent-server:
     image: "{{image:opencode}}"
     user: "0:0"
     entrypoint:
@@ -19,14 +21,19 @@ services:
 
         The composer turns named volumes into bind mounts that start out owned by root, while the
         agent runs as uid 10001. This runs first (as root, after envexec), creates the directories
-        in SEALED_OWNED_DIRS, hands them to SEALED_RUN_AS, drops every privilege and execs argv.
+        in SEALED_OWNED_DIRS, hands them to SEALED_RUN_AS, drops every privilege, sets
+        no_new_privs (so setuid binaries in the image cannot regain root) and execs argv.
         Symlinks planted inside the volume are removed, never followed. Embedded verbatim in the
         compose fragment.
         """
+        import ctypes
         import os
         import pwd
         import stat
         import sys
+
+        PR_SET_NO_NEW_PRIVS = 38
+        PR_GET_NO_NEW_PRIVS = 39
 
 
         class DropError(Exception):
@@ -81,6 +88,17 @@ services:
             raise DropError("could regain root after the drop")
 
 
+        def set_no_new_privs():
+            """prctl(PR_SET_NO_NEW_PRIVS, 1): exec can no longer grant privileges (setuid, file caps)."""
+            if not sys.platform.startswith("linux"):
+                raise DropError("no_new_privs needs Linux")
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+                raise DropError("prctl(PR_SET_NO_NEW_PRIVS) failed: errno " + str(ctypes.get_errno()))
+            if libc.prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1:
+                raise DropError("no_new_privs did not take effect")
+
+
         def home_of(uid):
             try:
                 return pwd.getpwuid(uid).pw_dir
@@ -88,7 +106,7 @@ services:
                 return "/tmp"
 
 
-        def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid):
+        def main(argv=None, env=None, execvp=os.execvp, getuid=os.getuid, no_new_privs=set_no_new_privs):
             argv = list(sys.argv if argv is None else argv)
             env = os.environ if env is None else env
             if len(argv) < 2:
@@ -103,7 +121,8 @@ services:
                     drop(uid, gid)
                 elif current != uid:
                     raise DropError("started as uid " + str(current) + "; expected root or " + str(uid))
-            except (DropError, OSError) as err:
+                no_new_privs()
+            except (DropError, OSError, AttributeError) as err:
                 print("dropuid: " + str(err), file=sys.stderr)
                 return 1
             env["HOME"] = home_of(uid)
@@ -119,291 +138,287 @@ services:
       - -I
       - -c
       - |
-        """Sealed coding-agent bootstrap job (stdlib only; embedded verbatim in the compose fragment).
+        """Session-key gate in front of OpenCode in the same container (stdlib only; embedded verbatim
+        in the OpenCode fallback fragment).
 
-        Runs once per data disk, before the code route opens:
-        1. waits for llm-gateway (GET /health/readiness) and, in openhands mode, for the agent server;
-        2. creates a LiteLLM virtual key for this app with the gateway master key (any older key with
-           the same alias is deleted first, so a re-run rotates it);
-        3. picks the default model: the relay model if the gateway serves it, else the local model;
-        4. openhands mode: stores {model, base_url, api_key} through PATCH /api/settings;
-           key-file mode (OpenCode fallback): writes the key to a 0600 file for the server to read;
-        5. writes the done file (no secrets in it) and then idles, so the composer's
-           restart: unless-stopped policy does not loop the job.
-        Secret values are never printed.
+        Caddy's password gate consumes the Authorization header, so OpenCode's own HTTP Basic auth
+        cannot be used through the code route, and the gate password must never be handed to the
+        agent. This proxy runs OpenCode on loopback (argv after --) and serves its API on the
+        container port:
+        - every request needs X-Session-API-Key: <CODE_SESSION_API_KEY>, except GET or HEAD of
+          /global/health (healthchecks);
+        - requests reach OpenCode with Authorization: Basic <OPENCODE_SERVER_USERNAME>:
+          <OPENCODE_SERVER_PASSWORD>, a password generated for OpenCode alone; any client
+          Authorization header is dropped;
+        - /global/upgrade (self-update) is refused, and so are WebSocket upgrades;
+        - responses stream, so Server-Sent Events (/event) work.
+        CODE_SESSION_API_KEY is removed from OpenCode's environment. Paths and bodies are never logged.
+
+          authproxy.py --listen 0.0.0.0:4096 --upstream 127.0.0.1:4097 -- opencode serve --port 4097
         """
-        import json
+        import base64
+        import hmac
+        import http.client
+        import http.server
         import os
         import signal
+        import subprocess
         import sys
-        import time
-        import urllib.error
-        import urllib.request
+        import threading
 
-        LITELLM_PREFIX = "litellm_proxy/"
+        SESSION_KEY_ENV = "CODE_SESSION_API_KEY"
+        HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection",
+                      "te", "trailer", "trailers", "transfer-encoding", "upgrade"}
+        DROP_FROM_CLIENT = HOP_BY_HOP | {"authorization", "x-session-api-key", "host", "content-length"}
+        PUBLIC = {("GET", "/global/health"), ("HEAD", "/global/health")}
+        DENIED_PREFIXES = ("/global/upgrade",)
+        MAX_BODY = 64 * 1024 * 1024
+        MIN_SECRET_LEN = 16
 
 
-        class BootstrapError(Exception):
-            pass
+        class ProxyError(Exception):
+            def __init__(self, status, message):
+                super().__init__(message)
+                self.status = status
 
 
         def log(message):
-            print("coding-agent-bootstrap: " + message, file=sys.stderr, flush=True)
+            print("authproxy: " + message, file=sys.stderr, flush=True)
 
 
-        class Config:
-            def __init__(self, env):
-                self.mode = env.get("SEALED_BOOTSTRAP_MODE", "openhands")
-                if self.mode not in ("openhands", "key-file"):
-                    raise BootstrapError("SEALED_BOOTSTRAP_MODE must be openhands or key-file")
-                self.gateway_url = env.get("SEALED_GATEWAY_URL", "http://llm-gateway:4000").rstrip("/")
-                self.agent_url = env.get("SEALED_AGENT_SERVER_URL", "http://coding-agent-server:8000").rstrip("/")
-                self.key_alias = env.get("SEALED_LLM_KEY_ALIAS", "coding-agent")
-                self.key_models = [m.strip() for m in env.get("SEALED_LLM_KEY_MODELS", "relay/*,local/*").split(",") if m.strip()]
-                self.primary = env.get("SEALED_MODEL_PRIMARY", "relay/default")
-                self.fallback = env.get("SEALED_MODEL_FALLBACK", "local/qwen3-4b")
-                self.done_file = env.get("SEALED_DONE_FILE", "/workspace/.sealed/bootstrap.done")
-                self.key_file = env.get("SEALED_KEY_FILE", "/workspace/.sealed/llm-gateway-key")
-                self.wait_timeout = float(env.get("SEALED_WAIT_TIMEOUT_S", "900"))
-                self.poll_interval = float(env.get("SEALED_POLL_INTERVAL_S", "3"))
-                self.idle = env.get("SEALED_BOOTSTRAP_IDLE", "1") == "1"
-                self.master_key = (env.get("LITELLM_MASTER_KEY") or "").strip()
-                self.session_key = (env.get("OH_SESSION_API_KEYS_0") or "").strip()
-                if not self.master_key:
-                    raise BootstrapError("LITELLM_MASTER_KEY is not set (secret of this app)")
-                if self.mode == "openhands" and not self.session_key:
-                    raise BootstrapError("OH_SESSION_API_KEYS_0 is not set (secret of this app)")
+        def host_port(text):
+            host, sep, port = text.rpartition(":")
+            if not sep or not host or not port.isdigit():
+                raise ValueError("expected host:port, got " + repr(text))
+            return host, int(port)
 
 
-        class Http:
-            """JSON over HTTP that never uses proxy env vars (all targets are inside the VM)."""
-
-            def __init__(self, timeout=10.0):
-                self.timeout = timeout
-                self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-            def call(self, method, url, body=None, headers=None):
-                data = None
-                hdrs = dict(headers or {})
-                if body is not None:
-                    data = json.dumps(body).encode("utf-8")
-                    hdrs["Content-Type"] = "application/json"
-                request = urllib.request.Request(url, data=data, method=method, headers=hdrs)
-                try:
-                    with self.opener.open(request, timeout=self.timeout) as response:
-                        return response.status, _decode(response.read())
-                except urllib.error.HTTPError as err:
-                    return err.code, _decode(err.read())
-
-
-        def _decode(raw):
-            text = raw.decode("utf-8", "replace")
-            try:
-                return json.loads(text)
-            except ValueError:
-                return text
+        def parse_args(argv):
+            if "--" not in argv:
+                raise ValueError("usage: authproxy.py --listen HOST:PORT --upstream HOST:PORT -- <opencode command>")
+            sep = argv.index("--")
+            flags, child = argv[:sep], argv[sep + 1:]
+            values = {"--listen": "0.0.0.0:4096", "--upstream": "127.0.0.1:4097"}
+            i = 0
+            while i < len(flags):
+                if flags[i] not in values or i + 1 >= len(flags):
+                    raise ValueError("unknown or incomplete flag " + repr(flags[i]))
+                values[flags[i]] = flags[i + 1]
+                i += 2
+            upstream = host_port(values["--upstream"])
+            if upstream[0] not in ("127.0.0.1", "localhost", "::1"):
+                raise ValueError("--upstream must be loopback, so OpenCode is never reachable directly")
+            if not child:
+                raise ValueError("missing OpenCode command after --")
+            return host_port(values["--listen"]), upstream, child
 
 
-        def wait_for(what, check, timeout, interval, sleep=time.sleep, clock=time.monotonic):
-            deadline = clock() + timeout
-            while True:
-                try:
-                    if check():
-                        return
-                except OSError:
+        class Settings:
+            def __init__(self, upstream, session_key, user, password):
+                if len(session_key) < MIN_SECRET_LEN:
+                    raise ValueError(SESSION_KEY_ENV + " is missing or shorter than 16 characters")
+                if len(password) < MIN_SECRET_LEN:
+                    raise ValueError("OPENCODE_SERVER_PASSWORD is missing or shorter than 16 characters")
+                self.upstream = upstream
+                self.session_key = session_key.encode("utf-8")
+                token = base64.b64encode((user + ":" + password).encode("utf-8")).decode("ascii")
+                self.upstream_auth = "Basic " + token
+
+            @classmethod
+            def from_env(cls, env, upstream):
+                return cls(upstream, (env.get(SESSION_KEY_ENV) or "").strip(),
+                           env.get("OPENCODE_SERVER_USERNAME") or "opencode",
+                           (env.get("OPENCODE_SERVER_PASSWORD") or "").strip())
+
+
+        def make_handler(settings):
+            class Handler(http.server.BaseHTTPRequestHandler):
+                protocol_version = "HTTP/1.1"
+                server_version = "sealed-authproxy"
+                sys_version = ""
+
+                def log_message(self, *args):
                     pass
-                if clock() >= deadline:
-                    raise BootstrapError("timed out waiting for " + what)
-                sleep(interval)
+
+                def reply(self, status, text):
+                    body = (text + "\n").encode("utf-8")
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        self.wfile.write(body)
+
+                def authorized(self, path):
+                    if (self.command, path) in PUBLIC:
+                        return True
+                    supplied = (self.headers.get("X-Session-API-Key") or "").encode("utf-8")
+                    return hmac.compare_digest(supplied, settings.session_key)
+
+                def read_body(self):
+                    encoding = (self.headers.get("Transfer-Encoding") or "").strip().lower()
+                    if encoding:
+                        if encoding != "chunked":
+                            raise ProxyError(501, "unsupported transfer encoding")
+                        return self.read_chunked()
+                    length = self.headers.get("Content-Length")
+                    if length is None:
+                        return None
+                    try:
+                        size = int(length)
+                    except ValueError:
+                        raise ProxyError(400, "bad Content-Length")
+                    if size < 0 or size > MAX_BODY:
+                        raise ProxyError(413, "request body too large")
+                    return self.rfile.read(size)
+
+                def read_chunked(self):
+                    chunks, total = [], 0
+                    while True:
+                        line = self.rfile.readline(1024)
+                        try:
+                            size = int(line.split(b";")[0].strip(), 16)
+                        except ValueError:
+                            raise ProxyError(400, "bad chunked body")
+                        if size == 0:
+                            while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
+                                pass
+                            return b"".join(chunks)
+                        total += size
+                        if total > MAX_BODY:
+                            raise ProxyError(413, "request body too large")
+                        chunks.append(self.rfile.read(size))
+                        self.rfile.readline(1024)
+
+                def forward_headers(self, body):
+                    named = {t.strip().lower() for t in (self.headers.get("Connection") or "").split(",")}
+                    headers = {k: v for k, v in self.headers.items() if k.lower() not in DROP_FROM_CLIENT | named}
+                    headers["Host"] = settings.upstream[0] + ":" + str(settings.upstream[1])
+                    headers["Authorization"] = settings.upstream_auth
+                    if body is not None:
+                        headers["Content-Length"] = str(len(body))
+                    return headers
+
+                def handle_any(self):
+                    if not self.path.startswith("/"):
+                        self.close_connection = True
+                        return self.reply(400, "bad request target")
+                    path = self.path.split("?", 1)[0]
+                    if not self.authorized(path):
+                        return self.reply(401, "missing or wrong X-Session-API-Key")
+                    if path.startswith(DENIED_PREFIXES):
+                        return self.reply(403, "not allowed through the Sealed code route")
+                    if self.headers.get("Upgrade"):
+                        self.close_connection = True
+                        return self.reply(501, "connection upgrades are not proxied")
+                    try:
+                        body = self.read_body()
+                    except ProxyError as err:
+                        self.close_connection = True
+                        return self.reply(err.status, str(err))
+                    conn = http.client.HTTPConnection(settings.upstream[0], settings.upstream[1])
+                    try:
+                        try:
+                            conn.request(self.command, self.path, body=body, headers=self.forward_headers(body))
+                            response = conn.getresponse()
+                        except OSError:
+                            self.close_connection = True
+                            return self.reply(502, "OpenCode is not reachable")
+                        self.relay(response)
+                    except OSError:
+                        self.close_connection = True  # client went away mid-stream
+                    finally:
+                        conn.close()
+
+                def relay(self, response):
+                    length = response.getheader("Content-Length")
+                    no_body = self.command == "HEAD" or response.status in (204, 304) or response.status < 200
+                    self.send_response_only(response.status, response.reason)
+                    for key, value in response.getheaders():
+                        if key.lower() not in HOP_BY_HOP and key.lower() != "content-length":
+                            self.send_header(key, value)
+                    if no_body or length is not None:
+                        if length is not None:
+                            self.send_header("Content-Length", length)
+                        self.end_headers()
+                        while not no_body:
+                            data = response.read(65536)
+                            if not data:
+                                break
+                            self.wfile.write(data)
+                    else:
+                        self.send_header("Transfer-Encoding", "chunked")
+                        self.end_headers()
+                        while True:
+                            data = response.read1(65536)
+                            if not data:
+                                break
+                            self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                            self.wfile.flush()
+                        self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+
+                do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = handle_any
+
+            return Handler
 
 
-        class Gateway:
-            def __init__(self, http, base_url, master_key):
-                self.http = http
-                self.base = base_url
-                self.auth = {"Authorization": "Bearer " + master_key}
-
-            def ready(self):
-                status, _ = self.http.call("GET", self.base + "/health/readiness")
-                return status == 200
-
-            def delete_alias(self, alias):
-                status, _ = self.http.call("POST", self.base + "/key/delete", {"key_aliases": [alias]}, self.auth)
-                if status in (401, 403):
-                    raise BootstrapError("gateway rejected the master key (HTTP " + str(status) + ")")
-                return status < 300
-
-            def generate_key(self, alias, models):
-                body = {
-                    "key_alias": alias,
-                    "models": models,
-                    "key_type": "llm_api",
-                    "duration": None,
-                    "metadata": {"sealed_app": "coding-agent"},
-                }
-                status, payload = self.http.call("POST", self.base + "/key/generate", body, self.auth)
-                key = payload.get("key") if isinstance(payload, dict) else None
-                if status >= 300 or not isinstance(key, str) or not key.startswith("sk-"):
-                    raise BootstrapError("key generation failed (HTTP " + str(status) + ")")
-                return key
-
-            def model_names(self):
-                status, payload = self.http.call("GET", self.base + "/v1/model/info", None, self.auth)
-                if status != 200 or not isinstance(payload, dict):
-                    raise BootstrapError("could not list gateway models (HTTP " + str(status) + ")")
-                return {m.get("model_name") for m in payload.get("data") or [] if isinstance(m, dict)}
+        def make_server(listen, settings):
+            server = http.server.ThreadingHTTPServer(listen, make_handler(settings))
+            server.daemon_threads = True
+            return server
 
 
-        class AgentServer:
-            def __init__(self, http, base_url, session_key):
-                self.http = http
-                self.base = base_url
-                self.auth = {"X-Session-API-Key": session_key}
-
-            def ready(self):
-                status, _ = self.http.call("GET", self.base + "/ready")
-                return status == 200
-
-            def patch_llm(self, llm):
-                return self.http.call("PATCH", self.base + "/api/settings", {"agent_settings_diff": {"llm": llm}}, self.auth)
-
-
-        def choose_model(available, primary, fallback):
-            if primary in available:
-                return primary
-            if fallback in available:
-                return fallback
-            raise BootstrapError("gateway serves neither " + primary + " nor " + fallback)
-
-
-        def llm_settings(cfg, model, key):
-            llm = {
-                "model": LITELLM_PREFIX + model,
-                "base_url": cfg.gateway_url,
-                "api_key": key,
-                "usage_id": "coding-agent",
-            }
-            if model == cfg.primary and cfg.fallback and cfg.fallback != model:
-                # Per-request fallback at the gateway when the relay refuses (attestation, spend limit).
-                llm["litellm_extra_body"] = {"fallbacks": [cfg.fallback]}
-            return llm
-
-
-        def seed_openhands(cfg, agent, model, key):
-            llm = llm_settings(cfg, model, key)
-            status, _ = agent.patch_llm(llm)
-            if status == 422 and "litellm_extra_body" in llm:
-                log("settings rejected litellm_extra_body; storing without gateway fallback")
-                llm.pop("litellm_extra_body")
-                status, _ = agent.patch_llm(llm)
-            if status == 409:
-                raise BootstrapError("agent settings are encrypted with a different OH_SECRET_KEY (HTTP 409)")
-            if status >= 300:
-                raise BootstrapError("PATCH /api/settings failed (HTTP " + str(status) + ")")
-
-
-        def write_private(path, text, mode):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        def main(argv=None, env=None, popen=subprocess.Popen):
+            argv = list(sys.argv[1:] if argv is None else argv)
+            env = dict(os.environ if env is None else env)
             try:
-                os.write(fd, text.encode("utf-8"))
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            os.chmod(tmp, mode)
-            os.replace(tmp, path)
-
-
-        def run(cfg, http, sleep=time.sleep, clock=time.monotonic):
-            if os.path.exists(cfg.done_file) and (cfg.mode != "key-file" or os.path.exists(cfg.key_file)):
-                log("already bootstrapped (" + cfg.done_file + ")")
-                return {"skipped": True}
-            gateway = Gateway(http, cfg.gateway_url, cfg.master_key)
-            log("waiting for llm-gateway at " + cfg.gateway_url)
-            wait_for("llm-gateway", gateway.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
-            agent = None
-            if cfg.mode == "openhands":
-                agent = AgentServer(http, cfg.agent_url, cfg.session_key)
-                wait_for("agent server", agent.ready, cfg.wait_timeout, cfg.poll_interval, sleep, clock)
-
-            gateway.delete_alias(cfg.key_alias)
-            key = gateway.generate_key(cfg.key_alias, cfg.key_models)
-            model = choose_model(gateway.model_names(), cfg.primary, cfg.fallback)
-            if model != cfg.primary:
-                log("relay model unavailable, using " + model)
-
-            if agent is not None:
-                seed_openhands(cfg, agent, model, key)
-            else:
-                write_private(cfg.key_file, key, 0o600)
-
-            summary = {"mode": cfg.mode, "model": LITELLM_PREFIX + model, "key_alias": cfg.key_alias, "at": int(time.time())}
-            write_private(cfg.done_file, json.dumps(summary, sort_keys=True) + "\n", 0o644)
-            log("done: model " + summary["model"] + ", key alias " + cfg.key_alias)
-            return summary
-
-
-        def idle_forever():
-            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-            while True:
-                signal.pause()
-
-
-        def main(env=None):
-            try:
-                cfg = Config(dict(os.environ if env is None else env))
-                run(cfg, Http())
-            except (BootstrapError, OSError) as err:
+                listen, upstream, child = parse_args(argv)
+                settings = Settings.from_env(env, upstream)
+                server = make_server(listen, settings)
+            except (ValueError, OSError) as err:
                 log("error: " + str(err))
+                return 2
+            child_env = {k: v for k, v in env.items() if k != SESSION_KEY_ENV}
+            try:
+                proc = popen(child, env=child_env)
+            except OSError as err:
+                server.server_close()
+                log("error: cannot start " + child[0] + ": " + str(err))
                 return 1
-            if cfg.idle:
-                idle_forever()
-            return 0
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, lambda signum, _frame: proc.send_signal(signum))
+            host, port = server.server_address[:2]
+            log("listening on " + host + ":" + str(port) + ", OpenCode on " + upstream[0] + ":" + str(upstream[1]))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            code = proc.wait()
+            server.shutdown()
+            server.server_close()
+            return code if code >= 0 else 128 - code
 
 
         if __name__ == "__main__":
             sys.exit(main())
-    x-sealed-secrets:
-      - LITELLM_MASTER_KEY
-    environment:
-      SEALED_RUN_AS: "10001:10001"
-      SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/.sealed,/workspace/.opencode
-      SEALED_BOOTSTRAP_MODE: key-file
-      SEALED_GATEWAY_URL: http://llm-gateway:4000
-      SEALED_LLM_KEY_ALIAS: coding-agent
-      SEALED_LLM_KEY_MODELS: relay/*,local/*
-      SEALED_MODEL_PRIMARY: relay/default
-      SEALED_MODEL_FALLBACK: local/qwen3-4b
-      SEALED_KEY_FILE: /workspace/.sealed/llm-gateway-key
-      SEALED_DONE_FILE: /workspace/.sealed/bootstrap.done
-      SEALED_WAIT_TIMEOUT_S: "900"
-    volumes:
-      - coding-agent-workspace:/workspace
-    healthcheck:
-      test: ["CMD", "/usr/bin/python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/workspace/.sealed/bootstrap.done') else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 90
-      start_period: 900s
-    mem_limit: 256m
-    stop_grace_period: 5s
-
-  coding-agent-server:
-    image: "{{image:opencode}}"
-    user: "10001:10001"
-    entrypoint:
-      - /usr/bin/python3
-      - -I
-      - -c
-      - "import os, sys; os.environ['LITELLM_API_KEY'] = open('/workspace/.sealed/llm-gateway-key').read().strip(); os.execvp(sys.argv[1], sys.argv[1:])"
-    command: ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]
+      - "--listen"
+      - "0.0.0.0:4096"
+      - "--upstream"
+      - "127.0.0.1:4097"
+      - "--"
+      - opencode
+      - serve
+      - "--hostname"
+      - "127.0.0.1"
+      - "--port"
+      - "4097"
     working_dir: /workspace/project
     x-sealed-secrets:
+      - LLM_GATEWAY_KEY
+      - CODE_SESSION_API_KEY
       - OPENCODE_SERVER_PASSWORD
     environment:
-      # Must match the password gate's basic_auth user, so one Authorization header passes both.
-      OPENCODE_SERVER_USERNAME: sealed
+      SEALED_RUN_AS: "10001:10001"
+      SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/.opencode
+      OPENCODE_SERVER_USERNAME: opencode
       OPENCODE_DISABLE_AUTOUPDATE: "1"
       OPENCODE_DISABLE_MODELS_FETCH: "1"
       OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
@@ -425,7 +440,7 @@ services:
             "litellm": {
               "npm": "@ai-sdk/openai-compatible",
               "name": "Sealed llm-gateway",
-              "options": {"baseURL": "http://llm-gateway:4000/v1", "apiKey": "{env:LITELLM_API_KEY}"},
+              "options": {"baseURL": "http://llm-gateway:4000/v1", "apiKey": "{env:LLM_GATEWAY_KEY}"},
               "models": {
                 "relay-default": {"id": "relay/default", "name": "Relay default (paid per token)", "limit": {"context": 128000, "output": 8192}},
                 "local-qwen3-4b": {"id": "local/qwen3-4b", "name": "Local Qwen3 4B (stays in your VM)", "limit": {"context": 8192, "output": 2048}}
@@ -433,9 +448,6 @@ services:
             }
           }
         }
-    depends_on:
-      coding-agent-bootstrap:
-        condition: service_healthy
     volumes:
       - coding-agent-workspace:/workspace
     tmpfs:
@@ -446,7 +458,7 @@ services:
         - /usr/bin/python3
         - -I
         - -c
-        - "import base64, sys, urllib.request as u; p = open('/run/sealed/secrets/coding-agent/OPENCODE_SERVER_PASSWORD').read().rstrip('\\r\\n'); a = base64.b64encode(('sealed:' + p).encode()).decode(); r = u.Request('http://127.0.0.1:4096/global/health', headers={'Authorization': 'Basic ' + a}); sys.exit(0 if u.build_opener(u.ProxyHandler({})).open(r, timeout=3).status == 200 else 1)"
+        - "import sys, urllib.request as u; o = u.build_opener(u.ProxyHandler({})); sys.exit(0 if o.open('http://127.0.0.1:4096/global/health', timeout=3).status == 200 else 1)"
       interval: 10s
       timeout: 5s
       retries: 30

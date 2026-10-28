@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Sealed OpenCode: upstream OpenCode 1.19.5 (MIT) plus bash, git and python3 for the agent's
 # shell, running as uid 10001. Fallback coding agent only (not in the default release).
+# python3 also runs the fragment's embedded session-key proxy (bootstrap/authproxy.py).
 # Build context: this directory. Target platform: linux/amd64.
 
 FROM --platform=linux/amd64 ghcr.io/anomalyco/opencode:1.19.5@sha256:f4cfe16d91efbbfca01a51c44094fba4cf82e15c7fa17de5f11f9059699b1e6e
@@ -35,4 +36,5 @@ LABEL org.opencontainers.image.source="https://github.com/anomalyco/opencode" \
       sealed.base.digest="ghcr.io/anomalyco/opencode@sha256:f4cfe16d91efbbfca01a51c44094fba4cf82e15c7fa17de5f11f9059699b1e6e"
 EXPOSE 4096
 ENTRYPOINT ["opencode"]
-CMD ["serve", "--hostname", "0.0.0.0", "--port", "4096"]
+# Loopback by default: OpenCode is only reached through the fragment's session-key proxy.
+CMD ["serve", "--hostname", "127.0.0.1", "--port", "4097"]

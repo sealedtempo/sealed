@@ -50,10 +50,10 @@ secrets:
   - name: OH_SECRET_KEY
     description: Encrypts the stored LLM key and secrets on the data disk. Set once and never change it.
     generate: hex32
-  - name: LITELLM_MASTER_KEY
+  - name: LLM_GATEWAY_KEY
     description: >-
-      Must equal llm-gateway's LITELLM_MASTER_KEY. Used only by the bootstrap job to create this app's
-      gateway virtual key (alias coding-agent).
+      This app's llm-gateway virtual key (alias coding-agent, models relay/* and local/*). Must equal
+      llm-gateway's APP_KEY_CODING_AGENT, from which the gateway provisions the key. Never the master key.
     generate: none
 telemetry_off_env:
   OH_TELEMETRY_EXPORTER: none
@@ -68,11 +68,14 @@ license_exclusions:
   - "anomalyco/opencode:packages/enterprise/"
 bootstrap:
   service: coding-agent-bootstrap
-  done_file: /workspace/.sealed/bootstrap.done
+  # On the bootstrap job's own volume, which the agent's container does not mount.
+  done_file: /var/lib/sealed-bootstrap/done
 notes: >-
-  Local runtime: commands run inside coding-agent-server as uid 10001, no Docker socket. The bootstrap
-  job creates a LiteLLM virtual key (alias coding-agent, models relay/* and local/*) and seeds
-  PATCH /api/settings with model litellm_proxy/relay/default and base_url http://llm-gateway:4000,
-  falling back to litellm_proxy/local/qwen3-4b when the relay route is not served. Egress is closed by
-  default; add git hosts (for example github.com:443) as customer egress additions. Tokens are
-  metered at llm-gateway; this app is metered per app hour.
+  Local runtime: commands run inside coding-agent-server as uid 10001 with no_new_privs, no Docker
+  socket. This app never holds the gateway master key: llm-gateway provisions the virtual key
+  LLM_GATEWAY_KEY (alias coding-agent, models relay/* and local/*, rate limited) from its secret
+  APP_KEY_CODING_AGENT. At every start the bootstrap job waits until the gateway accepts that key and
+  seeds PATCH /api/settings with base_url http://llm-gateway:4000 and model litellm_proxy/relay/default
+  (a gateway model chosen earlier is kept); the gateway itself falls back from relay/default to the local
+  model. Egress is closed by default; add git hosts (for example github.com:443) as customer egress
+  additions. Tokens are metered at llm-gateway; this app is metered per app hour.

@@ -11,8 +11,13 @@ OpenHands (default):
   The LLM settings (model, gateway URL, virtual key) are read from the agent's stored settings,
   which the bootstrap job seeded. Override with --model litellm_proxy/local/qwen3-4b or --llm-key.
 
-OpenCode fallback:
-  a6-coding-agent.sh --target opencode --url https://code.<ip>.sslip.io --gate-password "$PW"
+OpenCode fallback (--session-key is its CODE_SESSION_API_KEY):
+  a6-coding-agent.sh --target opencode --url https://code.<ip>.sslip.io --session-key "$K" --gate-password "$PW"
+
+Token evidence: the agent's own usage counters must show tokens. With --gateway-admin-key (the
+gateway master key) and --gateway-check-url https://gateway.<ip>.sslip.io, llm-gateway's spend
+logs must also show tokens for this app's key since the run started; that corroboration is
+required whenever the agent's counters have an unknown shape.
 
 Only the Python standard library is used.
 """
@@ -20,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import ssl
@@ -28,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 TASK = (
@@ -131,7 +138,62 @@ def total_prompt_tokens(info: dict[str, Any]) -> Optional[int]:
     return None if not values else -1
 
 
+def parse_time(value: Any) -> Optional[float]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def row_tokens(row: dict[str, Any]) -> int:
+    total = row.get("total_tokens")
+    if isinstance(total, int) and total > 0:
+        return total
+    return sum(v for v in (row.get("prompt_tokens"), row.get("completion_tokens")) if isinstance(v, int) and v > 0)
+
+
+def gateway_tokens(args: argparse.Namespace, llm_key: Optional[str], since: float) -> Optional[int]:
+    """Tokens llm-gateway logged for this app's key since `since`, or None without --gateway-admin-key."""
+    if not args.gateway_admin_key:
+        return None
+    context = ssl.create_default_context(cafile=args.ca_file) if args.ca_file else None
+    gateway = Client(args.gateway_check_url or args.gateway_url,
+                     {"Authorization": "Bearer " + args.gateway_admin_key}, context=context)
+    query = {"api_key": hashlib.sha256(llm_key.encode("utf-8")).hexdigest()} if llm_key else None
+    rows = gateway.ok("GET", "/spend/logs", query=query)
+    if not isinstance(rows, list):
+        raise A6Error("unexpected /spend/logs response from llm-gateway")
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not llm_key and (row.get("metadata") or {}).get("user_api_key_alias") != args.key_alias:
+            continue
+        started = parse_time(row.get("startTime"))
+        if started is not None and started >= since - 5:
+            total += row_tokens(row)
+    return total
+
+
+def require_tokens(agent_tokens: Optional[int], gateway: Optional[int], source: str) -> None:
+    if gateway is not None and gateway <= 0:
+        raise A6Error(f"llm-gateway logged no tokens for {source} since the run started")
+    if agent_tokens is None or agent_tokens == 0:
+        if gateway is None:
+            raise A6Error(f"{source} recorded no LLM usage")
+        return
+    if agent_tokens < 0 and gateway is None:
+        raise A6Error(f"{source} usage has an unknown shape; pass --gateway-admin-key (and "
+                      "--gateway-check-url) so llm-gateway can corroborate the token use")
+
+
 def openhands(client: Client, args: argparse.Namespace) -> dict[str, Any]:
+    started = time.time()
     client.ok("GET", "/ready")
     llm = resolve_llm(client, args)
     llm.setdefault("usage_id", "coding-agent-a6")
@@ -173,10 +235,12 @@ def openhands(client: Client, args: argparse.Namespace) -> dict[str, Any]:
     tokens = total_prompt_tokens(info)
     if tokens is None or tokens == 0:
         raise A6Error("conversation recorded no LLM usage")
+    gateway = gateway_tokens(args, llm.get("api_key"), started)
+    require_tokens(tokens, gateway, "the conversation")
     if not args.keep:
         client.call("DELETE", f"/api/conversations/{cid}")
     return {"target": "openhands", "conversation": cid, "workdir": workdir, "model": llm["model"],
-            "prompt_tokens": tokens if tokens >= 0 else None, "test_exit_code": 0}
+            "prompt_tokens": tokens if tokens >= 0 else None, "gateway_tokens": gateway, "test_exit_code": 0}
 
 
 def shell_exit(result: Any) -> Optional[int]:
@@ -190,7 +254,17 @@ def shell_exit(result: Any) -> Optional[int]:
     return exits[-1] if exits else None
 
 
+def message_tokens(reply: Any) -> Optional[int]:
+    """input + output tokens of an OpenCode assistant message, or None if it has no counters."""
+    info = reply.get("info") if isinstance(reply, dict) else None
+    tokens = info.get("tokens") if isinstance(info, dict) else None
+    if not isinstance(tokens, dict):
+        return None
+    return sum(v for v in (tokens.get("input"), tokens.get("output")) if isinstance(v, int) and v > 0)
+
+
 def opencode(client: Client, args: argparse.Namespace) -> dict[str, Any]:
+    started = time.time()
     health = client.ok("GET", "/global/health")
     if not (isinstance(health, dict) and health.get("healthy")):
         raise A6Error("OpenCode is not healthy")
@@ -204,10 +278,11 @@ def opencode(client: Client, args: argparse.Namespace) -> dict[str, Any]:
     text = (f"Create {sub}/calc.py with def add(a, b): return a + b and {sub}/test_calc.py (unittest, "
             f"asserts add(2, 3) == 5). Run: cd {sub} && {TEST_COMMAND}")
     log(f"session {sid} started with model litellm/{model}")
-    client.ok("POST", f"/session/{sid}/message", query=query, timeout=args.timeout, body={
+    reply = client.ok("POST", f"/session/{sid}/message", query=query, timeout=args.timeout, body={
         "model": {"providerID": "litellm", "modelID": model}, "agent": "build",
         "parts": [{"type": "text", "text": text}],
     })
+    tokens = message_tokens(reply)
     content = client.ok("GET", "/file/content", query={"path": f"{sub}/calc.py", **query})
     if "def add" not in str((content or {}).get("content", "") if isinstance(content, dict) else content):
         raise A6Error("calc.py does not define add")
@@ -216,10 +291,12 @@ def opencode(client: Client, args: argparse.Namespace) -> dict[str, Any]:
     code = shell_exit(result)
     if code != 0:
         raise A6Error(f"independent test run failed (exit {code})")
+    gateway = gateway_tokens(args, args.llm_key, started)
+    require_tokens(tokens, gateway, "the OpenCode reply")
     if not args.keep:
         client.call("DELETE", f"/session/{sid}", query=query)
     return {"target": "opencode", "session": sid, "workdir": f"{args.workspace}/{sub}", "model": model,
-            "test_exit_code": 0}
+            "tokens": tokens, "gateway_tokens": gateway, "test_exit_code": 0}
 
 
 def parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
@@ -227,12 +304,20 @@ def parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="A6 acceptance check for the coding-agent app")
     p.add_argument("--target", choices=("openhands", "opencode"), default=env.get("A6_TARGET", "openhands"))
     p.add_argument("--url", default=env.get("A6_URL"), help="code route or http://coding-agent-server:8000")
-    p.add_argument("--session-key", default=env.get("CODING_AGENT_API_KEY"), help="OH_SESSION_API_KEYS_0 value")
+    p.add_argument("--session-key", default=env.get("CODING_AGENT_API_KEY"),
+                   help="X-Session-API-Key: OH_SESSION_API_KEYS_0 (OpenHands) or CODE_SESSION_API_KEY (OpenCode)")
     p.add_argument("--gate-user", default=env.get("SEALED_GATE_USER", "sealed"))
     p.add_argument("--gate-password", default=env.get("SEALED_GATE_PASSWORD"), help="password gate (Caddy basic auth)")
     p.add_argument("--llm-key", default=env.get("CODING_AGENT_LLM_KEY"), help="LiteLLM virtual key override")
     p.add_argument("--model", default=env.get("A6_MODEL"), help="model override, e.g. litellm_proxy/local/qwen3-4b")
-    p.add_argument("--gateway-url", default=env.get("A6_GATEWAY_URL", "http://llm-gateway:4000"))
+    p.add_argument("--gateway-url", default=env.get("A6_GATEWAY_URL", "http://llm-gateway:4000"),
+                   help="gateway URL as the agent sees it (base_url with --llm-key)")
+    p.add_argument("--gateway-check-url", default=env.get("A6_GATEWAY_CHECK_URL"),
+                   help="gateway URL reachable from here for the spend-log check (default --gateway-url)")
+    p.add_argument("--gateway-admin-key", default=env.get("A6_GATEWAY_MASTER_KEY"),
+                   help="gateway master key; enables the spend-log corroboration")
+    p.add_argument("--key-alias", default=env.get("A6_KEY_ALIAS", "coding-agent"),
+                   help="gateway key alias of the app (spend logs, when the key itself is unknown)")
     p.add_argument("--workspace", default=None, help="parent dir for the test files")
     p.add_argument("--timeout", type=float, default=float(env.get("A6_TIMEOUT_S", "900")))
     p.add_argument("--poll", type=float, default=float(env.get("A6_POLL_S", "5")))
@@ -242,10 +327,8 @@ def parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     args = p.parse_args(argv)
     if not args.url:
         p.error("--url (or A6_URL) is required")
-    if args.target == "openhands" and not args.session_key:
-        p.error("--session-key (or CODING_AGENT_API_KEY) is required for openhands")
-    if args.target == "opencode" and not args.gate_password:
-        p.error("--gate-password (or SEALED_GATE_PASSWORD) is required for opencode")
+    if not args.session_key:
+        p.error("--session-key (or CODING_AGENT_API_KEY) is required")
     if args.workspace is None:
         args.workspace = "/workspace/project"
     return args
@@ -256,8 +339,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     headers: dict[str, str] = {}
     if args.gate_password:
         headers.update(basic_auth(args.gate_user, args.gate_password))
-    if args.target == "openhands":
-        headers["X-Session-API-Key"] = args.session_key
+    headers["X-Session-API-Key"] = args.session_key
     context = ssl.create_default_context(cafile=args.ca_file) if args.ca_file else None
     client = Client(args.url, headers, context=context)
     try:
