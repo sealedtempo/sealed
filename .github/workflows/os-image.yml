@@ -1,0 +1,230 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Sealed dstack OS image (D-016, spec 5.1 and 5.8). Builds the production and
+# debug variants of the patched dstack 0.6.1 guest OS for Google Cloud TDX from
+# runtime/images/dstack-os, checks that no NVIDIA, ZFS or CDDL content is in
+# them, prints the sha256s and os_image_hash, and on an os-image-v<version> tag
+# publishes the GCE disk tarballs as release assets. It never touches GCP;
+# importing and measuring an image is runtime/images/dstack-os/import-and-measure.sh,
+# run by the operator.
+name: os-image
+
+on:
+  pull_request:
+    paths:
+      - 'runtime/images/dstack-os/**'
+      - '.github/workflows/os-image.yml'
+  # No paths filter on tags: GitHub ANDs it with the ref filter, which would
+  # silently drop a release tag on a commit that does not touch these paths.
+  push:
+    tags: ['os-image-v*']
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: 'Variants to build (JSON list)'
+        required: false
+        default: '["prod","debug"]'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: os-image-${{ github.ref }}
+  # A release build must never be cancelled by a later push.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  static:
+    name: Static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Go tests (osimage helper, sealed-logship)
+        run: |
+          go vet ./runtime/images/dstack-os/...
+          go test ./runtime/images/dstack-os/...
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends squashfs-tools gdisk mtools
+      - name: License check tests
+        run: python3 -I -B -m unittest discover -s runtime/images/dstack-os -p 'test_*.py' -v
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -x runtime/images/dstack-os/*.sh \
+            runtime/images/dstack-os/overlay/os/mkosi/components/sealed-logship/*.sh
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/os-image.yml
+      - name: Prepare the patched source and check it against source.lock
+        run: |
+          src="$RUNNER_TEMP/dstack-src"
+          runtime/images/dstack-os/build.sh prepare "$src"
+          runtime/images/dstack-os/build.sh check-lock "$src"
+      - name: Upstream static contract on the patched tree
+        run: runtime/images/dstack-os/build.sh lint "$RUNNER_TEMP/dstack-src"
+
+  build:
+    name: Build ${{ matrix.variant }}
+    needs: static
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/os-image-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.variants || '["prod","debug"]') }}
+    steps:
+      # The preinstalled SDKs take most of the runner's disk. Remove only those;
+      # the image build itself stays hermetic inside mkosi.
+      - name: Reclaim runner disk space
+        run: |
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+            /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the osimage helper
+        run: go build -o "$RUNNER_TEMP/osimage" ./runtime/images/dstack-os/tools/osimage
+      - name: Prepare the patched source
+        run: |
+          src="$RUNNER_TEMP/dstack-src"
+          runtime/images/dstack-os/build.sh prepare "$src"
+          runtime/images/dstack-os/build.sh check-lock "$src"
+          echo "SRC=$src" >> "$GITHUB_ENV"
+      - name: Install pinned mkosi and its host dependencies
+        run: |
+          set -euo pipefail
+          # The mkosi revision comes from the patched tree's versions.env, the
+          # same pin upstream's own release workflow installs.
+          # shellcheck source=/dev/null
+          . "$SRC/os/mkosi/versions.env"
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends python3-venv
+          python3 -m venv "$RUNNER_TEMP/mkosi-venv"
+          "$RUNNER_TEMP/mkosi-venv/bin/pip" install --disable-pip-version-check \
+            "mkosi @ git+https://github.com/systemd/mkosi.git@${MKOSI_REVISION}"
+          mkdir -p "$RUNNER_TEMP/mkosi-ci-bin"
+          ln -s "$RUNNER_TEMP/mkosi-venv/bin/mkosi" "$RUNNER_TEMP/mkosi-ci-bin/mkosi"
+          mapfile -t dependencies < <("$RUNNER_TEMP/mkosi-venv/bin/mkosi" --directory "$SRC/os/mkosi" dependencies)
+          # squashfs-tools, mtools and gdisk are for the Sealed packaging and license check.
+          sudo apt-get install --yes --no-install-recommends "${dependencies[@]}" squashfs-tools mtools gdisk
+      - name: Rust crate license inventory
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: runtime/images/dstack-os/build.sh rust-inventory "$VARIANT" "$SRC" "$RUNNER_TEMP/out"
+      - name: Build the ${{ matrix.variant }} image
+        env:
+          # ubuntu-24.04 runners have 4 vCPUs and 16 GiB of RAM.
+          JOBS: '4'
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          # Runner user namespaces are restricted, so mkosi runs as root, with
+          # the distro Python first on PATH.
+          sudo --set-home env \
+            "PATH=$RUNNER_TEMP/mkosi-ci-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            "JOBS=$JOBS" "OSIMAGE=$RUNNER_TEMP/osimage" \
+            runtime/images/dstack-os/build.sh image "$VARIANT" "$SRC" "$RUNNER_TEMP/build" "$RUNNER_TEMP/out"
+          sudo chown -R "$USER:$USER" "$RUNNER_TEMP/out" "$RUNNER_TEMP/build"
+          df -h /
+      - name: Report sha256s and os_image_hash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          hashes=$(ls "$RUNNER_TEMP"/out/*-hashes.txt)
+          cat "$hashes"
+          os_image_hash=$(awk '$1 == "os_image_hash" {print $2}' "$hashes")
+          echo "::notice title=os_image_hash ($VARIANT)::$os_image_hash"
+          {
+            echo "### Sealed dstack OS, $VARIANT variant"
+            echo
+            echo '```'
+            cat "$hashes"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: os-image-${{ matrix.variant }}
+          path: ${{ runner.temp }}/out/*
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish release
+    needs: build
+    # The tag is the publish decision; nothing else reaches this job.
+    if: startsWith(github.ref, 'refs/tags/os-image-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: os-image-*
+          merge-multiple: true
+          path: dist
+      - name: Validate the tag and the artifacts
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . runtime/images/dstack-os/upstream.env
+          if [ "$TAG" != "os-image-v$SEALED_OS_VERSION" ]; then
+            echo "::error::tag $TAG does not match SEALED_OS_VERSION=$SEALED_OS_VERSION"
+            exit 1
+          fi
+          cd dist
+          for name in "$SEALED_IMAGE_NAME_PROD" "$SEALED_IMAGE_NAME_DEBUG"; do
+            base="$name-$SEALED_OS_VERSION"
+            sha256sum -c "$base.sha256"
+            test -f "$base-gce.tar.gz"
+            # The GCE import format: the tarball holds exactly disk.raw.
+            test "$(tar -tzf "$base-gce.tar.gz")" = disk.raw
+          done
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . runtime/images/dstack-os/upstream.env
+          {
+            echo "Sealed dstack OS \`$SEALED_OS_VERSION\` for Google Cloud TDX: upstream dstack \`$UPSTREAM_TAG\`"
+            echo "(\`$UPSTREAM_COMMIT\`) without the NVIDIA userspace and ZFS, ext4 data disks only."
+            echo "Built by \`.github/workflows/os-image.yml\` from \`runtime/images/dstack-os\` at \`$GITHUB_SHA\`."
+            echo
+            echo "Import with \`gcloud compute images create ... --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC\`,"
+            echo "or measure and register with \`runtime/images/dstack-os/import-and-measure.sh\`. The debug variant"
+            echo "exports container logs to Cloud Logging and is registered with isDebug = true."
+            for name in "$SEALED_IMAGE_NAME_PROD" "$SEALED_IMAGE_NAME_DEBUG"; do
+              echo
+              echo '```'
+              cat "dist/$name-$SEALED_OS_VERSION-hashes.txt"
+              echo '```'
+            done
+          } > release-notes.md
+          gh release create "$TAG" dist/* \
+            --title "Sealed dstack OS $SEALED_OS_VERSION" \
+            --notes-file release-notes.md \
+            --verify-tag
