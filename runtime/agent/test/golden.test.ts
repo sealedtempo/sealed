@@ -49,6 +49,15 @@ const agentSvc = compose.services["sealed-agent"] as {
 const defaults = await loadDefaults(join(import.meta.dirname, "../../../config/defaults.yaml"), { testOverrides: false });
 
 describe("sealed-agent against the composer's golden stack", () => {
+  // Merge C: ws/harden-composer moved the composer to 1.3.0 and refreshed its goldens while this copy kept 1.2.0's,
+  // so these tests checked the agent against a stack the composer no longer writes.
+  it("the fixture is the composer's current golden output, byte for byte", async () => {
+    const source = join(import.meta.dirname, "../../composer/testdata/golden");
+    const files = (await readdir(golden)).filter((f) => f !== "README.md").sort();
+    expect(files).toEqual(["Caddyfile", "Caddyfile.payment-needed", "app-compose.json", "config.json", "stack.json"]);
+    for (const f of files) expect(await read(f), `${f} differs from runtime/composer/testdata/golden/${f}: copy it again`).toBe(await readFile(join(source, f), "utf8"));
+  });
+
   const settings = settingsFromEnv(agentSvc.environment);
   const configTarget = (name: string) => agentSvc.configs.find((c) => c.source === name)?.target;
   const volumeTarget = (name: string) => agentSvc.volumes.find((v) => v.type === "volume" && v.source === name)?.target;
