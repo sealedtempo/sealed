@@ -1,0 +1,63 @@
+# Sealed contracts. Foundry 1.7.1+, Solidity 0.8.38, OpenZeppelin Contracts 5.7.0 (Soldeer).
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+cache_path = "cache"
+libs = ["dependencies"]
+solc_version = "0.8.38"
+# Tempo targets the Osaka hard fork (docs: quickstart/evm-compatibility).
+evm_version = "osaka"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+bytecode_hash = "ipfs"
+# Tempo network features in forge/cast/anvil (TIP-20 precompiles, Tempo gas schedule, Tempo transactions).
+network = "tempo"
+auto_detect_remappings = false
+fs_permissions = [
+    { access = "read-write", path = "./deployments" },
+    { access = "read", path = "./catalog" },
+    { access = "read", path = "./broadcast" },
+    { access = "read", path = "./out" },
+]
+
+[profile.default.fuzz]
+runs = 256
+seed = "0x5ea1ed"
+
+[profile.default.invariant]
+runs = 128
+depth = 64
+fail_on_revert = false
+
+[profile.ci.fuzz]
+runs = 1000
+
+[profile.ci.invariant]
+runs = 256
+depth = 100
+
+[rpc_endpoints]
+tempo = "${TEMPO_RPC_URL:-https://rpc.tempo.xyz}"
+tempo_public = "https://rpc.tempo.xyz"
+local = "http://127.0.0.1:8545"
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = false
+int_types = "long"
+quote_style = "double"
+number_underscore = "thousands"
+sort_imports = false
+
+[soldeer]
+remappings_generate = false
+remappings_regenerate = false
+recursive_deps = false
+
+[dependencies]
+"@openzeppelin-contracts" = "5.7.0"
+forge-std = "1.17.0"

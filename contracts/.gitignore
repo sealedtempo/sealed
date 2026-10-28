@@ -1,0 +1,14 @@
+# Soldeer dependencies (restored with `forge soldeer install` from soldeer.lock)
+dependencies/
+# Build outputs
+out/
+cache/
+coverage/
+lcov.info
+# Local and dry-run broadcasts
+broadcast/*/31337/
+broadcast/**/dry-run/
+# Local deployments written by script/local-e2e.sh
+deployments/local.json
+deployments/anvil*.json
+.e2e/
