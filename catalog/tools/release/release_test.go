@@ -93,6 +93,9 @@ func TestPlan(t *testing.T) {
 	if plan[0].Version != "2.3.4" || plan[0].Problem != "" {
 		t.Fatalf("gateway: %+v", plan[0])
 	}
+	if refs := notes.ImageRefs; len(refs) != 2 || refs[1].Ref != "ghcr.io/sealedtempo/postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b" {
+		t.Fatalf("image refs: %+v", refs)
+	}
 	// Unbuilt images and bad versions are problems; --strict turns them into a failure.
 	p := filepath.Join(root, CatalogDir, "notes/manifest.yaml")
 	writeFile(t, p, strings.Replace(readFile(t, p), "release_version: 1.0.0-sealed.1", "release_version: v1.0.0", 1))
@@ -330,6 +333,51 @@ func TestReleaseDocAndNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustContain(t, so.String(), "## Verify")
+
+	// --base adds the onchain record to an existing release.json (the re-run path).
+	if err := writeJSONFile(onchain, OnchainRecord{ChainID: 4217, TxHash: tx, BlockNumber: 7, ReleaseID: info.ReleaseID}); err != nil {
+		t.Fatal(err)
+	}
+	rj2 := filepath.Join(t.TempDir(), "release2.json")
+	if err := run([]string{"release-doc", "--root", root, "--base", rj, "--onchain", onchain, "--out", rj2}, &so, &se); err != nil {
+		t.Fatal(err)
+	}
+	var withTx ReleaseDoc
+	if err := readJSONFile(rj2, &withTx); err != nil || withTx.Onchain == nil || withTx.Onchain.TxHash != tx || withTx.BundleHash != info.BundleHash {
+		t.Fatalf("base + onchain: %+v %v", withTx, err)
+	}
+	if err := writeJSONFile(onchain, OnchainRecord{TxHash: tx, ReleaseID: "0x" + strings.Repeat("1", 64)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"release-doc", "--root", root, "--base", rj, "--onchain", onchain}, &so, &se); err == nil {
+		t.Fatal("--base with a record of another release")
+	}
+}
+
+func TestScanMatrix(t *testing.T) {
+	set, err := LoadImages(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := ScanMatrix(set, repoRoot(t), []string{"llm-gateway", "crm"})
+	if len(m) != 2 || m[0].App != "crm" || m[1].App != "llm-gateway" || m[1].Waivers != "catalog/apps/llm-gateway/waivers.yaml" {
+		t.Fatalf("matrix %+v", m)
+	}
+	if tw := m[0].Images[0]; tw.Name != "twenty" || tw.Blocked == "" || !strings.HasPrefix(tw.Ref, "docker.io/twentycrm/twenty@sha256:") {
+		t.Fatalf("twenty: %+v", tw)
+	}
+	for _, img := range m[1].Images {
+		switch img.Name {
+		case "litellm", "local-model":
+			if !img.Unbuilt || img.Ref != "" {
+				t.Errorf("%s is unbuilt: %+v", img.Name, img)
+			}
+		case "postgres":
+			if img.Ref != "docker.io/library/postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c" {
+				t.Errorf("postgres scans the upstream digest: %+v", img)
+			}
+		}
+	}
 }
 
 func TestTxSummary(t *testing.T) {

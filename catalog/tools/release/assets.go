@@ -90,15 +90,22 @@ func Assets(d Defaults, app, version string, images []string) (AssetNames, error
 
 // PlannedRelease is one app the release job releases.
 type PlannedRelease struct {
-	App     string     `json:"app"`
-	Dir     string     `json:"dir"`
-	Version string     `json:"version"`
-	AppID   string     `json:"appId"`
-	Tag     string     `json:"tag"`
-	Images  []string   `json:"images"`
-	Unbuilt []string   `json:"unbuilt"`
-	Assets  AssetNames `json:"assets"`
-	Problem string     `json:"problem,omitempty"` // set when the app cannot be released as is
+	App       string     `json:"app"`
+	Dir       string     `json:"dir"`
+	Version   string     `json:"version"`
+	AppID     string     `json:"appId"`
+	Tag       string     `json:"tag"`
+	Images    []string   `json:"images"`
+	ImageRefs []ImageRef `json:"imageRefs"` // what the bundle pins and VMs pull: <registry>/<name>@<digest>
+	Unbuilt   []string   `json:"unbuilt"`
+	Assets    AssetNames `json:"assets"`
+	Problem   string     `json:"problem,omitempty"` // set when the app cannot be released as is
+}
+
+// ImageRef is one image of a planned release.
+type ImageRef struct {
+	Name string `json:"name"`
+	Ref  string `json:"ref"`
 }
 
 // Plan lists the releases for the given app ids (all top-level apps when ids is empty and all is set).
@@ -127,9 +134,10 @@ func Plan(d Defaults, apps []App, ids []string, all bool) ([]PlannedRelease, err
 			return nil, fmt.Errorf("no app %q under %s", id, CatalogDir)
 		}
 		p := PlannedRelease{App: a.ID, Dir: a.Dir, Version: a.Version(), AppID: composer.AppID(a.ID).Hex(),
-			Images: []string{}, Unbuilt: []string{}}
+			Images: []string{}, ImageRefs: []ImageRef{}, Unbuilt: []string{}}
 		for _, img := range a.Manifest.Images {
 			p.Images = append(p.Images, img.Name)
+			p.ImageRefs = append(p.ImageRefs, ImageRef{Name: img.Name, Ref: d.Registry + "/" + img.Name + "@" + img.Digest})
 			if img.Unbuilt() {
 				p.Unbuilt = append(p.Unbuilt, img.Name)
 			}

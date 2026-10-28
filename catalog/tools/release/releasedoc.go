@@ -329,3 +329,26 @@ func short(s string, n int) string {
 	}
 	return s[:n]
 }
+
+// AddOnchain reads an existing release.json and adds the onchain record, which must be for its release.
+func AddOnchain(basePath, onchainPath string) (*ReleaseDoc, error) {
+	var doc ReleaseDoc
+	if err := readJSONFile(basePath, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Schema != "sealed-release/v1" {
+		return nil, fmt.Errorf("%s: schema %q, want sealed-release/v1", basePath, doc.Schema)
+	}
+	if onchainPath == "" {
+		return nil, fmt.Errorf("--base needs --onchain")
+	}
+	var rec OnchainRecord
+	if err := readJSONFile(onchainPath, &rec); err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(rec.ReleaseID, doc.ReleaseID) {
+		return nil, fmt.Errorf("onchain record is for release %s, not %s", rec.ReleaseID, doc.ReleaseID)
+	}
+	doc.Onchain = &rec
+	return &doc, nil
+}

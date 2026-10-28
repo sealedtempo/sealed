@@ -71,6 +71,10 @@ func TestMirrorImagesScript(t *testing.T) {
 	if r.code == 0 || !strings.Contains(r.output, "notes-web (docker.io/example/forbidden:1.0.0): D-999") || strings.Contains(f3.calls(t), "crane") {
 		t.Fatalf("blocked: %d\n%s\n%s", r.code, r.output, f3.calls(t))
 	}
+	r = runScriptIn(t, root, "mirror-images.sh", f3.env(), matrix, "--skip-blocked")
+	if r.code != 0 || !strings.Contains(r.output, "warn not mirrored: notes-web") || !strings.Contains(r.output, "2 total") {
+		t.Fatalf("skip blocked: %d\n%s", r.code, r.output)
+	}
 	if err := run([]string{"images", "--root", root, "--format", "mirror-matrix", "--apps", "notes", "--fail-on-blocked"}, &so, &se); err == nil {
 		t.Fatal("--fail-on-blocked must fail for notes")
 	}

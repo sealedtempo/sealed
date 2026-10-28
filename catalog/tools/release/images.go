@@ -444,3 +444,54 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// ScanApp is one app of the scan matrix: the images to scan and the waivers that apply to them.
+type ScanApp struct {
+	App     string      `json:"app"`
+	Dir     string      `json:"dir"`
+	Waivers string      `json:"waivers"`
+	Images  []ScanImage `json:"images"`
+}
+
+// ScanImage is one image to scan. Mirrored images are scanned at their upstream source by digest (the
+// same bytes the mirror serves); built images at the catalog registry. Unbuilt images have no digest yet.
+type ScanImage struct {
+	Name    string `json:"name"`
+	Ref     string `json:"ref,omitempty"`
+	Unbuilt bool   `json:"unbuilt,omitempty"`
+	Blocked string `json:"blocked,omitempty"`
+}
+
+// ScanMatrix lists the top-level apps (all when apps is empty) with their images.
+func ScanMatrix(set *ImageSet, root string, apps []string) []ScanApp {
+	list, err := LoadApps(root, false)
+	if err != nil {
+		return nil
+	}
+	upstream := map[string]MirrorImage{}
+	for _, m := range append(append([]MirrorImage{}, set.Mirror...), set.Blocked...) {
+		upstream[m.Name+"@"+m.Digest] = m
+	}
+	out := []ScanApp{}
+	for _, a := range list {
+		if len(apps) > 0 && !contains(apps, a.ID) {
+			continue
+		}
+		sa := ScanApp{App: a.ID, Dir: a.Dir, Waivers: a.Dir + "/waivers.yaml", Images: []ScanImage{}}
+		for _, img := range a.Manifest.Images {
+			si := ScanImage{Name: img.Name}
+			switch {
+			case img.Unbuilt():
+				si.Unbuilt = true
+			case strings.HasPrefix(img.Source, "build:"):
+				si.Ref = set.Registry + "/" + img.Name + "@" + img.Digest
+			default:
+				m := upstream[img.Name+"@"+img.Digest]
+				si.Ref, si.Blocked = m.From, m.Blocked
+			}
+			sa.Images = append(sa.Images, si)
+		}
+		out = append(out, sa)
+	}
+	return out
+}

@@ -2,14 +2,15 @@
 # Copy upstream images to the catalog registry with crane, digest for digest (spec 5.3: VMs pull only from
 # ghcr.io, and the digest a manifest pins must be the digest that registry serves).
 #
-#   scripts/release/mirror-images.sh <mirror-matrix.json>
+#   scripts/release/mirror-images.sh <mirror-matrix.json> [--skip-blocked]
 #
 # The input is `go run ./catalog/tools/release images --format mirror-matrix [--apps ...]`:
 # {"include": [{name, from, to, target, digest}, ...], "blocked": [...]}. For each entry the script skips the
 # copy when <target> (<registry>/<name>@<digest>) already exists, otherwise runs `crane copy <from> <to>`
 # (the whole index, so the digest stays identical), and then checks that both <to> and <target> resolve to
 # exactly <digest>. Entries listed under "blocked" (images.yaml never_mirror, for example Twenty under D-049)
-# make the script fail before anything is copied. DRY_RUN=1 prints the plan only.
+# make the script fail before anything is copied; --skip-blocked (the scheduled mirror of the whole catalog)
+# reports them as warnings and mirrors the rest. DRY_RUN=1 prints the plan only.
 #
 # Registry credentials come from crane's config (crane auth login ghcr.io ... in the workflow).
 
@@ -17,11 +18,16 @@
 . "$(dirname "$0")/lib.sh"
 
 MATRIX="${1:-}"
-[ -n "$MATRIX" ] && [ -f "$MATRIX" ] || die "usage: mirror-images.sh <mirror-matrix.json>" 2
+SKIP_BLOCKED="${2:-}"
+[ -n "$MATRIX" ] && [ -f "$MATRIX" ] || die "usage: mirror-images.sh <mirror-matrix.json> [--skip-blocked]" 2
+[ -z "$SKIP_BLOCKED" ] || [ "$SKIP_BLOCKED" = --skip-blocked ] || die "unknown argument: $SKIP_BLOCKED" 2
 need jq
 blocked="$(jq -r '(.blocked // [])[] | "\(.name) (\(.source)): \(.blocked)"' "$MATRIX")"
-[ -z "$blocked" ] || die "refusing to mirror images whose license forbids redistribution:
+if [ -n "$blocked" ]; then
+	[ -n "$SKIP_BLOCKED" ] || die "refusing to mirror images whose license forbids redistribution:
 $blocked"
+	while IFS= read -r b; do log "warn not mirrored: $b"; done <<<"$blocked"
+fi
 need crane
 
 n="$(jq '.include | length' "$MATRIX")"

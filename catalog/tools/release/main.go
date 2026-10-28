@@ -152,11 +152,11 @@ func today(s string) (time.Time, error) {
 
 func cmdImages(args []string, stdout, stderr io.Writer) error {
 	fs, root := newFlags("images", stderr)
-	format := fs.String("format", "json", "json (everything), build-matrix or mirror-matrix")
+	format := fs.String("format", "json", "json (everything), build-matrix, mirror-matrix or scan-matrix")
 	changed := fs.String("changed", "", "file listing changed paths; selects builds (build-matrix)")
 	all := fs.Bool("all", false, "select every build (build-matrix)")
 	names := fs.String("names", "", "comma-separated image names to select (build-matrix)")
-	apps := fs.String("apps", "", "comma-separated app ids; limits the mirror matrix to their images (mirror-matrix)")
+	apps := fs.String("apps", "", "comma-separated app ids; limits the mirror and scan matrices to their images")
 	failBlocked := fs.Bool("fail-on-blocked", false, "fail when a selected app names an image that must not be mirrored (mirror-matrix)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -184,6 +184,8 @@ func cmdImages(args []string, stdout, stderr io.Writer) error {
 			sel = []BuildImage{}
 		}
 		return printJSON(stdout, map[string]any{"include": sel})
+	case "scan-matrix":
+		return printJSON(stdout, map[string]any{"include": ScanMatrix(set, r, splitList(*apps))})
 	case "mirror-matrix":
 		want := splitList(*apps)
 		out, blocked := []MirrorImage{}, []MirrorImage{}
@@ -668,6 +670,7 @@ func cmdReleaseDoc(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&in.RunURL, "run-url", "", "workflow run URL")
 	fs.StringVar(&in.Identity, "identity", "", "certificate identity (default: release.yml on main)")
 	fs.StringVar(&in.Onchain, "onchain", "", "publish-release.sh result JSON")
+	base := fs.String("base", "", "an existing release.json to add --onchain to (instead of --bundle and the scans)")
 	out := fs.String("out", "", "write release.json here (default stdout)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -680,7 +683,12 @@ func cmdReleaseDoc(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	doc, err := BuildReleaseDoc(d, in)
+	var doc *ReleaseDoc
+	if *base != "" {
+		doc, err = AddOnchain(*base, in.Onchain)
+	} else {
+		doc, err = BuildReleaseDoc(d, in)
+	}
 	if err != nil {
 		return err
 	}
