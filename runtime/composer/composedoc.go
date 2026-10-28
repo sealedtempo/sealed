@@ -249,11 +249,8 @@ func appService(a *plannedApp, s *plannedService, noProxy string) (map[string]an
 		return &FragmentError{App: a.id, Service: spec.Name, Msg: fmt.Sprintf(format, args...)}
 	}
 
-	image := spec.Image
-	if mm := imagePlaceholderRe.FindStringSubmatch(image); mm != nil {
-		img, _ := m.Image(mm[1])
-		image = img.Ref
-	}
+	img, _ := m.Image(spec.Image)
+	image := img.Ref
 
 	entry := []any{EnvexecPath, "--app", a.id}
 	for _, name := range spec.Secrets {

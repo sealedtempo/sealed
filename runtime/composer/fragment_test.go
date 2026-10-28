@@ -190,17 +190,16 @@ func TestFragmentLiteralDollars(t *testing.T) {
 	}
 }
 
-func TestFragmentAcceptsDigestRefOfManifestImage(t *testing.T) {
+func TestFragmentRequiresImagePlaceholders(t *testing.T) {
 	m := notesManifest(t)
 	img, _ := m.Image("notes-web")
 	frag := fmt.Sprintf("services:\n  notes-web:\n    image: %s\n    entrypoint: [x]\n", img.Ref)
-	if _, err := ParseFragment(m, []byte(frag)); err != nil {
-		t.Fatal(err)
-	}
-	other := strings.Replace(img.Ref, "1111", "9999", 1)
-	frag = fmt.Sprintf("services:\n  notes-web:\n    image: %s\n    entrypoint: [x]\n", other)
 	_, err := ParseFragment(m, []byte(frag))
 	wantFragmentError(t, err, "notes-web", "image")
+	f, err := ParseFragment(m, fragmentWith(""))
+	if err != nil || f.Service("notes-web").Image != "notes-web" {
+		t.Fatalf("placeholder: %v", err)
+	}
 }
 
 func TestParseManifestErrors(t *testing.T) {

@@ -54,7 +54,7 @@ func (f *Fragment) Service(name string) *ServiceSpec {
 // ServiceSpec holds the allowed keys of one fragment service in normalized form.
 type ServiceSpec struct {
 	Name            string
-	Image           string            // {{image:<name>}} or a digest reference
+	Image           string            // manifest image name from {{image:<name>}}
 	Entrypoint      []string          // required
 	Command         any               // nil, string or []string
 	Environment     map[string]string // public values only
@@ -283,16 +283,18 @@ func parseService(m *Manifest, name string, body map[string]any, declared map[st
 	if !ok {
 		return nil, fail("image", "required, as {{image:<name>}} or a digest reference")
 	}
-	if mm := imagePlaceholderRe.FindStringSubmatch(img); mm != nil {
+	mm := imagePlaceholderRe.FindStringSubmatch(img)
+	switch {
+	case mm != nil:
 		if _, ok := m.Image(mm[1]); !ok {
 			return nil, fail("image", "%q names no image in the manifest", mm[1])
 		}
-	} else if !digestRefRe.MatchString(img) {
-		return nil, fail("image", "%q must be {{image:<name>}} or pinned by digest (tags are rejected)", img)
-	} else if !manifestHasRef(m, img) {
-		return nil, fail("image", "%q is not one of the manifest's images; reference it as {{image:<name>}}", img)
+	case digestRefRe.MatchString(img):
+		return nil, fail("image", "%q: reference manifest images as {{image:<name>}} so the digest, SBOM and scan come from the manifest", img)
+	default:
+		return nil, fail("image", "%q must be {{image:<name>}}; tags and untracked images are rejected", img)
 	}
-	s.Image = img
+	s.Image = mm[1]
 
 	ep, err2 := stringList(body["entrypoint"])
 	if body["entrypoint"] == nil || err2 != nil || len(ep) == 0 {
@@ -452,15 +454,6 @@ func parseService(m *Manifest, name string, body map[string]any, declared map[st
 		s.Labels = lb
 	}
 	return s, nil
-}
-
-func manifestHasRef(m *Manifest, ref string) bool {
-	for _, img := range m.Images {
-		if img.Ref == ref {
-			return true
-		}
-	}
-	return false
 }
 
 type literalErr struct{ key, msg string }
