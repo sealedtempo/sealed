@@ -1,0 +1,42 @@
+{
+  "schema": "sealed-runtime-images/v1",
+  "registry": "ghcr.io/sealed-dev",
+  "images": {
+    "caddy": {
+      "digest": "sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f",
+      "source": "docker.io/library/caddy:2.11.7-alpine",
+      "license_spdx": "Apache-2.0",
+      "notes": "Index digest; linux/amd64 child sha256:04913b1da43339a40ad1ea87827d70a576ac5aa6cf674c6e24fdca675887533a. Mirrored with crane copy so the digest is unchanged."
+    },
+    "sealed-agent": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "source": "build:runtime/agent",
+      "license_spdx": "Apache-2.0",
+      "unbuilt": true
+    },
+    "sealed-egress": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "source": "build:runtime/egress",
+      "license_spdx": "Apache-2.0",
+      "unbuilt": true
+    },
+    "sealed-init": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "source": "build:runtime/envexec",
+      "license_spdx": "Apache-2.0",
+      "unbuilt": true
+    },
+    "sealed-mpp-payer": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "source": "build:runtime/mpp-payer",
+      "license_spdx": "Apache-2.0",
+      "unbuilt": true
+    },
+    "sealed-verifierd": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "source": "build:verifier",
+      "license_spdx": "Apache-2.0",
+      "unbuilt": true
+    }
+  }
+}

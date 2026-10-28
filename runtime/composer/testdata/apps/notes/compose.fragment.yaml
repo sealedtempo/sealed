@@ -1,0 +1,50 @@
+x-common: &common
+  stop_grace_period: 20s
+services:
+  notes-web:
+    <<: *common
+    image: "{{image:notes-web}}"
+    entrypoint: ["/usr/local/bin/notes"]
+    command: ["serve", "--port", "8080"]
+    environment:
+      NOTES_DB_URL: postgres://notes@notes-db:5432/notes
+      NOTES_PRICE_LABEL: "costs $$5"
+      NOTES_WORKERS: 2
+    x-sealed-secrets: [APP_SECRET, DB_PASSWORD, SMTP_PASSWORD]
+    depends_on:
+      notes-db:
+        condition: service_healthy
+    volumes:
+      - uploads:/var/lib/notes/uploads
+      - type: tmpfs
+        target: /tmp
+        tmpfs: {size: 64m}
+    user: "1000"
+    read_only: true
+    mem_limit: 512m
+    cpus: "0.5"
+    labels:
+      org.example.role: web
+  notes-db:
+    <<: *common
+    image: "{{image:postgres}}"
+    entrypoint: ["docker-entrypoint.sh"]
+    command: ["postgres"]
+    environment:
+      POSTGRES_USER: notes
+      POSTGRES_DB: notes
+      POSTGRES_PASSWORD_FILE: /run/sealed/secrets/notes/DB_PASSWORD
+    x-sealed-secrets: [DB_PASSWORD]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 128m
+    ulimits:
+      nofile: {soft: 4096, hard: 8192}
+volumes:
+  uploads:
+  pgdata: {}

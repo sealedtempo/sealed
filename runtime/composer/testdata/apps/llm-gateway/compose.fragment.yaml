@@ -1,0 +1,8 @@
+services:
+  llm-gateway-proxy:
+    image: "{{image:gateway}}"
+    entrypoint: ["/app/gateway"]
+    environment:
+      - AGENT_URL=http://sealed-agent:7070/v1/usage-events
+      - RELAY_BASE_URL=http://sealed-mpp-payer:8090/v1
+    x-sealed-secrets: [MASTER_KEY]

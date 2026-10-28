@@ -1,0 +1,56 @@
+# Fixture app for composer tests. Not a real catalog entry.
+schema: sealed-manifest/v1
+id: notes
+name: Notes
+category: internal-tools
+description: A small notes app with its own Postgres, used by the composer tests.
+release_version: 1.0.0-sealed.1
+upstream:
+  repo: https://github.com/example/notes
+  version: 1.0.0
+  license_spdx: MIT
+  source_url: https://github.com/example/notes/tree/v1.0.0
+maintainer:
+  name: Sealed fixtures
+  payout_address: "0x00000000000000000000000000000000000000a1"
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: notes-web
+images:
+  - name: notes-web
+    source: docker.io/example/notes:1.0.0
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    platform: linux/amd64
+    license_spdx: MIT
+  - name: postgres
+    source: docker.io/library/postgres:17.11-alpine
+    digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    license_spdx: PostgreSQL
+resources: {cpu: 1, memory_gb: 1, disk_gb: 5}
+routes:
+  - name: tools
+    service: notes-web
+    internal_port: 8080
+    path_or_host: tools
+    auth: gate
+healthcheck:
+  service: notes-web
+  http: /healthz
+  start_period_s: 20
+metering: {unit: app_hour, source: heartbeat}
+secrets:
+  - name: APP_SECRET
+    description: Session signing key
+    generate: hex32
+  - name: DB_PASSWORD
+    description: Postgres password shared by web and db
+    generate: base64-32
+  - name: SMTP_PASSWORD
+    description: Optional outgoing mail password
+    generate: none
+    optional: true
+telemetry_off_env:
+  NOTES_TELEMETRY: "0"
+  DO_NOT_TRACK: "1"
+license_exclusions: []
