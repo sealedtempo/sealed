@@ -108,7 +108,7 @@ func TestEvidenceHappyPath(t *testing.T) {
 	}
 	text := rep.Text()
 	t.Log("\n" + text)
-	if !strings.Contains(text, "PASS") || !strings.Contains(text, "WARNING: the quote comes from the dev simulator") || strings.Contains(text, "—") {
+	if !strings.Contains(text, "PASS") || !strings.Contains(text, "WARNING: the quote comes from the dev simulator") || strings.Contains(text, "\u2014") {
 		t.Fatalf("text report:\n%s", text)
 	}
 	raw, err := rep.JSON()
