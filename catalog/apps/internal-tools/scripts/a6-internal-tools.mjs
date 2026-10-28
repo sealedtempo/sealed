@@ -5,9 +5,8 @@
 // Env:
 //   TOOLS_URL      https://tools.<ip-with-dashes>.sslip.io, or http://internal-tools-server:3000 in the VM
 //   ADMIN_EMAIL, ADMIN_PASSWORD   the admin created by internal-tools-bootstrap
-//   GATE_BASIC     "user:password" for the Sealed gate (HTTP basic auth; ToolJet itself uses a cookie)
-//   GATE_COOKIE    "name=value" cookie that passes the Sealed gate
-//   GATE_HEADER    "Name: value" header that passes the Sealed gate
+//   GATE_BASIC     "sealed:<gate password>" for the Sealed gate (HTTP basic auth, the only gate the
+//                  composer renders; ToolJet itself uses the tj_auth_token cookie, so they coexist)
 //   A6_CLEANUP=1   delete the app at the end
 // Prints one JSON line with the app id. Exit code 0 on success, 1 on failure, 2 on bad usage.
 
@@ -22,12 +21,6 @@ export function gateHeaders(env) {
   if (env.GATE_BASIC) {
     if (!env.GATE_BASIC.includes(":")) throw new UsageError('GATE_BASIC must look like "user:password"');
     headers.authorization = `Basic ${Buffer.from(env.GATE_BASIC).toString("base64")}`;
-  }
-  if (env.GATE_COOKIE) headers.cookie = env.GATE_COOKIE;
-  if (env.GATE_HEADER) {
-    const i = env.GATE_HEADER.indexOf(":");
-    if (i < 1) throw new UsageError('GATE_HEADER must look like "Name: value"');
-    headers[env.GATE_HEADER.slice(0, i).trim().toLowerCase()] = env.GATE_HEADER.slice(i + 1).trim();
   }
   return headers;
 }

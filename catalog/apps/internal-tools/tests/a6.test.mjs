@@ -12,7 +12,7 @@ import { createFakeToolJet } from "./lib/fake-tooljet.mjs";
 
 const ORIGIN = "https://tools.34-1-2-3.sslip.io";
 const ADMIN = { ADMIN_EMAIL: "admin@example.com", ADMIN_PASSWORD: "correct-horse-battery" };
-const GATE = "gate:gate-password";
+const GATE = "sealed:gate-password";
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const cleanups = [];
@@ -65,12 +65,8 @@ describe("a6-internal-tools", () => {
     await assert.rejects(runA6({ ...ADMIN }), UsageError);
     await assert.rejects(runA6({ TOOLS_URL: "http://x" }), UsageError);
     assert.throws(() => gateHeaders({ GATE_BASIC: "no-colon" }), UsageError);
-    assert.throws(() => gateHeaders({ GATE_HEADER: "bad" }), UsageError);
-    assert.deepEqual(gateHeaders({ GATE_BASIC: "a:b", GATE_COOKIE: "g=1", GATE_HEADER: "X-Gate: t" }), {
-      authorization: "Basic YTpi",
-      cookie: "g=1",
-      "x-gate": "t",
-    });
+    assert.deepEqual(gateHeaders({}), {});
+    assert.deepEqual(gateHeaders({ GATE_BASIC: "a:b" }), { authorization: "Basic YTpi" });
   });
 
   test("the shell wrapper runs the helper and prints one JSON line", async () => {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
@@ -44,6 +45,8 @@ describe("loadConfig", () => {
   test("normalizes and applies defaults", () => {
     const cfg = loadConfig(good);
     assert.equal(cfg.baseUrl, "http://internal-tools-server:3000");
+    assert.equal(cfg.setupUrl, cfg.baseUrl, "no setup port: the route port is used for both phases");
+    assert.equal(loadConfig({ ...good, TOOLS_SETUP_URL: "http://internal-tools-server:3001/" }).setupUrl, "http://internal-tools-server:3001");
     assert.equal(cfg.origin, ORIGIN);
     assert.equal(cfg.email, "admin@example.com");
     assert.equal(cfg.adminName, "Sealed Admin");
@@ -55,7 +58,8 @@ describe("loadConfig", () => {
     ["short password", { ADMIN_PASSWORD: "short" }, /8 to 100/],
     ["long password", { ADMIN_PASSWORD: "x".repeat(101) }, /8 to 100/],
     ["bad email", { ADMIN_EMAIL: "nope" }, /not an email/],
-    ["origin with a path", { SEALED_PUBLIC_URL_TOOLS: `${ORIGIN}/x` }, /no path/],
+    ["origin with a path", { SEALED_PUBLIC_URL_TOOLS: `${ORIGIN}/x` }, /SEALED_PUBLIC_URL_TOOLS must be a scheme and host/],
+    ["setup URL with a path", { TOOLS_SETUP_URL: "http://internal-tools-server:3001/x" }, /TOOLS_SETUP_URL must be/],
     ["bad timeout", { HEALTH_TIMEOUT_S: "-1" }, /HEALTH_TIMEOUT_S/],
   ]) {
     test(`rejects ${name}`, () => {
@@ -97,12 +101,22 @@ describe("bootstrap", () => {
     assert.equal((await stat(join(dir, "done.json"))).mode & 0o777, 0o644);
   });
 
-  test("second run after completion makes no API calls", async () => {
+  test("second run after completion only re-checks that sign-up is refused", async () => {
     const { fake, env } = await setup();
     await bootstrap(loadConfig(env));
     const calls = fake.state.calls.length;
     assert.equal((await bootstrap(loadConfig(env))).status, "already-done");
-    assert.equal(fake.state.calls.length, calls);
+    assert.deepEqual(fake.state.calls.slice(calls), ["GET /api/health", "POST /api/onboarding/signup"]);
+    assert.equal(fake.state.users.size, 1);
+  });
+
+  test("a later start fails when sign-up has been opened", async () => {
+    const { fake, env } = await setup();
+    await bootstrap(loadConfig(env));
+    fake.state.signupsDisabled = false;
+    const lines = [];
+    assert.equal(await run(env, (l) => lines.push(l)), 1);
+    assert.ok(lines.some((l) => /self sign-up is not closed/.test(l)), lines.join("\n"));
   });
 
   test("re-run before done.json logs in instead of creating a second admin", async () => {
@@ -136,7 +150,7 @@ describe("bootstrap", () => {
 
   test("gives up when the server never becomes healthy", async () => {
     const { env } = await setup({ unhealthyPolls: 1_000_000 }, { HEALTH_TIMEOUT_S: "1", POLL_INTERVAL_MS: "50" });
-    await assert.rejects(bootstrap(loadConfig(env)), /not healthy after 1s/);
+    await assert.rejects(bootstrap(loadConfig(env)), /not healthy at .* after 1s/);
   });
 
   test("logs contain no password and no session cookie", async () => {
@@ -147,5 +161,46 @@ describe("bootstrap", () => {
     assert.ok(!text.includes(PASSWORD));
     for (const token of fake.state.sessions.keys()) assert.ok(!text.includes(token));
     assert.ok(text.includes("bootstrap complete"));
+  });
+});
+
+describe("setup port and route port", () => {
+  async function freePort() {
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    await new Promise((resolve) => server.close(resolve));
+    return port;
+  }
+  const exists = (path) => access(path).then(() => true, () => false);
+
+  test("works only on the setup port until done.json, then re-checks sign-up on the route port", async () => {
+    const { fake, dir, env } = await setup();
+    const routePort = await freePort();
+    const pending = run({ ...env, TOOLS_SETUP_URL: env.TOOLS_BASE_URL, TOOLS_BASE_URL: `http://127.0.0.1:${routePort}` }, () => {});
+    while (!(await exists(join(dir, "done.json")))) await new Promise((r) => setTimeout(r, 5));
+    const probes = fake.state.calls.filter((c) => c === "POST /api/onboarding/signup").length;
+    await fake.listen(routePort);
+    assert.equal(await pending, 0);
+    assert.equal(fake.state.calls.filter((c) => c === "POST /api/onboarding/signup").length, probes + 1);
+  });
+
+  test("a later start uses only the route port", async () => {
+    const { env } = await setup();
+    await bootstrap(loadConfig(env));
+    const deadPort = await freePort();
+    assert.equal((await bootstrap(loadConfig({ ...env, TOOLS_SETUP_URL: `http://127.0.0.1:${deadPort}` }))).status, "already-done");
+  });
+
+  test("an instance someone else set up never gets done.json, so the route stays closed", async () => {
+    const { dir, env } = await setup();
+    await fetch(`${env.TOOLS_BASE_URL}/api/onboarding/setup-super-admin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "neighbour@example.com", password: "neighbour", name: "n", workspaceName: "n" }),
+    });
+    const deadPort = await freePort();
+    assert.equal(await run({ ...env, TOOLS_SETUP_URL: env.TOOLS_BASE_URL, TOOLS_BASE_URL: `http://127.0.0.1:${deadPort}` }, () => {}), 1);
+    assert.equal(await exists(join(dir, "done.json")), false);
   });
 });

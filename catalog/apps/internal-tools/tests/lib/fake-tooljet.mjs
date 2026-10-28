@@ -80,7 +80,7 @@ export function createFakeToolJet({ unhealthyPolls = 0, signupsDisabled = true, 
     },
   };
 
-  const server = createServer(async (req, res) => {
+  const handler = async (req, res) => {
     const url = new URL(req.url, "http://fake");
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -113,19 +113,26 @@ export function createFakeToolJet({ unhealthyPolls = 0, signupsDisabled = true, 
         return send(res, 200, {});
       }
     }
-    const handler = routes[`${req.method} ${url.pathname}`];
-    if (handler) return handler(req, res, body);
+    const route = routes[`${req.method} ${url.pathname}`];
+    if (route) return route(req, res, body);
     return send(res, 404, { statusCode: 404, message: "Not Found" });
-  });
+  };
+
+  const servers = [];
+  // Each listener is another port onto the same instance (the setup port and the route port).
+  async function listen(port = 0) {
+    const server = createServer(handler);
+    servers.push(server);
+    await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+    return `http://127.0.0.1:${server.address().port}`;
+  }
 
   return {
     state,
-    async start() {
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-      return `http://127.0.0.1:${server.address().port}`;
-    },
+    listen,
+    start: listen,
     async stop() {
-      await new Promise((resolve) => server.close(resolve));
+      await Promise.all(servers.map((s) => new Promise((resolve) => s.close(resolve))));
     },
   };
 }

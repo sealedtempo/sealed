@@ -1,9 +1,14 @@
 // Sealed internal-tools bootstrap for ToolJet CE v3.20.
 //
-// Runs once inside the VM, against http://internal-tools-server:3000, before the tools route
-// opens: creates the first admin and the default workspace with the one-time
+// Runs inside the VM. Until done.json exists, internal-tools-server listens only on its setup
+// port (TOOLS_SETUP_URL, http://internal-tools-server:3001), which no Caddy route points at;
+// this job creates the first admin and the default workspace there with the one-time
 // /api/onboarding/setup-super-admin endpoint (it only works while the instance has no users),
-// confirms the admin can log in, and confirms that self sign-up is refused. Safe to re-run.
+// confirms the admin can log in, confirms that self sign-up is refused, and writes done.json.
+// The server then moves to the route port (TOOLS_BASE_URL, http://internal-tools-server:3000).
+// On every later start the job only re-checks, read-only, that sign-up is refused there.
+// If someone else ran setup-super-admin first, the admin cannot log in and the job fails, so
+// done.json is never written and the route never opens onto their instance. Safe to re-run.
 // This file is embedded verbatim into compose.fragment.yaml (tools/embed-bootstrap.mjs), so it
 // may only import node: builtins.
 //
@@ -30,6 +35,12 @@ function positiveInt(env, name, fallback, max) {
   return value;
 }
 
+function httpUrl(name, value) {
+  const url = trimSlash(value);
+  if (!/^https?:\/\/[^/]+$/.test(url)) throw new BootstrapError(`${name} must be a scheme and host with no path`);
+  return url;
+}
+
 export function loadConfig(env) {
   const required = (name) => {
     const value = env[name];
@@ -43,10 +54,11 @@ export function loadConfig(env) {
   if (password.length < 8 || password.length > 100) {
     throw new BootstrapError("ADMIN_PASSWORD must be 8 to 100 characters");
   }
-  const origin = trimSlash(required("SEALED_PUBLIC_URL_TOOLS"));
-  if (!/^https?:\/\/[^/]+$/.test(origin)) throw new BootstrapError("SEALED_PUBLIC_URL_TOOLS must be a scheme and host with no path");
+  const origin = httpUrl("SEALED_PUBLIC_URL_TOOLS", required("SEALED_PUBLIC_URL_TOOLS"));
+  const baseUrl = httpUrl("TOOLS_BASE_URL", required("TOOLS_BASE_URL"));
   return {
-    baseUrl: trimSlash(required("TOOLS_BASE_URL")),
+    baseUrl,
+    setupUrl: env.TOOLS_SETUP_URL ? httpUrl("TOOLS_SETUP_URL", env.TOOLS_SETUP_URL) : baseUrl,
     origin,
     stateDir: required("STATE_DIR"),
     email,
@@ -120,8 +132,10 @@ export async function waitHealthy(cfg, log) {
     } catch {
       // server not listening yet
     }
-    if (Date.now() >= deadline) throw new BootstrapError(`server not healthy after ${cfg.healthTimeoutMs / 1000}s`);
-    log("waiting for internal-tools-server /api/health");
+    if (Date.now() >= deadline) {
+      throw new BootstrapError(`server not healthy at ${cfg.baseUrl} after ${cfg.healthTimeoutMs / 1000}s`);
+    }
+    log(`waiting for ${cfg.baseUrl}/api/health`);
     await sleep(cfg.pollMs);
   }
 }
@@ -170,27 +184,30 @@ async function readJson(file) {
 
 export async function bootstrap(cfg, { log = () => {}, now = () => Date.now() } = {}) {
   const doneFile = join(cfg.stateDir, DONE_FILE);
+  const setup = { ...cfg, baseUrl: cfg.setupUrl };
   const done = await readJson(doneFile);
   if (done?.complete === true) {
-    log("already bootstrapped");
+    log("already bootstrapped, re-checking that self sign-up is refused");
+    await waitHealthy(cfg, log);
+    await verifySignupClosed(cfg);
     return { status: "already-done", organizationId: done.organizationId };
   }
   await mkdir(cfg.stateDir, { recursive: true });
-  await waitHealthy(cfg, log);
+  await waitHealthy(setup, log);
 
   log("creating the first admin and workspace");
-  let session = await setupSuperAdmin(cfg);
+  let session = await setupSuperAdmin(setup);
   if (!session) {
     log("instance already has users, logging in as the admin");
     try {
-      session = await login(cfg);
+      session = await login(setup);
     } catch (err) {
       throw new BootstrapError(`the instance already has users and the admin cannot log in (${err.message})`);
     }
   }
-  await verifySession(cfg, session);
+  await verifySession(setup, session);
   log("checking that self sign-up is refused");
-  await verifySignupClosed(cfg);
+  await verifySignupClosed(setup);
 
   const tmp = `${doneFile}.tmp`;
   const record = {
@@ -203,6 +220,11 @@ export async function bootstrap(cfg, { log = () => {}, now = () => Date.now() } 
   };
   await writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o644 });
   await rename(tmp, doneFile);
+  if (cfg.setupUrl !== cfg.baseUrl) {
+    log("done.json written, waiting for internal-tools-server on the route port");
+    await waitHealthy(cfg, log);
+    await verifySignupClosed(cfg);
+  }
   log("bootstrap complete");
   return { status: "bootstrapped", organizationId: session.organizationId };
 }
