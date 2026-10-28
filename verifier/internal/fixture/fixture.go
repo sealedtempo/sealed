@@ -206,7 +206,7 @@ func (w *World) Bundle(attestedAt uint64) *verify.Bundle {
 	if err != nil {
 		panic(err)
 	}
-	rd := attest.EvidenceReportData(out.StackHash, out.ConfigHash, w.EnclaveSigner, w.Nonce2)
+	rd := attest.EvidenceReportData(out.StackHash, out.ConfigHash, w.EnclaveSigner, w.Nonce2, attestedAt)
 	quote := attest.NewSimQuote(attest.SimQuoteParams{Debug: w.Debug, RTMR3: rtmr3, ReportData: rd})
 	return w.assemble(out, evs, quote, attestedAt)
 }

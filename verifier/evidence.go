@@ -148,8 +148,8 @@ func VerifyEvidence(ctx context.Context, b *Bundle, deps Deps, opts Options) (*R
 	s.checkEvidenceConfigBinding(b, f)
 	derived := s.checkDeploymentID(f.deploymentID)
 
-	want := attest.EvidenceReportData(f.stackHash, f.configHash, f.enclaveSigner, f.nonce2)
-	s.checkReportData(want, "sha256(\"sealed/evidence/v1\" || stackHash || configHash || enclaveSigner || nonce2)")
+	want := attest.EvidenceReportData(f.stackHash, f.configHash, f.enclaveSigner, f.nonce2, b.AttestedAt)
+	s.checkReportData(want, "sha256(\"sealed/evidence/v1\" || stackHash || configHash || enclaveSigner || nonce2 || uint64be(attestedAt))")
 	if opts.MaxEvidenceAge > 0 {
 		s.checkEvidenceFreshness(b.AttestedAt, now)
 	}
@@ -254,9 +254,9 @@ func (s *session) checkEvidenceFreshness(attestedAt uint64, now time.Time) {
 	case now.Sub(at) > s.opts.MaxEvidenceAge:
 		s.rep.fail(CheckFreshness, fmt.Sprintf("evidence is %s old, limit %s", now.Sub(at).Round(time.Second), s.opts.MaxEvidenceAge), data)
 	default:
-		// The quote does not cover attestedAt (INTERFACES section 3): the age is the sender's claim until
-		// onchain_record matches it against the record (or the oracle's own acceptance window bounds it).
-		s.rep.pass(CheckFreshness, fmt.Sprintf("attested %s ago (attestedAt is not in report_data: advisory unless the record matches)", now.Sub(at).Round(time.Second)), data)
+		// attestedAt is inside report_data (D-047), so this age is the quote's own once report_data passes, also
+		// before the deployment is registered (the oracle's first verification).
+		s.rep.pass(CheckFreshness, fmt.Sprintf("attested %s ago (attestedAt is bound in report_data)", now.Sub(at).Round(time.Second)), data)
 	}
 }
 

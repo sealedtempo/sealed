@@ -33,8 +33,8 @@ keys equal under case folding, are refused.
 | `config_hash` | sha256(CJSON(config)) = configHash |
 | `config_binding` | bundle customer, imageId, chainId and releaseIds equal the config's; config.apps sorted |
 | `deployment_id` | keccak256(abi.encode(customer, stackHash, salt)) = deploymentId (evidence), and = the requested `deploymentId` when one is given (evidence and live) |
-| `report_data` | quote report_data = the evidence (or live attest) construction |
-| `freshness` | evidence: attestedAt within the requested age (advisory on its own: attestedAt is not in report_data, `onchain_record` binds it); live: our nonce is bound |
+| `report_data` | quote report_data = the evidence construction `sha256("sealed/evidence/v1" \|\| stackHash \|\| configHash \|\| enclaveSigner \|\| nonce2 \|\| uint64be(attestedAt))` then 32 zero bytes (D-047), or the live attest construction |
+| `freshness` | evidence: attestedAt within the requested age and at most 5 minutes in the future (attestedAt is bound in report_data, so this holds before registration too); live: our nonce is bound |
 | `releases_active` | each release exists, isActiveRelease, and belongs to the app named in config.apps |
 | `stack_recompute` | the composer recomputes appCompose byte for byte from the config and the onchain releases |
 | `stack_approved` | DeploymentRegistry.isStackApproved(customer, stackHash) |

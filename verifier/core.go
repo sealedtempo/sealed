@@ -443,7 +443,7 @@ func (s *session) checkRecord(want recordExpectation) {
 		}
 	case want.quoteHash != nil:
 		cmp32("quoteHash", d.QuoteHash, *want.quoteHash)
-		// attestedAt is not covered by the quote, so the bundle's value only counts once the record vouches for it.
+		// The bundle must be the record's latest attestation: same quote, attested at lastAttestedAt.
 		if want.attestedAt != nil && *want.attestedAt != d.LastAttestedAt {
 			problems = append(problems, fmt.Sprintf("attestedAt %d != recorded lastAttestedAt %d", *want.attestedAt, d.LastAttestedAt))
 		}
