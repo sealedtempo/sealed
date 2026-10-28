@@ -10,10 +10,21 @@
 // - 401 with `WWW-Authenticate: Basic realm="sealed"` otherwise.
 // - 503 `starting` until the route's app finished its bootstrap (sealed-stack/v1 `bootstrap`), so
 //   routes stay closed while first-run setup is still open.
-// - 429 when a client (or everyone together) has failed too often: a failed attempt costs a token,
-//   bcrypt runs only when one is left, and a success gives it back. Successful checks are cached
-//   briefly, so a client that keeps sending Basic credentials does not pay bcrypt on every request.
+// - 429 when a client has failed too often: a failed attempt costs a token, bcrypt runs only when one is
+//   left, and a success gives it back. Clients that failed recently also share one global budget, so many
+//   addresses together cannot guess faster; a client with no recent failure never waits for that budget,
+//   so other clients' failures cannot lock out a new login (review ws-int-agent 6). IPv6 clients count per
+//   /64. bcrypt itself runs at most 8 at a time (BcryptWorker). Successful checks are cached briefly, so a
+//   client that keeps sending Basic credentials does not pay bcrypt on every request.
+// - `?bearer=1` (review C-6): Caddy's bearer-passthrough handle asks only whether the route is open. 200 once
+//   the keys are released and the app's bootstrap is done, for a request that carries a Bearer token (the app
+//   checks it); 503 `starting` before.
+//
+// What counts as the gate's own credential is exactly what Caddy strips (review ws-int-agent 7, C-3): Basic
+// with spaces (RFC 7235) and canonical base64, whose encoding of `sealed:` matches Caddy's prefix match in
+// every composer version; and a cookie named exactly `sealed_gate`, as Caddy's `(^|;\s*)sealed_gate=` removes.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { isIPv6 } from "node:net";
 import { BCRYPT_MAX_COST, BCRYPT_MAX_PASSWORD_BYTES, GateBusyError, parseBcrypt } from "./bcrypt.js";
 
 export const GATE_COOKIE = "sealed_gate";
@@ -23,7 +34,7 @@ const COOKIE_TAG = "sealed/gate-cookie/v1";
 const MAX_COOKIES_CHECKED = 8;
 
 export type GateDecision =
-  | { status: 200; via: "cookie" | "basic"; setCookie?: string; stripAuthorization: boolean }
+  | { status: 200; via: "cookie" | "basic" | "bearer"; setCookie?: string; stripAuthorization: boolean }
   /** A Basic success on a top-level GET navigation: set the cookie and send the browser back to the same URL. */
   | { status: 303; location: string; setCookie: string }
   | { status: 401 }
@@ -42,6 +53,8 @@ export interface GateRequest {
   uri?: string;
   /** The browser's Sec-Fetch-Mode. */
   fetchMode?: string;
+  /** `?bearer=1`: Caddy's bearer-passthrough handle asks only whether the route is open (review C-6). */
+  bearer?: boolean;
 }
 
 /**
@@ -92,15 +105,19 @@ export interface GateLimits {
   /** Failed attempts one client may make in a burst, and how fast that budget refills. */
   clientBurst: number;
   clientPerSec: number;
-  /** The same for all clients together (bcrypt runs in one worker). */
+  /** The same for all clients with a recent failure together. */
   globalBurst: number;
   globalPerSec: number;
+  /** A client whose last failure is older than this is not held to the global budget. */
+  suspectMs: number;
 }
 
-export const DEFAULT_GATE_LIMITS: GateLimits = { clientBurst: 10, clientPerSec: 1 / 6, globalBurst: 30, globalPerSec: 1 };
+export const DEFAULT_GATE_LIMITS: GateLimits = { clientBurst: 10, clientPerSec: 1 / 6, globalBurst: 30, globalPerSec: 1, suspectMs: 10 * 60_000 };
 
 export interface GateRoute {
   app: string;
+  /** The route also has a bearer-passthrough handle (sealed-stack/v1 route auth `bearer-passthrough`). */
+  bearer?: boolean;
 }
 
 export interface GateOptions {
@@ -123,14 +140,39 @@ export interface GateOptions {
 
 const b64url = (b: Uint8Array) => Buffer.from(b).toString("base64url");
 
-/** The gate's Basic credentials, or undefined when the header is not Basic auth. */
+/**
+ * The gate's Basic credentials, or undefined when the header is not Basic auth in the one form Caddy strips:
+ * `Basic`, one or more spaces, canonical padded base64 (RFC 7235 allows only spaces; Node and Go trim the ends).
+ */
 function parseBasic(header: string | undefined): { user: string; password: Buffer } | undefined {
-  const m = /^Basic[ \t]+([A-Za-z0-9+/=]+)[ \t]*$/i.exec(header ?? "");
+  const m = /^[Bb][Aa][Ss][Ii][Cc] +([A-Za-z0-9+/]+={0,2})$/.exec(header ?? "");
   if (!m) return undefined;
   const raw = Buffer.from(m[1] as string, "base64");
+  if (raw.toString("base64") !== m[1]) {
+    raw.fill(0);
+    return undefined;
+  }
   const colon = raw.indexOf(0x3a);
   if (colon < 0) return undefined;
   return { user: raw.subarray(0, colon).toString("utf8"), password: raw.subarray(colon + 1) };
+}
+
+/** Go's `\s` (RE2): what Caddy's cookie strip `(^|;\s*)` skips after a semicolon. */
+const GO_SPACE_RE = /^[\t\n\f\r ]*/;
+
+/** The failure-budget key of a client: its IPv4 address, or the /64 of an IPv6 address. */
+export function clientKey(client: string): string {
+  if (!isIPv6(client)) return client;
+  const [head = "", tail = ""] = client.toLowerCase().split("::");
+  const h = head ? head.split(":") : [];
+  const t = client.includes("::") ? (tail ? tail.split(":") : []) : [];
+  const groups = client.includes("::") ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : h;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
+/** A client's failure budget and when it last failed. */
+class ClientBudget extends TokenBucket {
+  lastFailure = Number.NEGATIVE_INFINITY;
 }
 
 export class Gate {
@@ -138,7 +180,7 @@ export class Gate {
   private readonly now: () => number;
   private readonly limits: GateLimits;
   private readonly global: TokenBucket;
-  private readonly clients = new Map<string, TokenBucket>();
+  private readonly clients = new Map<string, ClientBudget>();
   /** HMAC(key, Authorization header) -> expiry (ms) of a successful check. */
   private readonly cache = new Map<string, number>();
   private hash?: string;
@@ -199,26 +241,28 @@ export class Gate {
   private hasValidCookie(header: string | undefined): boolean {
     if (!header) return false;
     let checked = 0;
-    for (const part of header.split(";")) {
-      const eq = part.indexOf("=");
-      if (eq < 0 || part.slice(0, eq).trim() !== GATE_COOKIE) continue;
-      if (this.validCookie(part.slice(eq + 1).trim())) return true;
+    for (const raw of header.split(";")) {
+      // Exactly the parts Caddy strips: the name right after the separator's whitespace, then "=".
+      const part = raw.replace(GO_SPACE_RE, "");
+      if (!part.startsWith(`${GATE_COOKIE}=`)) continue;
+      if (this.validCookie(part.slice(GATE_COOKIE.length + 1).trim())) return true;
       if (++checked >= MAX_COOKIES_CHECKED) break;
     }
     return false;
   }
 
-  private bucket(client: string): TokenBucket {
-    let b = this.clients.get(client);
-    if (b) this.clients.delete(client);
+  private bucket(client: string): ClientBudget {
+    const key = clientKey(client);
+    let b = this.clients.get(key);
+    if (b) this.clients.delete(key);
     else {
-      b = new TokenBucket(this.limits.clientPerSec, this.limits.clientBurst, this.now);
+      b = new ClientBudget(this.limits.clientPerSec, this.limits.clientBurst, this.now);
       if (this.clients.size >= (this.o.maxClients ?? 4096)) {
         const oldest = this.clients.keys().next().value;
         if (oldest !== undefined) this.clients.delete(oldest);
       }
     }
-    this.clients.set(client, b);
+    this.clients.set(key, b);
     return b;
   }
 
@@ -247,40 +291,61 @@ export class Gate {
   async check(req: GateRequest): Promise<GateDecision> {
     const route = this.o.routes.get(req.route);
     if (!route) return { status: 403, reason: "not a gated route" };
+    if (req.bearer && !route.bearer) return { status: 403, reason: "not a bearer-passthrough route" };
     if (!this.released) return { status: 503, reason: "starting" };
+    if (req.bearer) {
+      // The app checks the token; the gate only holds the route closed until the app is set up.
+      if (!(await this.o.bootstrapDone(route.app))) return { status: 503, reason: "starting" };
+      return /^Bearer +\S/i.test(req.authorization ?? "") ? { status: 200, via: "bearer", stripAuthorization: false } : { status: 401 };
+    }
     if (!this.configured || this.hash === undefined) return { status: 503, reason: "not_configured" };
     if (!(await this.o.bootstrapDone(route.app))) return { status: 503, reason: "starting" };
 
     const basic = parseBasic(req.authorization);
     const stripAuthorization = basic !== undefined && basic.user === this.o.username;
-    if (this.hasValidCookie(req.cookie)) return { status: 200, via: "cookie", stripAuthorization };
+    if (this.hasValidCookie(req.cookie)) {
+      basic?.password.fill(0);
+      return { status: 200, via: "cookie", stripAuthorization };
+    }
     if (!basic) return { status: 401 };
     const authorization = req.authorization as string;
-    if (stripAuthorization && this.cached(authorization)) return this.admitted(req, stripAuthorization);
+    if (stripAuthorization && this.cached(authorization)) {
+      basic.password.fill(0);
+      return this.admitted(req, stripAuthorization);
+    }
 
     const client = this.bucket(req.client);
     if (!client.take()) return { status: 429, retryAfterSec: client.retryAfterSec() };
-    if (!this.global.take()) {
+    // Only clients that failed recently share the global budget: other clients' failures never block a new login.
+    const suspect = this.now() - client.lastFailure < this.limits.suspectMs;
+    if (suspect && !this.global.take()) {
       client.give();
       return { status: 429, retryAfterSec: this.global.retryAfterSec() };
     }
-    if (!stripAuthorization || basic.password.length > BCRYPT_MAX_PASSWORD_BYTES) return { status: 401 };
+    const failed = (): GateDecision => {
+      client.lastFailure = this.now();
+      return { status: 401 };
+    };
+    if (!stripAuthorization || basic.password.length > BCRYPT_MAX_PASSWORD_BYTES) {
+      basic.password.fill(0);
+      return failed();
+    }
     let ok: boolean;
     const password = new Uint8Array(basic.password);
     try {
       ok = await this.o.verify(password, this.hash);
     } catch (err) {
       client.give();
-      this.global.give();
+      if (suspect) this.global.give();
       if (err instanceof GateBusyError) return { status: 429, retryAfterSec: 1 };
       throw err;
     } finally {
       password.fill(0);
       basic.password.fill(0);
     }
-    if (!ok) return { status: 401 };
+    if (!ok) return failed();
     client.give();
-    this.global.give();
+    if (suspect) this.global.give();
     this.remember(authorization);
     return this.admitted(req, stripAuthorization);
   }

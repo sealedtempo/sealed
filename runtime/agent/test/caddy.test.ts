@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { caddyHelperPath, DirectCaddySwitch, HelperCaddySwitch } from "../src/caddy.js";
+import { adminSocketReachable, caddyHelperPath, canReachAdminSocket, DirectCaddySwitch, HelperCaddySwitch } from "../src/caddy.js";
 import { parseEndpoint } from "../src/http.js";
 import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
 import { CADDYFILE, CADDYFILE_PAYMENT_NEEDED } from "./helpers/fixtures.js";
@@ -64,5 +64,25 @@ describe("payment-needed switch (measured Caddyfiles over the admin socket)", ()
     await new Promise((r) => setTimeout(r, 200));
     expect(lost?.message).toMatch(/caddy helper exited/);
     await expect(helper.apply("payment-needed")).rejects.toThrow(/caddy helper exited/);
+  });
+
+  // Review ws-int-agent 9: the root helper is needed only when the dropped user cannot reach the socket.
+  it("needs no root helper when the run-as user can reach the composer 1.2 socket", async () => {
+    const agent = { uid: 10001, gid: 10001 };
+    const v12 = { adminSocketMode: "0660", adminSocketOwner: "10001:10001" };
+    const volume = { uid: 10001, gid: 10001, mode: 0o2770 };
+    expect(canReachAdminSocket(agent, v12, volume)).toBe(true);
+    // Group access alone is enough (Caddy owns the socket, the setgid volume gives it group 10001).
+    expect(canReachAdminSocket(agent, { adminSocketMode: "0660", adminSocketOwner: "0:10001" }, { uid: 0, gid: 10001, mode: 0o2770 })).toBe(true);
+    // Composer 1.1 (no socket facts), another group, a socket without group write, a directory without search.
+    expect(canReachAdminSocket(agent, {}, volume)).toBe(false);
+    expect(canReachAdminSocket({ uid: 10002, gid: 10002 }, v12, volume)).toBe(false);
+    expect(canReachAdminSocket(agent, { adminSocketMode: "0640", adminSocketOwner: "0:10001" }, volume)).toBe(false);
+    expect(canReachAdminSocket(agent, v12, { uid: 0, gid: 0, mode: 0o750 })).toBe(false);
+    expect(canReachAdminSocket(agent, v12, undefined)).toBe(false);
+    // With the directory read from disk: here the test user owns it.
+    const me = { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 };
+    expect(await adminSocketReachable(me, socket, { adminSocketMode: "0600", adminSocketOwner: `${me.uid}:${me.gid}` })).toBe(true);
+    expect(await adminSocketReachable(me, join(dir, "missing", "admin.sock"), v12)).toBe(false);
   });
 });

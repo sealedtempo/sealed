@@ -76,7 +76,16 @@ export const stackInfoSchema = z
     apps: z.array(stackAppSchema),
     sidecars: z.record(z.string(), ipv4),
     attestHost: z.string().min(1),
-    caddy: z.object({ adminSocket: z.string(), caddyfile: z.string(), caddyfilePaymentNeeded: z.string() }).loose(),
+    caddy: z
+      .object({
+        adminSocket: z.string(),
+        caddyfile: z.string(),
+        caddyfilePaymentNeeded: z.string(),
+        /** Composer 1.2: the admin socket's mode and owner, as Caddy creates it in its setgid tmpfs volume. */
+        adminSocketMode: z.string().regex(/^0?[0-7]{3}$/).optional(),
+        adminSocketOwner: ownerSpec.optional(),
+      })
+      .loose(),
     /** Host path of the data disk and every data bind source on it (composer 1.1+). */
     dataRoot: z.string().startsWith("/").optional(),
     dataDirs: z.array(z.string().startsWith("/")).optional(),

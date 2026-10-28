@@ -4,11 +4,14 @@
 // not approve. Caddy skips a reload when the adapted config is unchanged, so re-applying is cheap and
 // also covers a Caddy restart (which comes back with the normal file).
 //
-// The admin socket is root-owned (tmpfs mode 0750) and the agent drops root after boot, so in
-// production the loads go through a small helper process forked while still root (caddyHelper.ts)
-// that accepts nothing but the two variant names.
+// Composer 1.2 makes the admin socket 0660 with group 10001 in a 2770 tmpfs volume owned by 10001:10001,
+// which the agent's run-as user reaches directly, so the agent loads the Caddyfiles itself and keeps no
+// root process (review ws-int-agent 9). With composer 1.1 the socket is root-only (tmpfs mode 0750) and
+// the agent drops root after boot, so the loads go through a small helper process forked while still
+// root (caddyHelper.ts) that accepts nothing but the two variant names.
 import { type ChildProcess, fork } from "node:child_process";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Endpoint, HttpError, localRequest } from "./http.js";
@@ -38,6 +41,45 @@ export class DirectCaddySwitch implements CaddySwitch {
   apply(variant: CaddyVariant): Promise<void> {
     return loadCaddyfile(this.endpoint, variant === "normal" ? this.files.normal : this.files.paymentNeeded);
   }
+}
+
+/** Who a process runs as after dropping root (setgroups([]): no supplementary groups). */
+export interface RunAsIds {
+  uid: number;
+  gid: number;
+}
+
+interface Perm {
+  uid: number;
+  gid: number;
+  mode: number;
+}
+
+/** Whether `who` holds permission `bits` (r=4, w=2, x=1) on a file with this owner and mode. */
+function allowed(who: RunAsIds, p: Perm, bits: number): boolean {
+  if (who.uid === p.uid) return ((p.mode >> 6) & bits) === bits;
+  if (who.gid === p.gid) return ((p.mode >> 3) & bits) === bits;
+  return (p.mode & bits) === bits;
+}
+
+/**
+ * Whether `who` can connect to Caddy's admin socket as sealed-stack/v1 describes it (composer 1.2: write
+ * permission on the socket from `adminSocketMode` and `adminSocketOwner`) inside `dir` (search permission). A
+ * stack without those facts (composer 1.1, a root-only socket) needs the helper.
+ */
+export function canReachAdminSocket(who: RunAsIds, socket: { adminSocketMode?: string; adminSocketOwner?: string }, dir: Perm | undefined): boolean {
+  if (!socket.adminSocketMode || !socket.adminSocketOwner || !dir) return false;
+  const [uid, gid] = socket.adminSocketOwner.split(":").map(Number) as [number, number];
+  return allowed(who, { uid, gid, mode: Number.parseInt(socket.adminSocketMode, 8) }, 2) && allowed(who, dir, 1);
+}
+
+/** canReachAdminSocket with the socket directory as it is on disk now (it is a volume, so it exists before Caddy starts). */
+export async function adminSocketReachable(who: RunAsIds, socketPath: string, socket: { adminSocketMode?: string; adminSocketOwner?: string }): Promise<boolean> {
+  const dir = await stat(dirname(socketPath)).then(
+    (st) => ({ uid: st.uid, gid: st.gid, mode: st.mode & 0o7777 }),
+    () => undefined,
+  );
+  return canReachAdminSocket(who, socket, dir);
 }
 
 export function caddyHelperPath(): string {
