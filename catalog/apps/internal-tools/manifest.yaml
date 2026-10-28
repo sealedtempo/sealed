@@ -49,7 +49,8 @@ images:
     license_spdx: BSD-3-Clause
 resources:
   cpu: 2
-  memory_gb: 4
+  # Sum of the fragment's mem_limit values: 3g + 256m + 1g + 512m + 256m = 5 GiB.
+  memory_gb: 5
   disk_gb: 10
 routes:
   - name: tools
@@ -111,6 +112,10 @@ license_exclusions:
   - /usr/bin/redis-check-rdb
   - /usr/bin/redis-benchmark
   - /usr/bin/redis-cli
+  # Redis 8 modules (RediSearch, RedisJSON, RedisBloom, RedisTimeSeries; RSAL/SSPL/AGPL) and its
+  # configuration, owned by the redis-server package in the upstream image.
+  - /usr/lib/redis/
+  - /etc/redis/
 bootstrap:
   service: internal-tools-bootstrap
   done_file: internal-tools-bootstrap/done.json

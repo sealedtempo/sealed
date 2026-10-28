@@ -1,18 +1,24 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, test } from "node:test";
+import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parse } from "yaml";
 
 import { findBlocks, render, unescapeFromCompose } from "../tools/embed-bootstrap.mjs";
 import {
+  caddyHandles,
+  caddySite,
   composeConfig,
+  composerLint,
+  composeStack,
   dockerComposeAvailable,
+  findComposer,
+  memMiB,
   lintEgress,
   lintFragment,
   lintWaivers,
@@ -62,11 +68,17 @@ describe("manifest", () => {
     }
   });
 
-  test("excludes enterprise directories, Oracle Instant Client and Redis binaries", () => {
+  test("excludes enterprise directories, Oracle Instant Client, Redis binaries and Redis modules", () => {
     const ex = app.manifest.license_exclusions;
-    for (const path of ["/app/server/ee/", "/app/frontend/ee/", "/opt/oracle/", "/usr/bin/redis-server"]) {
+    for (const path of ["/app/server/ee/", "/app/frontend/ee/", "/opt/oracle/", "/usr/bin/redis-server", "/usr/lib/redis/", "/etc/redis/"]) {
       assert.ok(ex.includes(path), path);
     }
+  });
+
+  test("declares at least the memory the fragment's mem_limit values add up to", () => {
+    assert.ok(Object.values(services).every((svc) => svc.mem_limit), "every service has a mem_limit");
+    const total = Object.values(services).reduce((sum, svc) => sum + memMiB(svc.mem_limit), 0);
+    assert.ok(app.manifest.resources.memory_gb * 1024 >= total, `memory_gb ${app.manifest.resources.memory_gb} < ${total} MiB`);
   });
 });
 
@@ -98,9 +110,12 @@ describe("compose fragment", () => {
     assert.deepEqual(pg["x-sealed-secrets"].sort(), ["PGPASSWORD", "PGRST_JWT_SECRET"]);
   });
 
-  test("the database init script creates a non-superuser sample role", () => {
+  test("the database init script creates a non-superuser sample role and closes ToolJet's databases to PUBLIC", () => {
     const script = unescapeFromCompose(services["internal-tools-db"].entrypoint[2]);
     assert.match(script, /CREATE ROLE tooljet_sample LOGIN CREATEDB PASSWORD :'pw';/);
+    assert.match(script, /REVOKE CONNECT, TEMPORARY ON DATABASE tooljet_production, tooljet_db FROM PUBLIC;/);
+    assert.equal(services["internal-tools-server"].environment.PG_DB, "tooljet_production");
+    assert.equal(services["internal-tools-server"].environment.TOOLJET_DB, "tooljet_db");
     assert.doesNotMatch(script, /SUPERUSER/);
     const res = spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" });
     assert.equal(res.status, 0, res.stderr);
@@ -111,6 +126,36 @@ describe("compose fragment", () => {
       if (svc.entrypoint[0] !== "/bin/sh") continue;
       const res = spawnSync("sh", ["-n", "-c", unescapeFromCompose(svc.entrypoint[2])], { encoding: "utf8" });
       assert.equal(res.status, 0, `${name}: ${res.stderr}`);
+    }
+  });
+
+  test("valkey gets its password from a tmpfs config file, never from argv", async () => {
+    const svc = services["internal-tools-valkey"];
+    const script = unescapeFromCompose(svc.entrypoint[2]);
+    assert.deepEqual(svc.tmpfs, ["/run/valkey"]);
+    assert.doesNotMatch(script, /--requirepass/);
+    assert.match(svc.healthcheck.test[1], /^VALKEYCLI_AUTH="\$\$\(cat \/run\/sealed\/secrets\/internal-tools\/REDIS_PASSWORD\)" valkey-cli ping/);
+    const dir = await mkdtemp(join(tmpdir(), "tools-valkey-"));
+    try {
+      const bin = join(dir, "bin");
+      await mkdir(bin);
+      await writeFile(join(bin, "chown"), "#!/bin/sh\nexit 0\n");
+      await writeFile(join(bin, "tini"), `#!/bin/sh\nshift\nprintf '%s\\n' "$@" > "${dir}/argv"\nenv > "${dir}/env"\n`);
+      await chmod(join(bin, "chown"), 0o755);
+      await chmod(join(bin, "tini"), 0o755);
+      const conf = join(dir, "valkey.conf");
+      const res = spawnSync("/bin/sh", ["-c", script.replaceAll("/run/valkey/valkey.conf", conf), "internal-tools-valkey", ...svc.command], {
+        env: { PATH: `${bin}:${process.env.PATH}`, REDIS_PASSWORD: "feedface".repeat(8) },
+        encoding: "utf8",
+      });
+      assert.equal(res.status, 0, res.stderr);
+      const argv = (await readFile(join(dir, "argv"), "utf8")).trim().split("\n");
+      assert.deepEqual(argv, ["docker-entrypoint.sh", "valkey-server", conf, "--maxmemory-policy", "noeviction", "--appendonly", "yes"]);
+      assert.equal(await readFile(conf, "utf8"), `requirepass "${"feedface".repeat(8)}"\n`);
+      assert.equal((await stat(conf)).mode & 0o777, 0o600);
+      assert.doesNotMatch(await readFile(join(dir, "env"), "utf8"), /REDIS_PASSWORD/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 
@@ -192,5 +237,64 @@ describe("egress, waivers, licenses and docs", () => {
     for (const file of ["manifest.yaml", "compose.fragment.yaml", "egress.yaml", "waivers.yaml"]) {
       assert.doesNotThrow(() => parse(readFileSync(join(appDir, file), "utf8"), { uniqueKeys: true }), file);
     }
+  });
+});
+
+const composer = findComposer(appDir);
+describe("the real composer (runtime/composer, ws/composer)", { skip: composer.skip }, () => {
+  test("sealed-compose lint blocks the release only on the unbuilt ToolJet image (D-028)", () => {
+    const findings = composerLint(composer, appDir);
+    const errors = findings.filter((f) => f.severity === "error").map((f) => `${f.code} ${f.field ?? ""}`.trim());
+    const tooljet = app.manifest.images.findIndex((i) => i.name === "tooljet");
+    const unbuilt = /^sha256:0{64}$/.test(app.manifest.images[tooljet].digest);
+    // Until the runtime image workflow builds images/tooljet-ce and its digest is pinned, the
+    // composer refuses the release. Any other error means this app drifted from its rules.
+    assert.deepEqual(errors, unbuilt ? [`unbuilt-image images[${tooljet}].digest`] : []);
+    const warnings = new Set(findings.filter((f) => f.severity === "warning").map((f) => f.code));
+    assert.deepEqual([...warnings], ["sbom-missing"], "only the SBOMs CI generates are missing");
+  });
+
+  describe("composed stack", async () => {
+    const out = await mkdtemp(join(tmpdir(), "tools-composed-"));
+    after(() => rm(out, { recursive: true, force: true }));
+    const stack = composeStack(composer, [appDir], out);
+    const composed = stack.compose.services;
+
+    test("the Caddyfile gates tools with basic auth and never routes to the setup port", () => {
+      const handles = caddyHandles(caddySite(stack.caddyfile, "tools.34-1-2-3.sslip.io"));
+      assert.deepEqual(Object.keys(handles), [""]);
+      assert.match(handles[""], /basic_auth \{\n\t\t\tsealed \{env\.GATE_PASSWORD_BCRYPT\}/);
+      assert.match(handles[""], /reverse_proxy internal-tools-server:3000/);
+      assert.doesNotMatch(stack.caddyfile, /internal-tools-server:3001/);
+    });
+
+    test("internal-tools-server sees done.json read-only and keeps the fragment's healthcheck", () => {
+      const server = composed["internal-tools-server"];
+      const mount = server.volumes.find((v) => v.target === "/sealed-bootstrap");
+      assert.equal(mount.source, "/mnt/sealed-data/internal-tools/internal-tools-bootstrap");
+      assert.equal(mount.read_only, true);
+      assert.deepEqual(server.healthcheck.test, services["internal-tools-server"].healthcheck.test);
+      assert.equal(composed["internal-tools-bootstrap"].restart, "on-failure");
+      const tools = stack.stack.apps.find((a) => a.id === "internal-tools");
+      assert.equal(tools.bootstrap.doneFile, "internal-tools-bootstrap/done.json");
+    });
+
+    test("valkey's password stays out of the composed argv", () => {
+      const valkey = composed["internal-tools-valkey"];
+      assert.ok(!JSON.stringify([valkey.entrypoint, valkey.command]).includes("--requirepass"));
+    });
+
+    test("docker compose accepts the composed document", { skip: !dockerComposeAvailable() && "docker compose not installed" }, () => {
+      const result = composeConfig(stack.composePath, "sealed-tools-composed");
+      assert.ok(result.ok, result.stderr);
+    });
+
+    // Interface change 1: until the composer sets SEALED_PUBLIC_URL_<ROUTE>, the ":?" guard in
+    // the entrypoints stops internal-tools-server and internal-tools-bootstrap on purpose.
+    test("the composer sets SEALED_PUBLIC_URL_TOOLS on every internal-tools service", { todo: "interface change 1 is not in the composer yet" }, () => {
+      for (const name of ["internal-tools-server", "internal-tools-bootstrap"]) {
+        assert.equal(composed[name].environment.SEALED_PUBLIC_URL_TOOLS, "https://tools.34-1-2-3.sslip.io", name);
+      }
+    });
   });
 });

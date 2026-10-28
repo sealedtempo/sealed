@@ -2,7 +2,8 @@
 # without Oracle Instant Client, flattened so that neither exists in any layer (decision D-018a).
 #
 # Upstream ships redis-server 8.10.3 from packages.redis.io (RSALv2/SSPLv1/AGPLv3; D-020 uses
-# Valkey instead) and Oracle Instant Client 11.2 and 21.10 (Oracle license, not on the rule 9
+# Valkey instead) with its modules in /usr/lib/redis/modules (RediSearch, RedisJSON, RedisBloom,
+# RedisTimeSeries), and Oracle Instant Client 11.2 and 21.10 (Oracle license, not on the rule 9
 # list). ToolJet's Oracle data source keeps working in thin mode, which needs no client library.
 # Built by the runtime image workflow (linux/amd64); its digest is then pinned in manifest.yaml.
 
@@ -15,12 +16,13 @@ RUN set -eux; \
     test "$(id -g appuser)" = "1000"; \
     apt-get purge -y --auto-remove redis-server redis-tools; \
     rm -rf /etc/apt/sources.list.d/redis.list /usr/share/keyrings/redis-archive-keyring.gpg \
-           /var/lib/redis /var/log/redis /etc/redis /app/redis.conf; \
+           /var/lib/redis /var/log/redis /etc/redis /usr/lib/redis /app/redis.conf; \
     rm -rf /opt/oracle /etc/ld.so.conf.d/oracle-instantclient.conf; \
     ldconfig; \
     rm -f /app/server/entrypoint.sh; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /root/.npm; \
     if find / -xdev \( -name 'redis-server' -o -name 'redis-check-*' -o -name 'redis-benchmark' \
+         -o -path '/usr/lib/redis*' -o -path '/etc/redis*' -o \( -name '*.so' -path '*redis*' \) \
          -o -name 'libclntsh*' -o -name 'libnnz*' -o -name 'libociei*' -o -name 'libociicus*' -o -name 'libocci*' \) -print | grep -q .; then \
       echo "forbidden binaries left in the image" >&2; exit 1; \
     fi

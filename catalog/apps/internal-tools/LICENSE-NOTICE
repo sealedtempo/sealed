@@ -12,9 +12,10 @@ ToolJet Community Edition v3.20.251-lts
            the Dockerfile and sealed-entrypoint.sh in catalog/apps/internal-tools/images/tooljet-ce
            of this repository (Apache-2.0). No ToolJet source file is modified, so the
            corresponding source of ToolJet is the upstream tag above (AGPL section 13).
-           Removed: redis-server and redis-tools 8.10.3 from packages.redis.io (Redis is replaced
-           by Valkey, decision D-020) and Oracle Instant Client 11.2 and 21.10 (Oracle license,
-           not allowed by rule 9). The image is flattened, so the removed files are in no layer.
+           Removed: redis-server and redis-tools 8.10.3 from packages.redis.io with the Redis 8
+           modules under /usr/lib/redis/modules (RSALv2/SSPLv1/AGPLv3; Redis is replaced by
+           Valkey, decision D-020) and Oracle Instant Client 11.2 and 21.10 (Oracle license, not
+           allowed by rule 9). The image is flattened, so the removed files are in no layer.
 
   Enterprise code: ToolJet's enterprise edition lives in the private git submodules server/ee and
   frontend/ee (ToolJet/ee-server, ToolJet/ee-frontend). They are not in the public repository and

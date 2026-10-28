@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -27,8 +29,41 @@ describe("derived ToolJet image", () => {
     assert.doesNotMatch(dockerfile, /:latest|ee-lts/);
   });
 
+  test("the build fails on Redis modules and configuration left behind", async () => {
+    // The find predicate of the RUN step, rooted in a scratch tree instead of /.
+    const m = /if find \/ -xdev (\\\(.*?\\\)) -print/s.exec(dockerfile);
+    assert.ok(m, "find predicate not found");
+    const root = await mkdtemp(join(tmpdir(), "tooljet-tree-"));
+    try {
+      const predicate = m[1].replace(/\\\n\s*/g, " ").replaceAll("-path '/", `-path '${root}/`);
+      const files = {
+        "usr/lib/redis/modules/redisearch.so": true,
+        "etc/redis/redis.conf": true,
+        "opt/vendor/libredisbloom.so": true,
+        "usr/bin/redis-server": true,
+        "opt/oracle/instantclient_21_10/libclntsh.so.21.1": true,
+        "app/server/node_modules/ioredis/built/index.js": false,
+        "usr/lib/x86_64-linux-gnu/libssl.so.3": false,
+        "usr/local/bin/node": false,
+      };
+      for (const path of Object.keys(files)) {
+        await mkdir(join(root, dirname(path)), { recursive: true });
+        await writeFile(join(root, path), "");
+      }
+      const res = spawnSync("sh", ["-c", `find "${root}" -xdev ${predicate} -print`], { encoding: "utf8" });
+      assert.equal(res.status, 0, res.stderr);
+      const hits = new Set(res.stdout.trim().split("\n").map((p) => p.slice(root.length + 1)));
+      for (const [path, forbidden] of Object.entries(files)) {
+        assert.equal([...hits].some((h) => h === path || path.startsWith(`${h}/`)), forbidden, path);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("removes Redis and Oracle Instant Client and fails the build if any is left", () => {
     assert.match(dockerfile, /apt-get purge -y --auto-remove redis-server redis-tools/);
+    assert.match(dockerfile, /\/etc\/redis \/usr\/lib\/redis /);
     assert.match(dockerfile, /rm -rf \/opt\/oracle /);
     assert.match(dockerfile, /forbidden binaries left in the image/);
     assert.doesNotMatch(dockerfile, /LD_LIBRARY_PATH/);
@@ -66,6 +101,7 @@ describe("check-image-paths", () => {
     const listing = [
       "./", "app/", "app/server/dist/src/main.js", "opt/oracle/", "opt/oracle/instantclient_21_10/libclntsh.so.21.1",
       "usr/bin/redis-server", "usr/bin/redis-cli", "usr/local/bin/valkey-server", "app/server/ee/index.js",
+      "usr/lib/redis/modules/rejson.so", "etc/redis/redis.conf",
     ];
     assert.deepEqual(findExcluded(listing, ex), [
       "opt/oracle",
@@ -73,6 +109,8 @@ describe("check-image-paths", () => {
       "usr/bin/redis-server",
       "usr/bin/redis-cli",
       "app/server/ee/index.js",
+      "usr/lib/redis/modules/rejson.so",
+      "etc/redis/redis.conf",
     ]);
   });
 
