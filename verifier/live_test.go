@@ -30,6 +30,8 @@ type attestServer struct {
 	// respond overrides the nonce and key hash the quote binds.
 	bindNonce *[32]byte
 	bindKey   *[32]byte
+	// redirect makes GET /attest answer with a redirect to another path.
+	redirect bool
 }
 
 func newAttestServer(t *testing.T, w *fixture.World) *attestServer {
@@ -37,6 +39,10 @@ func newAttestServer(t *testing.T, w *fixture.World) *attestServer {
 	as := &attestServer{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/attest", func(rw http.ResponseWriter, r *http.Request) {
+		if as.redirect {
+			http.Redirect(rw, r, "/moved?"+r.URL.RawQuery, http.StatusFound)
+			return
+		}
 		nonce, err := hexb.Decode32(r.URL.Query().Get("nonce"))
 		if err != nil {
 			http.Error(rw, "bad nonce", http.StatusBadRequest)
@@ -57,7 +63,7 @@ func newAttestServer(t *testing.T, w *fixture.World) *attestServer {
 		json.NewEncoder(rw).Encode(resp)
 	})
 	mux.HandleFunc("/moved", func(rw http.ResponseWriter, r *http.Request) {
-		http.Redirect(rw, r, "/attest?"+r.URL.RawQuery, http.StatusFound)
+		t.Errorf("a redirect was followed to %s", r.URL)
 	})
 	as.srv = httptest.NewUnstartedServer(mux)
 	as.srv.StartTLS()
@@ -76,7 +82,7 @@ func liveEnv(t *testing.T) (*env, *attestServer, verify.LiveOptions) {
 	e := newEnv(t, false)
 	as := newAttestServer(t, e.w)
 	// httptest listens on 127.0.0.1, which production fetches refuse.
-	return e, as, verify.LiveOptions{Options: verify.Options{ChainID: 4217, RequireOnchainRecord: true}, RootCAs: as.roots(), Timeout: 10 * time.Second,
+	return e, as, verify.LiveOptions{Options: e.opts, RootCAs: as.roots(), Timeout: 10 * time.Second,
 		AllowPrivateAddresses: true}
 }
 
@@ -116,6 +122,8 @@ func TestLiveTamper(t *testing.T) {
 		name  string
 		setup func(e *env, as *attestServer, opts *verify.LiveOptions) string // returns the URL
 		fail  []string
+		// detail, when set, must appear in the live_fetch check's detail.
+		detail string
 	}{
 		{
 			name: "claims a key it does not serve (relayed attestation)",
@@ -200,9 +208,12 @@ func TestLiveTamper(t *testing.T) {
 			fail: []string{verify.CheckLiveFetch},
 		},
 		{
-			name:  "redirect",
-			setup: func(e *env, as *attestServer, _ *verify.LiveOptions) string { return as.srv.URL + "/moved" },
-			fail:  []string{verify.CheckLiveFetch},
+			name: "redirect",
+			setup: func(e *env, as *attestServer, _ *verify.LiveOptions) string {
+				as.redirect = true
+				return as.srv.URL + "/attest"
+			},
+			fail: []string{verify.CheckLiveFetch},
 		},
 		{
 			name: "expected deployment differs",
@@ -230,20 +241,32 @@ func TestLiveTamper(t *testing.T) {
 			fail: []string{verify.CheckExpectedApps},
 		},
 		{
+			// Port 443, so the URL rule passes and the dial-time address check refuses it.
 			name: "loopback destination refused without the dev flag",
 			setup: func(e *env, as *attestServer, opts *verify.LiveOptions) string {
 				opts.AllowPrivateAddresses = false
-				return as.srv.URL + "/attest"
+				return "https://127.0.0.1/attest"
 			},
-			fail: []string{verify.CheckLiveFetch},
+			fail:   []string{verify.CheckLiveFetch},
+			detail: "not a public address",
 		},
 		{
 			name: "loopback name refused after resolution",
 			setup: func(e *env, as *attestServer, opts *verify.LiveOptions) string {
 				opts.AllowPrivateAddresses = false
-				return strings.Replace(as.srv.URL, "127.0.0.1", "localhost", 1) + "/attest"
+				return "https://localhost:443/attest"
 			},
-			fail: []string{verify.CheckLiveFetch},
+			fail:   []string{verify.CheckLiveFetch},
+			detail: "not a public address",
+		},
+		{
+			name: "another port without the dev flag",
+			setup: func(e *env, as *attestServer, opts *verify.LiveOptions) string {
+				opts.AllowPrivateAddresses = false
+				return as.srv.URL + "/attest"
+			},
+			fail:   []string{verify.CheckLiveFetch},
+			detail: "port must be 443",
 		},
 		{
 			name: "host outside the allowlist",
@@ -280,6 +303,9 @@ func TestLiveTamper(t *testing.T) {
 			sort.Strings(want)
 			if !slices.Equal(got, want) {
 				t.Fatalf("failed checks %v, want %v\n%s", got, want, rep.Text())
+			}
+			if tc.detail != "" && !strings.Contains(rep.Check(verify.CheckLiveFetch).Detail, tc.detail) {
+				t.Fatalf("live_fetch detail %q lacks %q", rep.Check(verify.CheckLiveFetch).Detail, tc.detail)
 			}
 		})
 	}

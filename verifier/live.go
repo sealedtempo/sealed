@@ -34,9 +34,9 @@ type LiveOptions struct {
 	// AllowedHosts, when non-empty, restricts attest URLs to these hosts: exact names or addresses, or "*.domain"
 	// for any name below domain (for example "*.sslip.io" and the relay's host).
 	AllowedHosts []string
-	// AllowPrivateAddresses lets the fetch connect to loopback, private, link-local and other non-public addresses
-	// (dev only). Otherwise every resolved destination must be public, unless the request goes through the
-	// HTTPS_PROXY from the environment.
+	// AllowPrivateAddresses lets the fetch connect to loopback, private, link-local and other non-public addresses,
+	// on any port (dev only). Otherwise every resolved destination must be public, unless the request goes through
+	// the HTTPS_PROXY from the environment, and the port must be 443.
 	AllowPrivateAddresses bool
 }
 
@@ -81,24 +81,48 @@ func VerifyLive(ctx context.Context, attestURL string, deps Deps, opts LiveOptio
 	return verifyLiveResponse(ctx, f, deps, opts.Options, rep), nil
 }
 
+// AttestPath is the only path a live verification fetches: sealed-agent's GET /attest (INTERFACES.md section 11).
+const AttestPath = "/attest"
+
+// checkAttestURL accepts exactly https://<host>[:443]/attest. The verifier adds the nonce itself, so a caller
+// cannot choose the path, the query, credentials or (outside dev runs) the port: inside a CVM the fetch goes out
+// through sealed-egress under the verifier's own egress rule, and a caller-chosen path or query would turn the
+// verifier into an HTTP client for whoever can reach its API (review V-1).
+func checkAttestURL(u *url.URL, opts LiveOptions) error {
+	switch {
+	case u.Scheme != "https":
+		return errors.New("attest URL must be https (the TLS key binding needs a TLS connection)")
+	case u.Opaque != "" || u.Host == "" || u.Hostname() == "":
+		return errors.New("attest URL has no host")
+	case u.User != nil:
+		return errors.New("attest URL must not carry credentials")
+	case u.Path != AttestPath || u.RawPath != "":
+		return fmt.Errorf("attest URL path must be %s, not %q", AttestPath, u.EscapedPath())
+	case u.RawQuery != "" || u.ForceQuery:
+		return errors.New("attest URL must not carry a query: the verifier sends its own nonce")
+	case u.Fragment != "" || u.RawFragment != "":
+		return errors.New("attest URL must not carry a fragment")
+	case u.Port() != "" && u.Port() != "443" && !opts.AllowPrivateAddresses:
+		return fmt.Errorf("attest URL port must be 443, not %s", u.Port())
+	case !hostAllowed(u.Hostname(), opts.AllowedHosts):
+		return fmt.Errorf("attest host %q is not one of the allowed hosts %v", u.Hostname(), opts.AllowedHosts)
+	}
+	return nil
+}
+
 func fetchAttest(ctx context.Context, attestURL string, opts LiveOptions) (*fetched, error) {
 	u, err := url.Parse(attestURL)
 	if err != nil {
 		return nil, fmt.Errorf("attest URL: %w", err)
 	}
-	if u.Scheme != "https" {
-		return nil, fmt.Errorf("attest URL must be https (the TLS key binding needs a TLS connection)")
-	}
-	if !hostAllowed(u.Hostname(), opts.AllowedHosts) {
-		return nil, fmt.Errorf("attest host %q is not one of the allowed hosts %v", u.Hostname(), opts.AllowedHosts)
+	if err := checkAttestURL(u, opts); err != nil {
+		return nil, err
 	}
 	f := &fetched{}
 	if _, err := rand.Read(f.nonce[:]); err != nil {
 		return nil, err
 	}
-	q := u.Query()
-	q.Set("nonce", hex0x(f.nonce[:]))
-	u.RawQuery = q.Encode()
+	u.RawQuery = url.Values{"nonce": {hex0x(f.nonce[:])}}.Encode()
 
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -213,6 +237,7 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 		rep.failf(CheckBundle, "config: %v", err)
 	} else {
 		s.cfg = cfg
+		rep.Config = cfg.summary()
 		rep.pass(CheckBundle, fmt.Sprintf("/attest response with %d releases", len(releaseIDs)), nil)
 	}
 

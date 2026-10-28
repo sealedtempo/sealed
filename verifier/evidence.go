@@ -115,6 +115,7 @@ func VerifyEvidence(ctx context.Context, b *Bundle, deps Deps, opts Options) (*R
 		rep.failf(CheckBundle, "config: %v", cfgErr)
 	} else {
 		s.cfg = cfg
+		rep.Config = cfg.summary()
 		rep.pass(CheckBundle, fmt.Sprintf("%s, runtime %s, %d releases", EvidenceSchema, b.Runtime, len(f.releaseIDs)), nil)
 	}
 

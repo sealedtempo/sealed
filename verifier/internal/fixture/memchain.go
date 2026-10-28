@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -25,6 +26,8 @@ type MemChain struct {
 	Now         uint64
 	// Head is the block number PinHead reports.
 	Head uint64
+	// HeadAt is the timestamp of the head block (D-060); nil means Now.
+	HeadAt func() time.Time
 	// FailCalls makes every read fail, like an unreachable RPC.
 	FailCalls bool
 }
@@ -48,6 +51,20 @@ func (m *MemChain) PinHead(context.Context) (verify.ChainReader, uint64, error) 
 		return nil, 0, err
 	}
 	return m, m.Head, nil
+}
+
+// BlockTime implements verify.BlockTimer for the head block.
+func (m *MemChain) BlockTime(_ context.Context, n uint64) (uint64, error) {
+	if err := m.fail(); err != nil {
+		return 0, err
+	}
+	if n != m.Head {
+		return 0, fmt.Errorf("block %d not found (head %d)", n, m.Head)
+	}
+	if m.HeadAt != nil {
+		return uint64(m.HeadAt().Unix()), nil
+	}
+	return m.Now, nil
 }
 
 var errRPC = fmt.Errorf("rpc unavailable")
