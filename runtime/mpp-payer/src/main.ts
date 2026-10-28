@@ -110,6 +110,7 @@ function main(): void {
         stackHash: gate.state().stackHash,
         sessionsAvailable: relay.sessionsAvailable(),
       },
+      recovery: recovery.snapshot(),
     }),
     log,
   })

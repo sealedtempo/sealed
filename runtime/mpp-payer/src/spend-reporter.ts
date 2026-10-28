@@ -1,3 +1,4 @@
+import type { RecoveryCounters } from './channel-recovery.js'
 import type { SpendCounters } from './spend-guard.js'
 
 export type SpendReport = {
@@ -6,6 +7,8 @@ export type SpendReport = {
   currency: string
   counters: SpendCounters
   relay: { attested: boolean; checkedAt?: number; stackHash?: string; sessionsAvailable: boolean }
+  /** Orphaned-channel recovery counters; sealed-agent reports them as mpp_recovery* (runtime/agent/src/spend.ts). */
+  recovery?: RecoveryCounters
   sentAt: number
 }
 

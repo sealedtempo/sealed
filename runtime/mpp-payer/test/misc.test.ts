@@ -83,6 +83,18 @@ describe('spend reporter', () => {
     expect(await reporter.send()).toBe(true)
     expect(sent[0].url).toBe('http://sealed-agent:7070/v1/spend')
     expect(sent[0].body).toMatchObject({ source: 'sealed-mpp-payer', mode: 'access-key', counters: { charges: 1, chargeAmount: '1234', limit: '2000000' }, relay: { attested: true } })
+    // The recovery counters travel as the agent's spend schema reads them (requestCloses, withdrawals, recovered, failures).
+    const withRecovery = new SpendReporter({
+      agentUrl: 'http://sealed-agent:7070',
+      intervalSeconds: 60,
+      snapshot: () => ({ mode: 'access-key', currency: 'c', counters: guard.counters(), relay: { attested: true, sessionsAvailable: true }, recovery: { requestCloses: 1, withdrawals: 1, recovered: '500', failures: 0 } }),
+      fetch: async (url, init) => {
+        sent.push({ url, body: JSON.parse(String(init.body)) })
+        return new Response(null, { status: 204 })
+      },
+    })
+    expect(await withRecovery.send()).toBe(true)
+    expect(Object.keys(sent[1].body.recovery).sort()).toEqual(['failures', 'recovered', 'requestCloses', 'withdrawals'])
     const failing = new SpendReporter({ agentUrl: 'http://x', intervalSeconds: 60, snapshot: () => ({ mode: 'm', currency: 'c', counters: guard.counters(), relay: { attested: false, sessionsAvailable: false } }), fetch: async () => new Response(null, { status: 500 }) })
     expect(await failing.send()).toBe(false)
   })
