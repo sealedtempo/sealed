@@ -56,6 +56,33 @@ describe("composer lint wrapper", skip, () => {
     for (const f of errors) assert.deepEqual(Object.keys(f).sort().filter((k) => !["file", "field"].includes(k)), ["app", "code", "message", "severity"]);
   });
 
+  test("release mode: missing license metadata and enterprise paths in the SBOM file list", () => {
+    // License audit F5 and F6: a package without license metadata is an error in release mode
+    // unless a reviewed override covers it (map-stream 0.1.0 is covered), and the ee/ default
+    // matches the file list as a path segment.
+    const dir = copyFixture("notes");
+    const pkg = (name, version) => ({
+      SPDXID: `SPDXRef-${name}`, name, versionInfo: version, licenseConcluded: "NOASSERTION", licenseDeclared: "NOASSERTION",
+      externalRefs: [{ referenceType: "purl", referenceLocator: `pkg:npm/${name}@${version}` }],
+    });
+    const sbom = {
+      spdxVersion: "SPDX-2.3",
+      name: "notes-web",
+      packages: [pkg("map-stream", "0.1.0"), pkg("left-pad", "1.3.0")],
+      files: [
+        { SPDXID: "SPDXRef-f1", fileName: "app/server/ee/licensing/license.service.js" },
+        { SPDXID: "SPDXRef-f2", fileName: "app/server/tree/index.js" },
+      ],
+    };
+    writeFileSync(join(dir, "sbom", "notes-web.spdx.json"), JSON.stringify(sbom));
+    const release = errorsOf(composerLint(composer, dir, { requireSbom: true }));
+    assert.deepEqual(release.filter((f) => f.code === "sbom-no-license").map((f) => f.field), ["left-pad@1.3.0"], JSON.stringify(release));
+    assert.deepEqual(release.filter((f) => f.code === "excluded-path").map((f) => f.field), ["/app/server/ee/"], JSON.stringify(release));
+    const dev = composerLint(composer, dir);
+    assert.ok(dev.some((f) => f.code === "sbom-no-license" && f.severity === "warning" && f.field === "left-pad@1.3.0"), JSON.stringify(dev));
+    assert.ok(!errorsOf(dev).some((f) => f.code === "sbom-no-license"));
+  });
+
   test("the CLI exits 1 on errors and 0 when clean", () => {
     const cli = fileURLToPath(new URL("./catalog-lint.mjs", import.meta.url));
     const env = { ...process.env, SEALED_COMPOSE_BIN: composer.bin };
