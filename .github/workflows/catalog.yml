@@ -1,0 +1,188 @@
+# Catalog checks (spec 6.8, pull requests): schema validation and the composer's catalog lint (licenses per
+# D-021 and D-050 with license_exceptions, digests, telemetry-off variables, egress policy), waivers.yaml
+# format, the release_version bump rule, compose lint with the real composer and the composer golden tests,
+# and a Syft SBOM plus a Grype scan per image with the waivers gate (critical findings fail unless waived).
+#
+# Images that are still unbuilt (all-zero digest) cannot be scanned on a pull request: the runtime image
+# workflow builds them after merge, scans them, and opens the pin PR, which runs this workflow in full.
+# Every Monday the whole catalog is rescanned, because new CVEs appear without any change here.
+name: catalog
+on:
+  pull_request:
+    paths:
+      - catalog/**
+      - runtime/composer/**
+      - runtime/caddy/**
+      - config/defaults.yaml
+      - scripts/release/**
+      - .github/workflows/catalog.yml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: Comma-separated app ids to scan (empty scans every app)
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: catalog-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  GO_VERSION: "1.27.3"
+  SYFT_VERSION: v1.55.0
+  GRYPE_VERSION: v0.121.0
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      scan: ${{ steps.matrix.outputs.scan }}
+      count: ${{ steps.matrix.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - run: go build -o "$RUNNER_TEMP/bin/sealed-release" ./catalog/tools/release && go build -o "$RUNNER_TEMP/bin/sealed-compose" ./runtime/composer/cmd/sealed-compose
+      - run: echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Schema and composer lint tests
+        run: go test -count=1 ./catalog/schema/... ./runtime/composer/lint/...
+      - name: Catalog lint (pull request gate)
+        run: |
+          sealed-compose lint --catalog catalog/apps --json >"$RUNNER_TEMP/lint.json" || true
+          sealed-release lint-gate --findings "$RUNNER_TEMP/lint.json" --mode pr
+      - name: Waivers format
+        run: sealed-release waivers lint
+      - name: Image list (build contexts, mirror policy, pins agree)
+        run: sealed-release images >/dev/null
+      - name: Changed files
+        id: changed
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only "$BASE_SHA" HEAD >"$RUNNER_TEMP/changed.txt"
+          else
+            : >"$RUNNER_TEMP/changed.txt"
+          fi
+          echo "file=$RUNNER_TEMP/changed.txt" >>"$GITHUB_OUTPUT"
+      - name: release_version bump rule
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+          CHANGED: ${{ steps.changed.outputs.file }}
+        run: scripts/release/plan-releases.sh pr-check --changed "$CHANGED"
+      - name: Release plan warnings
+        run: sealed-release plan --apps all >/dev/null
+      - name: Scan matrix
+        id: matrix
+        env:
+          EVENT: ${{ github.event_name }}
+          APPS: ${{ inputs.apps }}
+          CHANGED: ${{ steps.changed.outputs.file }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            if grep -qE '^(catalog/tools/release/|scripts/release/scan-image\.sh$)' "$CHANGED"; then
+              APPS=""  # the gate itself changed: scan every app
+            else
+              APPS="$(sed -n 's#^catalog/apps/\([^/]*\)/.*#\1#p' "$CHANGED" | sort -u | paste -sd, -)"
+              [ -n "$APPS" ] || APPS=none
+            fi
+          fi
+          if [ "$APPS" = none ]; then
+            printf 'scan={"include":[]}\ncount=0\n' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sealed-release images --format scan-matrix --apps "$APPS" >"$RUNNER_TEMP/scan.json"
+          {
+            echo "scan=$(jq -c . "$RUNNER_TEMP/scan.json")"
+            echo "count=$(jq '.include | length' "$RUNNER_TEMP/scan.json")"
+          } >>"$GITHUB_OUTPUT"
+  compose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - name: Composer golden and compose tests
+        run: go test -count=1 ./runtime/composer/... ./runtime/caddy/...
+      # Every app alone and the customer stack, composed by the real composer, then docker compose config.
+      - name: Compose lint
+        run: |
+          docker compose version
+          go run ./catalog/tools/release compose-check --out "$RUNNER_TEMP/compose" --docker-config
+  scan:
+    needs: lint
+    if: needs.lint.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.lint.outputs.scan) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with: { syft-version: "${{ env.SYFT_VERSION }}" }
+      - uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with: { grype-version: "${{ env.GRYPE_VERSION }}" }
+      - run: go build -o "$RUNNER_TEMP/bin/sealed-release" ./catalog/tools/release && go build -o "$RUNNER_TEMP/bin/sealed-compose" ./runtime/composer/cmd/sealed-compose
+      # Built images live in the catalog registry (read access for packages that are still private).
+      - name: Registry login
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - name: SBOM, Grype and waivers per image
+        env:
+          APP: ${{ matrix.app }}
+          WAIVERS: ${{ matrix.waivers }}
+          IMAGES: ${{ toJSON(matrix.images) }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          out="$RUNNER_TEMP/scan/$APP"
+          failed=0
+          # No empty fields: read collapses consecutive tabs.
+          while IFS=$'\t' read -r name unbuilt ref; do
+            if [ "$unbuilt" = true ]; then
+              echo "::notice title=unbuilt::$APP/$name is not built yet; the runtime image workflow scans it before its pin PR"
+              continue
+            fi
+            scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "$WAIVERS" --out "$out" || failed=1
+          done < <(jq -r '.[] | [.name, (.unbuilt // false | tostring), (.ref // "none")] | @tsv' <<<"$IMAGES")
+          exit "$failed"
+      # Licenses of every SBOM package (D-021, D-050), enterprise paths and license_exclusions, with the SBOMs.
+      - name: Catalog lint with the SBOMs
+        env:
+          APP: ${{ matrix.app }}
+          DIR: ${{ matrix.dir }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          work="$RUNNER_TEMP/lint/$APP"
+          mkdir -p "$work"
+          cp -R "$DIR"/. "$work"/
+          rm -rf "$work/sbom" "$work/scan"
+          if [ -d "$RUNNER_TEMP/scan/$APP/sbom" ]; then
+            cp -R "$RUNNER_TEMP/scan/$APP/sbom" "$RUNNER_TEMP/scan/$APP/scan" "$work"/
+          fi
+          "$RUNNER_TEMP/bin/sealed-compose" lint --app-dir "$work" --require-sbom --json >"$RUNNER_TEMP/lint-$APP.json" || true
+          "$SEALED_RELEASE_BIN" lint-gate --findings "$RUNNER_TEMP/lint-$APP.json" --mode pr
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scan-${{ matrix.app }}
+          path: ${{ runner.temp }}/scan/${{ matrix.app }}
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,208 @@
+# Runtime image workflow (D-028): build every image the catalog builds itself (manifest
+# `source: build:images/<dir>`, plus the sidecars of runtime-images.json and the key broker) reproducibly
+# for linux/amd64, push it to the catalog registry, check that a no-cache rebuild gives the same digest,
+# scan it (Syft, Grype, waivers), and open the PRs that pin the new digests:
+#   - catalog PR: catalog/apps/*/manifest.yaml (each pinned app then needs a new release_version);
+#   - runtime PR: runtime/composer/runtime-images.json and catalog/tools/release/extra-images.json (a
+#     composer version bump has to join it, see the PR text).
+# Image settings (build contexts, reproducibility exceptions) are in catalog/tools/release/images.yaml.
+name: images
+on:
+  push:
+    branches: [main]
+    paths:
+      - catalog/apps/**/images/**
+      - catalog/apps/*/manifest.yaml
+      - catalog/apps/*/*/manifest.yaml
+      - catalog/tools/release/images.yaml
+      - runtime/**
+      - verifier/**
+      - key-broker/**
+      - packages/**
+      - config/defaults.yaml
+      - go.mod
+      - go.sum
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+      - .github/workflows/images.yml
+  workflow_dispatch:
+    inputs:
+      images:
+        description: Comma-separated image names to build, or "all" (empty builds what changed plus unbuilt images)
+        type: string
+        required: false
+        default: ""
+      verify_reproducible:
+        description: Rebuild each image without cache and require the same digest
+        type: boolean
+        required: false
+        default: true
+permissions: {}
+concurrency:
+  group: images
+  cancel-in-progress: false
+env:
+  GO_VERSION: "1.27.3"
+  CRANE_VERSION: v0.22.1
+  SYFT_VERSION: v1.55.0
+  GRYPE_VERSION: v0.121.0
+  BUILDX_VERSION: v0.38.0
+  # BuildKit pinned by index digest: image builds are reproducible only with a fixed BuildKit.
+  BUILDKIT_IMAGE: moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          NAMES: ${{ inputs.images }}
+        run: |
+          sel=()
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$NAMES" = all ]; then sel=(--all); elif [ -n "$NAMES" ]; then sel=(--names "$NAMES"); fi
+          fi
+          if [ "${#sel[@]}" -eq 0 ]; then
+            if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+              git diff --name-only "$BEFORE" HEAD >"$RUNNER_TEMP/changed.txt"
+              sel=(--changed "$RUNNER_TEMP/changed.txt")
+            else
+              sel=(--all)
+            fi
+          fi
+          go run ./catalog/tools/release images --format build-matrix "${sel[@]}" >"$RUNNER_TEMP/matrix.json"
+          {
+            echo "matrix=$(jq -c . "$RUNNER_TEMP/matrix.json")"
+            echo "count=$(jq '.include | length' "$RUNNER_TEMP/matrix.json")"
+          } >>"$GITHUB_OUTPUT"
+          jq -r '"images to build: " + ([.include[].name] | join(", "))' "$RUNNER_TEMP/matrix.json"
+  build:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      # The model image and the flattened app images need more than the runner's free disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}", cache: false }
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver: docker-container
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with: { syft-version: "${{ env.SYFT_VERSION }}" }
+      - uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with: { grype-version: "${{ env.GRYPE_VERSION }}" }
+      - name: Tools
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/google/go-containerregistry/cmd/crane@$CRANE_VERSION"
+          go build -o "$RUNNER_TEMP/bin/sealed-release" ./catalog/tools/release
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Registry login
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          printf '%s' "$TOKEN" | crane auth login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Build, push and check reproducibility
+        env:
+          ENTRY: ${{ toJSON(matrix) }}
+          NAME: ${{ matrix.name }}
+          VERIFY: ${{ github.event_name != 'workflow_dispatch' || inputs.verify_reproducible }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          mkdir -p "$RUNNER_TEMP/out/results"
+          args=(--entry "$ENTRY" --out "$RUNNER_TEMP/out/results/$NAME.json" --push --commit "$GITHUB_SHA")
+          [ "$VERIFY" = true ] && args+=(--verify-reproducible)
+          scripts/release/build-image.sh "${args[@]}"
+      - name: SBOM, Grype and waivers
+        env:
+          NAME: ${{ matrix.name }}
+          REPOSITORY: ${{ matrix.repository }}
+          WAIVERS: ${{ join(matrix.waivers, ' ') }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          result="$RUNNER_TEMP/out/results/$NAME.json"
+          digest="$(jq -r .digest "$result")"
+          # Every app that uses the image must accept its findings.
+          for w in $WAIVERS; do
+            scripts/release/scan-image.sh --image "$NAME" --ref "$REPOSITORY@$digest" --waivers "$w" --out "$RUNNER_TEMP/out/scan"
+          done
+          jq --slurpfile s "$RUNNER_TEMP/out/scan/summary/$NAME.summary.json" '.scan = $s[0]' "$result" >"$result.tmp"
+          mv "$result.tmp" "$result"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.name }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+          retention-days: 30
+  pin:
+    needs: [plan, build]
+    if: always() && needs.plan.outputs.count != '0' && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # A PR opened with GITHUB_TOKEN starts no workflows; PIN_PR_TOKEN (a GitHub App or fine-grained
+          # token with contents and pull-requests write) lets the pin PR run CI.
+          token: ${{ secrets.PIN_PR_TOKEN || github.token }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          path: ${{ runner.temp }}/artifacts
+      - name: Collect results
+        run: |
+          mkdir -p "$RUNNER_TEMP/results"
+          find "$RUNNER_TEMP/artifacts" -path '*/results/*.json' -exec cp {} "$RUNNER_TEMP/results/" \;
+          ls "$RUNNER_TEMP/results"
+      - name: Open the pin PRs
+        env:
+          GH_TOKEN: ${{ secrets.PIN_PR_TOKEN || github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          for scope in catalog runtime; do
+            git switch -q main
+            scripts/release/open-pin-pr.sh --scope "$scope" --results "$RUNNER_TEMP/results" --run-url "$RUN_URL" --commit "$GITHUB_SHA"
+          done
+      - name: Fail when a build failed
+        if: needs.build.result != 'success'
+        run: |
+          echo "::error::some image builds failed; their digests are not pinned"
+          exit 1

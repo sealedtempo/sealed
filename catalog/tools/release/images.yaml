@@ -1,0 +1,44 @@
+# Image settings for the runtime image workflow (.github/workflows/images.yml) and the mirror
+# (.github/workflows/mirror.yml).
+#
+# Every image the catalog builds itself (manifest `source: build:images/<dir>`, runtime-images.json
+# `source: build:<dir>`) must have an entry under `builds`, keyed by its image directory relative to the
+# repository root after resolving symlinks. The release tool fails on a build source without an entry, so a
+# new image cannot be skipped silently.
+#
+#   context: dir    build with the image directory as the build context
+#   context: root   build with the repository root as the context (the Dockerfile copies repo paths)
+#   nonreproducible: "<reason>"
+#                   the no-cache rebuild is still run and reported, but a digest mismatch does not block the
+#                   pin PR. Leave unset unless a rebuild showed a mismatch that cannot be fixed yet.
+#
+# `extra` lists images that no manifest or runtime-images.json references. Their digests are pinned in
+# extra-images.json next to this file. `optional: true` skips an entry until its Dockerfile exists.
+#
+# `never_mirror` lists upstream repositories that must never be copied to the catalog registry, because
+# copying is redistribution and their license forbids it. A manifest that still names one fails the mirror.
+version: 1
+builds:
+  catalog/apps/coding-agent/fallback-opencode/images/opencode: {context: dir}
+  catalog/apps/inference-relay/images/litellm-relay: {context: dir}
+  catalog/apps/inference-relay/images/relay: {context: root}
+  catalog/apps/internal-tools/images/tooljet-ce: {context: dir}
+  catalog/apps/llm-gateway/images/litellm: {context: dir}
+  catalog/apps/scraper/images/scraper-runner-playwright: {context: root}
+  runtime/agent: {context: root}
+  runtime/egress: {context: root}
+  runtime/envexec: {context: root}
+  runtime/images/local-model: {context: dir}
+  runtime/mpp-payer: {context: root}
+  verifier: {context: root}
+extra:
+  # The key broker runs on Cloud Run in the customer's project (spec 5.7), so it is not a stack sidecar and
+  # has no entry in runtime-images.json. The CLI's bootstrap pins it from extra-images.json.
+  - name: sealed-key-broker
+    dir: key-broker
+    context: root
+    optional: true
+never_mirror:
+  - repository: docker.io/twentycrm/twenty
+    decision: D-049
+    reason: the official Twenty image carries files under Twenty's commercial license, which forbids redistribution
