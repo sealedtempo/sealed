@@ -72,9 +72,12 @@ class PackagingTest(unittest.TestCase):
         self.assertEqual(secrets["OLLAMA_GATE_KEY"]["generate"], "hex32")
         for name in ("LITELLM_MASTER_KEY", "LITELLM_SALT_KEY", "POSTGRES_PASSWORD", "OLLAMA_GATE_KEY"):
             self.assertFalse(secrets[name].get("optional", False))
-        # Nothing here refers to another app's secret; coding-agent refers to APP_KEY_CODING_AGENT.
+        # Nothing here refers to another app's secret; coding-agent's required LLM_GATEWAY_KEY refers
+        # to APP_KEY_CODING_AGENT, so that one is required (and generated) too.
         self.assertFalse([s for s in secrets.values() if "same_as" in s])
         self.assertIn("same_as", secrets["APP_KEY_CODING_AGENT"]["description"])
+        self.assertEqual(secrets["APP_KEY_CODING_AGENT"]["generate"], "sk-hex32")
+        self.assertFalse(secrets["APP_KEY_CODING_AGENT"].get("optional", False))
 
     def test_provider_secrets_match_manifest_and_fragment(self):
         secrets = {s["name"]: s for s in self.manifest["secrets"]}

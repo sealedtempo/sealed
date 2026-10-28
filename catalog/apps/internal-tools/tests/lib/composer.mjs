@@ -125,9 +125,9 @@ export function unexpectedFindings(findings, { errors = ["unbuilt-image"], warni
     .map((f) => `${f.severity} ${f.file ?? ""} ${f.field ?? ""} [${f.code}] ${f.message}`);
 }
 
-export function sampleConfig(appIds, version) {
+export function sampleConfig(appIds, version, { brief = true } = {}) {
   const word = (byte, len) => `0x${byte.repeat(len)}`;
-  return {
+  const config = {
     schema: "sealed-config/v1",
     chainId: 4217,
     customer: word("0", 38) + "c1",
@@ -142,7 +142,8 @@ export function sampleConfig(appIds, version) {
       keyBroker: "https://sealed-key-broker-xyz.a.run.app",
       platformApi: "https://api.sealed.example",
       tempoRpc: "https://rpc.tempo.xyz",
-      relay: "https://relay.sealed.example",
+      // The relay is served on its deployment's attest host (D-045).
+      relay: "https://attest.relay.sealed.example",
       relayAttest: "https://attest.relay.sealed.example/attest",
     },
     contracts: {
@@ -155,6 +156,8 @@ export function sampleConfig(appIds, version) {
     settlement: { mode: "access-key", intervalMinutes: 60, gracePeriodMinutes: 1440, spendLimitPerDay: "2000000" },
     relayOwner: word("0", 38) + "b1",
   };
+  if (brief) config.debug = false; // integration brief item 13, composer 1.2.0
+  return config;
 }
 
 // sealed-compose compose for the given app directories into outDir. Returns the artifacts.
@@ -162,7 +165,7 @@ export function composeStack(composer, appDirs, outDir) {
   mkdirSync(outDir, { recursive: true });
   const ids = appDirs.map((d) => parse(readFileSync(join(d, "manifest.yaml"), "utf8")).id);
   const configPath = join(outDir, "input-config.json");
-  writeFileSync(configPath, JSON.stringify(sampleConfig(ids, composer.version)));
+  writeFileSync(configPath, JSON.stringify(sampleConfig(ids, composer.version, { brief: composer.brief })));
   const { dirs, done } = inputs(composer, appDirs);
   try {
     const args = ["compose", "--config", configPath, "--fill-release-ids", "--allow-missing-sbom", "--registry", REGISTRY];

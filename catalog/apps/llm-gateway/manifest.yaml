@@ -76,9 +76,9 @@ secrets:
     description: >-
       Virtual key the gateway provisions for coding-agent (alias coding-agent, models relay/* and local/*,
       rate limited). coding-agent's LLM_GATEWAY_KEY refers to this secret (same_as), so sealed secrets
-      sets it once for both apps. Not needed without coding-agent.
+      sets it once for both apps. Generated and always present, because a required secret may only
+      refer to a required one; without coding-agent in the stack the key exists only inside llm-gateway.
     generate: sk-hex32
-    optional: true
   - name: BYOK_ROUTES_ENABLED
     description: >-
       Set to true to allow byok/<provider> routes. Data leaves your cloud on those routes: the provider says

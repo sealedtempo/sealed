@@ -121,7 +121,7 @@ class Composer:
         ids = [load_yaml(os.path.join(d, "manifest.yaml"))["id"] for d in app_dirs]
         config_path = os.path.join(out_dir, "input-config.json")
         with open(config_path, "w", encoding="utf-8") as handle:
-            json.dump(sample_config(ids, self.version), handle)
+            json.dump(sample_config(ids, self.version, brief=self.brief), handle)
         scratch = os.path.join(out_dir, "apps")
         os.makedirs(scratch, exist_ok=True)
         args = ["compose", "--config", config_path, "--fill-release-ids", "--allow-missing-sbom",
@@ -204,12 +204,12 @@ def unbuilt_images(manifest: dict[str, Any]) -> list[str]:
     return [i["name"] for i in manifest["images"] if i["digest"] == ZERO_DIGEST]
 
 
-def sample_config(app_ids: list[str], version: str) -> dict[str, Any]:
+def sample_config(app_ids: list[str], version: str, brief: bool = True) -> dict[str, Any]:
     """A sealed-config/v1 document for a test stack (sslip hostnames on 34.1.2.3)."""
     def word(byte: str, count: int) -> str:
         return "0x" + byte * count
 
-    return {
+    config = {
         "schema": "sealed-config/v1",
         "chainId": 4217,
         "customer": word("0", 38) + "c1",
@@ -224,7 +224,8 @@ def sample_config(app_ids: list[str], version: str) -> dict[str, Any]:
             "keyBroker": "https://sealed-key-broker-xyz.a.run.app",
             "platformApi": "https://api.sealed.example",
             "tempoRpc": "https://rpc.tempo.xyz",
-            "relay": "https://relay.sealed.example",
+            # The relay is served on its deployment's attest host (D-045).
+            "relay": "https://attest.relay.sealed.example",
             "relayAttest": "https://attest.relay.sealed.example/attest",
         },
         "contracts": {
@@ -238,6 +239,9 @@ def sample_config(app_ids: list[str], version: str) -> dict[str, Any]:
                        "spendLimitPerDay": "2000000"},
         "relayOwner": word("0", 38) + "b1",
     }
+    if brief:
+        config["debug"] = False  # integration brief item 13, composer 1.2.0
+    return config
 
 
 def caddy_site(caddyfile: str, host: str) -> Optional[str]:

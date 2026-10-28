@@ -75,9 +75,9 @@ export function lint(composer: Composer, appDir: string): Finding[] {
   }
 }
 
-export function sampleConfig(appIds: string[], version: string): Record<string, unknown> {
+export function sampleConfig(appIds: string[], version: string, brief = true): Record<string, unknown> {
   const word = (byte: string, n: number) => `0x${byte.repeat(n)}`;
-  return {
+  const config: Record<string, unknown> = {
     schema: 'sealed-config/v1',
     chainId: 4217,
     customer: `${word('0', 38)}c1`,
@@ -92,7 +92,8 @@ export function sampleConfig(appIds: string[], version: string): Record<string, 
       keyBroker: 'https://sealed-key-broker-xyz.a.run.app',
       platformApi: 'https://api.sealed.example',
       tempoRpc: 'https://rpc.tempo.xyz',
-      relay: 'https://relay.sealed.example',
+      // The relay is served on its deployment's attest host (D-045).
+      relay: 'https://attest.relay.sealed.example',
       relayAttest: 'https://attest.relay.sealed.example/attest',
     },
     contracts: {
@@ -105,6 +106,8 @@ export function sampleConfig(appIds: string[], version: string): Record<string, 
     settlement: { mode: 'access-key', intervalMinutes: 60, gracePeriodMinutes: 1440, spendLimitPerDay: '2000000' },
     relayOwner: `${word('0', 38)}b1`,
   };
+  if (brief) config.debug = false; // integration brief item 13, composer 1.2.0
+  return config;
 }
 
 export interface Composed {
@@ -117,7 +120,7 @@ export interface Composed {
 export function compose(composer: Composer, appDirs: string[], outDir: string, appIds: string[]): Composed {
   mkdirSync(outDir, { recursive: true });
   const configPath = join(outDir, 'input-config.json');
-  writeFileSync(configPath, JSON.stringify(sampleConfig(appIds, composer.version)));
+  writeFileSync(configPath, JSON.stringify(sampleConfig(appIds, composer.version, composer.brief)));
   const args = ['compose', '--config', configPath, '--fill-release-ids', '--allow-missing-sbom', '--registry', REGISTRY, '--out', outDir];
   for (const d of appDirs) args.push('--app-dir', d);
   const res = run(composer, args);

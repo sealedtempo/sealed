@@ -122,8 +122,10 @@ Health: `GET /health/liveliness` (liveness) and `GET /health/readiness` (DB conn
 `LITELLM_MASTER_KEY` (sk-hex32; only `llm-gateway-litellm` and `llm-gateway-keys` list it),
 `LITELLM_SALT_KEY` (sk-hex32, never change after first boot), `POSTGRES_PASSWORD` (hex32),
 `OLLAMA_GATE_KEY` (hex32; only `llm-gateway-litellm` and `llm-gateway-ollama` list it),
-`APP_KEY_CODING_AGENT` (sk-hex32, optional; coding-agent's `LLM_GATEWAY_KEY` refers to it with
-`same_as`), and the optional provider keys with `BYOK_ROUTES_ENABLED` and `EXTERNAL_ROUTES_ENABLED`.
+`APP_KEY_CODING_AGENT` (sk-hex32, generated; coding-agent's `LLM_GATEWAY_KEY` refers to it with
+`same_as`, and a required secret may only refer to a required one, so it always exists; without
+coding-agent the key lives only inside llm-gateway), and the optional provider keys with
+`BYOK_ROUTES_ENABLED` and `EXTERNAL_ROUTES_ENABLED`.
 Secret Manager names are `sealed-llm-gateway-<NAME>`.
 
 ## Never enable (enterprise only)
