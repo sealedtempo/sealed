@@ -1,0 +1,36 @@
+coding-agent: third-party license notice
+==========================================
+
+Sealed's own files in this directory (bootstrap scripts, tools, A6 helper, tests, Dockerfile) are
+Apache-2.0 like the rest of this repository.
+
+1. OpenHands agent-server (image "openhands-agent-server", default release)
+   License: MIT (OpenHands/software-agent-sdk LICENSE, "Copyright (c) 2026 OpenHands contributors")
+   Source:  https://github.com/OpenHands/software-agent-sdk/tree/v1.58.2
+            commit d2ee0cdea60825608c2f8906eb54e1d4d264fb42
+   Image:   ghcr.io/openhands/agent-server:1.58.2-python-minimal
+            @sha256:9e04bf35e5f44f987f2bd7bb82b8f967104def33183da85bd6e95c9eb34ddfb3
+   Not shipped:
+     - The "-python" (full) agent-server flavor and the agent-canvas image. Both bundle
+       @anthropic-ai/claude-agent-sdk (Anthropic commercial terms) through the default ACP
+       providers. The python-minimal flavor is built without ACP providers; its /acp-node is empty.
+     - The enterprise/ directory of the archived OpenHands/legacy repository (PolyForm Free Trial
+       License). Nothing is built from or vendored from OpenHands/legacy.
+   Removed: nothing from the image; it is used unmodified by digest.
+   Bundled: CPython 3.13, Node 24 and npm, Debian trixie packages (OS system components, D-021),
+            litellm 1.93.0 (MIT, without litellm-enterprise), browser-use (MIT, inactive with the
+            browser disabled), lmnr (Apache-2.0, inactive unless configured). The release SBOM
+            lists every package and license.
+
+2. OpenCode (image "opencode", fallback-opencode/ only, not in the default release)
+   License: MIT ("Copyright (c) 2025 opencode")
+   Source:  https://github.com/anomalyco/opencode/tree/v1.19.5
+            commit 810c0eba1a7348036f8bdf61e6632d0c36c6876c
+   Base:    ghcr.io/anomalyco/opencode:1.19.5
+            @sha256:f4cfe16d91efbbfca01a51c44094fba4cf82e15c7fa17de5f11f9059699b1e6e
+   Added:   Alpine packages bash (GPL-3.0-or-later), git (GPL-2.0-only), python3 (PSF-2.0) and their
+            dependencies, installed with apk in our own layer; exact versions are recorded in
+            /usr/share/sealed/apk-versions.txt. D-021 covers OS packages "in base images" only, and
+            GPL-2.0-only is not on the rule 9 list, so these apk additions need a recorded decision
+            (or another way to give the agent git) before this variant can be released.
+   Not shipped: packages/enterprise of the OpenCode repository (not part of the CLI binary).

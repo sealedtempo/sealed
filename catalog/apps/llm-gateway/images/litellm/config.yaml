@@ -1,0 +1,89 @@
+# Base LiteLLM proxy config for the Sealed llm-gateway (LiteLLM v1.106.5, MIT core only).
+#
+# sealed_entrypoint.py renders the final config at boot: it starts from this file and
+# appends byok/<provider>/* and external/<provider>/* routes from providers.yaml only when
+# the matching provider key secret exists and the family is opted in. The rendered file
+# never contains secret values, only os.environ/<NAME> references.
+#
+# Route families:
+#   local/<model>   Ollama in this VM (CPU). Data stays in the VM.
+#   relay/<model>   sealed-mpp-payer -> platform inference relay in a confidential VM, paid per token.
+#   byok/...        TEE providers with the customer's key; opt-in (BYOK_ROUTES_ENABLED). Data leaves
+#                   your cloud and the provider's attestation is not verified by Sealed.
+#   external/...    ordinary hosted APIs; opt-in (EXTERNAL_ROUTES_ENABLED). Data leaves your cloud.
+#
+# Never add enterprise-only settings here (see catalog/apps/llm-gateway/README.md).
+
+model_list:
+  - model_name: local/qwen3-4b
+    litellm_params:
+      model: ollama_chat/qwen3:4b-instruct-2507-q4_K_M
+      api_base: http://llm-gateway-ollama:11434
+      keep_alive: "-1"
+    model_info:
+      mode: chat
+      max_input_tokens: 8192
+      input_cost_per_token: 0
+      output_cost_per_token: 0
+      sealed_route: local
+      sealed_data_location: stays in your VM
+
+  # Any other Ollama tag baked into the local-model image: local/<tag> -> ollama_chat/<tag>.
+  - model_name: local/*
+    litellm_params:
+      model: ollama_chat/*
+      api_base: http://llm-gateway-ollama:11434
+      keep_alive: "-1"
+    model_info:
+      mode: chat
+      sealed_route: local
+      sealed_data_location: stays in your VM
+
+  # The relay's default model. Exact name, so it wins over the wildcard below.
+  - model_name: relay/default
+    litellm_params:
+      model: openai/default
+      api_base: http://sealed-mpp-payer:8090/v1
+      api_key: sealed-mpp-payer
+    model_info:
+      mode: chat
+      sealed_route: relay
+      sealed_data_location: platform relay in an attested confidential VM
+
+  # relay/<model> -> sealed-mpp-payer, which pays the relay over MPP and forwards {"model": "<model>"}.
+  - model_name: relay/*
+    litellm_params:
+      model: openai/*
+      api_base: http://sealed-mpp-payer:8090/v1
+      api_key: sealed-mpp-payer
+    model_info:
+      mode: chat
+      sealed_route: relay
+      sealed_data_location: platform relay in an attested confidential VM
+
+litellm_settings:
+  callbacks: ["sealed_usage.usage_logger"]
+  drop_params: true
+  turn_off_message_logging: true
+  disable_hf_tokenizer_download: true
+  request_timeout: 600
+  json_logs: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: false
+  store_prompts_in_spend_logs: false
+  disable_error_logs: true
+  disable_model_info_refresh: true
+  password_policy_check_breached_passwords: false
+  allow_requests_on_db_unavailable: false
+  database_connection_pool_limit: 10
+
+router_settings:
+  routing_strategy: simple-shuffle
+  # When relay/default fails (relay unfunded, unattested, down, or the payer's spend limit),
+  # answer from the local model instead. Server-side, so it works for every client.
+  # Fallback targets must stay local/ (sealed_entrypoint.check_fallbacks enforces it).
+  fallbacks:
+    - relay/default: ["local/qwen3-4b"]

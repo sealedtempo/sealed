@@ -1,0 +1,81 @@
+schema: sealed-manifest/v1
+id: coding-agent
+name: Coding agent
+category: developer
+description: >-
+  Headless coding agent (OpenHands agent-server, MIT) that edits files and runs commands in its own
+  container on the apps network, with its LLM wired to llm-gateway. REST API and docs on the code route
+  behind the password gate. Requires llm-gateway in the same stack.
+upstream:
+  repo: https://github.com/OpenHands/software-agent-sdk
+  version: v1.58.2
+  license_spdx: MIT
+  source_url: https://github.com/OpenHands/software-agent-sdk/tree/v1.58.2
+maintainer:
+  name: Sealed
+  payout_address: ${MAINTAINER_DEFAULT_ADDRESS}
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: coding-agent-server
+images:
+  # python-minimal flavor: no ACP providers (no @anthropic-ai/claude-agent-sdk), no VS Code, no Chromium.
+  - name: openhands-agent-server
+    source: ghcr.io/openhands/agent-server:1.58.2-python-minimal
+    digest: sha256:9e04bf35e5f44f987f2bd7bb82b8f967104def33183da85bd6e95c9eb34ddfb3
+    platform: linux/amd64
+    license_spdx: MIT
+resources:
+  cpu: 2
+  memory_gb: 4
+  disk_gb: 20
+routes:
+  - name: code
+    service: coding-agent-server
+    internal_port: 8000
+    path_or_host: code
+    auth: gate
+healthcheck:
+  service: coding-agent-server
+  http: /ready
+  port: 8000
+  start_period_s: 60
+metering:
+  unit: app_hour
+  source: heartbeat
+secrets:
+  - name: OH_SESSION_API_KEYS_0
+    description: API key for the agent server (header X-Session-API-Key on every /api call).
+    generate: hex32
+  - name: OH_SECRET_KEY
+    description: Encrypts the stored LLM key and secrets on the data disk. Set once and never change it.
+    generate: hex32
+  - name: LLM_GATEWAY_KEY
+    description: >-
+      This app's llm-gateway virtual key (alias coding-agent, models relay/* and local/*). Must equal
+      llm-gateway's APP_KEY_CODING_AGENT, from which the gateway provisions the key. Never the master key.
+    generate: none
+telemetry_off_env:
+  OH_TELEMETRY_EXPORTER: none
+  DO_NOT_TRACK: "1"
+  ANONYMIZED_TELEMETRY: "false"
+  LITELLM_LOCAL_MODEL_COST_MAP: "True"
+license_exclusions:
+  - "OpenHands/legacy:enterprise/"
+  - "/acp-node/**"
+  - "**/@anthropic-ai/claude-agent-sdk*/**"
+  - "**/litellm_enterprise/**"
+  - "anomalyco/opencode:packages/enterprise/"
+bootstrap:
+  service: coding-agent-bootstrap
+  # On the bootstrap job's own volume, which the agent's container does not mount.
+  done_file: /var/lib/sealed-bootstrap/done
+notes: >-
+  Local runtime: commands run inside coding-agent-server as uid 10001 with no_new_privs, no Docker
+  socket. This app never holds the gateway master key: llm-gateway provisions the virtual key
+  LLM_GATEWAY_KEY (alias coding-agent, models relay/* and local/*, rate limited) from its secret
+  APP_KEY_CODING_AGENT. At every start the bootstrap job waits until the gateway accepts that key and
+  seeds PATCH /api/settings with base_url http://llm-gateway:4000 and model litellm_proxy/relay/default
+  (a gateway model chosen earlier is kept); the gateway itself falls back from relay/default to the local
+  model. Egress is closed by default; add git hosts (for example github.com:443) as customer egress
+  additions. Tokens are metered at llm-gateway; this app is metered per app hour.

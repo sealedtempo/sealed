@@ -1,0 +1,15 @@
+# Virtual keys that llm-gateway provisions for other catalog apps (sealed_keys.py, service
+# llm-gateway-keys). The consumer app never holds the master key: it gets only its own key,
+# as one of its own secrets with the same value as the secret named here.
+#
+# Each alias listed here is owned by the keys job: it creates the key (with the value from the
+# secret), restores scope and limits if they drift, and deletes the alias when the secret is unset.
+# Only MIT-core key fields are used (docs/notes/litellm.md section 3).
+apps:
+  - app: coding-agent
+    secret: APP_KEY_CODING_AGENT      # coding-agent's LLM_GATEWAY_KEY must hold the same value
+    key_alias: coding-agent
+    models: ["relay/*", "local/*"]    # never byok/* or external/*
+    rpm_limit: 300
+    tpm_limit: 2000000
+    max_parallel_requests: 8

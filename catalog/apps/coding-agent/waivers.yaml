@@ -1,0 +1,8 @@
+# Grype waivers for coding-agent images (spec 6.8). CI fails on critical findings unless listed here.
+# Schema, one entry per finding:
+#   - id: CVE-YYYY-NNNNN          # or GHSA-xxxx-xxxx-xxxx
+#     image: openhands-agent-server  # manifest images[].name
+#     package: <package name>
+#     reason: why it does not apply or why it cannot be fixed yet
+#     expires: YYYY-MM-DD         # required; the waiver stops applying after this date
+[]
