@@ -7,7 +7,8 @@
 //   (and, once the composer mounts one file per secret, nothing else),
 // - every data directory exists before the ready flag,
 // - the forward_auth gate works for every gated route the composer emits, bootstrap included,
-// - the evidence bundle verifies with the real verifier library in simulator mode.
+// - the evidence bundle verifies with the real verifier library in simulator mode,
+// - the payment-needed switch loads the composed Caddyfiles.
 import { execFile, execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -73,6 +74,7 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
   let agent: Agent;
   let settings: ReturnType<typeof testSettings>;
   let caddyIp: string;
+  const payer = new FakePayer();
   let now = 1_800_000_000;
   const secrets: Record<string, Record<string, string>> = {};
   const chowns: { path: string; readyFlag: boolean }[] = [];
@@ -189,7 +191,7 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
         postUsage: async () => undefined,
         postHealth: async () => undefined,
       },
-      payer: () => new FakePayer(),
+      payer: () => payer,
       tls: fixedTlsKey(`0x${"77".repeat(32)}`),
       egressStats: async () => undefined,
       probe: async () => true,
@@ -360,6 +362,24 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
       expect(report.checks.find((c) => c.name === name)?.ok, name).toBe(true);
     }
   }, 600_000);
+
+  it("switches Caddy between the two composed Caddyfiles when fees cannot be paid", async () => {
+    const gateway = stack.apps.find((a) => a.id === "llm-gateway") as StackInfo["apps"][number];
+    const usage = await localRequest(ep(), "/v1/usage-events", {
+      body: { app: "llm-gateway", unit: "tokens", quantity: 1_000_000, id: "e2e-1" },
+      headers: fromPeer(gateway.services.find((x) => x.primary)?.ip as string),
+    });
+    expect(usage.status).toBe(202);
+    payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
+    await agent.settle(now);
+    now += 1440 * 60;
+    expect((await agent.settle(now)).paymentNeeded).toBe(true);
+    expect(caddy.current).toBe(await readFile(join(out, "Caddyfile.payment-needed"), "utf8"));
+    payer.budgetResult = { spendable: 1_000_000_000n };
+    now += 60;
+    expect((await agent.settle(now)).paymentNeeded).toBe(false);
+    expect(caddy.current).toBe(await readFile(join(out, "Caddyfile"), "utf8"));
+  });
 
   it("takes the payer's reservations from its fixed IP in the composed stack", async () => {
     const payerIp = stack.sidecars["sealed-mpp-payer"] as string;
