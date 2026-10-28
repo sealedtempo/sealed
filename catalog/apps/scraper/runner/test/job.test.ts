@@ -90,6 +90,18 @@ describe('parseJobSpec', () => {
     ]);
   });
 
+  it('takes optional max_depth and max_duration_minutes, absent by default', () => {
+    const base = { start_urls: ['https://example.com/'] };
+    const plain = parseJobSpec(base);
+    expect(plain.ok && 'max_depth' in plain.spec).toBe(false);
+    expect(plain.ok && 'max_duration_minutes' in plain.spec).toBe(false);
+    const limited = parseJobSpec({ ...base, max_depth: 0, max_duration_minutes: 30 });
+    expect(limited.ok && limited.spec).toMatchObject({ max_depth: 0, max_duration_minutes: 30 });
+    expect(fields({ ...base, max_depth: -1, max_duration_minutes: 0 })).toEqual(['max_depth', 'max_duration_minutes']);
+    expect(fields({ ...base, max_depth: 101, max_duration_minutes: 1441 })).toEqual(['max_depth', 'max_duration_minutes']);
+    expect(fields({ ...base, max_depth: '2' })).toEqual(['max_depth']);
+  });
+
   it('validates extract', () => {
     const base = { start_urls: ['https://example.com/'] };
     expect(fields({ ...base, extract: ['h1'] })).toEqual(['extract']);

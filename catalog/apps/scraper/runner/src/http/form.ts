@@ -12,6 +12,8 @@ export interface JobForm {
   extract: string;
   max_concurrency: string;
   max_requests_per_minute: string;
+  max_depth: string;
+  max_duration_minutes: string;
 }
 
 export const EMPTY_FORM: JobForm = {
@@ -23,6 +25,8 @@ export const EMPTY_FORM: JobForm = {
   extract: '',
   max_concurrency: '',
   max_requests_per_minute: '',
+  max_depth: '',
+  max_duration_minutes: '',
 };
 
 export function readForm(body: Record<string, string | File | (string | File)[]>): JobForm {
@@ -40,6 +44,8 @@ export function readForm(body: Record<string, string | File | (string | File)[]>
     extract: text('extract'),
     max_concurrency: text('max_concurrency'),
     max_requests_per_minute: text('max_requests_per_minute'),
+    max_depth: text('max_depth'),
+    max_duration_minutes: text('max_duration_minutes'),
   };
 }
 
@@ -80,7 +86,7 @@ export function formToJob(form: JobForm): { job: Record<string, unknown>; errors
     respect_robots: form.respect_robots,
     extract: Object.fromEntries(extract),
   };
-  for (const key of ['max_pages', 'max_concurrency', 'max_requests_per_minute'] as const) {
+  for (const key of ['max_pages', 'max_concurrency', 'max_requests_per_minute', 'max_depth', 'max_duration_minutes'] as const) {
     const value = numberOrRaw(form[key]);
     if (value !== undefined) job[key] = value;
   }

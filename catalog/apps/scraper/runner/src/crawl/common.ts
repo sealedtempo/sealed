@@ -29,13 +29,29 @@ export function egressProxy(proxyUrl: string | undefined): ProxyConfiguration | 
 
 export function robotsPolicy(deps: CrawlDeps, sink: CrawlSink): RobotsPolicy {
   const fetcher = deps.robotsFetcher ?? createProxyRobotsFetcher({ proxyUrl: deps.proxyUrl, userAgent: deps.userAgent });
-  return new RobotsPolicy(fetcher, deps.proxyUrl, (url, outcome, reason) => sink.robots(url, outcome, reason));
+  return new RobotsPolicy(fetcher, {
+    proxyUrl: deps.proxyUrl,
+    userAgent: deps.robotsUserAgent,
+    onOutcome: (url, outcome, reason) => sink.robots(url, outcome, reason),
+  });
+}
+
+// The pause between requests to one site: the largest robots.txt Crawl-delay for our product token
+// among the start URLs' sites, at most MAX_CRAWL_DELAY_SECS. Crawlee applies it per registrable
+// domain, so sites reached through same_domain: false wait the same.
+export async function startCrawlDelaySecs(spec: JobSpec, robots: RobotsPolicy): Promise<number> {
+  if (!spec.respect_robots) return 0;
+  const origins = [...new Set(spec.start_urls.map((u) => new URL(u).origin))];
+  const delays = await Promise.all(origins.map((o) => robots.crawlDelaySecs(o)));
+  return Math.min(MAX_CRAWL_DELAY_SECS, Math.max(0, ...delays));
 }
 
 // Crawlee reports a skipped link once per page that links to it, and reports max_pages
 // ("limit", "enqueueLimit") even for links that were already crawled. Report each skipped URL once,
-// and leave max_pages out: the run's page cap is already part of its spec.
-const LIMIT_REASONS = new Set(['limit', 'enqueueLimit']);
+// and leave max_pages and max_depth out: those caps are already part of the run's spec.
+const LIMIT_REASONS = new Set(['limit', 'enqueueLimit', 'depth']);
+// Longest robots.txt Crawl-delay honoured, in seconds.
+export const MAX_CRAWL_DELAY_SECS = 60;
 const MAX_TRACKED_SKIPS = 100_000;
 
 // State one run's handlers share.
@@ -65,6 +81,7 @@ export function sharedOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink, s
     proxyConfiguration: egressProxy(deps.proxyUrl),
     respectRobotsTxtFile: spec.respect_robots ? { userAgent: deps.robotsUserAgent } : false,
     maxRequestsPerCrawl: spec.max_pages,
+    maxCrawlDepth: spec.max_depth,
     minConcurrency: 1,
     maxConcurrency: spec.max_concurrency,
     maxRequestsPerMinute: spec.max_requests_per_minute,

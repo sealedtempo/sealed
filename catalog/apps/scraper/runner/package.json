@@ -25,7 +25,8 @@
     "cheerio": "1.0.0-rc.12",
     "got-scraping": "4.2.2",
     "hono": "4.13.13",
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "robots-parser": "3.0.1"
   },
   "optionalDependencies": {
     "@crawlee/playwright": "3.18.2",

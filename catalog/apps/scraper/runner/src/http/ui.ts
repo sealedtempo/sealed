@@ -64,6 +64,8 @@ ${errorList(errors)}
   )}</select></label>
 <label>Max concurrency <input type="number" name="max_concurrency" min="1" max="32" placeholder="default" value="${form.max_concurrency}"></label>
 <label>Requests per minute <input type="number" name="max_requests_per_minute" min="1" max="1200" placeholder="60" value="${form.max_requests_per_minute}"></label>
+<label>Link depth <input type="number" name="max_depth" min="0" max="100" placeholder="no limit" value="${form.max_depth}"></label>
+<label>Time limit, minutes <input type="number" name="max_duration_minutes" min="1" max="1440" placeholder="no limit" value="${form.max_duration_minutes}"></label>
 </div>
 <label class="check"><input type="checkbox" name="same_domain"${form.same_domain ? raw(' checked') : ''}> Follow links on the same host name only</label>
 <label class="check"><input type="checkbox" name="respect_robots"${form.respect_robots ? raw(' checked') : ''}> Respect robots.txt</label>
@@ -113,7 +115,9 @@ function runPage(run: Run, items: Item[], events: RunEvent[]): Html {
 <dt>Created</dt><dd>${when(run.createdAt)}</dd>
 <dt>Started</dt><dd>${when(run.startedAt)}</dd>
 <dt>Finished</dt><dd>${when(run.finishedAt)}</dd>
-<dt>Crawler</dt><dd>${run.crawler}, up to ${run.spec.max_pages} pages, ${run.spec.max_concurrency} at a time, ${run.spec.max_requests_per_minute} per minute</dd>
+<dt>Crawler</dt><dd>${run.crawler}, up to ${run.spec.max_pages} pages, ${run.spec.max_concurrency} at a time, ${run.spec.max_requests_per_minute} per minute${
+    run.spec.max_depth !== undefined ? `, link depth ${run.spec.max_depth}` : ''
+  }${run.spec.max_duration_minutes !== undefined ? `, at most ${run.spec.max_duration_minutes} min` : ''}</dd>
 <dt>Start URLs</dt><dd>${run.spec.start_urls.map((u) => html`<div class="url">${u}</div>`)}</dd>
 <dt>Pages</dt><dd>${run.pagesOk} ok, ${run.pagesFailed} failed, ${run.pagesSkipped} skipped</dd>
 ${run.error ? html`<dt>Error</dt><dd>${run.error}</dd>` : ''}

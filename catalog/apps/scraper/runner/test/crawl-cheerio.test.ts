@@ -182,6 +182,14 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
     expect(out.failed).toEqual([]);
   });
 
+  it('stops at max_depth without reporting the links it leaves out', async () => {
+    const out = memorySink();
+    await runCheerio(a6Job({ max_depth: 0 }), testDeps(proxy.url), out.sink, never);
+    expect(out.items.map((i) => pathOf(i.url))).toEqual(['/']);
+    // robots.txt still applies first; the nine pages one link away are not reported one by one.
+    expect(out.skipped).toEqual([{ url: `http://${FIXTURE_HOST}/private/staff.html`, reason: 'robotsTxt' }]);
+  });
+
   it('stops at max_pages', async () => {
     const out = memorySink();
     await runCheerio(a6Job({ max_pages: 3 }), testDeps(proxy.url), out.sink, never);
@@ -291,4 +299,37 @@ describe('TLS verification', () => {
     expect(out.failed[0]?.error).toMatch(/self[- ]signed|certificate/i);
     expect(proxy.log.some((t) => t.method === 'CONNECT' && t.target === 'tls.test:443')).toBe(true);
   });
+});
+
+describe('robots.txt Crawl-delay', () => {
+  let server: Server;
+  let proxy: TestProxy;
+  const hits: { path: string; at: number }[] = [];
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      const path = req.url ?? '/';
+      if (path === '/robots.txt') return res.writeHead(200, { 'content-type': 'text/plain' }).end('User-agent: SealedScraper\nCrawl-delay: 1\n');
+      hits.push({ path, at: Date.now() });
+      const links = ['/a', '/b', '/c'].map((p) => `<a href="${p}">${p}</a>`).join('');
+      res.writeHead(200, { 'content-type': 'text/html' }).end(`<h1 class="product-name">${path}</h1>${links}`);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    proxy = await startTestProxy({ 'slow.test:80': (server.address() as AddressInfo).port });
+  });
+
+  afterAll(async () => {
+    await proxy.close();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it('waits the Crawl-delay between requests to the site, even with concurrency', async () => {
+    const out = memorySink();
+    await runCheerio(a6Job({ max_pages: 3, max_concurrency: 4 }, 'slow.test'), testDeps(proxy.url), out.sink, never);
+    expect(out.items).toHaveLength(3);
+    expect(out.robots).toEqual([{ url: 'http://slow.test/robots.txt', outcome: 'parsed', reason: 'HTTP 200, crawl-delay 1 s' }]);
+    const gaps = hits.slice(1).map((h, i) => h.at - hits[i]!.at);
+    expect(gaps).toHaveLength(2);
+    for (const gap of gaps) expect(gap).toBeGreaterThanOrEqual(900);
+  }, 30_000);
 });

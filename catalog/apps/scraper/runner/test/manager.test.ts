@@ -102,6 +102,20 @@ describe('RunManager', () => {
     expect(await manager.cancel('not-a-uuid')).toBe('not-found');
   });
 
+  it('stops a run at max_duration_minutes, keeps its pages and says why', async () => {
+    const store = new MemoryRunStore();
+    const c = controllableCrawl(2);
+    const manager = new RunManager({ store, crawl: c.crawl, meter: countingMeter().meter, maxRuns: 1, minuteMs: 20 });
+    const limited = parseJobSpec({ start_urls: ['https://shop.example/'], max_duration_minutes: 1 });
+    if (!limited.ok) throw new Error('bad spec');
+    const run = await manager.submit(limited.spec);
+    await manager.idle();
+    expect(await store.getRun(run.id)).toMatchObject({ status: 'succeeded', error: null, pagesOk: 2 });
+    expect((await store.listEvents(run.id, { limit: 10 })).map((e) => [e.kind, e.detail])).toEqual([
+      ['limit', 'stopped after 1 min (max_duration_minutes)'],
+    ]);
+  });
+
   it('marks a run failed when the crawl throws', async () => {
     const store = new MemoryRunStore();
     const crawl: CrawlFn = async () => {

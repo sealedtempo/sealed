@@ -4,7 +4,7 @@ import type { Request } from '@crawlee/core';
 import type { RobotsTxtFile } from '@crawlee/utils';
 import type { JobSpec } from '../job.js';
 import type { RobotsPolicy } from '../robots.js';
-import { jobConfiguration, newRunState, pageHandler, robotsPolicy, runWithAbort, sharedOptions, throwOnFailedResponse, type PageResponse } from './common.js';
+import { jobConfiguration, newRunState, pageHandler, robotsPolicy, runWithAbort, sharedOptions, startCrawlDelaySecs, throwOnFailedResponse, type PageResponse } from './common.js';
 import { EGRESS_HEADER, egressVerdictFromHeader } from '../egress.js';
 import { capResponse, DEFAULT_MAX_PAGE_BYTES } from './size-cap.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
@@ -65,6 +65,7 @@ export function cheerioOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink):
 
 export async function runCheerio(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink, signal: AbortSignal): Promise<CrawlSummary> {
   const robots = robotsPolicy(deps, sink);
-  const crawler = new SealedCheerioCrawler(cheerioOptions(spec, deps, sink), jobConfiguration(deps.memoryMbytes), robots, deps.maxPageBytes);
+  const crawlDelay = await startCrawlDelaySecs(spec, robots);
+  const crawler = new SealedCheerioCrawler({ ...cheerioOptions(spec, deps, sink), sameDomainDelaySecs: crawlDelay }, jobConfiguration(deps.memoryMbytes), robots, deps.maxPageBytes);
   return runWithAbort(crawler, spec, robots, signal);
 }

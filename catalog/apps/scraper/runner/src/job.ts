@@ -13,6 +13,9 @@ export interface JobSpec {
   max_concurrency: number;
   max_requests_per_minute: number;
   respect_robots: boolean;
+  // Optional limits; absent means none. Depth 0 crawls only the start URLs.
+  max_depth?: number;
+  max_duration_minutes?: number;
 }
 
 export interface FieldError {
@@ -29,6 +32,8 @@ export const LIMITS = {
   fields: 50,
   selectorLength: 500,
   requestsPerMinute: 1200,
+  depth: 100,
+  durationMinutes: 1440,
   concurrency: { cheerio: 32, playwright: 4 } as Record<CrawlerKind, number>,
 } as const;
 
@@ -48,6 +53,8 @@ const KEYS = new Set([
   'max_concurrency',
   'max_requests_per_minute',
   'respect_robots',
+  'max_depth',
+  'max_duration_minutes',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,6 +76,12 @@ function intField(
     return fallback;
   }
   return value;
+}
+
+function optionalIntField(input: Record<string, unknown>, name: string, min: number, max: number, errors: FieldError[]): number | undefined {
+  if (input[name] === undefined) return undefined;
+  const value = intField(input, name, min, min, max, errors);
+  return value === input[name] ? value : undefined;
 }
 
 function boolField(input: Record<string, unknown>, name: string, fallback: boolean, errors: FieldError[]): boolean {
@@ -190,5 +203,9 @@ export function parseJobSpec(input: unknown, available: readonly CrawlerKind[] =
     ),
     respect_robots: boolField(input, 'respect_robots', true, errors),
   };
+  const maxDepth = optionalIntField(input, 'max_depth', 0, LIMITS.depth, errors);
+  if (maxDepth !== undefined) spec.max_depth = maxDepth;
+  const maxMinutes = optionalIntField(input, 'max_duration_minutes', 1, LIMITS.durationMinutes, errors);
+  if (maxMinutes !== undefined) spec.max_duration_minutes = maxMinutes;
   return errors.length > 0 ? { ok: false, errors } : { ok: true, spec };
 }

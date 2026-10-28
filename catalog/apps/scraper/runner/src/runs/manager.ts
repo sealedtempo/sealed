@@ -12,6 +12,8 @@ export interface RunManagerOptions {
   log?: Logger;
   // Events (failed and skipped URLs) kept per run; counters keep counting past this.
   maxEventsPerRun?: number;
+  // Length of a minute for max_duration_minutes (tests shorten it).
+  minuteMs?: number;
 }
 
 export type CancelResult = 'cancelled' | 'stopping' | 'not-found' | 'finished';
@@ -26,11 +28,13 @@ export class RunManager {
   private readonly active = new Map<string, { abort: AbortController; done: Promise<void> }>();
   private readonly log: Logger;
   private readonly maxEvents: number;
+  private readonly minuteMs: number;
   private accepting = true;
 
   constructor(private readonly options: RunManagerOptions) {
     this.log = options.log ?? silentLogger;
     this.maxEvents = options.maxEventsPerRun ?? 500;
+    this.minuteMs = options.minuteMs ?? 60_000;
   }
 
   get activeCount(): number {
@@ -106,16 +110,27 @@ export class RunManager {
       if (!run || !(await store.markRunning(id))) return;
       this.log.info('run started', { run: id });
       const sink = this.sinkFor(id);
+      // max_duration_minutes stops the crawl like a cancel, but the run counts as succeeded and says why.
+      const minutes = run.spec.max_duration_minutes;
+      const timeLimit = minutes ? AbortSignal.timeout(minutes * this.minuteMs) : null;
+      const crawlSignal = timeLimit ? AbortSignal.any([signal, timeLimit]) : signal;
+      const timedOut = () => !signal.aborted && timeLimit?.aborted === true;
       let status: RunStatus = 'succeeded';
       let error: string | null = null;
       try {
-        const summary = await crawl(run.spec, sink, signal);
+        const summary = await crawl(run.spec, sink, crawlSignal);
         if (signal.aborted) [status, error] = this.accepting ? ['cancelled', null] : ['failed', SHUTDOWN];
         this.log.info('run finished', { run: id, status, finished: summary.requestsFinished, failed: summary.requestsFailed });
       } catch (err) {
-        status = signal.aborted && this.accepting ? 'cancelled' : 'failed';
-        error = signal.aborted && !this.accepting ? SHUTDOWN : errorMessage(err);
-        this.log.error('run failed', { run: id, error });
+        if (!timedOut()) {
+          status = signal.aborted && this.accepting ? 'cancelled' : 'failed';
+          error = signal.aborted && !this.accepting ? SHUTDOWN : errorMessage(err);
+          this.log.error('run failed', { run: id, error });
+        }
+      }
+      if (timedOut()) {
+        await store.addNote(id, 'limit', run.spec.start_urls[0] ?? '', `stopped after ${minutes} min (max_duration_minutes)`);
+        this.log.info('run reached its time limit', { run: id, minutes });
       }
       await store.finishRun(id, status, error);
       await meter.flush();

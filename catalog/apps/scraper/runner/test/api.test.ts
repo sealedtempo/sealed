@@ -288,6 +288,8 @@ describe('UI', () => {
     expect(csp).toContain("frame-ancestors 'none'");
     const page = await res.text();
     expect(page).toContain('<form method="post" action="/jobs">');
+    expect(page).toContain('name="max_depth"');
+    expect(page).toContain('name="max_duration_minutes"');
     expect(page).toContain('https://shop.example/');
     expect(page).toContain('Outbound traffic only reaches destinations you approve.');
     expect(page).not.toMatch(/\u2014/);

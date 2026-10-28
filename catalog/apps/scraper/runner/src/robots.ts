@@ -1,5 +1,6 @@
 import { RobotsTxtFile } from '@crawlee/utils';
 import { gotScraping } from 'got-scraping';
+import robotsParserModule from 'robots-parser';
 import { EGRESS_HEADER, egressVerdictFromError } from './egress.js';
 
 // Crawlee 3.18.2 fetches robots.txt without the proxy, with TLS verification off, and treats every
@@ -12,6 +13,9 @@ import { EGRESS_HEADER, egressVerdictFromError } from './egress.js';
 //   network error, timeout  -> unreachable: disallow everything
 //   refused by sealed-egress (a failed CONNECT, or a response marked X-Sealed-Egress) -> unreachable
 // Each outcome is reported with its reason, so a run can show why a site was not crawled.
+
+// robots-parser is CommonJS (module.exports = fn) while its typings declare an ES default export.
+const robotsParser = robotsParserModule as unknown as (url: string, robotstxt: string) => { getCrawlDelay(ua?: string): number | undefined };
 
 export interface RobotsFetchResult {
   status: number;
@@ -61,14 +65,21 @@ export function robotsUrlFor(url: string): string {
   return `${new URL(url).origin}/robots.txt`;
 }
 
+export interface RobotsPolicyOptions {
+  proxyUrl?: string;
+  // Our product token, for Crawl-delay. Without it Crawl-delay is not read.
+  userAgent?: string;
+  onOutcome?: RobotsOutcomeListener;
+}
+
 export class RobotsPolicy {
   private readonly cache = new Map<string, Promise<RobotsTxtFile>>();
+  private readonly delays = new Map<string, number>();
   readonly outcomes = new Map<string, RobotsOutcome>();
 
   constructor(
     private readonly fetcher: RobotsFetcher,
-    private readonly proxyUrl?: string,
-    private readonly onOutcome?: RobotsOutcomeListener,
+    private readonly options: RobotsPolicyOptions = {},
   ) {}
 
   forUrl(url: string): Promise<RobotsTxtFile> {
@@ -82,12 +93,14 @@ export class RobotsPolicy {
         )
         .then(async ({ outcome, body, reason }) => {
           this.outcomes.set(robotsUrl, outcome);
+          const delay = outcome === 'parsed' ? this.crawlDelayIn(robotsUrl, body) : 0;
+          if (delay > 0) this.delays.set(robotsUrl, delay);
           try {
-            await this.onOutcome?.(robotsUrl, outcome, reason);
+            await this.options.onOutcome?.(robotsUrl, outcome, delay > 0 ? `${reason}, crawl-delay ${delay} s` : reason);
           } catch {
             // Reporting is best effort; the decision itself stands.
           }
-          return RobotsTxtFile.from(robotsUrl, body, this.proxyUrl);
+          return RobotsTxtFile.from(robotsUrl, body, this.options.proxyUrl);
         });
       this.cache.set(robotsUrl, pending);
     }
@@ -96,6 +109,18 @@ export class RobotsPolicy {
 
   async isAllowed(url: string, userAgent: string): Promise<boolean> {
     return (await this.forUrl(url)).isAllowed(url, userAgent);
+  }
+
+  // Crawl-delay in seconds for our product token on the site of `url`; 0 when none.
+  async crawlDelaySecs(url: string): Promise<number> {
+    await this.forUrl(url);
+    return this.delays.get(robotsUrlFor(url)) ?? 0;
+  }
+
+  private crawlDelayIn(robotsUrl: string, body: string): number {
+    if (!this.options.userAgent) return 0;
+    const delay = robotsParser(robotsUrl, body).getCrawlDelay(this.options.userAgent);
+    return typeof delay === 'number' && Number.isFinite(delay) && delay > 0 ? delay : 0;
   }
 }
 

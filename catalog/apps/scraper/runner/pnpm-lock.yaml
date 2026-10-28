@@ -35,6 +35,9 @@ importers:
       pg:
         specifier: 8.23.1
         version: 8.23.1
+      robots-parser:
+        specifier: 3.0.1
+        version: 3.0.1
     devDependencies:
       '@types/node':
         specifier: 24.19.2

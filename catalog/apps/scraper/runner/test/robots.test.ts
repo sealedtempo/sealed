@@ -108,17 +108,37 @@ describe('RobotsPolicy', () => {
       'https://down.test/robots.txt': { status: 503, body: '' },
     });
     const seen: string[] = [];
-    const policy = new RobotsPolicy(fetcher, undefined, (url, outcome, reason) => void seen.push(`${url} ${outcome} ${reason}`));
+    const policy = new RobotsPolicy(fetcher, { onOutcome: (url, outcome, reason) => void seen.push(`${url} ${outcome} ${reason}`) });
     await Promise.all([policy.forUrl('https://shop.test/a'), policy.forUrl('https://shop.test/b'), policy.forUrl('https://down.test/')]);
     expect(seen.sort()).toEqual(['https://down.test/robots.txt deny-all unreachable: HTTP 503', 'https://shop.test/robots.txt parsed HTTP 200']);
   });
 
   it('keeps its decision when reporting fails', async () => {
     const { fetcher } = fake({ 'https://shop.test/robots.txt': { status: 200, body: RULES } });
-    const policy = new RobotsPolicy(fetcher, undefined, () => {
-      throw new Error('db down');
+    const policy = new RobotsPolicy(fetcher, {
+      onOutcome: () => {
+        throw new Error('db down');
+      },
     });
     expect(await policy.isAllowed('https://shop.test/no-sealed/x', UA)).toBe(false);
+  });
+
+  it('reads Crawl-delay for our product token and reports it', async () => {
+    const { fetcher } = fake({
+      'https://slow.test/robots.txt': { status: 200, body: 'User-agent: SealedScraper\nCrawl-delay: 4\nDisallow: /x/\n\nUser-agent: *\nCrawl-delay: 30\n' },
+      'https://any.test/robots.txt': { status: 200, body: 'User-agent: *\nCrawl-delay: 2.5\n' },
+      'https://none.test/robots.txt': { status: 200, body: 'User-agent: *\nDisallow:\n' },
+      'https://down.test/robots.txt': { status: 503, body: 'Crawl-delay: 9' },
+    });
+    const seen: string[] = [];
+    const policy = new RobotsPolicy(fetcher, { userAgent: UA, onOutcome: (url, _o, reason) => void seen.push(`${url} ${reason}`) });
+    expect(await policy.crawlDelaySecs('https://slow.test/a')).toBe(4);
+    expect(await policy.crawlDelaySecs('https://any.test/')).toBe(2.5);
+    expect(await policy.crawlDelaySecs('https://none.test/')).toBe(0);
+    expect(await policy.crawlDelaySecs('https://down.test/')).toBe(0);
+    expect(seen).toContain('https://slow.test/robots.txt HTTP 200, crawl-delay 4 s');
+    // Without a product token there is nothing to match.
+    expect(await new RobotsPolicy(fetcher).crawlDelaySecs('https://slow.test/')).toBe(0);
   });
 
   it('builds robots URLs from the origin', () => {
@@ -177,13 +197,13 @@ describe('createProxyRobotsFetcher', () => {
   it('marks an http destination the proxy refuses, so it is not mistaken for an origin 403', async () => {
     const fetch = createProxyRobotsFetcher({ proxyUrl: proxy.url, userAgent: 'x' });
     expect(await fetch('http://blocked.test/robots.txt')).toMatchObject({ status: 403, egress: 'blocked' });
-    const policy = new RobotsPolicy(fetch, proxy.url);
+    const policy = new RobotsPolicy(fetch, { proxyUrl: proxy.url });
     expect(await policy.isAllowed('http://blocked.test/page', UA)).toBe(false);
     expect(policy.outcomes.get('http://blocked.test/robots.txt')).toBe('deny-all');
   });
 
   it('fails when the proxy refuses the destination (egress block) and when the proxy is down', async () => {
-    const policy = new RobotsPolicy(createProxyRobotsFetcher({ proxyUrl: proxy.url, userAgent: 'x' }), proxy.url);
+    const policy = new RobotsPolicy(createProxyRobotsFetcher({ proxyUrl: proxy.url, userAgent: 'x' }), { proxyUrl: proxy.url });
     expect(await policy.isAllowed('https://blocked.test/page', UA)).toBe(false);
     expect(policy.outcomes.get('https://blocked.test/robots.txt')).toBe('deny-all');
     const dead = createProxyRobotsFetcher({ proxyUrl: 'http://127.0.0.1:1', userAgent: 'x', timeoutMs: 2000 });

@@ -3,7 +3,7 @@ import type { RobotsTxtFile } from '@crawlee/utils';
 import { firefox } from 'playwright';
 import type { JobSpec } from '../job.js';
 import type { RobotsPolicy } from '../robots.js';
-import { jobConfiguration, newRunState, pageHandler, robotsPolicy, runWithAbort, sharedOptions } from './common.js';
+import { jobConfiguration, newRunState, pageHandler, robotsPolicy, runWithAbort, sharedOptions, startCrawlDelaySecs } from './common.js';
 import { EGRESS_HEADER, egressVerdictFromHeader } from '../egress.js';
 import { assertDeclaredSize, DEFAULT_MAX_PAGE_BYTES } from './size-cap.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
@@ -104,6 +104,7 @@ export function playwrightOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSin
 
 export async function runPlaywright(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink, signal: AbortSignal): Promise<CrawlSummary> {
   const robots = robotsPolicy(deps, sink);
-  const crawler = new SealedPlaywrightCrawler(playwrightOptions(spec, deps, sink), jobConfiguration(deps.memoryMbytes), robots);
+  const crawlDelay = await startCrawlDelaySecs(spec, robots);
+  const crawler = new SealedPlaywrightCrawler({ ...playwrightOptions(spec, deps, sink), sameDomainDelaySecs: crawlDelay }, jobConfiguration(deps.memoryMbytes), robots);
   return runWithAbort(crawler, spec, robots, signal);
 }
