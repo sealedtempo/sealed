@@ -1,0 +1,127 @@
+schema: sealed-manifest/v1
+id: inference-relay
+name: Inference relay
+category: ai
+description: >-
+  Paid, attested inference for Sealed deployments. An mppx server takes Machine Payments Protocol
+  payments in pathUSD on Tempo (per-token sessions over SSE, per-request charges as the fallback)
+  and forwards to a LiteLLM instance that reaches Tinfoil, Phala, NEAR AI and Privatemode only
+  through attestation-verified, key-pinned channels. Operated by the platform; OWNER approves its stack.
+upstream:
+  repo: https://github.com/sealed-dev/sealed
+  version: 0.1.0
+  license_spdx: Apache-2.0
+  source_url: https://github.com/sealed-dev/sealed/tree/main/runtime/relay
+maintainer:
+  name: Sealed
+  payout_address: ${MAINTAINER_DEFAULT_ADDRESS}
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: inference-relay-front
+images:
+  # Built from runtime/relay (mppx front and provider sidecars). Digest pinned after the image workflow builds it.
+  - name: relay
+    source: build:images/relay
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    platform: linux/amd64
+    license_spdx: Apache-2.0
+  # Derived from ghcr.io/berriai/litellm-database:v1.106.5@sha256:0d10536ce596ef74bf5bbd3244310bb11c2cadd8f92d2f22d587cc0b9fc16e01
+  # with enterprise/ and litellm_enterprise removed, flattened, plus the relay model config.
+  - name: litellm-relay
+    source: build:images/litellm-relay
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    platform: linux/amd64
+    license_spdx: MIT
+  - name: postgres
+    source: docker.io/library/postgres:16.15
+    digest: sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+    platform: linux/amd64
+    license_spdx: PostgreSQL
+  # Edgeless Systems Privatemode proxy v1.60.0 (OCI index digest). privatemode-proxy/ is MIT; see LICENSE-NOTICE.
+  - name: privatemode-proxy
+    source: ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.60.0
+    digest: sha256:ea044948f9ee427ba8eff07a489e1105f20170e3e8c42b9800d8adaf065b24b3
+    platform: linux/amd64
+    license_spdx: MIT
+resources:
+  cpu: 2
+  memory_gb: 6
+  disk_gb: 20
+routes:
+  - name: relay
+    service: inference-relay-front
+    internal_port: 8080
+    path_or_host: relay
+    auth: public
+healthcheck:
+  service: inference-relay-front
+  http: /healthz
+  port: 8080
+  start_period_s: 60
+metering:
+  unit: tokens
+  source: callback
+secrets:
+  - name: MPP_SECRET_KEY
+    description: HMAC key that binds MPP challenges (at least 32 bytes). Rotating it invalidates open challenges.
+    generate: base64-32
+  - name: LITELLM_MASTER_KEY
+    description: Key the relay front uses to call its LiteLLM. Starts with sk-.
+    generate: sk-hex32
+  - name: DATABASE_PASSWORD
+    description: Password of the relay's Postgres (MPP session store, vouchers survive restarts).
+    generate: hex32
+  - name: RELAY_SETTLER_KEY
+    description: >-
+      Hot key that sends session settle and close transactions as the channel operator. Payments
+      go to TREASURY_ADDRESS; this key only needs pathUSD for network fees. Without it the relay
+      offers per-request charges only.
+    generate: hex32
+    optional: true
+  - name: TINFOIL_API_KEY
+    description: Tinfoil API key. Enables tinfoil/<model>.
+    generate: none
+    optional: true
+  - name: PHALA_API_KEY
+    description: Phala Confidential AI (RedPill) API key. Enables phala/<model>.
+    generate: none
+    optional: true
+  - name: NEARAI_API_KEY
+    description: NEAR AI Cloud API key. Enables nearai/<model>; also authenticates its attestation reports.
+    generate: none
+    optional: true
+  - name: PRIVATEMODE_API_KEY
+    description: Privatemode API key. Enables privatemode/<model> through the Privatemode proxy.
+    generate: none
+    optional: true
+telemetry_off_env:
+  LITELLM_LOCAL_MODEL_COST_MAP: "True"
+  LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS: "True"
+  LITELLM_LOCAL_AUTOROUTER_PRESETS: "True"
+  LITELLM_LOCAL_POLICY_TEMPLATES: "True"
+  LITELLM_LOCAL_BLOG_POSTS: "True"
+  LITELLM_OFFLINE_MODE: "true"
+  LITELLM_DISABLE_LATEST_RELEASE_CHECK: "true"
+  LITELLM_DONT_SHOW_FEEDBACK_BOX: "true"
+  CHECKPOINT_DISABLE: "1"
+  PRISMA_OFFLINE_MODE: "true"
+  HF_HUB_OFFLINE: "1"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  DISABLE_ADMIN_UI: "True"
+  NO_DOCS: "True"
+  NO_REDOC: "True"
+  NPM_CONFIG_UPDATE_NOTIFIER: "false"
+  DO_NOT_TRACK: "1"
+license_exclusions:
+  - "/app/enterprise/**"
+  - "**/litellm_enterprise/**"
+  - "**/litellm_enterprise-*.dist-info/**"
+  - "BerriAI/litellm:enterprise/"
+notes: >-
+  Models are <provider>/<model> (GET /v1/models lists them with relay prices: provider list price x
+  (1 + relay_markup_bps/10000), in pathUSD base units per 1M tokens) plus "default". A provider is
+  enabled only when its API key secret exists, and the front refuses to forward (503, before any
+  payment) unless that provider's latest attestation verified. GET /v1/attest-status shows the
+  evidence. Session vouchers live in the relay's own Postgres. TREASURY_ADDRESS in the fragment is
+  filled in at release build time.

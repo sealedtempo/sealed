@@ -1,0 +1,24 @@
+# Egress policy for inference-relay (INTERFACES section 7). Hashed as sha256(CJSON(parsed)).
+version: 1
+default_allow:
+  - "rpc.tempo.xyz:443"
+  - "inference.tinfoil.sh:443"
+  - "github-proxy.tinfoil.sh:443"
+  - "kds-proxy.tinfoil.sh:443"
+  - "inference.phala.com:443"
+  - "cloud-api.near.ai:443"
+  - "api.privatemode.ai:443"
+  - "cdn.confidential.cloud:443"
+  - "api.trustedservices.intel.com:443"
+  - "certificates.trustedservices.intel.com:443"
+customer_additions_allowed: false
+notes: >-
+  rpc.tempo.xyz: verify and broadcast MPP charges, read escrow channel state, settle and close
+  sessions. inference.tinfoil.sh: Tinfoil enclave attestation and inference (TLS pinned to the
+  attested key); github-proxy.tinfoil.sh and kds-proxy.tinfoil.sh: the release digest, Sigstore
+  bundle and AMD VCEK the official Tinfoil verifier fetches. inference.phala.com: Phala ACI report
+  and inference (TLS pinned). cloud-api.near.ai: NEAR AI gateway attestation and inference (TLS
+  pinned). api.privatemode.ai and cdn.confidential.cloud: the Privatemode proxy's attested API
+  and its manifest. api.trustedservices.intel.com and certificates.trustedservices.intel.com:
+  Intel PCS collateral and root CA CRL for TDX quote verification (Phala, NEAR AI). Nothing else;
+  the relay is operator-run, so no customer additions.

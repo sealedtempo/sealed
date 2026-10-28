@@ -1,0 +1,86 @@
+# LiteLLM config for the inference relay (LiteLLM v1.106.5, MIT core only).
+#
+# Each model is <provider>/<model> and maps to an OpenAI-compatible upstream that only
+# forwards over an attested channel: the provider's verification sidecar (Tinfoil, Phala,
+# NEAR AI; TLS pinned to the attested key) or the Privatemode proxy (attests and encrypts
+# itself). LiteLLM holds the provider keys as os.environ references and passes them as bearer
+# tokens; the relay front refuses any model whose provider is not attested before it gets here.
+# Must match runtime/relay/config/prices.json (checked by runtime/relay/test/catalog.test.ts).
+# Never add enterprise-only settings here.
+
+model_list:
+  - model_name: tinfoil/gpt-oss-120b
+    litellm_params:
+      model: openai/gpt-oss-120b
+      api_base: http://inference-relay-tinfoil:8100/v1
+      api_key: os.environ/TINFOIL_API_KEY
+    model_info:
+      mode: chat
+      sealed_provider: tinfoil
+  - model_name: tinfoil/glm-5-3
+    litellm_params:
+      model: openai/glm-5-3
+      api_base: http://inference-relay-tinfoil:8100/v1
+      api_key: os.environ/TINFOIL_API_KEY
+    model_info:
+      mode: chat
+      sealed_provider: tinfoil
+  - model_name: phala/openai/gpt-oss-120b
+    litellm_params:
+      model: openai/openai/gpt-oss-120b
+      api_base: http://inference-relay-phala:8100/v1
+      api_key: os.environ/PHALA_API_KEY
+    model_info:
+      mode: chat
+      sealed_provider: phala
+  - model_name: phala/z-ai/glm-5.3
+    litellm_params:
+      model: openai/z-ai/glm-5.3
+      api_base: http://inference-relay-phala:8100/v1
+      api_key: os.environ/PHALA_API_KEY
+    model_info:
+      mode: chat
+      sealed_provider: phala
+  - model_name: nearai/z-ai/glm-5.3
+    litellm_params:
+      model: openai/z-ai/glm-5.3
+      api_base: http://inference-relay-nearai:8100/v1
+      api_key: os.environ/NEARAI_API_KEY
+    model_info:
+      mode: chat
+      sealed_provider: nearai
+  - model_name: nearai/deepseek/deepseek-v3.2
+    litellm_params:
+      model: openai/deepseek/deepseek-v3.2
+      api_base: http://inference-relay-nearai:8100/v1
+      api_key: os.environ/NEARAI_API_KEY
+    model_info:
+      mode: chat
+      sealed_provider: nearai
+  - model_name: privatemode/gpt-oss-120b
+    litellm_params:
+      model: openai/gpt-oss-120b
+      api_base: http://inference-relay-privatemode:8080/v1
+      api_key: os.environ/PRIVATEMODE_API_KEY
+    model_info:
+      mode: chat
+      sealed_provider: privatemode
+
+litellm_settings:
+  drop_params: true
+  turn_off_message_logging: true
+  disable_hf_tokenizer_download: true
+  request_timeout: 600
+  json_logs: true
+
+# No database: the relay front is LiteLLM's only client and uses the master key.
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: false
+  store_prompts_in_spend_logs: false
+  disable_error_logs: true
+  disable_model_info_refresh: true
+  password_policy_check_breached_passwords: false
+
+router_settings:
+  routing_strategy: simple-shuffle

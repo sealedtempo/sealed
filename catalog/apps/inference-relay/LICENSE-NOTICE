@@ -1,0 +1,28 @@
+inference-relay license notice
+
+First-party code
+  runtime/relay (relay front and provider sidecars): Apache-2.0, this repository.
+
+Images
+  relay            built from runtime/relay on node:24.22.1-bookworm-slim. Node.js is MIT; Debian
+                   base packages are OS system components (D-021).
+  litellm-relay    LiteLLM v1.106.5, MIT core only. Derived from
+                   ghcr.io/berriai/litellm-database:v1.106.5 with /app/enterprise and the
+                   litellm_enterprise package (proprietary "BerriAI Enterprise license") deleted and
+                   the image flattened, so no layer contains them. No LITELLM_LICENSE is ever set.
+                   Source: https://github.com/BerriAI/litellm/tree/v1.106.5
+  postgres         PostgreSQL 16.15, PostgreSQL License (D-021).
+  privatemode-proxy
+                   ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.60.0. The
+                   edgelesssys/privatemode-public repository carries a restrictive custom license
+                   for most directories, but privatemode-proxy/, internal/oss/, sdk/ and chat/ are
+                   additionally licensed MIT (LICENSE.MIT). CI must confirm from the image SBOM that
+                   the binary links only MIT-licensed packages; if not, disable the provider by
+                   removing the service and its models.
+                   Source: https://github.com/edgelesssys/privatemode-public
+
+Notable JavaScript dependencies (all on the allowlist)
+  mppx 0.15.0 MIT, viem 2.57.13 MIT, hono 4.13.11 MIT, @hono/node-server 2.0.10 MIT, pg 8.23.1 MIT,
+  undici 7.30.1 MIT, eventsource-parser 4.1.1 MIT, @tinfoilsh/verifier 1.3.0 Apache-2.0,
+  @phala/aci-verifier 0.10.0 Apache-2.0, @phala/dcap-qvl 0.7.0 Apache-2.0,
+  @freedomofpress/sigstore-browser and friends MPL-2.0 / Apache-2.0.
