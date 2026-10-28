@@ -25,6 +25,10 @@ export class FakePayer implements FeePayer {
   daily = 20_000_000n;
   budgetResult: Budget = { spendable: 1_000_000_000n };
   reserve = 1000n;
+  /** What each payment transaction paid in network fees (counts against the spend limit, D-048). */
+  networkFee = 2_000n;
+  /** The access key's period end, as getRemainingLimit reports it. */
+  periodEnd: number | undefined;
   failNext = 0;
   private key(usageHash: Hex, appId: Hex) {
     return `${usageHash}:${appId}`;
@@ -101,6 +105,10 @@ export class FakePayer implements FeePayer {
       if (!this.tokens.has(k)) this.tokens.set(k, this.feeToken);
     }
     this.paid.push(lines);
-    return { txHash: `0x${String(this.paid.length).padStart(64, "0")}` as Hex, gasUsed: 100_000n };
+    return { txHash: `0x${String(this.paid.length).padStart(64, "0")}` as Hex, gasUsed: 100_000n, networkFee: this.networkFee };
+  }
+  async limitPeriodEnd() {
+    this.chainRead();
+    return this.periodEnd;
   }
 }

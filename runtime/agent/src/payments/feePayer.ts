@@ -56,7 +56,10 @@ export interface FeePayer {
   /** Estimated network fee in token base units for exactly this batch; rejects when the node's estimate reverts. */
   feeReserve(lines: PaymentLine[]): Promise<bigint>;
   budget(reserve: bigint): Promise<Budget>;
-  pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint }>;
+  /** `networkFee` is what the transaction paid in fee-token base units (it counts against an access-key limit). */
+  pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint; networkFee?: bigint }>;
+  /** End of the access key's current spending-limit period (unix seconds); undefined without a periodic limit. */
+  limitPeriodEnd?(): Promise<number | undefined>;
 }
 
 const tip20Abi = [
@@ -246,7 +249,13 @@ export class TempoFeePayer implements FeePayer {
     return { spendable, binding };
   }
 
-  async pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint }> {
+  async limitPeriodEnd(): Promise<number | undefined> {
+    if (this.mode !== "access-key") return undefined;
+    const { periodEnd } = await this.client.accessKey.getRemainingLimit({ account: this.o.customer, accessKey: this.keyId, token: this.o.feeToken });
+    return periodEnd !== undefined && periodEnd > 0n ? Number(periodEnd) : undefined;
+  }
+
+  async pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint; networkFee?: bigint }> {
     if (lines.length === 0) throw new Error("nothing to pay");
     if (lines.length > MAX_LINES_PER_TX) throw new Error(`at most ${MAX_LINES_PER_TX} legs per transaction`);
     const gas = await this.gasFor(lines);
@@ -255,6 +264,9 @@ export class TempoFeePayer implements FeePayer {
     if (receipt.status !== "success") {
       throw Object.assign(new Error(`payment transaction reverted (gas used ${receipt.gasUsed} of ${gas})`), { txHash: hash });
     }
-    return { txHash: hash, gasUsed: receipt.gasUsed };
+    // Fee units = gas * attodollars-per-gas / 1e12, rounded up (as feeReserve).
+    const price = (receipt as { effectiveGasPrice?: bigint }).effectiveGasPrice;
+    const networkFee = price === undefined ? undefined : (receipt.gasUsed * price + 999_999_999_999n) / 1_000_000_000_000n;
+    return { txHash: hash, gasUsed: receipt.gasUsed, ...(networkFee !== undefined ? { networkFee } : {}) };
   }
 }

@@ -24,11 +24,15 @@ import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
 import { FakePayer } from "./helpers/fakePayer.js";
 import { type FakePlatform, startFakePlatform } from "./helpers/fakePlatform.js";
 import { fromPeer, testPeerOf, testSettings } from "./helpers/fixtures.js";
+// The payer's own code builds the /v1/spend body (brief item 21: accept it as payments built it).
+import { SpendGuard } from "../../mpp-payer/src/spend-guard.js";
+import { SpendReporter } from "../../mpp-payer/src/spend-reporter.js";
 
 const golden = join(import.meta.dirname, "fixtures/composer-golden");
 const read = (f: string) => readFile(join(golden, f), "utf8");
 const appCompose = await read("app-compose.json");
 const configText = await read("config.json");
+const config = JSON.parse(configText) as { feeToken: string };
 const compose = JSON.parse(JSON.parse(appCompose).docker_compose_file) as {
   services: Record<string, Record<string, unknown>>;
   volumes: Record<string, { driver_opts?: { type?: string } }>;
@@ -218,6 +222,34 @@ describe("sealed-agent against the composer's golden stack", () => {
       expect(JSON.stringify(h.body)).not.toContain("sealed-mpp-payer");
     });
 
+    it("accepts the body the real payer sends (runtime/mpp-payer SpendGuard and SpendReporter)", async () => {
+      const guard = new SpendGuard(2_000_000n, () => now * 1000);
+      guard.reserve(1200n, "charge");
+      const reporter = new SpendReporter({
+        agentUrl: `http://127.0.0.1:${agent.port}`,
+        intervalSeconds: 60,
+        snapshot: () => ({
+          mode: "access-key",
+          currency: config.feeToken,
+          counters: guard.counters(),
+          relay: { attested: true, checkedAt: now, stackHash: `0x${"ab".repeat(32)}`, sessionsAvailable: false },
+        }),
+        fetch: (url, init) => fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), ...fromPeer("172.30.0.5") } }),
+      });
+      expect(await reporter.send()).toBe(true);
+      const h = await agent.reportHealth(now);
+      expect(h.body.payments).toMatchObject({
+        mpp_day: new Date(now * 1000).toISOString().slice(0, 10),
+        mpp_limit: "2000000",
+        mpp_budget: "2000000",
+        mpp_debited: "1200",
+        mpp_charges: 1,
+        mpp_relayAttested: true,
+        mpp_sessionsAvailable: false,
+      });
+      expect(JSON.stringify(h.body)).not.toContain("abab");
+    });
+
     it("switches Caddy to the measured Caddyfile.payment-needed after the grace period", async () => {
       payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
       await agent.settle(now);
@@ -229,6 +261,54 @@ describe("sealed-agent against the composer's golden stack", () => {
       now += 60;
       expect((await agent.settle(now)).paymentNeeded).toBe(false);
       expect(caddy.current).toBe(await read("Caddyfile"));
+    });
+
+    it("reserves the payer's share of the daily budget after the next settlement's fees (D-048)", async () => {
+      const post = (path: string, body: unknown, ip = "172.30.0.5") => localRequest(ep(), path, { body, headers: fromPeer(ip) });
+      expect((await post("/v1/spend/reserve", { amount: "1000" }, "172.30.0.16")).status).toBe(403);
+      expect((await post("/v1/spend/reserve", { amount: "1000", currency: `0x${"99".repeat(20)}` })).status).toBe(422);
+      expect((await post("/v1/spend/reserve", { amount: "-1" })).status).toBe(400);
+      expect((await post("/v1/spend/reserve", { amount: "0" })).status).toBe(400);
+      expect((await post("/v1/spend/release", { reservationId: `0x${"00".repeat(16)}`, used: "1" })).status).toBe(404);
+      // Usage that the next settlement will pay: 2M gateway tokens (0.40 USD).
+      expect((await post("/v1/usage-events", { app: "llm-gateway", unit: "tokens", quantity: 2_000_000, id: "budget-1" }, "172.30.0.16")).status).toBe(202);
+      // reserved_for_fees: unpaid legs, the open period and a network fee allowance per app transaction.
+      const reserved = agent.feeReserve();
+      expect(reserved).toBeGreaterThanOrEqual(400_000n + 10_000n);
+      // What the payer may take: the limit less what was spent today (earlier settlements) and reserved_for_fees.
+      const spent = BigInt(agent.budget?.state.fees ?? "0") + BigInt(agent.budget?.state.payer ?? "0");
+      const base = 2_000_000n - spent - reserved;
+      expect(agent.budget?.available(now)).toBe(base);
+      const first = JSON.parse((await post("/v1/spend/reserve", { amount: "100000", currency: config.feeToken })).body);
+      expect(first).toMatchObject({ ok: true, remaining: (base - 100_000n).toString() });
+      const tooMuch = JSON.parse((await post("/v1/spend/reserve", { amount: base.toString() })).body);
+      expect(tooMuch).toEqual({ ok: false, remaining: (base - 100_000n).toString(), reason: "budget" });
+      const released = JSON.parse((await post("/v1/spend/release", { reservationId: first.reservationId, used: "40000" })).body);
+      expect(released).toEqual({ ok: true, remaining: (base - 40_000n).toString() });
+      // Settlement pays the fees (plus the network fee) out of the same limit.
+      const before = BigInt(agent.budget?.state.fees ?? "0");
+      const r = await agent.settle(now);
+      expect(r.apps.filter((a) => a.result === "paid").length).toBeGreaterThan(0);
+      const paid = r.apps.reduce((s, a) => s + (a.result === "paid" ? a.amount + payer.networkFee : 0n), 0n);
+      expect(BigInt(agent.budget?.state.fees ?? "0") - before).toBe(paid);
+      const h = await agent.reportHealth(now);
+      expect(h.body.payments).toMatchObject({ budget_limit: "2000000", budget_payer: "40000", budget_fees: (before + paid).toString(), budget_reserved: "0" });
+    });
+
+    it("follows the access key's limit period for the budget window", async () => {
+      payer.periodEnd = now + 3600;
+      await agent.settle(now);
+      expect(agent.budget?.state).toMatchObject({ windowEnd: now + 3600, aligned: true });
+    });
+
+    it("answers the gate only for Caddy, and fails closed on a released hash it cannot use", async () => {
+      const gate = (ip: string, route = "tools") => localRequest(ep(), `/v1/gate?route=${route}`, { headers: { ...fromPeer(ip), authorization: `Basic ${Buffer.from("sealed:x").toString("base64")}` } });
+      expect((await gate("172.30.0.16")).status).toBe(403);
+      const r = await gate("172.30.0.4");
+      // The golden secrets carry "$2a$14$hash", which is no bcrypt hash.
+      expect(r.status).toBe(503);
+      expect(r.body).toBe("gate not configured");
+      expect((await gate("172.30.0.4", "attest")).status).toBe(403);
     });
   });
 });
