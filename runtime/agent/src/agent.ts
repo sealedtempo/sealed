@@ -152,6 +152,8 @@ export class Agent {
         feeSplitter: ctx.config.contracts.feeSplitter as Address,
         deploymentRegistry: ctx.config.contracts.deploymentRegistry as Address,
         deploymentId: ctx.deploymentId,
+        // Local Tempo nodes (anvil 1.7.1, T4 rules) under-estimate these batches; mainnet uses the node's estimate.
+        minGas: ctx.config.chainId === 4217 ? 0n : 5_000_000n,
       });
     this.payer = payer;
     void payer

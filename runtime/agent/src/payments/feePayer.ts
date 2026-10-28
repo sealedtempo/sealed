@@ -42,6 +42,16 @@ export interface FeePayer {
   pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint }>;
 }
 
+const legacyUsagePaidAbi = [
+  {
+    type: "function",
+    name: "usagePaid",
+    stateMutability: "view",
+    inputs: [{ name: "usageHash", type: "bytes32" }, { name: "appId", type: "bytes32" }],
+    outputs: [{ type: "bool" }],
+  },
+] as const;
+
 const tip20Abi = [
   { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "a", type: "address" }], outputs: [{ type: "uint256" }] },
 ] as const;
@@ -58,6 +68,8 @@ export interface TempoFeePayerOptions {
   deploymentId: Hex;
   /** Extra gas on top of the node's estimate (keychain signatures are estimated low). */
   gasHeadroomPct?: number;
+  /** Lower bound for the gas limit. Local anvil 1.7.1 (Tempo T4 rules) under-estimates batches with new storage slots. */
+  minGas?: bigint;
   receiptTimeoutMs?: number;
 }
 
@@ -123,8 +135,26 @@ export class TempoFeePayer implements FeePayer {
     });
   }
 
+  /**
+   * usagePaid(deploymentId, usageHash, appId) returns the amount paid (0 = unpaid). Contracts built
+   * before review fix D-029 expose usagePaid(usageHash, appId) returning bool; both are accepted.
+   */
   async isPaid(usageHash: Hex, appId: Hex): Promise<boolean> {
-    return this.client.readContract({ address: this.o.feeSplitter, abi: feeSplitterAbi, functionName: "usagePaid", args: [usageHash, appId] });
+    try {
+      const amount = await this.client.readContract({
+        address: this.o.feeSplitter,
+        abi: feeSplitterAbi,
+        functionName: "usagePaid",
+        args: [this.o.deploymentId, usageHash, appId],
+      });
+      return amount > 0n;
+    } catch (err) {
+      try {
+        return await this.client.readContract({ address: this.o.feeSplitter, abi: legacyUsagePaidAbi, functionName: "usagePaid", args: [usageHash, appId] });
+      } catch {
+        throw err;
+      }
+    }
   }
 
   private calls(lines: PaymentLine[]) {
@@ -145,7 +175,9 @@ export class TempoFeePayer implements FeePayer {
   private async gasFor(lines: PaymentLine[]): Promise<bigint> {
     const estimate = await this.client.estimateGas({ account: this.account, calls: this.calls(lines), feeToken: this.o.feeToken } as never);
     const pct = BigInt(this.o.gasHeadroomPct ?? 50);
-    return estimate + (estimate * pct) / 100n + 50_000n;
+    const gas = estimate + (estimate * pct) / 100n + 50_000n;
+    const min = this.o.minGas ?? 0n;
+    return gas > min ? gas : min;
   }
 
   async feeReserve(lines: PaymentLine[]): Promise<bigint> {
@@ -181,7 +213,9 @@ export class TempoFeePayer implements FeePayer {
     const gas = await this.gasFor(lines);
     const hash = await this.client.sendTransaction({ account: this.account, calls: this.calls(lines), feeToken: this.o.feeToken, gas } as never);
     const receipt = await this.client.waitForTransactionReceipt({ hash, timeout: this.o.receiptTimeoutMs ?? 120_000 });
-    if (receipt.status !== "success") throw Object.assign(new Error(`payment transaction reverted`), { txHash: hash });
+    if (receipt.status !== "success") {
+      throw Object.assign(new Error(`payment transaction reverted (gas used ${receipt.gasUsed} of ${gas})`), { txHash: hash });
+    }
     return { txHash: hash, gasUsed: receipt.gasUsed };
   }
 }

@@ -217,8 +217,10 @@ export async function send(
 ): Promise<Hash> {
   const account = devAccount(key);
   const request = { account, address, abi, functionName, args, feeToken: LOCAL_TOKENS.alphaUsd } as const;
-  const gas = await client.estimateContractGas(request as never);
-  const hash = await client.writeContract({ ...request, gas: (gas * 3n) / 2n + 100_000n } as never);
+  // anvil 1.7.1 (Tempo T4 rules) under-estimates storage-heavy calls, so leave wide headroom.
+  const estimate = await client.estimateContractGas(request as never);
+  const gas = [estimate * 3n + 1_000_000n, 3_000_000n].reduce((a, b) => (a > b ? a : b));
+  const hash = await client.writeContract({ ...request, gas: gas > 25_000_000n ? 25_000_000n : gas } as never);
   const receipt = await client.waitForTransactionReceipt({ hash, timeout: 10_000 });
   if (receipt.status !== "success") throw new Error(`${functionName} reverted (${hash})`);
   return hash;

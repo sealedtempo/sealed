@@ -95,10 +95,10 @@ export class Settler {
           }
           continue;
         }
-        const { txHash } = await payer.pay(asLines(chosen));
+        const { txHash, gasUsed } = await payer.pay(asLines(chosen));
         for (const e of chosen) ledger.markPaid(e.usageHash, app, txHash, now);
         daily -= sum;
-        log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, txHash, mode: payer.mode });
+        log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, txHash, gasUsed, mode: payer.mode });
         outcomes.push({ app, result: "paid", txHash, amount: sum, reports: chosen.length });
       } catch (err) {
         log.warn("fee payment failed", { app, ...errorFields(err) });
