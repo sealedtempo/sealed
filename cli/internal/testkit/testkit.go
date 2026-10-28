@@ -115,8 +115,13 @@ func SimImageID(debug bool) [32]byte {
 	return composer.ImageID(name, "1.0.0", attest.SimMeasurementsHash(debug))
 }
 
-// ConfigDoc returns a sealed-config/v1 document for the given bundles (sorted by app id).
+// ConfigDoc returns a sealed-config/v1 document for the given bundles (sorted by app id) with the fake registries.
 func ConfigDoc(customer common.Address, imageID [32]byte, bs ...*composer.Bundle) map[string]any {
+	return ConfigDocAt(Addresses, customer, imageID, bs...)
+}
+
+// ConfigDocAt is ConfigDoc for other registry addresses.
+func ConfigDocAt(addrs chain.Addresses, customer common.Address, imageID [32]byte, bs ...*composer.Bundle) map[string]any {
 	sorted := append([]*composer.Bundle(nil), bs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Manifest.ID < sorted[j].Manifest.ID })
 	var apps []any
@@ -136,8 +141,8 @@ func ConfigDoc(customer common.Address, imageID [32]byte, bs ...*composer.Bundle
 			"relayAttest": "https://attest.relay.sealed.example/attest",
 		},
 		"contracts": map[string]any{
-			"platformRegistry": lowerAddr(Addresses.PlatformRegistry), "appRegistry": lowerAddr(Addresses.AppRegistry),
-			"deploymentRegistry": lowerAddr(Addresses.DeploymentRegistry), "feeSplitter": "0x00000000000000000000000000000000000000e4",
+			"platformRegistry": lowerAddr(addrs.PlatformRegistry), "appRegistry": lowerAddr(addrs.AppRegistry),
+			"deploymentRegistry": lowerAddr(addrs.DeploymentRegistry), "feeSplitter": "0x00000000000000000000000000000000000000e4",
 		},
 		"feeToken":   "0x20c000000000000000000000b9537d11c60e8b50",
 		"settlement": map[string]any{"mode": "access-key", "intervalMinutes": 60, "gracePeriodMinutes": 1440, "spendLimitPerDay": "2000000"},
@@ -149,6 +154,7 @@ func lowerAddr(a common.Address) string { return "0x" + hex.EncodeToString(a[:])
 
 // World is one deployment with real bundles and the real composer.
 type World struct {
+	Addrs         chain.Addresses
 	Customer      common.Address
 	EnclaveSigner common.Address
 	ImageID       [32]byte
@@ -159,18 +165,24 @@ type World struct {
 	AttestedAt    uint64
 }
 
-// NewWorld composes a llm-gateway + notes stack.
+// NewWorld composes a llm-gateway + notes stack on the fake registries.
 func NewWorld(t testing.TB) *World {
+	return NewWorldAt(t, Addresses, common.HexToAddress("0x00000000000000000000000000000000000000c1"))
+}
+
+// NewWorldAt composes the stack for customer on the given registries.
+func NewWorldAt(t testing.TB, addrs chain.Addresses, customer common.Address) *World {
 	t.Helper()
 	w := &World{
-		Customer:      common.HexToAddress("0x00000000000000000000000000000000000000c1"),
+		Addrs:         addrs,
+		Customer:      customer,
 		EnclaveSigner: common.HexToAddress("0x00000000000000000000000000000000000000d5"),
 		ImageID:       SimImageID(false),
 		Bundles:       []*composer.Bundle{Bundle(t, "llm-gateway"), Bundle(t, "notes")},
 		Nonce2:        sha256.Sum256([]byte("nonce2")),
 		AttestedAt:    1793200000,
 	}
-	cfgJSON, err := cjson.Marshal(ConfigDoc(w.Customer, w.ImageID, w.Bundles...))
+	cfgJSON, err := cjson.Marshal(ConfigDocAt(addrs, w.Customer, w.ImageID, w.Bundles...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,8 +236,8 @@ func (w *World) Evidence(t testing.TB) map[string]any {
 	return map[string]any{
 		"schema": verify.EvidenceSchema, "chainId": 4217,
 		"contracts": map[string]any{
-			"platformRegistry": lowerAddr(Addresses.PlatformRegistry), "appRegistry": lowerAddr(Addresses.AppRegistry),
-			"deploymentRegistry": lowerAddr(Addresses.DeploymentRegistry),
+			"platformRegistry": lowerAddr(w.Addrs.PlatformRegistry), "appRegistry": lowerAddr(w.Addrs.AppRegistry),
+			"deploymentRegistry": lowerAddr(w.Addrs.DeploymentRegistry),
 		},
 		"deploymentId": w.Result.DeploymentID.Hex(), "customer": lowerAddr(w.Customer),
 		"imageId": "0x" + hex.EncodeToString(w.ImageID[:]), "releaseIds": ids,

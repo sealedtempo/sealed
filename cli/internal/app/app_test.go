@@ -42,6 +42,8 @@ type harness struct {
 	stdin   string
 	tty     bool
 	answers []string
+	// real, when set, replaces the in-memory chain (anvil tests).
+	real registry.Reader
 }
 
 func newHarness(t *testing.T) *harness {
@@ -85,8 +87,13 @@ func (h *harness) run(args ...string) (int, string, string) {
 			h.answers = h.answers[1:]
 			return a, nil
 		},
-		NewTokens:        func(string) (gcp.TokenSource, error) { return gcp.StaticToken("ya29.test"), nil },
-		NewChain:         func(context.Context, *settings.Settings) (registry.Reader, error) { return h.chain, nil },
+		NewTokens: func(string) (gcp.TokenSource, error) { return gcp.StaticToken("ya29.test"), nil },
+		NewChain: func(context.Context, *settings.Settings) (registry.Reader, error) {
+			if h.real != nil {
+				return h.real, nil
+			}
+			return h.chain, nil
+		},
 		NewSecretStore:   func(string, gcp.TokenSource) secrets.Store { return h.store },
 		NewCompute:       func(string, gcp.TokenSource) deploy.Compute { return h.compute },
 		NewShared:        func(string, string, gcp.TokenSource) deploy.SharedDisk { return h.shared },
