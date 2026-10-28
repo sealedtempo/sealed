@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Payment needed</title>
+<style>
+:root { --bg: #f7f7f5; --fg: #1d1d1b; --muted: #5c5c57; --card: #ffffff; --line: #e2e2dc; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #141413; --fg: #ededea; --muted: #a6a6a0; --card: #1e1e1c; --line: #33332f; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px 16px; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 34rem; width: 100%; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 28px 28px 24px; }
+h1 { font-size: 1.35rem; margin: 0 0 12px; }
+p { margin: 0 0 12px; }
+.muted { color: var(--muted); font-size: 0.92rem; margin-top: 18px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Payment needed</h1>
+<p>This deployment's usage fees could not be paid within the grace period, so its apps are unavailable for now.</p>
+<p>Nothing was deleted. Your data stays in your cloud account, and the apps come back as soon as a payment succeeds.</p>
+<p>If you own this deployment, open the Sealed console and raise the spending limit or add funds.</p>
+<p class="muted">Status code 402. The attestation endpoint of this deployment keeps working.</p>
+</main>
+</body>
+</html>
