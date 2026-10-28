@@ -3,7 +3,7 @@ import type { RobotsTxtFile } from '@crawlee/utils';
 import { firefox } from 'playwright';
 import type { JobSpec } from '../job.js';
 import type { RobotsPolicy } from '../robots.js';
-import { handlePage, jobConfiguration, robotsPolicy, runWithAbort, sharedOptions } from './common.js';
+import { jobConfiguration, newRunState, pageHandler, robotsPolicy, runWithAbort, sharedOptions } from './common.js';
 import { EGRESS_HEADER, egressVerdictFromHeader } from '../egress.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
 
@@ -66,8 +66,10 @@ export class SealedPlaywrightCrawler extends PlaywrightCrawler {
 }
 
 export function playwrightOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink): PlaywrightCrawlerOptions {
+  const state = newRunState();
+  const handlePage = pageHandler(spec, sink, state);
   return {
-    ...sharedOptions(spec, deps, sink),
+    ...sharedOptions(spec, deps, sink, state),
     headless: true,
     navigationTimeoutSecs: 60,
     browserPoolOptions: { useFingerprints: false, retireBrowserAfterPageCount: 50 },
@@ -92,7 +94,7 @@ export function playwrightOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSin
         statusCode: ctx.response?.status() ?? null,
         egress: egressVerdictFromHeader(ctx.response?.headers()[EGRESS_HEADER]),
       };
-      await handlePage(ctx, response, $, spec, sink);
+      await handlePage(ctx, response, $);
     },
   };
 }

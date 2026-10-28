@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -22,6 +22,7 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
   let site: StaticServer;
   let robots500: StaticServer;
   let codes: StaticServer;
+  let apex: Server;
   let proxy: TestProxy;
   const status = (code: number) => (_req: IncomingMessage, res: ServerResponse) =>
     res.writeHead(code, { 'content-type': 'text/html' }).end(`<h1 class="product-name">${code}</h1>`);
@@ -36,8 +37,13 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
       '/429': status(429),
       '/500': status(500),
     });
+    // apex.test sends everything to www.apex.test, as many sites do.
+    apex = createServer((req, res) => res.writeHead(301, { location: `http://www.apex.test${req.url}` }).end());
+    await new Promise<void>((r) => apex.listen(0, '127.0.0.1', r));
     proxy = await startTestProxy(
       {
+        'apex.test:80': (apex.address() as AddressInfo).port,
+        'www.apex.test:80': site.port,
         [`${FIXTURE_HOST}:80`]: site.port,
         'down.test:80': robots500.port,
         'other.test:80': site.port,
@@ -50,7 +56,7 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
 
   afterAll(async () => {
     await proxy.close();
-    await Promise.all([site.close(), robots500.close(), codes.close()]);
+    await Promise.all([site.close(), robots500.close(), codes.close(), new Promise<void>((r) => apex.close(() => r()))]);
   });
 
   it('fetches 401, 403, 404 and 429 once, and retries only 5xx', async () => {
@@ -136,6 +142,14 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
       expect(t.headers['user-agent']).toBe('SealedScraper/1.0 (+test)');
       expect(t.headers['sec-ch-ua']).toBeUndefined();
     }
+  });
+
+  it('follows a start URL that redirects to another host name and stays on that host', async () => {
+    const out = memorySink();
+    await runCheerio(a6Job({}, 'apex.test'), testDeps(proxy.url), out.sink, never);
+    expect(out.items.map((i) => i.url).sort()).toEqual(expected.items.map((e) => `http://www.apex.test${e.path}`).sort());
+    expect(out.skipped).toEqual([{ url: 'http://www.apex.test/private/staff.html', reason: 'robotsTxt' }]);
+    expect(out.failed).toEqual([]);
   });
 
   it('stops at max_pages', async () => {

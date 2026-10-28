@@ -3,7 +3,7 @@ import { CheerioCrawler, type CheerioCrawlerOptions, type Configuration } from '
 import type { RobotsTxtFile } from '@crawlee/utils';
 import type { JobSpec } from '../job.js';
 import type { RobotsPolicy } from '../robots.js';
-import { handlePage, jobConfiguration, robotsPolicy, runWithAbort, sharedOptions, throwOnFailedResponse, type PageResponse } from './common.js';
+import { jobConfiguration, newRunState, pageHandler, robotsPolicy, runWithAbort, sharedOptions, throwOnFailedResponse, type PageResponse } from './common.js';
 import { EGRESS_HEADER, egressVerdictFromHeader } from '../egress.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
 
@@ -35,8 +35,10 @@ export class SealedCheerioCrawler extends CheerioCrawler {
 }
 
 export function cheerioOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink): CheerioCrawlerOptions {
+  const state = newRunState();
+  const handlePage = pageHandler(spec, sink, state);
   return {
-    ...sharedOptions(spec, deps, sink),
+    ...sharedOptions(spec, deps, sink, state),
     // HttpCrawler defaults to true; certificates are always verified.
     ignoreSslErrors: false,
     navigationTimeoutSecs: 30,
@@ -48,7 +50,7 @@ export function cheerioOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink):
       },
     ],
     requestHandler: async (ctx) => {
-      await handlePage(ctx, pageResponse(ctx.response), ctx.$, spec, sink);
+      await handlePage(ctx, pageResponse(ctx.response), ctx.$);
     },
   };
 }
