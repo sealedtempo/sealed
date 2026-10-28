@@ -19,7 +19,7 @@ describe("payment-needed switch", () => {
     expect(routes[0]?.match).toEqual(original.apps.http.servers.srv0.routes[0]?.match);
     expect(isPaymentNeededConfig(switched)).toBe(true);
     expect(isPaymentNeededConfig(original)).toBe(false);
-    expect(JSON.stringify(switched)).not.toMatch(/—/);
+    expect(JSON.stringify(switched)).not.toMatch(/\u2014/); // no em-dashes in UI copy
   });
 
   describe("through the admin API on a unix socket", () => {
