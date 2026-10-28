@@ -1,53 +1,55 @@
 # Sealed interfaces (v1)
 
-This file is the contract between components. Every format, hash and endpoint that crosses a component boundary is defined here. If code and this file disagree, fix one of them in the same commit.
+This file is the contract between components. Every format, hash and endpoint that crosses a component boundary is defined here. If code and this file disagree, fix one of them in the same commit. Component READMEs (`runtime/composer/README.md`, `runtime/agent/README.md`, `runtime/egress/README.md`, `verifier/README.md`, `key-broker/README.md`, `cli/README.md`) hold the finer detail; where they go further than this file, they must not contradict it.
 
 Conventions:
 - `0x` hex for all byte values in JSON. Lowercase hex. Addresses are EIP-55 checksummed in UI only; lowercase in hashes and JSON.
 - `sha256` for hashes over offchain artifacts (quote, event log, config, compose, bundles). `keccak256` for onchain ids.
-- `||` is byte concatenation. Integers in byte strings are big-endian.
+- `||` is byte concatenation. Integers in byte strings are big-endian (`uint64be` is 8 bytes).
 - Times are unix seconds (uint64).
-- Money is in FEE_TOKEN base units (pathUSD, 6 decimals) as decimal strings in JSON, `uint256` onchain.
+- Money is in FEE_TOKEN base units as decimal strings in JSON, `uint256` onchain. FEE_TOKEN is the config's `feeToken`: USDC.e `0x20c000000000000000000000b9537d11c60e8b50` on Tempo mainnet (D-035), 6 decimals. Local Tempo nodes fund pathUSD (`0x20c0000000000000000000000000000000000000`), which tests use.
 
 ## 1. Canonical JSON (CJSON)
 
-Used for config, compose, egress policy and event log hashing.
+Used for config, compose, egress policy, event log, stack info and release plaintext hashing.
 
 - RFC 8785 (JCS) restricted profile: object keys sorted by byte order (keys must be ASCII), no insignificant whitespace, UTF-8, no trailing newline.
 - Numbers: integers only, within +/- 2^53. No floats anywhere in hashed documents (use integer base units, basis points, seconds).
 - Strings: JSON escapes only for `"`, `\`, and control characters (`\b \f \n \r \t`, others as `\u00XX`). No HTML escaping (Go: `SetEscapeHTML(false)`).
 - Multi-line strings embedded in JSON use LF only.
-- Implementations: Go `runtime/composer/cjson`, TS `@sealed/core/cjson`. Both run the shared vectors in `runtime/composer/testdata/cjson/*.json`.
+- Implementations: Go `runtime/composer/cjson` (the only Go implementation: the composer, verifier, egress, key broker and CLI all use it, D-006, D-040), TS `@sealed/core` (`canonicalize`, `parseCJSON`). Both run the shared vectors in `runtime/composer/testdata/cjson/*.json`.
 
 ## 2. Ids and hashes
 
 | name | formula |
 |---|---|
 | appId | `keccak256(bytes(slug))` |
-| releaseId | `keccak256(abi.encode(appId, version /*string*/, bundleHash))` |
+| releaseId | `keccak256(abi.encode(appId, version /*string*/, bundleHash))`, where version is the manifest's `release_version`, else `upstream.version` |
 | deploymentId | `keccak256(abi.encode(customer /*address*/, stackHash, salt /*bytes32*/))` |
 | imageId | `keccak256(abi.encode(name /*string*/, version /*string*/, measurementsHash))` (computed offchain; contracts accept any unique non-zero id) |
 | measurementsHash | `keccak256(mrtd || rtmr0 || rtmr1 || rtmr2)`, each exactly 48 bytes |
 | bundleHash | `sha256(bundle.tar)` (section 7) |
 | egressPolicyHash | `sha256(CJSON(egress.yaml parsed))` |
-| sbomHash | `sha256(CJSON({"<image name>": "<sha256 hex of sbom file>"...}))` over the SBOM files in the bundle |
-| configHash | `sha256(CJSON(public config))` (section 5) |
-| stackHash | dstack compose hash: `sha256(app-compose.json bytes)` (section 6). Fallback runtime: `sha256(CJSON(compose))` |
-| quoteHash | `sha256(raw quote bytes)` |
+| sbomHash | `sha256(CJSON({"<image name>": "0x<sha256 hex of sbom/<image>.spdx.json>", ...}))`, `{}` when a bundle has no SBOMs |
+| configHash | `sha256(CJSON(normalized public config))` (section 5) |
+| stackHash | dstack compose hash: `sha256(app-compose.json bytes)` (section 6) |
+| quoteHash | `sha256(quote bytes)`, over the signed quote only (D-052, section 8) |
 | eventLogHash | `sha256(CJSON(event log array))` |
 | usageHash | EIP-712 digest of the UsageReport (section 4.2) |
 
 ## 3. report_data constructions (TDX, 64 bytes)
 
-All three are `sha256(tag || fields)` followed by 32 zero bytes. The ASCII tag gives domain separation between the three uses (see DECISIONS D-010).
+All three are `sha256(tag || fields)` followed by 32 zero bytes. The ASCII tag gives domain separation between the three uses (D-010).
 
 | use | formula |
 |---|---|
 | key release | `sha256("sealed/kb-release/v1" || nonce[32] || ephemeralPub[32])` |
-| evidence | `sha256("sealed/evidence/v1" || stackHash[32] || configHash[32] || enclaveSigner[20] || nonce2[32])` |
+| evidence | `sha256("sealed/evidence/v1" || stackHash[32] || configHash[32] || enclaveSigner[20] || nonce2[32] || uint64be(attestedAt))` (D-047) |
 | live attest | `sha256("sealed/attest/v1" || nonce[32] || tlsPubKeyHash[32] || enclaveSigner[20])` where `tlsPubKeyHash = sha256(DER SubjectPublicKeyInfo of the serving TLS cert)` |
 
-`nonce2` for evidence: 32 random bytes generated by the agent, included in the bundle. It makes each evidence quote unique; freshness for evidence comes from `attestedAt` and the oracle's acceptance window (15 minutes).
+`nonce2` for evidence: 32 random bytes generated by the agent, included in the bundle. It makes each evidence quote unique. `attestedAt` is bound in report_data, so the evidence acceptance window (15 minutes, at most 5 minutes in the future) holds before a deployment is registered too. The agent takes `attestedAt` before it asks for the quote.
+
+Evidence vector (`packages/core/test/reportData.test.ts`, `verifier/attest`): stackHash 32 x `0x01`, configHash 32 x `0x02`, enclaveSigner 20 x `0x03`, nonce2 32 x `0x04`, attestedAt `1730000000` give `ecf4a53654152e242b80948f7c0657f5821a0406eb2a8291c5c0927696178ed3` followed by 32 zero bytes.
 
 ## 4. EIP-712
 
@@ -62,7 +64,7 @@ Heartbeat(bytes32 deploymentId,bytes32 quoteHash,uint64 attestedAt)
 
 `DeploymentRegistry.recordDigest(Record)` and `heartbeatDigest(deploymentId, quoteHash, attestedAt)` are public views returning the EIP-712 digests. `IAttestationVerifier.verify(digest, evidence)` receives one of these digests.
 
-Method 1 (ORACLE_SIG_V1) evidence: `abi.encode(bytes signature)` where signature is a 65-byte ECDSA signature over the digest by an allowed oracle signer. Method 2 (ZK_DCAP_V1) is reserved; see ZK_UPGRADE.md for its evidence layout.
+Method 1 (ORACLE_SIG_V1) evidence: `abi.encode(bytes signature)` where signature is a 65-byte ECDSA signature over the digest by an allowed oracle signer (v is 27 or 28). Method 2 (ZK_DCAP_V1) is reserved; see ZK_UPGRADE.md for its evidence layout.
 
 ### 4.2 Usage reports (signed by the enclave signer)
 
@@ -73,9 +75,9 @@ UsageItem(bytes32 appId,uint8 unit,uint256 quantity,uint256 fee)
 UsageReport(bytes32 deploymentId,uint64 periodStart,uint64 periodEnd,UsageItem[] items)
 ```
 
-Units: `1 = tokens` (count), `2 = pages` (successful requests), `3 = app_hour` (quantity in seconds, priced per hour). `fee` is in FEE_TOKEN base units. The report digest is the `usageHash` passed to `FeeSplitter.payFees` for every app in that report.
+Units: `1 = tokens` (count), `2 = pages` (successful requests), `3 = app_hour` (quantity in seconds, priced per hour). `fee` is in FEE_TOKEN base units. The report digest is the `usageHash` passed to `FeeSplitter.payFees` for every app in that report. A leg `(deploymentId, usageHash, appId)` counts as paid only when the `FeesPaid` amounts for it sum to the report's fee (D-034); a short leg is completed with `topUpFees`.
 
-Pricing (from config/defaults.yaml, 6 decimals): tokens `fee = floor(q * 200000 / 1_000_000)` per 0.20 USD per 1M; pages `floor(q * 200000 / 1000)`; app_hour `floor(q * price_units / 3600)`. Fractional remainders carry into the next period per app.
+Pricing (from `config/defaults.yaml`, 6 decimals): tokens `fee = floor(q * 200000 / 1_000_000)` (0.20 USD per 1M); pages `floor(q * 200000 / 1000)` (0.20 USD per 1k); app_hour `floor(q * price_units / 3600)`. Fractional remainders carry into the next period per app. No fee in a report exceeds `min(defaults cap, FeeSplitter perPaymentCap)`; the agent cuts reports to fit.
 
 ## 5. Public deployment config (`sealed-config/v1`)
 
@@ -88,70 +90,99 @@ Never contains secrets. Measured: it is an input to the composer, so it is cover
   "customer": "0x…",
   "salt": "0x…32 bytes",
   "imageId": "0x…",
-  "composerVersion": "1.0.0",
+  "composerVersion": "1.2.0",
   "apps": [ { "id": "llm-gateway", "releaseId": "0x…" } ],
   "hostnames": { "scheme": "sslip", "ip": "34.1.2.3" },
   "egressAdditions": { "scraper": ["example.com:443"] },
   "allowedVpcRanges": [],
+  "debug": false,
   "endpoints": {
     "keyBroker": "https://sealed-key-broker-xyz.a.run.app",
     "platformApi": "https://api.example",
     "tempoRpc": "https://rpc.tempo.xyz",
-    "relay": "https://relay.example",
-    "relayAttest": "https://attest.relay.example/attest"
+    "relay": "https://attest.34-9-8-7.sslip.io",
+    "relayAttest": "https://attest.34-9-8-7.sslip.io/attest"
   },
   "contracts": { "platformRegistry": "0x…", "appRegistry": "0x…", "deploymentRegistry": "0x…", "feeSplitter": "0x…" },
-  "feeToken": "0x20c0000000000000000000000000000000000000",
+  "feeToken": "0x20c000000000000000000000b9537d11c60e8b50",
   "settlement": { "mode": "access-key", "intervalMinutes": 60, "gracePeriodMinutes": 1440, "spendLimitPerDay": "2000000" },
   "relayOwner": "0x…"
 }
 ```
 
-- `hostnames.scheme` is `sslip` (`<route>.<ip-with-dashes>.sslip.io`) or `custom` with `"domains": {"gateway": "llm.example.com", ...}`.
-- `apps` sorted by `id`. `egressAdditions` entries are `host:port`, host may start with `*.` for one-label wildcards.
+- `composerVersion` must equal the composer's `Version` (`1.2.0`); a composer refuses configs of any other version, so the key broker, verifierd and the CLI recompute only stacks of their own composer version.
+- Parsing is strict: unknown fields, keys in another case, duplicate keys, floats and mixed-case hex are refused. Bounds: at most 128 KiB of JSON, 16 apps, 64 egress additions per app and 256 in total, 32 VPC ranges.
+- `apps` sorted by `id`, unique. `egressAdditions` entries are `host:port`, host may start with `*.` for one-label wildcards; only for apps in the stack whose egress policy has `customer_additions_allowed: true`. IPv4 literals must be public unicast; RFC 1918 literals are accepted only inside `allowedVpcRanges`.
+- `allowedVpcRanges` lie wholly in RFC 1918 space and overlap neither `apps` (172.30.0.0/24), `edge` (172.31.0.0/24) nor the app networks 172.30.1.0/24 to 172.30.16.0/24.
+- `debug` (boolean, default `false`): container logs use the `local` driver when true, else none. It is part of configHash, so the customer approves it.
+- Normalization: absent `egressAdditions`, `allowedVpcRanges` and `debug` become `{}`, `[]` and `false`, and the canonical form always carries them. configHash is over that normalized form (Go `Config.CanonicalJSON`; the TS twin `sealedConfigSchema` applies the same defaults). The composer writes the normalized config into the stack, so the VM, the evidence bundle and the platform's stored config all carry it.
+- Endpoint URLs are http(s) without credentials. `relayOwner`, `endpoints.relay` and `endpoints.relayAttest` are required when `llm-gateway` is in the stack; then `endpoints.relay` must be exactly the origin of `endpoints.relayAttest` (scheme and host, no path, no trailing slash), because the relay is served on its deployment's attest host (D-045) and the payer pins relay requests to the attested TLS key.
+- `hostnames.scheme` is `sslip` (`<route>.<ip-with-dashes>.sslip.io`) or `custom` with `"domains": {"<route>": "llm.example.com", "attest": "...", ...}`: a domain for every route in the stack plus `attest`, none for routes outside it, none for a route served on the attest host.
 - `settlement.mode` is `access-key` or `enclave-account`.
 - deploymentId is derived, not stored: `keccak256(abi.encode(customer, stackHash, salt))`.
 
 ## 6. Stack composition
 
-Inputs: public config, release bundles (by releaseId, fetched by bundleHash), composer version. Output: `app-compose.json` (dstack) whose sha256 is stackHash.
+Inputs: public config, release bundles (by releaseId, fetched by the release asset URL rule and checked against the onchain bundleHash, section 7), composer version. Output: `app-compose.json` (dstack) whose sha256 is stackHash.
 
-- `docker_compose_file` is the composed compose document serialized as CJSON (compose accepts JSON).
-- All images by digest (`ghcr.io/<owner>/<name>@sha256:…`). Tags are rejected.
-- Secrets never appear. Apps read secrets from `/run/sealed/secrets/<app>/<NAME>` (tmpfs written by sealed-agent) and wait for `/run/sealed/ready`.
-- The composer writes the public config and per-caller egress rules into the compose as inline `configs` content, so they are measured.
-- Fixed service IPs on the `apps` network (`172.30.0.0/24`): egress `.2`, agent `.3`, caddy `.4`, mpp-payer `.5`, apps from `.16` in config order of `apps` (sorted by id), app sub-services after that.
-- app-compose.json (dstack v0.6.1, `manifest_version` 2) is exactly this object serialized as CJSON, no trailing newline:
-  `{"allowed_envs":[],"docker_compose_file":"<CJSON compose>","gateway_enabled":false,"key_provider":"tpm","key_provider_id":"","kms_enabled":false,"local_key_provider_enabled":false,"manifest_version":2,"name":"sealed-<first 8 hex of configHash>","no_instance_id":false,"public_logs":false,"public_sysinfo":false,"public_tcbinfo":true,"runner":"docker-compose","secure_time":false,"storage_fs":"ext4"}`.
-  Plus `pre_launch_script`: the composer-rendered host rules script (section 15), measured like everything else. No `init_script` or `features`. Unmeasured host inputs (`.sys-config.json`, `.instance_info`, `app_id`) never drive any decision.
-- RTMR3 (event log v1): each event digest is `sha384(le32(0x08000001) || ":" || name || ":" || payload)`; `RTMR3 = sha384(RTMR3 || digest)` from 48 zero bytes. Verifiers require exactly this sequence and reject unknown events: `system-preparing`, `app-id`(20 bytes), `compose-hash`(32, equals stackHash), `gpu-policy-hash`(32, `44136fa3...aff8a` for no policy), `instance-id`(20), `boot-mr-done`, `key-provider`(`{"name":"tpm","id":""}`), `storage-fs`(`ext4`), `storage-encrypted`(`1`), `system-ready`. Golden vectors: `runtime/composer/testdata/dstack/` (copied from docs/notes/dstack.md section 6.3).
+- `docker_compose_file` is the composed compose document serialized as CJSON (compose accepts JSON); project name `sealed`. Every `$` in measured text is written as `$$`, so compose interpolation never reads host environment.
+- All images by digest, exactly `<registry>/<name>@sha256:…` with the registry of `runtime/composer/runtime-images.json` (`ghcr.io/sealedtempo`, equal to `config/defaults.yaml` `catalog.registry`). Tags are rejected. Zero digests (images not built yet) compose but are listed in the result's `unbuilt`; release lint refuses them.
+- Secrets never appear. Apps read them from `/run/sealed/secrets/<appId>/<NAME>` (section 14) and wait for `/run/sealed/ready/ok`.
+- The composer writes the public config, the stack info, the egress config and the Caddyfiles into the compose as inline `configs` content, so they are measured.
+- Networks (D-041), all bridges with IPv6 off:
 
-## 7. Release bundle
+| network | subnet | members |
+|---|---|---|
+| `apps` | `172.30.0.0/24`, internal | the sidecars and each app's primary service (alias `<appId>`) |
+| `edge` | `172.31.0.0/24`, inter-container traffic off | sealed-egress `.2`, caddy `.4` (publishes 80 and 443) |
+| `app-<appId>` | `172.30.<n>.0/24`, internal, n = 1..16 in sorted app order | every service of the app, sealed-egress `.2`, sealed-agent `.3` |
 
-Deterministic tar (POSIX ustar, entries sorted by path, mtime 0, uid/gid 0, uname/gname empty, mode 0644 files, 0755 dirs, LF endings in text files):
+- Fixed addresses on `apps`: sealed-egress `.2`, sealed-agent `.3`, caddy `.4`, sealed-mpp-payer `.5` and sealed-verifierd `.6` (both only when llm-gateway is in the stack), app primaries from `.16` in app order. On `app-<appId>`: the primary `.16`, the other services from `.17` in name order. A service of one app reaches another app's service only when both are primaries on `apps` (for example coding-agent to `llm-gateway`, llm-gateway to `sealed-mpp-payer`).
+- app-compose.json (dstack v0.6.1, `manifest_version` 2) is exactly this object serialized as CJSON, no trailing newline, at most 50 MiB:
+  `{"allowed_envs":[],"docker_compose_file":"<CJSON compose>","gateway_enabled":false,"key_provider":"tpm","key_provider_id":"","kms_enabled":false,"local_key_provider_enabled":false,"manifest_version":2,"name":"sealed-<first 8 hex of configHash>","no_instance_id":false,"pre_launch_script":"<host rules, section 15>","public_logs":false,"public_sysinfo":false,"public_tcbinfo":true,"runner":"docker-compose","secure_time":false,"storage_fs":"ext4"}`.
+  No `init_script` or `features`. Unmeasured host inputs (`.sys-config.json`, `.instance_info`, `app_id`) never drive any decision.
+- RTMR3 (event log v1): each event digest is `sha384(le32(0x08000001) || ":" || name || ":" || payload)`; `RTMR3 = sha384(RTMR3 || digest)` from 48 zero bytes. Verifiers require exactly this sequence and reject unknown events: `system-preparing`, `app-id`(20 bytes), `compose-hash`(32, equals stackHash), `gpu-policy-hash`(32, `44136fa3...aff8a` for no policy), `instance-id`(20), `boot-mr-done`, `key-provider`(`{"name":"tpm","id":""}`), `storage-fs`(`ext4`), `storage-encrypted`(`1`), `system-ready`. Golden vectors: `runtime/composer/testdata/dstack/`.
+- Determinism: any change to composed bytes (composer code, `runtime-images.json`, the Caddy template, the host rules) needs a new composer version, because approved stacks pin the old bytes. `runtime/composer/testdata/golden/` pins the fixture stack (composer 1.2.0: stackHash `0xb31a58ae19594fd537c6bbb154ee50fac64b1d4b53acad375ad42a10d912727d`); consumers that copy the goldens (`runtime/agent/test/fixtures/composer-golden`) copy them again.
+
+## 7. Release bundle and release assets
+
+Deterministic tar (POSIX ustar written by the composer's own encoder, entries sorted by path with explicit parent directories, mtime 0, uid/gid 0, uname/gname empty, mode 0644 files, 0755 dirs, LF endings in text files, no record padding, at most 64 MiB). Only the canonical form loads, so one bundleHash names exactly one content:
 
 ```
 manifest.yaml
 compose.fragment.yaml
 egress.yaml
-LICENSES/<files>
+LICENSES/<files>          (the app's LICENSE-NOTICE and LICENSES/)
 sbom/<image-name>.spdx.json
 scan/<image-name>.json
 ```
 
-`sealed release build <app>` reproduces bundleHash. The composer reads only manifest.yaml, compose.fragment.yaml and egress.yaml.
+At build time every `images[].ref` in the bundled manifest is set to `<catalog.registry>/<name>@<digest>`. `sealed release build <app>` and release CI (`catalog/tools/release bundle`) both build with `composer.BuildBundle` and reproduce bundleHash byte for byte; the composer reads only manifest.yaml, compose.fragment.yaml and egress.yaml.
 
 Egress policy (`egress.yaml`):
 ```yaml
 version: 1
-default_allow: ["api.example.com:443"]
+default_allow: ["api.example.com:443"]   # at most 256 entries
 customer_additions_allowed: true
 notes: "why each entry exists"
 ```
 
+Release assets (D-046), one GitHub Release per app version under `catalog.release_asset_base` (`https://github.com/sealedtempo/sealed/releases/download`). `version` is the version hashed into releaseId, used literally, and must match `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$` (GitHub renames other characters, `+` included); release CI also refuses a leading `v`.
+
+| asset | URL or name |
+|---|---|
+| tag | `<appId>-v<version>` |
+| bundle | `<base>/<appId>-v<version>/<appId>-<version>.bundle.tar` |
+| cosign signature, certificate, Sigstore bundle | the bundle URL plus `.sig`, `.crt`, `.sigstore.json` |
+| SLSA provenance | the bundle URL plus `.intoto.jsonl` |
+| SBOM and scan of an image | `sbom.<image>.spdx.json`, `scan.<image>.json` in the same release (the bundle's `sbom/` and `scan/` files; asset names cannot contain `/`) |
+| release summary | `<appId>-<version>.release.json` (`sealed-release/v1`, for the api and console) |
+
+The rule is implemented once, `runtime/composer` `NewReleaseAssets`, `ReleaseTag`, `BundleAssetName`, `SBOMAssetName`; release CI names, the key broker, sealed-verifierd (`verifier/bundles`) and the CLI use it. Fetchers follow redirects, accept a bundle only when its sha256 equals the onchain bundleHash (else `bundle_hash_mismatch`), load it in canonical form and cache it by hash. Onchain `signatureURI` is the `.sig` URL and `provenanceURI` the `.intoto.jsonl` URL.
+
 ## 8. Evidence bundle (`sealed-evidence/v1`)
 
-Produced by sealed-agent, sent to `POST /v1/evidence`, downloadable from the console, consumed by `sealed verify`.
+Produced by sealed-agent, sent to `POST /v1/evidence`, downloadable from the console and `GET /v1/deployments/:id/evidence`, consumed by `sealed verify`.
 
 ```json
 {
@@ -162,7 +193,7 @@ Produced by sealed-agent, sent to `POST /v1/evidence`, downloadable from the con
   "customer": "0x…",
   "imageId": "0x…",
   "releaseIds": ["0x…"],
-  "config": { "…": "public config, section 5" },
+  "config": { "…": "normalized public config, section 5" },
   "configHash": "0x…",
   "appCompose": "<exact app-compose.json string>",
   "stackHash": "0x…",
@@ -178,104 +209,249 @@ Produced by sealed-agent, sent to `POST /v1/evidence`, downloadable from the con
 }
 ```
 
-`record` is added by the platform after registration and is not covered by any hash.
+- `config` is the normalized config the VM mounts at `/etc/sealed/config.json`, so `sha256(CJSON(config)) = configHash`.
+- `quote` is exactly the signed quote: dstack on GCP returns it zero padded in an 8000-byte buffer, and verifiers refuse trailing bytes, so producers trim to the signed length (D-052).
+- report_data is the evidence construction of section 3, with `attestedAt` bound.
+- `record` is added by the platform after registration and is not covered by any hash.
+- Verification checks and their order are listed in `verifier/README.md` (`bundle`, `chain`, `quote_hash`, `quote`, `td_attributes`, `image_measurements`, `image_approved`, `event_log_hash`, `rtmr3`, `compose_hash`, `config_hash`, `config_binding`, `deployment_id`, `report_data`, `freshness`, `releases_active`, `stack_recompute`, `stack_approved`, `approval_releases`, `onchain_record`; `chain` also requires `config.contracts.feeSplitter` to equal the verifier's FeeSplitter when it knows one).
 
 ## 9. Key broker API
 
-`GET /v1/nonce` -> `{"nonce":"0x…32 bytes","expiresAt":1730000300}`. Single use, 5 minute lifetime.
+Runs on Cloud Run in the customer's project (spec 5.7, `key-broker/`), deployed by the customer's bootstrap (section 16), max instances 1, listening on `$PORT` (8080).
 
-`POST /v1/release`
+`GET /v1/nonce` -> `{"nonce":"0x…32 bytes","expiresAt":1730000300}`. Single use, 5 minute lifetime, kept in memory. `GET /healthz` -> `{"status":"ok"}`.
+
+`POST /v1/release`, strict JSON (unknown, duplicate or differently cased keys are refused):
 ```json
 { "nonce": "0x…", "ephemeralPub": "0x…32 bytes X25519", "quote": "0x…", "eventLog": [], "config": {}, "appCompose": "…", "releaseIds": ["0x…"], "imageId": "0x…" }
 ```
-Checks, in order, each logged with reason and hashes: quote verifies with Intel collateral and TCB status is allowed; report_data equals the key-release construction; measurements hash to `PlatformRegistry.getImage(imageId).measurementsHash` and `isApprovedImage(imageId)`; RTMR3 replays from the event log and its compose-hash event equals `sha256(appCompose)`; the composer recomputes appCompose from config and the releases' bundles (fetched from the catalog and checked against onchain bundleHash) byte for byte; `config.customer` equals the bootstrap customer; `DeploymentRegistry.isStackApproved(customer, stackHash)`; the set of `config.apps[].releaseId` equals `getStackApproval(customer, stackHash).releaseIds` and `config.imageId` equals the approval's imageId (so revoking any release of the stack really blocks it).
 
-200 response: `{"stackHash":"0x…","deploymentId":"0x…","enc":"0x…","ciphertext":"0x…"}`. HPKE base mode, RFC 9180 suite X25519 / HKDF-SHA256 / AES-256-GCM, `info = "sealed/kb-release/v1"`, `aad = nonce`. Plaintext is CJSON:
+Checks, in order; the nonce is consumed first on every attempt, every chain read is pinned to one block, and each check is logged with its data:
+
+| check | denial reason |
+|---|---|
+| nonce issued here, unused, unexpired | `bad_nonce` |
+| request well formed, sizes bounded | 400 `bad_request` |
+| quote verifies with Intel PCS collateral; a request without a TDX quote is refused | `quote_invalid` |
+| TCB status allowed (`UpToDate`, `SWHardeningNeeded` by default) | `tcb_status` |
+| report_data equals the key-release construction | `report_data_mismatch` |
+| `getImage(imageId)` exists and `isApprovedImage(imageId)` | `image_not_approved` |
+| measurements hash to the image's measurementsHash | `measurements_mismatch` |
+| not a debug image; no TD debug, migratable or reserved attribute bits | `image_debug` |
+| RTMR3 replays from the event log with exactly the section 6 sequence | `rtmr3_replay` |
+| the compose-hash event equals `sha256(appCompose)` | `compose_mismatch` |
+| config parses for this composer version, `releaseIds` equal `config.apps[].releaseId`, each release is published for that app | `compose_mismatch` |
+| each bundle (section 7 URL rule) has the onchain bundleHash | `bundle_hash_mismatch` |
+| the composer recomputes appCompose byte for byte | `compose_mismatch` |
+| `config.customer` equals the bootstrap customer | `customer_mismatch` |
+| `config.chainId` and `config.contracts` name the broker's chain and registries | `stack_not_approved` |
+| `DeploymentRegistry.isStackApproved(customer, stackHash)` | `stack_not_approved` |
+| the approval's releaseIds equal the config's as a set, and its imageId equals `config.imageId` and the request's (D-014) | `stack_not_approved` |
+
+200 response: `{"stackHash":"0x…","deploymentId":"0x…","enc":"0x…","ciphertext":"0x…"}` with an `X-Request-Id` header. HPKE base mode, RFC 9180 suite X25519 / HKDF-SHA256 / AES-256-GCM, `info = "sealed/kb-release/v1"`, `aad = nonce`; `enc` (32 bytes) and `ciphertext` (the bare AEAD output) are separate fields. Plaintext is CJSON, with an entry for every app of the stack (possibly empty) and `_gate` always:
 ```json
-{ "secrets": { "crm": { "APP_SECRET": "…" }, "_gate": { "GATE_PASSWORD_BCRYPT": "…" } }, "diskKey": "0x…32", "signerSeed": "0x…32" }
+{ "diskKey": "0x…32", "secrets": { "crm": { "PG_DATABASE_PASSWORD": "…" }, "_gate": { "GATE_PASSWORD_BCRYPT": "…" } }, "signerSeed": "0x…32" }
 ```
-`diskKey = HMAC_KMS("sealed/disk/v1" || deploymentId)`, `signerSeed = HMAC_KMS("sealed/signer/v1" || deploymentId)` using the bootstrap's Cloud KMS HMAC-SHA256 key, so both survive reboots and never leave KMS in root form. Local dev uses a file-backed HMAC key.
+`diskKey = HMAC_KMS("sealed/disk/v1" || deploymentId)`, `signerSeed = HMAC_KMS("sealed/signer/v1" || deploymentId)` using the bootstrap's Cloud KMS HMAC-SHA256 key version 1 (`macSign`), so both survive reboots and never leave KMS in root form. Local dev uses a file-backed HMAC key (dev build only).
 
-Failure: 403 `{"decision":"denied","reason":"<code>","detail":"…"}`. Reason codes: `bad_nonce`, `quote_invalid`, `tcb_status`, `report_data_mismatch`, `image_not_approved`, `image_debug`, `measurements_mismatch`, `rtmr3_replay`, `compose_mismatch`, `bundle_hash_mismatch`, `customer_mismatch`, `stack_not_approved`.
+Denials: 403 `{"decision":"denied","reason":"<code>","detail":"…"}` with the reasons above. Other answers use the same shape: 400 `bad_request` (malformed body, unusable ephemeral key), 429 with `Retry-After` when the in-flight limit is reached, 503 `unavailable` (RPC, catalog, Secret Manager, KMS, deadline), 503 `secret_missing` or `secret_invalid` (a required manifest secret is not stored or not usable; the customer fixes it with `sealed secrets set` and the agent retries), 503 `decision_log_unavailable` (an allowed release is withheld when its Cloud Logging write fails).
 
-Secret Manager naming: `sealed-<app>-<NAME>` (for example `sealed-crm-APP_SECRET`), and `sealed-gate-password`. The broker only returns secrets named in the manifests of the stack's releases.
+Secret Manager naming: `sealed-<appId>-<NAME>` (for example `sealed-crm-PG_DATABASE_PASSWORD`) and `sealed-gate-password`, which holds the bcrypt hash of the gate password and is released unchanged as `_gate/GATE_PASSWORD_BCRYPT` (a value that is not a bcrypt hash is refused). The broker reads only secrets named in the manifests of the stack's releases; missing optional ones are left out. A manifest secret with `same_as: "<appId>/<NAME>"` (D-043) is read from `sealed-<appId>-<NAME>` and released under the referencing app's name; the referenced app must be in the stack and declare that secret.
 
 ## 10. Platform API (selected endpoints)
+
+Private repo `services/api`; the console contract is `docs/API_CONTRACT.md` there. Errors are `{"error":{"code","message","detail"?}}`.
 
 | method | path | caller | body / result |
 |---|---|---|---|
 | POST | `/v1/evidence` | sealed-agent | evidence bundle -> `{"deploymentId","txHash","kind":"register"/"heartbeat"}` |
-| POST | `/v1/usage` | sealed-agent | `{"report":{UsageReport json},"signature":"0x…"}` |
-| POST | `/v1/health` | sealed-agent | `{"deploymentId","signature","body":{"apps":{"crm":"healthy"},"egress":{"allowed":{"host:port":n},"blocked":{"host:port":n}},"payments":{…}}}` signed by enclaveSigner (EIP-191 over CJSON body) |
-| GET | `/v1/catalog/apps` | anyone | apps with releases |
-| POST | `/v1/compose/preview` | console | `{config}` -> `{appCompose, stackHash, configHash, deploymentId}` |
+| POST | `/v1/usage` | sealed-agent | `{"report":{UsageReport json},"signature":"0x…"}` -> `{"usageHash","accepted":true,"duplicate"}` |
+| POST | `/v1/health` | sealed-agent | `{"deploymentId","signature","body"}` signed by the enclave signer (EIP-191 over CJSON body) -> `{"ok":true}`, plus `"reattest":true` while a customer's re-attest request is pending |
+| GET | `/v1/catalog/apps`, `/v1/catalog/apps/:id` | anyone | apps with releases; `latestRelease` may be null; a release carries `assetsError` when its bundle could not be fetched or did not match bundleHash |
+| GET | `/v1/compose/options?project=<id>` | customer session | `{region, zones[], machineTypes[], defaultMachineType}` |
+| POST | `/v1/compose/preview` | customer session | choices -> `{appCompose, stackHash, configHash, deploymentId, …}`; reserves the static IP (the sslip hostnames are in the config) |
 | POST | `/v1/deployments` | customer session | create |
 | GET | `/v1/deployments/:id` | customer session | status, timeline, record |
-| POST | `/v1/verify` | anyone | `{deploymentId}` or `{bundle}` -> verify report |
+| GET | `/v1/deployments/:id/evidence` | customer session or org API key (`Authorization: Bearer`) | the latest recorded evidence bundle |
+| POST | `/v1/deployments/:id/reattest` | customer session | records the request and runs a live `/attest` check through sealed-verifierd |
+| DELETE | `/v1/deployments/:id` | customer session | `{"txHash","prepared":[PreparedTransaction]}`: `closeDeployment` and `revokeKey` for the customer's wallet |
+| POST | `/v1/verify` | anyone | `{"deploymentId":"0x…"|"dep_…"}` or `{"bundle"}` -> verify report with `deploymentId` and `alias` |
+| GET | `/v1/relay` | anyone | relay models and prices, `relayAttestation` (`verified`, `failed`, `unknown`) |
 
-## 11. sealed-agent local API (inside the VM, apps network only)
+Oracle (`POST /v1/evidence`): shape and cheap bindings without the network (chain and contracts, releases, stackHash, quoteHash, eventLogHash, configHash, deploymentId, attestedAt within 15 minutes and at most 5 minutes ahead), then onchain state (unknown means register, Active means heartbeat with the same customer, stack, image, config and enclave signer and a later attestedAt, Closed is refused), then D-034 (`isStackApproved`, approval releases and image equal the config's), then sealed-verifierd `POST /v1/verify/evidence`; any failed check refuses. The ORACLE key signs the contract's `recordDigest` or `heartbeatDigest`. Agent-route errors: `evidence_rejected` (422, `detail.failed` lists check names), `signature_invalid` (401), `verifier_unavailable` (503), `chain_unavailable` (503), `conflict` (409, a stale health report or a closed deployment).
 
-| method | path | caller |
-|---|---|---|
-| POST | `/v1/usage-events` | apps: `{"app":"llm-gateway","unit":"tokens","quantity":123,"meta":{"model":"…","prompt_tokens":1,"completion_tokens":2,"key_alias":"…"}}` |
-| POST | `/v1/spend` | mpp-payer: spend counters |
-| GET | `/attest?nonce=0x…` | public via Caddy: `{"quote","eventLog","config","releaseIds","appCompose","enclaveSigner","tlsPubKeyHash","reportData"}` |
-| GET | `/healthz`, `/v1/ready` | Caddy, apps |
+Health body, checked strictly (property P5): only `at`, `apps` (app ids to `healthy`, `unhealthy`, `unknown`, `starting` or `stopped`), `egress` (`since`, and `allowed` and `blocked` as `host:port` keys to counts, at most 50 each) and `payments` (at most 64 short names with scalar values). The agent sends:
+
+```json
+{"at":1800000000,
+ "apps":{"crm":"healthy"},
+ "egress":{"since":1799999000,"allowed":{"host:port":3},"blocked":{"host:port":1}},
+ "payments":{"mode":"access-key","paymentNeeded":false,"failingSince":null,"lastPaidAt":null,"lastAttemptAt":null,"lastOutcome":"settled",
+             "metered":"200833","unpaid":"0","overCap":0,
+             "budget_limit":"2000000","budget_fees":"202833","budget_payer":"40000","budget_reserved":"0",
+             "budget_reservedForFees":"10200","budget_payerAvailable":"1746967","budget_windowEnd":"1800014400",
+             "mpp_debited":"1200","mpp_budget":"2000000","mpp_charges":3,"mpp_relayAttested":true}}
+```
+
+`mpp_<counter>` are the payer's counters from `POST /v1/spend` (nested `counters` and `relay` flattened); `budget_*` is the shared spend budget (section 11).
+
+sealed-verifierd (`verifier/cmd/sealed-verifierd`), used by the api and, in the VM, by the payer: `POST /v1/verify/evidence` (`{"bundle","options"}` or a bare bundle), `POST /v1/verify/live` (`{"url","options"}`), `POST /v1/compose` (`{"config"}` or a bare config -> `{appCompose, stackHash, configHash, deploymentId, unbuilt?}`; 503 with `Retry-After` when bundles are unavailable, 422 for configs or releases that do not compose, 501 only without a composer), `GET /healthz` -> `{ok, chainId, allowSimulated, composer}`. Options: `requireRecord`, `maxEvidenceAgeSeconds`, `deploymentId`, `expectedCustomer`, `expectedAppIds`, `heartbeat`. 429 when too many verifications are in flight. Flags and environment: `verifier/README.md` (`TEMPO_RPC_URL`, `TEMPO_CHAIN_ID`, `SEALED_CONFIG_FILE`, `SEALED_RELEASE_ASSET_BASE` with comma-separated mirrors, `SEALED_BUNDLE_CACHE_DIR`, `SEALED_FEE_SPLITTER`, `SEALED_VERIFIERD_LIVE_HOSTS`, `PORT`); the embedded `contracts/deployments/tempo-mainnet.json` is the default address source on chain 4217.
+
+## 11. sealed-agent local API (inside the VM, port 7070)
+
+Callers are identified by source address: the stack info's fixed addresses, every address a service owns (`services[].ips`, a primary reaches the agent from `apps` and from its app network).
+
+| method | path | caller | body / result |
+|---|---|---|---|
+| GET | `/healthz`, `/v1/ready` | Docker, apps | 200 once secrets are written and the ready flag is set |
+| POST | `/v1/usage-events` | the app's own services | `{"app":"llm-gateway","unit":"tokens","quantity":123,"id"?:"…","meta"?:{"model":"…","prompt_tokens":1,"completion_tokens":2,"key_alias":"…","call_id":"…"}}`; 403 from another source, 422 for a unit the app does not meter by `callback` or an event over the per-event limit (10M tokens, 10k pages, 3600 s), 429 over the hourly limit per app and unit; `id` or `meta.call_id` dedupes |
+| POST | `/v1/spend` | sealed-mpp-payer | the payer's SpendReport `{source, mode, currency, counters{day, limit, budget, debited, remaining, charges, chargeAmount, deposits, depositAmount, topUps, topUpAmount, refunded, refused, sessionAuthorized}, relay{attested, checkedAt, stackHash, sessionsAvailable}, sentAt}`; only the known numeric and boolean counters are kept (`mpp_*` in health reports) |
+| POST | `/v1/spend/reserve` | sealed-mpp-payer | `{"amount":"<base units>","currency"?:"0x…"}` -> `{"ok":true,"reservationId":"0x<16 bytes>","remaining"}` or `{"ok":false,"remaining","reason":"budget"|"too_many_reservations"}`; 400 for a malformed or non-positive amount, 422 when `currency` is not the config's `feeToken`, 503 before ready |
+| POST | `/v1/spend/release` | sealed-mpp-payer | `{"reservationId","used":"<base units>"}` -> `{"ok":true,"remaining"}`; 404 for an unknown or already released id |
+| GET | `/v1/gate?route=<route>` | caddy (forward_auth) | section 14, Caddy |
+| POST | `/v1/bootstrap/done` | the app's bootstrap service | `{"app"}`, only for a job whose done file is not on the data disk (409 otherwise) |
+| GET | `/attest?nonce=0x…` | public via Caddy | `{"quote","eventLog","config","releaseIds","appCompose","enclaveSigner","tlsPubKeyHash","reportData"}`; 1/s, burst 5 per client, 10/s overall |
+
+Shared spend budget (D-048): fee settlement and the payer draw on one window's limit, `settlement.spendLimitPerDay` (the access key's limit). The payer may reserve at most `limit - fees spent - payer spent - open reservations - reserved_for_fees`, where reserved_for_fees is the next settlement's estimated fees (unpaid legs, the open period, one settlement interval of app-hours, and 0.01 USD of network fees per app transaction). Settlement is never refused by the budget. The window follows the access key's onchain period end when it has a periodic limit, else the UTC day. At most 64 reservations are open; one not released within 15 minutes counts as spent until a late release corrects it. The payer reserves before each debit with `currency` = FEE_TOKEN, treats `ok:false` as a refusal (429 to its caller), treats 400, 401, 403, 404, 422, 5xx and timeouts as unavailable and refuses to pay (503 `spend_budget_unavailable`), releases with `used` (`"0"` when the payment never left or the relay answered 402), treats 404 on release as already released, and keeps its local SpendGuard over the whole daily limit as a second cap.
 
 ## 12. sealed-egress
 
-Config (generated by the composer, measured): CJSON
+Config (generated by the composer, measured, canonical CJSON; one trailing LF tolerated; strict keys):
 ```json
-{ "listen": {"proxy": ":3128", "dns": ":53", "stats": ":9100"},
-  "upstreamDns": ["8.8.8.8:53"],
-  "callers": [ {"name": "sealed-agent", "ip": "172.30.0.3", "allow": ["sealed-key-broker-xyz.a.run.app:443"]} ],
-  "allowedPrivateCidrs": [],
-  "statsReaders": ["172.30.0.3"] }
+{ "allowedPrivateCidrs": [],
+  "callers": [ {"allow": ["sealed-key-broker-xyz.a.run.app:443"], "ip": "172.30.0.3", "name": "sealed-agent"} ],
+  "listen": {"dns": ":53", "proxy": ":3128", "stats": ":9100"},
+  "statsReaders": ["172.30.0.3"],
+  "upstreamDns": ["8.8.8.8:53", "8.8.4.4:53"] }
 ```
-Matching: exact `host:port` or `*.domain:port` (one label). CONNECT and absolute-URI HTTP proxying. Destination IP checks after resolution: deny link-local (169.254.0.0/16, fe80::/10), loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7, 100.64/10) unless in `allowedPrivateCidrs`, and always deny 169.254.169.254. Raw-IP destinations are denied unless an allow entry is that IP. DNS: answers A/AAAA only for names allowed for that caller; everything else NXDOMAIN, counted as blocked. Stats: `GET /v1/stats` -> `{"since","allowed":{"host:port":n},"blocked":{"host:port":n}}`, readable only from `statsReaders`. Logs counts once a minute; never paths or payloads.
+
+- One caller per source address, unique names, sorted by address. The composer names them `sealed-agent` (`172.30.0.3`) and `sealed-agent--app-<appId>` (`172.30.<n>.3`), `caddy` (`acme-v02.api.letsencrypt.org:443`), `sealed-mpp-payer` (relay origin, Tempo RPC), `sealed-verifierd` (Intel PCS `api.trustedservices.intel.com:443` and `certificates.trustedservices.intel.com:443`, Tempo RPC, the relay attest host, and the release asset hosts `github.com:443`, `objects.githubusercontent.com:443`, `release-assets.githubusercontent.com:443`, D-061), and for each app service `<service>` (its app-network address) and, for a primary, `<service>--apps` (its `apps` address), both with the app's `default_allow` plus the config's `egressAdditions`. The agent's callers allow the key broker, the platform API and the Tempo RPC. Service names are at most 57 characters and contain no `--`.
+- `callers[].proxyAuth` (optional, only ever `true`) makes the caller also present a proxy credential; the composer does not set it (identity is the source address, NET_RAW is dropped on app services and app networks are separate).
+- Matching: exact `host:port` or `*.domain:port` (exactly one extra label). Hosts lowercase ASCII, at least two labels; ICANN public-suffix wildcards and IPv6 literals are rejected. CONNECT and absolute-URI `http://` proxying; absolute `https://` and client-chosen upstream proxies are refused.
+- Destination IP checks after resolution and again before the dial (only the checked IP is dialed): always deny metadata (169.254.169.254 and the IPv6 metadata addresses), loopback, link-local, 0/8, multicast, reserved, special-use and NAT64 ranges, the VM networks and the networks of egress's own interfaces; private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7) only inside `allowedPrivateCidrs`. Raw-IP destinations are denied unless an allow entry is that IP. Denials are 403 with `X-Sealed-Egress: blocked`; 429 with `X-Sealed-Egress: limited` over a per-caller limit.
+- DNS: A/AAAA only for names on the caller's allowlist (denied addresses stripped); other types for allowed names NOERROR without records; ANY or non-IN class REFUSED; other names NXDOMAIN; unknown sources and rate-limited queries REFUSED; all counted.
+- Stats: `GET /v1/stats` (only from `statsReaders`) -> `{"since","allowed":{"<key>":n},"blocked":{"<key>":n},"callers":{"<name>":{"allowed","blocked"}}}`, where keys are allowlist entries or words of a fixed vocabulary (`unlisted:<port>`, `ip-<class>:<port>`, `invalid:<port>`, `rate-limited:0|53`, `unauthenticated:0`, `other:0`), never a name or address a container chose. `GET /healthz` for anyone. Counts are logged once a minute; never paths or payloads.
 
 ## 13. Code layout and shared packages
 
-Go (one module at the repo root, `go.mod`, Go 1.24+ language level, built with the installed toolchain):
+Go (one module at the public repo root, `github.com/sealed-dev/sealed`, `go 1.26.0`, built with the installed toolchain):
 
 | package | path | owns |
 |---|---|---|
-| `cjson` | `runtime/composer/cjson` | canonical JSON encode and re-canonicalize |
-| `composer` | `runtime/composer` | bundle load/build (deterministic tar), manifest and egress parsing, `Compose(cfg, bundles) -> Result{AppCompose, StackHash, ConfigHash, DeploymentID, EgressConfig}` |
-| `egress` | `runtime/egress` | proxy, DNS, stats; `cmd/sealed-egress` |
+| `cjson` | `runtime/composer/cjson` | canonical JSON encode, parse and re-canonicalize |
+| `composer` | `runtime/composer` | bundle load and build (deterministic tar), manifest and egress parsing, `Compose(cfg, bundles) -> Result{AppCompose, StackHash, ConfigHash, DeploymentID, EgressConfig, Unbuilt, …}`, release asset rule and `FetchBundle`/`DirCache`, secret generators (`GenerateSecret`); `lint` (catalog lint and license policy); `cmd/sealed-compose` |
+| `caddy` | `runtime/caddy` | the Caddyfile template and payment-needed page |
+| `envexec` | `runtime/envexec` | the static entrypoint wrapper (section 14) |
+| `egress` | `runtime/egress` | proxy, DNS, stats; `policy` (config, matching, IP classes); `cmd/sealed-egress` |
 | `attest` | `verifier/attest` | TDX quote parse and verify (go-tdx-guest, Intel PCS collateral with cache), RTMR replay from the dstack event log, report_data builders, dev simulator quotes |
-| `chain` | `verifier/chain` | read-only Tempo contract client (go-ethereum) for the four registries |
-| `verify` | `verifier` | evidence bundle verification producing a `Report{OK, Checks[]}`; `cmd/sealed-verifierd` HTTP service |
-| `keybroker` | `key-broker` | nonce store, release pipeline, HPKE, KMS HMAC, Secret Manager, Cloud Logging; `cmd/key-broker` |
-| `cli` | `cli` | `cmd/sealed` (bootstrap, secrets, deploy, verify, catalog, release build) |
+| `chain` | `verifier/chain` | read-only Tempo contract client (go-ethereum) for the registries, reads pinned to one block, the embedded mainnet deployments file |
+| `bundles` | `verifier/bundles` | release bundle fetch with mirrors, hash check and cache, and the `verify.Composer` on runtime/composer |
+| `verify` | `verifier` | evidence and live verification producing `Report{OK, Simulated, BlockNumber, Checks[]}`; `httpapi`; `cmd/sealed-verifierd` |
+| `keybroker` | `key-broker` | nonce store, release pipeline, HPKE (Go `crypto/hpke`), secret plan with `same_as`, decision log; `gcp` (Secret Manager, Cloud KMS MAC, Cloud Logging); `cmd/key-broker` |
+| `cli` | `cli` | `cmd/sealed` (bootstrap, connect gcp, secrets, deploy, verify, catalog, release build) |
+| release tool | `catalog/tools/release` | catalog CI and release pipeline (bundles, assets, pins, waivers, workflow policy) |
 
-TypeScript (pnpm workspace at the public repo root, Node 22+, ESM, strict TS, vitest):
+TypeScript (pnpm workspace at the public repo root, lockfile committed, `pnpm install --frozen-lockfile`; Node 22.18+ for type stripping, images on Node 24.22.1; ESM, strict TS, vitest):
 
 | package | path | owns |
 |---|---|---|
-| `@sealed/core` | `packages/core` | chain definition, contract ABIs (from `contracts/abi`), EIP-712 types and helpers for Record, Heartbeat and UsageReport, CJSON twin, config loader for `config/defaults.yaml`, pricing math |
-| `@sealed/agent` | `runtime/agent` | sealed-agent |
+| `@sealed/core` | `packages/core` | chain definition (`tempoChain()` defaults the fee token to USDC.e on 4217 and pathUSD on local nodes), contract ABIs (from `contracts/abi`), EIP-712 types and helpers, report_data builders, HPKE open, CJSON twin, config schema twin (`sealedConfigSchema`), config loader for `config/defaults.yaml`, pricing math |
+| `@sealed/agent` | `runtime/agent` | sealed-agent and the dstack simulator (`runtime/agent/sim`) |
 | `@sealed/mpp-payer` | `runtime/mpp-payer` | sealed-mpp-payer |
 | `@sealed/relay` | `runtime/relay` | inference relay front (mppx server) and provider verification sidecars |
 | `@sealed/scraper-runner` | `catalog/apps/scraper/runner` | first-party scraper app |
 
-The private repo links `@sealed/core` from the public repo (`link:../sealed/packages/core`) for `services/api`, `console` and `tests/e2e`.
+`catalog/apps/crm` and `catalog/apps/internal-tools` keep app-local lockfiles for their `node --test` suites (`pnpm install --ignore-workspace --frozen-lockfile`). `catalog/tools/catalog-lint.mjs` and `catalog/tools/catalog_lint.py` wrap `sealed-compose lint` and composition for app test suites; the rules live only in the composer lint.
 
-Dev attestation mode: with `SEALED_DEV_SIM=1` the agent talks to a local dstack-compatible simulator and produces quotes in a clearly marked simulated format. `attest` accepts them only when the verifier is constructed with `AllowSimulated: true`, which production builds of the key broker and `sealed verify` never set; reports always show `simulated: true`. Every other check (report_data, RTMR3 replay, image, compose recomputation, onchain approval) runs unchanged, so the full flow is testable on a laptop with a local Tempo node.
+The private repo links `@sealed/core` from the public repo (`link:../../../sealed/packages/core` from `services/api`, the canonical layout with both repos side by side); a `.pnpmfile.cjs` hook (`SEALED_CORE_DIR`) points it at a worktree during development.
+
+Dev attestation mode: with `SEALED_DEV_SIM=1` the agent talks to a local dstack-compatible simulator and produces quotes in a clearly marked simulated format. `attest` accepts them only when the verifier is constructed with `AllowSimulated: true`, which production builds of the key broker (simulator support exists only with `-tags sealeddev`) and `sealed verify` never set; reports always show `simulated: true`. Every other check (report_data, RTMR3 replay, image, compose recomputation, onchain approval) runs unchanged, so the full flow is testable on a laptop with a local Tempo node.
 
 ## 14. App fragments and in-VM runtime conventions
 
-`compose.fragment.yaml` is a docker compose snippet with only `services:` and `volumes:`. Rules the composer enforces (violations are errors, with the field named):
+Manifest (`manifest.yaml`, `catalog/schema/manifest.schema.json`): `schema`, `id`, `name`, `category`, `description`, `release_version`, `upstream`, `maintainer`, `maintainer_share_bps`, `compose_fragment` (`compose.fragment.yaml`), `egress_policy` (`egress.yaml`), `primary_service`, `images` (`name`, `source`, `digest`, `platform`, `license_spdx`, `ref` written only by the bundle builder), `resources`, `routes`, `healthcheck`, `metering`, `secrets`, `telemetry_off_env`, `telemetry_none_reason`, `license_exclusions`, `license_exceptions`, `bootstrap`, `notes`.
 
-- Service names are globally unique and start with `<appId>-` (for example `crm-server`, `crm-db`). The manifest's `routes[].service` names the service a route points at. The app's primary service (manifest `primary_service`) also gets the network alias `<appId>` so other apps can reach it (for example `http://llm-gateway:4000`).
-- Allowed service keys: `image` (digest only), `command`, `entrypoint`, `environment` (public values only), `healthcheck`, `depends_on` (same app only), `volumes` (named volumes of this app only, or `tmpfs`), `tmpfs`, `user`, `working_dir`, `read_only`, `stop_grace_period`, `shm_size`, `ulimits`, `mem_limit`, `cpus`, `labels`. Everything else is rejected, including `privileged`, `cap_add`, `devices`, `network_mode`, `networks`, `ports`, `pid`, `ipc`, `security_opt`, `build`, `env_file`, `secrets`, `configs`, `extra_hosts`, `dns`, and any bind mount (so no docker.sock or dstack.sock).
-- Secrets: the manifest lists `secrets: [NAME]`. A service that needs them sets `x-sealed-secrets: [NAME]` and must declare an explicit `entrypoint` (and `command` if any). The composer rewrites the entrypoint to `["/sealed/bin/envexec", "--app", "<appId>", "--", <original entrypoint...>]`. `envexec` (static Go binary, `runtime/envexec`) waits for `/run/sealed/ready`, exports each `/run/sealed/secrets/<appId>/<NAME>` as an env var, then execs. Services without secrets still go through envexec so every app waits for the secrets-ready gate.
-- Volumes: each named volume becomes a bind mount of `/mnt/sealed-data/<appId>/<volume>` (on the LUKS data disk opened by sealed-agent, propagated with `rshared`).
-- Added by the composer to every app service: network `apps` with a fixed IPv4, `dns: [172.30.0.2]`, `HTTP_PROXY`/`HTTPS_PROXY`/`http_proxy`/`https_proxy` = `http://172.30.0.2:3128`, `NO_PROXY`/`no_proxy` = every service name and alias in the stack plus `localhost,127.0.0.1`, `NODE_USE_ENV_PROXY=1`, the manifest's `telemetry_off_env`, read-only mounts of `/sealed/bin` (envexec, from the `sealed-init` volume) and `/run/sealed/secrets/<appId>` (tmpfs, written by the agent), `/run/sealed/ready`, `restart: unless-stopped`, `logging: {driver: none}` (production image; the debug image uses `local`), and `depends_on: {sealed-agent: {condition: service_healthy}}`.
-- Sidecars the composer adds: `sealed-init` (copies envexec into a volume, exits), `sealed-egress` (apps `.2` and edge `.2`), `sealed-agent` (apps `.3`, port 7070; the only service with `/var/run/dstack.sock`, the `sealed-data` disk device and `CAP_SYS_ADMIN`; healthy only after secrets are written), `caddy` (apps `.4` and edge, publishes 80 and 443), `sealed-mpp-payer` (apps `.5`, port 8090, only when llm-gateway is in the stack), `sealed-verifierd` (apps `.6`, port 8088, only when llm-gateway is in the stack; used by the payer to verify the relay). Sidecar image digests come from `runtime/composer/runtime-images.json`, which is part of the composer version.
-- Measured config: the public config, the egress config (section 12) and the Caddyfile are passed as inline compose `configs` (`content:`), so their bytes are inside stackHash.
-- Manifest `metering.source: heartbeat` apps get app-hour accounting from the agent's container health polling; `callback` apps post to `http://sealed-agent:7070/v1/usage-events`.
-- Caddy: routes `gateway`, `scraper`, `crm`, `code`, `tools`, `attest` at `<route>.<ip-with-dashes>.sslip.io` (or custom domains). Every app UI sits behind `basic_auth` with the bcrypt hash released as `_gate/GATE_PASSWORD_BCRYPT`; `gateway` passes LiteLLM bearer keys through without the gate; `attest` is public and proxies `sealed-agent:7070/attest`. A payment-needed switch is driven by sealed-agent through Caddy's admin API on a unix socket shared only with the agent.
+- Reserved ids: `sealed`, `sealed-*`, `caddy`, `gate`, `localhost`. `primary_service`, `routes[].service`, `healthcheck.service` and `bootstrap.service` start with `<id>-`.
+- Routes: `name`, `service` (must be the `primary_service`, since Caddy is on `apps` only), `internal_port`, `path_or_host` (the route name or a path), `auth` and `on_attest_host`. `auth` is `gate` for every route except llm-gateway's `gateway` (`bearer-passthrough`, LiteLLM keys) and inference-relay's `relay` (`public`, the paid MPP endpoint). `on_attest_host: true` is allowed only for the route named `relay` with a path prefix other than `/attest` (`/v1`): Caddy serves it on the attest host, same origin and certificate as `/attest` (D-045), and it gets no host of its own.
+- Secrets: `name`, `description`, `generate`, optional `optional` and `same_as`. Generators: `none` (the customer supplies it), `hex32` (64 lowercase hex), `base64-32` (32 random bytes, standard base64 with padding), `sk-hex32` (`sk-` plus hex32), `password` (24 characters uniform over `[A-Za-z0-9]`). `GATE_PASSWORD_BCRYPT` is reserved. `same_as: "<appId>/<NAME>"` (D-043) takes the value of another app's secret: it needs `generate: none`, may not name its own app, and composing requires the referenced app in the stack declaring that secret, which may not itself be a reference; a required secret may not reference an optional one. The key broker releases it under the referencing app; `sealed secrets` stores it once, under the referenced app.
+- `bootstrap`: optional `service` (gets `restart: on-failure`) and `done_file`, `<volume>/<path>` relative to `/mnt/sealed-data/<appId>/` (the older absolute form under a named-volume mount still resolves, with a lint warning; tmpfs paths are rejected). The gate keeps the app's routes at 503 until it exists.
+- `license_exceptions: [{decision, paths, reason}]` are honoured only for decision ids listed in `runtime/composer/lint/exceptions.go` (empty).
+- Release versions follow section 7.
+
+`compose.fragment.yaml` is a docker compose snippet with `services:`, `volumes:` and `x-*` anchor blocks only. Rules the composer enforces (violations are errors, with the field named):
+
+- Service names are lowercase DNS labels starting with `<appId>-`, at most 57 characters, without `--`, unique across the stack together with app aliases and sidecar names.
+- Allowed service keys: `image` (`{{image:<name>}}` naming a manifest image), `command`, `entrypoint` (required, a list), `environment` (public values only; no host passthrough, no composer-owned keys such as proxy variables, `NODE_USE_ENV_PROXY` or `SEALED_PUBLIC_URL_*`, no secret names), `healthcheck`, `depends_on` (same app only, no cycles), `volumes`, `tmpfs` (`<path>[:size=…,mode=…]`), `user`, `working_dir`, `read_only`, `stop_grace_period`, `shm_size`, `ulimits`, `mem_limit`, `cpus` (integer or quoted decimal), `labels`, `x-sealed-secrets`. Everything else is rejected, including `privileged`, `cap_add`, `devices`, `network_mode`, `networks`, `ports`, `pid`, `ipc`, `security_opt`, `build`, `env_file`, `secrets`, `configs`, `extra_hosts`, `dns`, bind mounts, anonymous volumes and reserved targets (`/run/sealed/…`, `/sealed/…`, the dstack socket).
+- `$NAME` and `${…}` are errors (they would read unmeasured host environment); `$$` is a literal `$`.
+- Top-level `volumes`: names only, each empty or `{x-sealed-owner: "<uid>:<gid>"}` (decimal ids below 2^31). Every volume is a directory on the encrypted data disk; the owner is recorded in sealed-stack/v1 and the agent creates the directory with it before the ready flag.
+
+Added by the composer to every app service of app `n`:
+
+- the entrypoint `["/sealed/bin/envexec","--app","<appId>",("--secret"|"--optional-secret",NAME)...,"--",<entrypoint>...]`. envexec (static Go binary, `runtime/envexec`) waits for `/run/sealed/ready/ok`, exports each declared `/run/sealed/secrets/<appId>/<NAME>` as an environment variable (an empty file of an optional secret counts as not set; an empty required one is refused), then execs;
+- networks per section 6; `dns: [172.30.<n>.2]`; `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy` = `http://172.30.<n>.2:3128`; `NO_PROXY`/`no_proxy` = every service name and app alias in the stack plus `localhost,127.0.0.1`; `NODE_USE_ENV_PROXY=1`; the manifest's `telemetry_off_env`;
+- `SEALED_PUBLIC_URL_<ROUTE>=https://<host>` for every route the app owns (route name upper-cased, `-` as `_`, no trailing slash; the attest host for a route on the attest host);
+- one read-only bind per secret it lists in `x-sealed-secrets`, `{type: bind, source: /run/sealed/secrets/<appId>/<NAME>, target: the same path, read_only: true, bind: {create_host_path: false}}`, never a directory (D-042);
+- read-only `sealed-bin` at `/sealed/bin` and `sealed-ready` at `/run/sealed/ready`;
+- app volumes as binds of `/mnt/sealed-data/<appId>/<volume>` with `create_host_path: false` (a container that starts before the agent opened the disk fails and is started again by `docker compose up`);
+- `security_opt: [no-new-privileges:true]`, `cap_drop: [AUDIT_WRITE, MKNOD, NET_RAW, SETFCAP]`, `restart: unless-stopped` (`on-failure` for the bootstrap service), `logging: {driver: none}` (`local` with `debug`), and `depends_on` on sealed-agent (healthy) and sealed-init (completed);
+- for the manifest healthcheck service without its own healthcheck: `envexec probe http://127.0.0.1:<port><path>`.
+
+Sidecars (image digests from `runtime/composer/runtime-images.json`, part of the composer version):
+
+| service | addresses | notes |
+|---|---|---|
+| `sealed-init` | `network_mode: none` | copies envexec into `sealed-bin`, exits |
+| `sealed-egress` | apps `.2`, edge `.2`, `172.30.<n>.2` | `SEALED_EGRESS_CONFIG=/etc/sealed/egress.json` |
+| `sealed-agent` | apps `.3`, `172.30.<n>.3` | port 7070; the only service with `/var/run/dstack.sock`, `/mnt/sealed-data` (bind, `rshared`), the host's `/run/sealed/secrets`, the data disk device (`/dev/disk/by-id/google-sealed-data` as `/dev/sealed-data`), `/dev/mapper/control`, `device_cgroup_rules: ["b 252:* rwm","b 253:* rwm","b 254:* rwm"]` and `SYS_ADMIN`; healthy only after secrets are written |
+| `caddy` | apps `.4`, edge `.4` | publishes 80 and 443; `group_add: ["10001"]`; holds no secret; `/data` on the encrypted disk |
+| `sealed-mpp-payer` | apps `.5` | port 8090, only with llm-gateway; binds `/run/sealed/secrets/sealed-mpp-payer/ENCLAVE_KEY` and `SPEND_LIMIT_PER_DAY` |
+| `sealed-verifierd` | apps `.6` | port 8088, only with llm-gateway; used by the payer to verify the relay; `SEALED_VERIFIERD_LIVE_HOSTS` is the relay attest host |
+
+Measured inline configs: `sealed-config` (the normalized config, `/etc/sealed/config.json` in the agent, payer and verifierd), `sealed-stack` (`/etc/sealed/stack.json`, agent), `sealed-egress` (`/etc/sealed/egress.json`), `sealed-caddyfile` (`/etc/caddy/Caddyfile` in caddy, `/etc/sealed/caddy/Caddyfile` in the agent), `sealed-caddyfile-payment-needed` (`/etc/sealed/caddy/Caddyfile.payment-needed`, agent), `sealed-payment-page`. Docker volumes are sidecar plumbing only: `sealed-bin`, and the tmpfs volumes `sealed-ready` (0755) and `sealed-caddy-admin` (`mode=2770,uid=10001,gid=10001`). No Docker volume holds secrets.
+
+`sealed-stack/v1` (CJSON, measured, read by the agent from the booted app-compose):
+
+```
+{ "schema": "sealed-stack/v1", "composerVersion": "1.2.0",
+  "apps": [ { "id", "appId", "releaseId", "version", "primaryService",
+      "network": { "name": "app-<id>", "subnet": "172.30.<n>.0/24", "egress": "172.30.<n>.2", "agent": "172.30.<n>.3" },
+      "services": [ { "name", "ip" /* app-network address */, "ips" /* every address, sorted */,
+                      "networks": { "app-<id>": "…", "apps": "…" /* primary only */ }, "primary", "secrets": [NAME] } ],
+      "secrets": [ { "name", "optional", "sameAs"? } ],
+      "metering": { "unit", "source" },
+      "healthcheck": { "service", "port", "path" },
+      "routes": [ { "name", "host", "path", "service", "port", "auth", "onAttestHost", "publicUrl" } ],
+      "volumes": [ { "name", "path", "owner"? /* "<uid>:<gid>" */ } ],
+      "bootstrap"?: { "service", "doneFile", "donePath" /* data-disk path */ } } ],
+  "dataRoot": "/mnt/sealed-data", "dataDirs": [ sorted data bind sources, Caddy's included ],
+  "secretsRoot": "/run/sealed/secrets", "secretFiles": [ sorted secret file binds, the payer's included ],
+  "sidecars": { "sealed-egress": "172.30.0.2", "sealed-agent": "172.30.0.3", "caddy": "172.30.0.4", … },
+  "attestHost",
+  "gate": { "username": "sealed", "secretApp": "_gate", "secret": "GATE_PASSWORD_BCRYPT", "path": "/v1/gate", "cookie": "sealed_gate", "cookieMaxAgeSeconds": 43200 },
+  "caddy": { "adminSocket": "/run/sealed/caddy-admin/admin.sock", "adminSocketMode": "0660", "adminSocketOwner": "10001:10001",
+             "caddyfile": "/etc/sealed/caddy/Caddyfile", "caddyfilePaymentNeeded": "/etc/sealed/caddy/Caddyfile.payment-needed" } }
+```
+
+sealed-agent contract (before the ready flag): open the data disk; create every `dataDirs` entry (declared owner on every boot, else the first mounting service's numeric `user` at creation), refusing symlinks and paths outside `<dataRoot>/<appId>/`; check that `secretsRoot` is on tmpfs and that `secretFiles` equals the compose's secret binds (each bind's host path equal to its target, no other owner's files, read-only); write every `secretFiles` entry (0444, owner directories 0755): the released value, or an empty file for an optional secret the customer did not set. The gate hash stays in memory. Then create `/run/sealed/ready/ok`. `GET /v1/ready` answers 2xx only after that. The agent then drops to uid and gid 10001.
+
+Caddy (one site per route host plus the attest site; routes longest path first; every handle body is a `route` block):
+
+- `gate` routes: `request_header -X-Sealed-Gate-Set-Cookie`; `forward_auth sealed-agent:7070 { uri /v1/gate?route=<route>; copy_headers Set-Cookie>X-Sealed-Gate-Set-Cookie }`; the copied `Set-Cookie` goes onto the client response and the relay header is removed; `Authorization` is removed only when it carries the gate's Basic credentials (`^[Bb][Aa][Ss][Ii][Cc] +c2VhbGVkO`, base64 of `sealed:`), so an app's own `Authorization` passes untouched; then `reverse_proxy` with `network_proxy none`.
+- `bearer-passthrough`: requests with `Authorization: Bearer …` go straight to the app; the rest is gated as above. `public`: proxied without a gate.
+- The `sealed_gate` cookie is removed from every app request's `Cookie` header.
+- The attest site maps `/` and `/attest` to `sealed-agent:7070/attest` keeping the query, serves the `on_attest_host` routes next to it, and answers 404 elsewhere.
+- Global options: admin on `unix//run/sealed/caddy-admin/admin.sock|0660`, `persist_config off`, `ocsp_stapling off`, HTTP/1.1 and HTTP/2. ACME goes through sealed-egress.
+- Payment-needed variant: every app host answers the static page with 402 (bearer API calls get a plain-text 402), routes on the attest host a plain-text 402, `/attest` unchanged. The agent switches with `POST /load` (`Content-Type: text/caddyfile`) of one of the two measured Caddyfiles over the admin socket (mode 0660, group 10001; no root helper), re-applied every settlement tick.
+
+Gate (D-044), `GET /v1/gate?route=<route>` from Caddy's address only (403 for anyone else) with the client's headers plus `X-Forwarded-Method`, `X-Forwarded-Uri` and `X-Forwarded-For`:
+
+- 200 for a valid `sealed_gate` cookie (`v1.<expiresAt>.<session id>.<base64url HMAC-SHA256>` with a per-boot key over `sealed/gate-cookie/v1|<expiresAt>.<session id>`, route independent, 12 h), or for `Authorization: Basic` (scheme, spaces, credentials) with user `sealed` matching the released bcrypt hash. A Basic success sets `Set-Cookie: sealed_gate=…; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax`. 200 answers carry `X-Sealed-Gate: cookie|basic`.
+- 303 instead of 200 for a Basic success on a browser navigation (`X-Forwarded-Method: GET`, `Sec-Fetch-Mode: navigate`), `Location` the same-origin path and query, with the `Set-Cookie`.
+- 401 with `WWW-Authenticate: Basic realm="sealed"` otherwise.
+- 503 `starting` until the hash is released and the route's app's bootstrap is done (`bootstrap.donePath` exists as a regular file, or the job reported `POST /v1/bootstrap/done`); 503 `gate not configured` when the hash is not bcrypt or its cost is above 20.
+- 429 with `Retry-After` for repeated failures per client (burst 10, one per 6 s) or overall (burst 30, one per second).
+
+Metering: manifest `metering.source: heartbeat` apps get app-hour accounting from the agent's health polling of the healthcheck service (by its app-network address); `callback` apps post to `http://sealed-agent:7070/v1/usage-events`.
 
 ## 15. Dev simulator, payer key, host rules
 
@@ -283,6 +459,18 @@ Simulated quotes (dev only, never accepted by production builds): bytes are ASCI
 
 The simulator (`runtime/agent/sim`) serves the dstack guest-agent subset over a unix socket or TCP (`DSTACK_SIMULATOR_ENDPOINT`): `POST /GetQuote {"report_data":"<hex<=128>"}` -> `{"quote":"<hex>","event_log":"<JSON string>","report_data":"<hex128>","vm_config":"{}"}` and `GET /Info`. It reads an app-compose.json file, emits the exact RTMR3 event sequence of section 6 for it, and sets rtmr3 to the replayed value. The event log is a JSON array of `{"imr":3,"event_type":134217729,"digest":"<hex48>","event":"<name>","event_payload":"<hex>"}` exactly like dstack (RTMR0-2 entries omitted in sim).
 
-Payer key: sealed-agent writes the enclave signer private key to `/run/sealed/secrets/sealed-mpp-payer/ENCLAVE_KEY` and the daily limit to `/run/sealed/secrets/sealed-mpp-payer/SPEND_LIMIT_PER_DAY`, a tmpfs mounted only into sealed-mpp-payer. In access-key mode the payer signs as an access key of the customer account (`Account.fromSecp256k1(key, { access: customer })`).
+Payer key: sealed-agent writes the enclave signer private key to `/run/sealed/secrets/sealed-mpp-payer/ENCLAVE_KEY` and the daily limit to `/run/sealed/secrets/sealed-mpp-payer/SPEND_LIMIT_PER_DAY`; only sealed-mpp-payer binds those two files (`SEALED_SECRETS_DIR=/run/sealed/secrets/sealed-mpp-payer`, `SEALED_AGENT_URL=http://sealed-agent:7070`, `SEALED_VERIFIERD_URL=http://sealed-verifierd:8088`). In access-key mode the payer signs as an access key of the customer account (`Account.fromSecp256k1(key, { access: customer })`). It pays the relay only in `config.feeToken` (required) and refuses to start with the removed `RELAY_SPEND_SHARE_BPS`.
 
-Host rules: `pre_launch_script` installs, idempotently, `iptables -I DOCKER-USER` rules so that traffic forwarded from the edge subnet (172.31.0.0/24) to anything outside the VM is dropped unless its source is 172.31.0.2 (sealed-egress), with `ESTABLISHED,RELATED` allowed so inbound connections to Caddy still get replies. The script is fixed text rendered by the composer (only the subnet and IP vary) and it is part of stackHash.
+Host rules (v2): `pre_launch_script` rebuilds a `SEALED-EDGE` chain on every boot (ESTABLISHED,RELATED return; source `172.31.0.2`, sealed-egress, return; destination inside the edge subnet return; everything else drop) and jumps to it with `-s 172.31.0.0/24` from the top of `FORWARD` and, when the `DOCKER-USER` chain exists, from the top of `DOCKER-USER`, each inserted once. The script fails closed: it exits non-zero when a jump cannot be verified with `-C`, or when `DOCKER-USER` exists but `FORWARD` does not jump to it. It is fixed text rendered by the composer (only the subnet and IP vary) and part of stackHash.
+
+## 16. Customer bootstrap and the CLI
+
+`sealed bootstrap` (alias `sealed connect gcp`, D-032) applies `infra/terraform/customer-bootstrap` (embedded in the CLI) in the customer's project with the customer's own token. It creates the key broker on Cloud Run (image pinned by digest, `ghcr.io/sealedtempo/sealed-key-broker` from `catalog/tools/release/extra-images.json`, pulled through the project's Artifact Registry remote repository `sealed-ghcr`; max instances 1, ingress all, unauthenticated invocations, port 8080), the Cloud KMS HMAC_SHA256 key (version 1, never rotated or destroyed), the deployer service account (only the platform service account may mint tokens for it), the boot bucket, and the `sealed` network with its firewall rules. The key broker's service account gets `roles/secretmanager.secretAccessor` with an IAM condition on names starting `sealed-`, `roles/cloudkms.signer` on that one key (`macSign`) and `roles/logging.logWriter` (its decision log), nothing else.
+
+Key broker environment set by the bootstrap: `SEALED_CUSTOMER_ADDRESS`, `SEALED_GCP_PROJECT`, `SEALED_GCP_PROJECT_NUMBER`, `SEALED_SECRET_PREFIX` (`sealed-`), `SEALED_KMS_KEY_VERSION` (the key's `cryptoKeyVersions/1` resource name), `TEMPO_RPC_URL`, `TEMPO_CHAIN_ID`, `SEALED_PLATFORM_REGISTRY`, `SEALED_APP_REGISTRY`, `SEALED_DEPLOYMENT_REGISTRY`, `SEALED_RELEASE_ASSET_BASE`. Optional: `SEALED_GCP_REGION`, `SEALED_TCB_ALLOWED`, `SEALED_TCB_ADVISORIES`.
+
+The bootstrap's output is the connection token `sct_` + base64url(JSON) with `v`, `project`, `region`, `deployerAccount`, `keyBrokerUrl`, `customer`, `subnetwork` and `issuedAt`. It holds no secret.
+
+`sealed secrets` writes Secret Manager entries `sealed-<appId>-<NAME>` without a trailing newline, with the manifest generators (section 14), and `sealed-gate-password` as the bcrypt hash (cost 12) of the gate password; an existing secret is replaced only with `--rotate`. A `same_as` secret is stored once, under the referenced app.
+
+Stack file (`sealed-deploy/v1`, `cli/examples/stack.yaml`): `name` (resources `sealed-<name>`, `sealed-<name>-data`, `sealed-<name>-ip`), `connection` (an `sct_` token) or `project`, `region`, `keyBroker`, `customer`; optional `zone`, `machineType`, `dataDiskGb`, `bootBucket` and `salt` (default `0x` + `sha256("sealed/deploy-salt/v1" || 0x00 || project || 0x00 || name)`, so a redeploy keeps its deploymentId); `image` (`id`, `boot`, `systemDisk`, `vmConfig`); `apps` (`id`, `release`: `latest`, a version or a releaseId); `egressAdditions`; `endpoints` (`platformApi`, `relay`, `relayAttest`); `relayOwner`. `sealed deploy` composes with runtime/composer from onchain releases and stops with exit 3, printing the `approveStack` arguments, until the customer's wallet has approved exactly that stackHash.
