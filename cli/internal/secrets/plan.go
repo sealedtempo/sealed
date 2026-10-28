@@ -1,9 +1,6 @@
 package secrets
 
 import (
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,12 +8,14 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/sealed-dev/sealed/runtime/composer"
 )
 
 // Prefix starts every Secret Manager name the key broker may read (its IAM condition).
 const Prefix = "sealed-"
 
-// GateSecret holds the bcrypt hash of the password gate (released to Caddy as _gate/GATE_PASSWORD_BCRYPT).
+// GateSecret holds the bcrypt hash of the password gate (released to sealed-agent's gate as _gate/GATE_PASSWORD_BCRYPT).
 const GateSecret = "sealed-gate-password"
 
 // GateApp is the pseudo app name of the gate password on the command line.
@@ -58,48 +57,17 @@ func Labels(app, name string) map[string]string {
 	return l
 }
 
-const passwordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-// Generate creates a value with a manifest generator. rnd defaults to crypto/rand.
+// Generate creates a value with a manifest generator through runtime/composer's GenerateSecret, the one
+// implementation of the schema's generators. rnd defaults to crypto/rand.
 //   - hex32: 32 random bytes, lowercase hex (64 characters)
 //   - base64-32: 32 random bytes, standard base64 with padding (44 characters)
 //   - sk-hex32: "sk-" + hex32 (LiteLLM key format)
 //   - password: 24 characters from [A-Za-z0-9], uniform (rejection sampling)
 func Generate(kind string, rnd io.Reader) (string, error) {
-	if rnd == nil {
-		rnd = rand.Reader
-	}
-	buf := make([]byte, 32)
-	switch kind {
-	case "hex32", "sk-hex32", "base64-32":
-		if _, err := io.ReadFull(rnd, buf); err != nil {
-			return "", err
-		}
-		switch kind {
-		case "hex32":
-			return hex.EncodeToString(buf), nil
-		case "sk-hex32":
-			return "sk-" + hex.EncodeToString(buf), nil
-		default:
-			return base64.StdEncoding.EncodeToString(buf), nil
-		}
-	case "password":
-		out := make([]byte, 0, 24)
-		b := make([]byte, 1)
-		// 62 * 4 = 248: bytes >= 248 are rejected so every character is equally likely.
-		for len(out) < 24 {
-			if _, err := io.ReadFull(rnd, b); err != nil {
-				return "", err
-			}
-			if b[0] < 248 {
-				out = append(out, passwordAlphabet[int(b[0])%62])
-			}
-		}
-		return string(out), nil
-	case "none", "":
+	if kind == composer.GenerateNone || kind == "" {
 		return "", fmt.Errorf("this secret has no generator: supply the value")
 	}
-	return "", fmt.Errorf("unknown generator %q", kind)
+	return composer.GenerateSecret(kind, rnd)
 }
 
 // GateHash returns the stored form of a gate password: its bcrypt hash. The plaintext never leaves the

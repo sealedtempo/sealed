@@ -160,3 +160,31 @@ func TestLoadSecretsFile(t *testing.T) {
 		t.Fatal("accepted a secret outside the sealed- prefix")
 	}
 }
+
+// The real catalog's same_as (D-043): coding-agent's LLM_GATEWAY_KEY is llm-gateway's APP_KEY_CODING_AGENT, read
+// from the one Secret Manager entry `sealed secrets` stores (cli/internal/secrets TestRealCatalogManifests checks
+// the same name on the CLI side).
+func TestPlanSecretsRealCatalogSameAs(t *testing.T) {
+	bundles := map[string]*composer.Bundle{}
+	for _, app := range []string{"coding-agent", "llm-gateway"} {
+		b, err := composer.BuildBundle(composer.BuildInput{AppDir: filepath.Join("..", "catalog", "apps", app), Registry: "ghcr.io/sealedtempo", AllowMissingSBOM: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bundles[app] = b
+	}
+	refs, err := PlanSecrets([]string{"coding-agent", "llm-gateway"}, bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := refStrings(refs)
+	if !slices.Contains(got, "coding-agent/LLM_GATEWAY_KEY<-sealed-llm-gateway-APP_KEY_CODING_AGENT") {
+		t.Fatalf("same_as not resolved to the referenced app's secret: %v", got)
+	}
+	if !slices.Contains(got, "llm-gateway/OLLAMA_GATE_KEY<-sealed-llm-gateway-OLLAMA_GATE_KEY") {
+		t.Fatalf("llm-gateway's local-model key missing: %v", got)
+	}
+	if _, err := PlanSecrets([]string{"coding-agent"}, map[string]*composer.Bundle{"coding-agent": bundles["coding-agent"]}); err == nil {
+		t.Fatal("coding-agent without llm-gateway resolved its same_as")
+	}
+}

@@ -90,7 +90,7 @@ func TestGenerators(t *testing.T) {
 		t.Fatalf("hex32 from fixed bytes %q", v)
 	}
 	// Rejection sampling: 248..255 are skipped, 0 maps to 'A', 61 to '9'.
-	src := append(bytes.Repeat([]byte{255, 248}, 5), bytes.Repeat([]byte{0, 61}, 12)...)
+	src := append(append(bytes.Repeat([]byte{255, 248}, 5), bytes.Repeat([]byte{0, 61}, 12)...), make([]byte, 30)...)
 	v, _ = Generate("password", bytes.NewReader(src))
 	if v != strings.Repeat("A9", 12) {
 		t.Fatalf("password sampling %q", v)
@@ -347,5 +347,13 @@ func TestRealCatalogManifests(t *testing.T) {
 	}
 	if _, ok := p.Find("crm", "PG_DATABASE_PASSWORD"); !ok {
 		t.Fatal("crm secrets missing from the plan")
+	}
+	// D-043: stored once, under the referenced app, which is the name the key broker reads
+	// (key-broker TestPlanSecretsRealCatalogSameAs).
+	if e, ok := p.Find("coding-agent", "LLM_GATEWAY_KEY"); !ok || e.Stored != "sealed-llm-gateway-APP_KEY_CODING_AGENT" || e.SameAs != "llm-gateway/APP_KEY_CODING_AGENT" {
+		t.Fatalf("coding-agent LLM_GATEWAY_KEY: %+v", e)
+	}
+	if e, ok := p.Find("internal-tools", "ADMIN_PASSWORD"); !ok || e.Generate != "password" {
+		t.Fatalf("internal-tools ADMIN_PASSWORD uses the password generator: %+v", e)
 	}
 }
