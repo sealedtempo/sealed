@@ -212,7 +212,7 @@ mount the same three data volumes.
 | name | generated as | used for |
 |---|---|---|
 | `PG_DATABASE_PASSWORD` | hex32 | `espocrm` database role; written into `data/config-internal-override.php` |
-| `ADMIN_PASSWORD` | supplied by the customer | EspoCRM administrator `admin`, 8 to 128 characters; needed only on the first start |
+| `ADMIN_PASSWORD` | `password` (24 letters and digits) unless the customer sets one | EspoCRM administrator `admin`, 8 to 128 characters; needed only on the first start |
 
 EspoCRM generates its own `passwordSalt`, `cryptKey` and `hashSecretKey` during the install
 (`config:populate`) and keeps them in `data/config-internal.php` on the encrypted disk.

@@ -68,10 +68,10 @@ secrets:
     generate: hex32
   - name: ADMIN_PASSWORD
     description: >-
-      Password of the EspoCRM administrator "admin", created by the bootstrap job. 8 to 128
-      characters on one line. Changing it later in EspoCRM is fine; the bootstrap only needs it on
-      the first start.
-    generate: none
+      Password of the EspoCRM administrator "admin", created by the bootstrap job. Generated (24
+      letters and digits) unless the customer sets one of 8 to 128 characters on one line.
+      Changing it later in EspoCRM is fine; the bootstrap only needs it on the first start.
+    generate: password
 telemetry_off_env:
   ESPOCRM_CONFIG_USE_WEB_SOCKET: "false"
   ESPOCRM_CONFIG_ADMIN_NOTIFICATIONS: "false"

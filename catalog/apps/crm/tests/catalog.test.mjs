@@ -94,12 +94,9 @@ describe("manifest (D-049a: EspoCRM)", () => {
     assert.equal(app.manifest.telemetry_off_env.ESPOCRM_CONFIG_ADMIN_PANEL_IFRAME_DISABLED, "true");
   });
 
-  test("generates the database password; the customer supplies the admin password", () => {
+  test("generates the database password and the admin password (brief item 7)", () => {
     const gen = Object.fromEntries(app.manifest.secrets.map((s) => [s.name, s.generate]));
-    assert.deepEqual(gen, { PG_DATABASE_PASSWORD: "hex32", ADMIN_PASSWORD: "none" });
-  });
-
-  test("the admin password could use the password generator once the schema has it (brief item 7)", { todo: "secret generator password is not in catalog/schema yet" }, () => {
+    assert.deepEqual(gen, { PG_DATABASE_PASSWORD: "hex32", ADMIN_PASSWORD: "password" });
     const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
     assert.ok(schema.properties.secrets.items.properties.generate.enum.includes("password"));
   });
@@ -336,11 +333,9 @@ describe("the real composer (runtime/composer)", { skip: composer.skip }, () => 
       assert.ok(site, stack.caddyfile);
       const handles = caddyHandles(site);
       assert.deepEqual(Object.keys(handles), [""]);
-      // Either gate shape works for EspoCRM: basic_auth with Authorization stripped (composer
-      // before brief item 9) or forward_auth to sealed-agent (D-044).
-      const basic = /basic_auth \{\n\t+sealed \{env\.GATE_PASSWORD_BCRYPT\}/.test(handles[""]);
-      const forward = /forward_auth sealed-agent:7070 \{[\s\S]*uri \/v1\/gate\?route=crm/.test(handles[""]);
-      assert.ok(basic || forward, handles[""]);
+      // The gate is forward_auth to sealed-agent (D-044); basic_auth is gone with composer 1.2.0.
+      assert.match(handles[""], /forward_auth sealed-agent:7070 \{[\s\S]*uri \/v1\/gate\?route=crm/);
+      assert.doesNotMatch(stack.caddyfile, /basic_auth|GATE_PASSWORD_BCRYPT/);
       assert.match(handles[""], /reverse_proxy crm-server:8080/);
       assert.equal((stack.caddyfile.match(/crm-server:\d+/g) ?? []).filter((u) => u !== "crm-server:8080").length, 0);
     });
