@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,10 +94,16 @@ func TestCheckProxyAndBearer(t *testing.T) {
 	if !tok.CheckProxy("sealed-agent", proxyHeader("sealed-agent", good)) {
 		t.Fatal("valid credential refused")
 	}
+	// The wrong password differs from the token in its last character whatever that character is (a fixed
+	// replacement equalled the token whenever the token already ended in it).
+	last := "0"
+	if strings.HasSuffix(good, "0") {
+		last = "1"
+	}
 	bad := map[string]http.Header{
 		"none":       {},
 		"wrong user": proxyHeader("alpha", good),
-		"wrong pass": proxyHeader("sealed-agent", good[:63]+"0"),
+		"wrong pass": proxyHeader("sealed-agent", good[:63]+last),
 		"empty pass": proxyHeader("sealed-agent", ""),
 		"bearer":     {"Proxy-Authorization": {"Bearer " + good}},
 		"bad base64": {"Proxy-Authorization": {"Basic !!!"}},
