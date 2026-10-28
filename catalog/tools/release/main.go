@@ -20,6 +20,7 @@
 //	keystore      encrypt a key from the environment into a throwaway keystore (prints the address)
 //	tx-summary    onchain record and MAINNET_LEDGER.md row from a receipt
 //	workflows     check .github/workflows against the pinning and secrets policy
+//	defaults      the config/defaults.yaml values the release scripts use
 package main
 
 import (
@@ -55,7 +56,7 @@ func commands() []command {
 		{"compose-check", cmdComposeCheck}, {"plan", cmdPlan}, {"assets", cmdAssets}, {"bundle", cmdBundle},
 		{"info", cmdInfo}, {"sigstore", cmdSigstore}, {"release-doc", cmdReleaseDoc}, {"notes", cmdNotes},
 		{"catalog-json", cmdCatalogJSON}, {"keystore", cmdKeystore}, {"tx-summary", cmdTxSummary},
-		{"workflows", cmdWorkflows},
+		{"workflows", cmdWorkflows}, {"defaults", cmdDefaults},
 	}
 }
 
@@ -82,7 +83,12 @@ func newFlags(name string, stderr io.Writer) (*flag.FlagSet, *string) {
 	return fs, root
 }
 
+// resolveRoot returns --root, else $SEALED_REPO_ROOT (set by scripts/release/lib.sh), else the repository
+// that holds the working directory.
 func resolveRoot(root string) (string, error) {
+	if root == "" {
+		root = os.Getenv("SEALED_REPO_ROOT")
+	}
 	if root != "" {
 		return filepath.Abs(root)
 	}
@@ -810,4 +816,22 @@ func cmdWorkflows(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintln(stderr, "workflow policy: ok")
 	return nil
+}
+
+func cmdDefaults(args []string, stdout, stderr io.Writer) error {
+	fs, root := newFlags("defaults", stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	r, err := resolveRoot(*root)
+	if err != nil {
+		return err
+	}
+	d, err := LoadDefaults(r)
+	if err != nil {
+		return err
+	}
+	return printJSON(stdout, map[string]any{"chainId": d.ChainID, "explorerUrl": d.ExplorerURL, "publicRpcUrl": d.PublicRPC,
+		"feeToken": d.FeeToken, "registry": d.Registry, "releaseAssetBase": d.ReleaseAssetBase, "repoUrl": d.RepoURL(),
+		"repo": d.RepoSlug(), "root": r})
 }
