@@ -1,0 +1,93 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { parse } from "yaml";
+
+import { findExcluded, normalize } from "../tools/check-image-paths.mjs";
+
+const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const imageDir = join(appDir, "images/tooljet-ce");
+const dockerfile = readFileSync(join(imageDir, "Dockerfile"), "utf8");
+const entrypoint = readFileSync(join(imageDir, "sealed-entrypoint.sh"), "utf8");
+const manifest = parse(readFileSync(join(appDir, "manifest.yaml"), "utf8"));
+const fragment = parse(readFileSync(join(appDir, "compose.fragment.yaml"), "utf8"));
+
+describe("derived ToolJet image", () => {
+  test("starts from the upstream CE image by digest and ends flattened on scratch", () => {
+    const froms = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map((m) => m[1]);
+    assert.deepEqual(froms, [
+      "docker.io/tooljet/tooljet-ce@sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47",
+      "scratch",
+    ]);
+    assert.match(dockerfile, /^COPY --from=upstream \/ \/$/m);
+    assert.doesNotMatch(dockerfile, /:latest|ee-lts/);
+  });
+
+  test("removes Redis and Oracle Instant Client and fails the build if any is left", () => {
+    assert.match(dockerfile, /apt-get purge -y --auto-remove redis-server redis-tools/);
+    assert.match(dockerfile, /rm -rf \/opt\/oracle /);
+    assert.match(dockerfile, /forbidden binaries left in the image/);
+    assert.doesNotMatch(dockerfile, /LD_LIBRARY_PATH/);
+    assert.match(dockerfile, /test "\$\(cat \/app\/server\/\.version\)" = "3\.20\.251-lts"/);
+  });
+
+  test("runs as uid 1000 with the entrypoint and command the fragment uses", () => {
+    assert.match(dockerfile, /test "\$\(id -u appuser\)" = "1000"/);
+    assert.match(dockerfile, /^USER appuser$/m);
+    assert.match(dockerfile, /^ENTRYPOINT \["\/app\/server\/sealed-entrypoint\.sh"\]$/m);
+    assert.match(dockerfile, /^CMD \["node", "dist\/src\/main"\]$/m);
+    const server = fragment.services["internal-tools-server"];
+    assert.equal(server.user, "1000:1000");
+    assert.deepEqual(server.command, ["node", "dist/src/main"]);
+  });
+
+  test("the entrypoint runs the database setup and never starts Redis", () => {
+    assert.match(entrypoint, /npm run db:setup:prod/);
+    assert.match(entrypoint, /exec "\$@"/);
+    assert.doesNotMatch(entrypoint.replace(/^#.*$/gm, ""), /redis/i);
+    const res = spawnSync("bash", ["-n", join(imageDir, "sealed-entrypoint.sh")], { encoding: "utf8" });
+    assert.equal(res.status, 0, res.stderr);
+  });
+});
+
+describe("check-image-paths", () => {
+  const ex = manifest.license_exclusions;
+
+  test("normalizes tar and absolute paths", () => {
+    assert.equal(normalize("./opt/oracle/x"), "opt/oracle/x");
+    assert.equal(normalize("/usr/bin/redis-server"), "usr/bin/redis-server");
+  });
+
+  test("finds excluded directories and files in a listing like the upstream image", () => {
+    const listing = [
+      "./", "app/", "app/server/dist/src/main.js", "opt/oracle/", "opt/oracle/instantclient_21_10/libclntsh.so.21.1",
+      "usr/bin/redis-server", "usr/bin/redis-cli", "usr/local/bin/valkey-server", "app/server/ee/index.js",
+    ];
+    assert.deepEqual(findExcluded(listing, ex), [
+      "opt/oracle",
+      "opt/oracle/instantclient_21_10/libclntsh.so.21.1",
+      "usr/bin/redis-server",
+      "usr/bin/redis-cli",
+      "app/server/ee/index.js",
+    ]);
+  });
+
+  test("passes a listing of the derived image", () => {
+    const listing = ["app/server/dist/src/main.js", "app/server/sealed-entrypoint.sh", "opt/", "usr/bin/node-ish", "app/server/eeprom.txt"];
+    assert.deepEqual(findExcluded(listing, ex), []);
+  });
+
+  test("the CLI reads a listing on stdin and exits 1 on a hit", () => {
+    const tool = join(appDir, "tools/check-image-paths.mjs");
+    const bad = spawnSync(process.execPath, [tool], { input: "usr/bin/redis-server\n", encoding: "utf8" });
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /usr\/bin\/redis-server/);
+    const good = spawnSync(process.execPath, [tool], { input: "app/server/dist/src/main.js\n", encoding: "utf8" });
+    assert.equal(good.status, 0, good.stderr);
+    assert.match(good.stdout, /ok: 1 paths/);
+  });
+});
