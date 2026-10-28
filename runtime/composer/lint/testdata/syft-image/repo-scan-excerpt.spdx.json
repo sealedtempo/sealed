@@ -1,0 +1,406 @@
+{
+ "SPDXID": "SPDXRef-DOCUMENT",
+ "creationInfo": {
+  "created": "2026-10-28T17:59:15Z",
+  "creators": [
+   "Organization: Anchore, Inc",
+   "Tool: syft-1.55.0"
+  ],
+  "licenseListVersion": "3.29"
+ },
+ "dataLicense": "CC0-1.0",
+ "documentNamespace": "https://anchore.com/syft/dir/sealed-public-af4dba06-b62a-44db-a635-33ad72b92883",
+ "files": [
+  {
+   "SPDXID": "SPDXRef-File-...apps-scraper-runner-pnpm-lock.yaml-3a1666572367cc73",
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "5d69a9fbb801ef43cc431113d708cda3e173fb4d"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "b7801e2453774ad6bf9b7dc6cb8d050fdd2ae6a48d31e7df4f6c0f007f321a82"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "fileName": "catalog/apps/scraper/runner/pnpm-lock.yaml",
+   "fileTypes": [
+    "TEXT"
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ]
+  },
+  {
+   "SPDXID": "SPDXRef-File-go.mod-3fc5a8d3d86e9790",
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "f3f03886f411555958235492f0431800fe76c546"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "728fe5c72befc3bee2b9535318d3199023399b1df1e57feb9b4486e5ba63f246"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "fileName": "go.mod",
+   "fileTypes": [
+    "TEXT"
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ]
+  },
+  {
+   "SPDXID": "SPDXRef-File-pnpm-lock.yaml-c895fb8e872e275f",
+   "checksums": [
+    {
+     "algorithm": "SHA1",
+     "checksumValue": "d6931e29cd788b9b172cfc061a4442b0d016db9f"
+    },
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "861eec2d695cbee61f9b31bda0e08628bcbf17db2ca9da27244082ab0e35b6da"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "fileName": "pnpm-lock.yaml",
+   "fileTypes": [
+    "TEXT"
+   ],
+   "licenseConcluded": "NOASSERTION",
+   "licenseInfoInFiles": [
+    "NOASSERTION"
+   ]
+  }
+ ],
+ "hasExtractedLicensingInfos": [
+  {
+   "extractedText": "NOASSERTION",
+   "licenseId": "LicenseRef-497fcdb9fae55924c12f55f05cbe83a096662e5c591d79b74e4a8f23bab5ffee",
+   "name": "sha256:497fcdb9fae55924c12f55f05cbe83a096662e5c591d79b74e4a8f23bab5ffee",
+   "seeAlsos": [
+    "file://$GOPATH/pkg/mod/github.com/prometheus/procfs@v0.21.1/NOTICE"
+   ]
+  }
+ ],
+ "name": "sealed-public (excerpt)",
+ "packages": [
+  {
+   "SPDXID": "SPDXRef-Package-npm-caniuse-lite-617a3321fe262f01",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:caniuse-lite:caniuse-lite:1.0.30001819:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:caniuse-lite:caniuse_lite:1.0.30001819:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:caniuse_lite:caniuse-lite:1.0.30001819:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:caniuse_lite:caniuse_lite:1.0.30001819:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:caniuse:caniuse-lite:1.0.30001819:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:caniuse:caniuse_lite:1.0.30001819:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:npm/caniuse-lite@1.0.30001819",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "CC-BY-4.0",
+   "name": "caniuse-lite",
+   "sourceInfo": "acquired package info from installed node module manifest file: /catalog/apps/scraper/runner/pnpm-lock.yaml",
+   "supplier": "NOASSERTION",
+   "versionInfo": "1.0.30001819"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-ProjectZKM-Ziren-crates-go-runtime-zkvm-runtime-4c1dc13e5937dc3c",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:ProjectZKM:Ziren\\/crates\\/go-runtime\\/zkvm-runtime:v0.0.0-20251001021608-1fe7b43fc4d6:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:ProjectZKM:Ziren\\/crates\\/go-runtime\\/zkvm_runtime:v0.0.0-20251001021608-1fe7b43fc4d6:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:ProjectZKM:Ziren\\/crates\\/go_runtime\\/zkvm_runtime:v0.0.0-20251001021608-1fe7b43fc4d6:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime@v0.0.0-20251001021608-1fe7b43fc4d6",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime",
+   "sourceInfo": "acquired package info from go module information: /go.mod",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v0.0.0-20251001021608-1fe7b43fc4d6"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-ethereum-go-ethereum-a6ff341334e98b9d",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:ethereum:go-ethereum:v1.17.10:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:ethereum:go_ethereum:v1.17.10:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/ethereum/go-ethereum@v1.17.10",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "BSD-2-Clause-Views AND BSD-3-Clause AND GPL-3.0-only AND LGPL-3.0-only AND MIT",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/ethereum/go-ethereum",
+   "sourceInfo": "acquired package info from go module information: /go.mod",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v1.17.10"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-prometheus-procfs-f7b708d2edebb666",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:prometheus:procfs:v0.21.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/prometheus/procfs@v0.21.1",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "Apache-2.0 AND LicenseRef-497fcdb9fae55924c12f55f05cbe83a096662e5c591d79b74e4a8f23bab5ffee",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/prometheus/procfs",
+   "sourceInfo": "acquired package info from go module information: /go.mod",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v0.21.1"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-npm-map-stream-c6bae6e454060750",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:map-stream:map-stream:0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:map-stream:map_stream:0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:map_stream:map-stream:0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:map_stream:map_stream:0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:map:map-stream:0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:map:map_stream:0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:npm/map-stream@0.1.0",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "map-stream",
+   "sourceInfo": "acquired package info from installed node module manifest file: /catalog/apps/scraper/runner/pnpm-lock.yaml",
+   "supplier": "NOASSERTION",
+   "versionInfo": "0.1.0"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-npm-pause-stream-de2004c607589129",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:pause-stream:pause-stream:0.0.11:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:pause-stream:pause_stream:0.0.11:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:pause_stream:pause-stream:0.0.11:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:pause_stream:pause_stream:0.0.11:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:pause:pause-stream:0.0.11:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:pause:pause_stream:0.0.11:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:npm/pause-stream@0.0.11",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "pause-stream",
+   "sourceInfo": "acquired package info from installed node module manifest file: /catalog/apps/scraper/runner/pnpm-lock.yaml",
+   "supplier": "NOASSERTION",
+   "versionInfo": "0.0.11"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-npm-sax-61987b02913b5caa",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:sax:sax:1.6.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:npm/sax@1.6.1",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "BlueOak-1.0.0",
+   "name": "sax",
+   "sourceInfo": "acquired package info from installed node module manifest file: /catalog/apps/scraper/runner/pnpm-lock.yaml",
+   "supplier": "NOASSERTION",
+   "versionInfo": "1.6.1"
+  },
+  {
+   "SPDXID": "SPDXRef-DocumentRoot-Directory-sealed-public",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "sealed-public",
+   "primaryPackagePurpose": "FILE",
+   "supplier": "NOASSERTION"
+  }
+ ],
+ "relationships": [
+  {
+   "relatedSpdxElement": "SPDXRef-Package-npm-caniuse-lite-617a3321fe262f01",
+   "relationshipType": "CONTAINS",
+   "spdxElementId": "SPDXRef-DocumentRoot-Directory-sealed-public"
+  },
+  {
+   "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-ProjectZKM-Ziren-crates-go-runtime-zkvm-runtime-4c1dc13e5937dc3c",
+   "relationshipType": "CONTAINS",
+   "spdxElementId": "SPDXRef-DocumentRoot-Directory-sealed-public"
+  },
+  {
+   "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-ethereum-go-ethereum-a6ff341334e98b9d",
+   "relationshipType": "CONTAINS",
+   "spdxElementId": "SPDXRef-DocumentRoot-Directory-sealed-public"
+  },
+  {
+   "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-prometheus-procfs-f7b708d2edebb666",
+   "relationshipType": "CONTAINS",
+   "spdxElementId": "SPDXRef-DocumentRoot-Directory-sealed-public"
+  },
+  {
+   "relatedSpdxElement": "SPDXRef-Package-npm-map-stream-c6bae6e454060750",
+   "relationshipType": "CONTAINS",
+   "spdxElementId": "SPDXRef-DocumentRoot-Directory-sealed-public"
+  },
+  {
+   "relatedSpdxElement": "SPDXRef-Package-npm-pause-stream-de2004c607589129",
+   "relationshipType": "CONTAINS",
+   "spdxElementId": "SPDXRef-DocumentRoot-Directory-sealed-public"
+  },
+  {
+   "relatedSpdxElement": "SPDXRef-Package-npm-sax-61987b02913b5caa",
+   "relationshipType": "CONTAINS",
+   "spdxElementId": "SPDXRef-DocumentRoot-Directory-sealed-public"
+  },
+  {
+   "relatedSpdxElement": "SPDXRef-DocumentRoot-Directory-sealed-public",
+   "relationshipType": "DESCRIBES",
+   "spdxElementId": "SPDXRef-DOCUMENT"
+  }
+ ],
+ "spdxVersion": "SPDX-2.3"
+}

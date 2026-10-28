@@ -1,6 +1,7 @@
 """Tests for catalog_lint.py (standard library only): python3 -m unittest discover catalog/tools"""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -48,6 +49,33 @@ class ComposerLintTest(unittest.TestCase):
             self.assertIn("[fragment]", res.stdout)
             ok = subprocess.run([sys.executable, cli, os.path.join(FIXTURES, "notes")], capture_output=True, text=True, env=env)
             self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+
+    def test_release_license_rules(self) -> None:
+        # License audit F5 and F6, through the wrapper: no license metadata fails a release
+        # unless a reviewed override covers it; license_exclusions globs match the file list.
+        with tempfile.TemporaryDirectory() as tmp:
+            app = os.path.join(tmp, "notes")
+            shutil.copytree(os.path.join(FIXTURES, "notes"), app)
+            manifest = os.path.join(app, "manifest.yaml")
+            with open(manifest, encoding="utf-8") as fh:
+                text = fh.read()
+            with open(manifest, "w", encoding="utf-8") as fh:
+                fh.write(text.replace("license_exclusions: []", 'license_exclusions: ["ms-playwright/chromium-*"]'))
+
+            def pkg(name: str, version: str) -> dict:
+                return {"SPDXID": "SPDXRef-" + name, "name": name, "versionInfo": version, "licenseConcluded": "NOASSERTION",
+                        "externalRefs": [{"referenceType": "purl", "referenceLocator": f"pkg:npm/{name}@{version}"}]}
+
+            sbom = {"spdxVersion": "SPDX-2.3", "name": "notes-web",
+                    "packages": [pkg("pause-stream", "0.0.11"), pkg("left-pad", "1.3.0")],
+                    "files": [{"SPDXID": "SPDXRef-f1", "fileName": "root/.cache/ms-playwright/chromium-1187/chrome-linux/chrome"},
+                              {"SPDXID": "SPDXRef-f2", "fileName": "root/.cache/ms-playwright/firefox-1490/firefox/firefox"}]}
+            with open(os.path.join(app, "sbom", "notes-web.spdx.json"), "w", encoding="utf-8") as fh:
+                json.dump(sbom, fh)
+            errors = catalog_lint.errors_of(catalog_lint.composer_lint(app, require_sbom=True))
+            self.assertEqual([f["field"] for f in errors if f["code"] == "sbom-no-license"], ["left-pad@1.3.0"], errors)
+            self.assertEqual([f["field"] for f in errors if f["code"] == "excluded-path"], ["/root/.cache/ms-playwright/chromium-1187/"], errors)
+            self.assertFalse([f for f in catalog_lint.errors_of(catalog_lint.composer_lint(app)) if f["code"] == "sbom-no-license"])
 
 
 if __name__ == "__main__":

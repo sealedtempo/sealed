@@ -13,6 +13,9 @@ type LicenseStatus int
 const (
 	// Allowed: on the rule 9 list or the D-021 additions.
 	Allowed LicenseStatus = iota
+	// FontOnly: acceptable only for font packages and OS packages (D-056:
+	// SIL OFL 1.1).
+	FontOnly
 	// SystemOnly: acceptable only for OS distribution packages in base
 	// images or added with apk/apt in our own layers (D-021, D-050), for
 	// example GPL-2.0-only.
@@ -28,7 +31,7 @@ const (
 )
 
 func (s LicenseStatus) String() string {
-	return [...]string{"allowed", "system-only", "data-only", "unknown", "banned"}[s]
+	return [...]string{"allowed", "font-only", "system-only", "data-only", "unknown", "banned"}[s]
 }
 
 // LicenseResult is the evaluation of an SPDX license expression.
@@ -67,6 +70,16 @@ var dataOnlyLicenses = set("CC-BY-4.0")
 // browserslist reads (D-050).
 var DataOnlyPackages = []string{"caniuse-lite"}
 
+// fontLicenses are allowed only for fonts (D-056: SIL OFL 1.1 allows
+// embedding and redistribution, but it is not on the rule 9 list), that is
+// for the packages in FontPackages and for OS packages (fonts-* in Debian).
+var fontLicenses = set("OFL-1.1", "OFL-1.1-RFN", "OFL-1.1-no-RFN")
+
+// FontPackages are package name patterns (path.Match) that lint accepts as
+// font-only packages: the Fontsource scopes ship font files and @font-face
+// CSS, no code. Adding a pattern needs review (D-056).
+var FontPackages = []string{"@fontsource/*", "@fontsource-variable/*"}
+
 // systemLicenses are licenses common in Debian, Alpine and Ubuntu packages
 // that are not on the allowlist for app code. They are accepted only for OS
 // packages: in base images, or added with apk/apt in our own layers (git
@@ -77,12 +90,14 @@ var DataOnlyPackages = []string{"caniuse-lite"}
 // D-050 and D-069.
 var systemLicenses = set(
 	"GPL-2.0-only", "GPL-1.0-or-later", "Artistic-1.0-Perl", "Artistic-2.0", "MPL-1.1", "EPL-1.0", "EPL-2.0",
-	"Apache-1.1", "OFL-1.1", "NCSA", "Unicode-DFS-2016", "Unicode-3.0", "BSD-1-Clause", "OLDAP-2.8",
+	"Apache-1.1", "NCSA", "Unicode-DFS-2016", "Unicode-3.0", "BSD-1-Clause", "OLDAP-2.8",
 	"MIT-0", "Sleepycat", "W3C", "HPND", "ICU", "PHP-3.01",
 	// D-050: OS packages only.
 	"X11", "BSD-4-Clause", "BSD-4-Clause-UC", "OpenSSL", "OpenSSL-standalone", "curl", "IJG", "IJG-short",
 	"Libpng", "libpng-2.0", "libtiff", "FTL", "bzip2-1.0.5", "bzip2-1.0.6", "Ruby", "Vim",
-	// D-069: Debian's php8.4 packages in crm's EspoCRM image, OS packages only.
+	// The Zend Engine License 2.00 in Debian's PHP packages (the php8.4
+	// packages of crm's EspoCRM image, license audit F11, D-069, D-071): free
+	// (FSF), not OSI-approved, OS packages only, like the D-050 group.
 	"Zend-2.0",
 )
 
@@ -134,20 +149,19 @@ func set(items ...string) map[string]bool {
 
 // EvaluateLicense parses an SPDX expression (OR, AND, WITH, parentheses,
 // "+") and classifies it. OR takes the best alternative, AND the worst.
-func EvaluateLicense(expr string) LicenseResult {
+func EvaluateLicense(expr string) LicenseResult { return evaluateLicense(expr, nil) }
+
+// evaluateLicense is EvaluateLicense with extra license ids that count as
+// allowed: a reviewed override's allow list, for that one package only.
+// Banned ids stay banned.
+func evaluateLicense(expr string, extra map[string]bool) LicenseResult {
 	res := LicenseResult{Expr: expr}
-	toks, err := tokenize(expr)
-	if err != nil || len(toks) == 0 {
+	n, err := parseSPDX(expr)
+	if err != nil {
 		res.Status = Unknown
 		return res
 	}
-	p := &spdxParser{toks: toks}
-	n, err := p.expr()
-	if err != nil || p.pos != len(p.toks) {
-		res.Status = Unknown
-		return res
-	}
-	res.Status, res.Elected = n.eval()
+	res.Status, res.Elected = n.eval(extra)
 	banned := map[string]bool{}
 	n.collectBanned(banned)
 	for b := range banned {
@@ -157,6 +171,76 @@ func EvaluateLicense(expr string) LicenseResult {
 	return res
 }
 
+// parseSPDX parses a whole SPDX license expression.
+func parseSPDX(expr string) (*spdxNode, error) {
+	toks, err := tokenize(expr)
+	if err != nil {
+		return nil, err
+	}
+	if len(toks) == 0 {
+		return nil, fmt.Errorf("empty expression")
+	}
+	p := &spdxParser{toks: toks}
+	n, err := p.expr()
+	if err != nil {
+		return nil, err
+	}
+	if p.pos != len(p.toks) {
+		return nil, fmt.Errorf("unexpected %q", p.toks[p.pos])
+	}
+	return n, nil
+}
+
+// licenseIDs lists the license ids of an expression (exceptions excluded).
+func (n *spdxNode) licenseIDs(out map[string]bool) {
+	if n.op == "" {
+		out[n.id] = true
+		return
+	}
+	for _, k := range n.kids {
+		k.licenseIDs(out)
+	}
+}
+
+// pruneLicenseRefs removes the given LicenseRef ids from an expression and
+// returns what is left ("" when nothing is). The expression is returned
+// unchanged when it does not parse.
+func pruneLicenseRefs(expr string, refs map[string]bool) string {
+	if len(refs) == 0 || expr == "" {
+		return expr
+	}
+	n, err := parseSPDX(expr)
+	if err != nil {
+		return expr
+	}
+	if n = n.prune(refs); n == nil {
+		return ""
+	}
+	return n.String()
+}
+
+func (n *spdxNode) prune(refs map[string]bool) *spdxNode {
+	if n.op == "" {
+		if refs[n.id] {
+			return nil
+		}
+		return n
+	}
+	var kids []*spdxNode
+	for _, k := range n.kids {
+		if k = k.prune(refs); k != nil {
+			kids = append(kids, k)
+		}
+	}
+	switch len(kids) {
+	case 0:
+		return nil
+	case 1:
+		return kids[0]
+	}
+	return &spdxNode{op: n.op, kids: kids}
+}
+
 type spdxNode struct {
 	op        string // "", "AND", "OR"
 	id        string // leaf license id (normalized)
@@ -164,14 +248,14 @@ type spdxNode struct {
 	kids      []*spdxNode
 }
 
-func (n *spdxNode) eval() (LicenseStatus, string) {
+func (n *spdxNode) eval(extra map[string]bool) (LicenseStatus, string) {
 	switch n.op {
 	case "":
-		return classify(n.id, n.exception), n.String()
+		return classify(n.id, n.exception, extra), n.String()
 	case "AND":
 		worst, parts := Allowed, []string{}
 		for _, k := range n.kids {
-			s, e := k.eval()
+			s, e := k.eval(extra)
 			if s > worst {
 				worst = s
 			}
@@ -181,7 +265,7 @@ func (n *spdxNode) eval() (LicenseStatus, string) {
 	default: // OR
 		best, elected := Banned, ""
 		for i, k := range n.kids {
-			s, e := k.eval()
+			s, e := k.eval(extra)
 			if i == 0 || s < best {
 				best, elected = s, e
 			}
@@ -192,7 +276,7 @@ func (n *spdxNode) eval() (LicenseStatus, string) {
 
 func (n *spdxNode) collectBanned(out map[string]bool) {
 	if n.op == "" {
-		if classify(n.id, n.exception) == Banned {
+		if classify(n.id, n.exception, nil) == Banned {
 			out[n.String()] = true
 		}
 		return
@@ -219,13 +303,15 @@ func (n *spdxNode) String() string {
 	return strings.Join(parts, " "+n.op+" ")
 }
 
-func classify(id, exception string) LicenseStatus {
+func classify(id, exception string, extra map[string]bool) LicenseStatus {
 	if isBanned(id) || (exception != "" && isBanned(exception)) {
 		return Banned
 	}
 	switch {
-	case allowedLicenses[id]:
+	case allowedLicenses[id], extra[id]:
 		return Allowed
+	case fontLicenses[id]:
+		return FontOnly
 	case systemLicenses[id], isGFDL(id):
 		return SystemOnly
 	case dataOnlyLicenses[id]:

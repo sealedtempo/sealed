@@ -198,6 +198,37 @@ func TestLintFindsProblems(t *testing.T) {
 		{"enterprise package", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"name":"notes"`, `"name":"litellm-enterprise"`)
 		}, CodeExcludedPath, Error},
+		{"invalid exclusion glob", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_exclusions: []", `license_exclusions: ["/app/[bad/**"]`)
+		}, CodeExclusions, Error},
+		{"exclusion that matches everything", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_exclusions: []", `license_exclusions: ["/**"]`)
+		}, CodeExclusions, Error},
+		{"ToolJet without exclusions", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "repo: https://github.com/example/notes", "repo: https://github.com/ToolJet/ToolJet")
+		}, CodeExclusions, Error},
+		{"opencode without exclusions", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "repo: https://github.com/example/notes", "repo: https://github.com/anomalyco/opencode.git")
+		}, CodeExclusions, Error},
+		{"font license for the app", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_spdx: PostgreSQL", "license_spdx: OFL-1.1")
+		}, CodeLicense, Error},
+		{"font license on a code package", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"OFL-1.1"`)
+		}, CodeSBOMLicense, Error},
+		{"Zend license on an app package", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"PHP-3.01 AND Zend-2.0"`)
+		}, CodeSBOMLicense, Error},
+		{"package without license metadata", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT","licenseDeclared":"MIT"`, `"licenseConcluded":"NOASSERTION","licenseDeclared":"NONE"`)
+		}, CodeSBOMNoLicense, Error},
+		{"ee directory in the image", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"name":"notes-web",`, `"name":"notes-web","files":[{"SPDXID":"SPDXRef-F","fileName":"app/server/ee/licensing/license.service.js"}],`)
+		}, CodeExcludedPath, Error},
+		{"excluded glob in the image", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_exclusions: []", `license_exclusions: ["ms-playwright/chromium-*"]`)
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"name":"notes-web",`, `"name":"notes-web","files":[{"SPDXID":"SPDXRef-F","fileName":"root/.cache/ms-playwright/chromium-1187/chrome-linux/chrome"}],`)
+		}, CodeExcludedPath, Error},
 		{"invalid sbom", func(t *testing.T, d string) {
 			_ = os.WriteFile(filepath.Join(d, "sbom", "postgres.spdx.json"), []byte("{}"), 0o644)
 		}, CodeSBOMInvalid, Error},
@@ -235,7 +266,11 @@ func TestDistroAndDataLicenses(t *testing.T) {
 		`{"name":"curl","versionInfo":"8.14.1","licenseDeclared":"curl","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:deb/debian/curl@8.14.1"}]},` +
 		`{"name":"libjpeg","versionInfo":"9f","licenseDeclared":"IJG AND Libpng","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:deb/debian/libjpeg@9f"}]},` +
 		`{"name":"caniuse-lite","versionInfo":"1.0.30001700","licenseDeclared":"CC-BY-4.0","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:npm/caniuse-lite@1.0.30001700"}]},` +
-		`{"name":"blueoak-thing","versionInfo":"1.0.0","licenseDeclared":"BlueOak-1.0.0"}]}`
+		`{"name":"blueoak-thing","versionInfo":"1.0.0","licenseDeclared":"BlueOak-1.0.0"},` +
+		// D-056: OFL on a font package; F11: Zend-2.0 on an OS package.
+		`{"name":"@fontsource/inter","versionInfo":"5.2.8","licenseDeclared":"OFL-1.1","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:npm/%40fontsource/inter@5.2.8"}]},` +
+		`{"name":"fonts-dejavu-core","versionInfo":"2.37-8","licenseDeclared":"OFL-1.1 AND GPL-2.0-only","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:deb/debian/fonts-dejavu-core@2.37-8"}]},` +
+		`{"name":"php8.4-common","versionInfo":"8.4.11-1","licenseDeclared":"PHP-3.01 AND Zend-2.0","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:deb/debian/php8.4-common@8.4.11-1"}]}]}`
 	writeFile(t, filepath.Join(dir, "sbom", "notes-web.spdx.json"), sbom)
 	fs := LintApp(dir, Options{RequireSBOM: true})
 	for _, f := range fs {
@@ -265,6 +300,12 @@ func TestLicenseExceptions(t *testing.T) {
 	fs = LintApp(dir, Options{RequireSBOM: true})
 	if HasErrors(fs) || codes(fs, Warning)[CodeExempt] != 1 || codes(fs, Warning)[CodeLicenseException] != 1 {
 		t.Fatalf("accepted exception: %v", fs)
+	}
+	// An accepted exception path is a glob like license_exclusions; a bad one is an error.
+	edit(t, filepath.Join(dir, "manifest.yaml"), "paths: [vendor/enterprise/billing, never/matches]", `paths: [vendor/enterprise/billing, "a//b"]`)
+	fs = LintApp(dir, Options{RequireSBOM: true})
+	if codes(fs, Error)[CodeLicenseException] != 1 || codes(fs, Warning)[CodeExempt] != 1 {
+		t.Fatalf("bad exception path: %v", fs)
 	}
 	// The schema rejects malformed entries.
 	edit(t, filepath.Join(dir, "manifest.yaml"), "decision: D-999", "decision: 19")
@@ -355,6 +396,21 @@ func TestUnknownLicenseIsWarningOutsideRelease(t *testing.T) {
 	dir := copyApp(t, "notes")
 	edit(t, filepath.Join(dir, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"CC-BY-NC-4.0"`)
 	if fs := LintApp(dir, Options{}); codes(fs, Error)[CodeSBOMLicense] != 0 || codes(fs, Warning)[CodeSBOMLicense] != 1 {
+		t.Fatalf("%v", fs)
+	}
+}
+
+func TestNoLicenseIsWarningOutsideRelease(t *testing.T) {
+	dir := copyApp(t, "notes")
+	edit(t, filepath.Join(dir, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT","licenseDeclared":"MIT"`, `"licenseConcluded":"NOASSERTION"`)
+	if fs := LintApp(dir, Options{}); codes(fs, Error)[CodeSBOMNoLicense] != 0 || codes(fs, Warning)[CodeSBOMNoLicense] != 1 {
+		t.Fatalf("%v", fs)
+	}
+	// OS packages without metadata are system components: one warning per SBOM, in release mode too.
+	edit(t, filepath.Join(dir, "sbom", "postgres.spdx.json"), `"licenseDeclared":"GPL-2.0-only"`, `"licenseDeclared":"NOASSERTION"`)
+	edit(t, filepath.Join(dir, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"NOASSERTION"`, `"licenseConcluded":"MIT"`)
+	fs := LintApp(dir, Options{RequireSBOM: true})
+	if codes(fs, Error)[CodeSBOMNoLicense] != 0 || codes(fs, Warning)[CodeSBOMNoLicense] != 1 {
 		t.Fatalf("%v", fs)
 	}
 }

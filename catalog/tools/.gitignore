@@ -1,0 +1,2 @@
+# Python bytecode from the wrapper tests. Build outputs are never committed (license audit F2).
+__pycache__/
