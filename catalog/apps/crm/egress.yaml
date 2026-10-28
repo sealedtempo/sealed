@@ -2,11 +2,12 @@ version: 1
 default_allow: []
 customer_additions_allowed: true
 notes: >-
-  Twenty needs no outbound host to run. Calls found in source (telemetry, twenty-icons.com,
-  the Docker Hub version check, the npm marketplace sync, twenty.com enterprise endpoints) are
-  switched off by env or fail closed here and show up as blocked counts; expect one blocked
-  attempt to twenty-icons.com when the bootstrap creates the workspace. Customers who later
-  enable email or calendar sync add their provider hosts, for example gmail.googleapis.com:443,
-  www.googleapis.com:443, oauth2.googleapis.com:443, graph.microsoft.com:443 and
-  login.microsoftonline.com:443, or their IMAP, SMTP and CalDAV hosts. Twenty's SMTP and IMAP
-  clients do not use HTTP proxies, so raw IMAP and SMTP need more than an allowlist entry.
+  EspoCRM needs no outbound host to run. Calls found in the 10.0.11 source are off or fail
+  closed here and show up as blocked counts: the version and extension checks against
+  s.espocrm.com (adminNotifications off in data/config-override.php), the admin-panel iframe
+  from s.espocrm.com (off; it would load in the admin's browser, outside the VM), and Google
+  Maps, OAuth providers, reCAPTCHA and S3 storage, which run only when an admin configures them.
+  Customers who later enable email add their IMAP and SMTP hosts, for example
+  imap.example.com:993 and smtp.example.com:465 or :587. EspoCRM's IMAP and SMTP clients open
+  raw TLS connections and do not use the HTTP proxy, so raw IMAP and SMTP need more than an
+  allowlist entry. Webhooks and workflow HTTP calls go to the hosts the customer adds.

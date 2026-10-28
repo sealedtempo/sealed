@@ -1,50 +1,45 @@
 crm app: license notice
 
-Twenty v2.52.0
-  Image:   docker.io/twentycrm/twenty:v2.52.0
-           sha256:20b1010a975c42954d9f90698564795daf106da964bc95028836b09a8f424839 (unmodified upstream image)
-  License: GNU Affero General Public License v3.0 (AGPL-3.0-only), with the additional permission
-           under AGPLv3 section 7 ("Twenty Application Exception"). Full text, verbatim from the tag:
-           LICENSES/twenty-v2.52.0-LICENSE
-  Source:  https://github.com/twentyhq/twenty/tree/twenty/v2.52.0
-           (tag twenty/v2.52.0, commit 62c9c99746abbe3392de76ba77fd32cc93883335)
+EspoCRM 10.0.11
+  Image:   images/espocrm (built by the runtime image workflow; digest pinned in manifest.yaml)
+  Release: https://www.espocrm.com/downloads/EspoCRM-10.0.11.zip
+           sha256 cdd04f7efa52a59025ef824c75b06e0a84cf986724a8c5bc4b56fcd2ce8e0ab1
+  License: GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). Full text,
+           verbatim from the release: LICENSES/espocrm-10.0.11-LICENSE.txt
+           Additional term under AGPLv3 section 7(b), from every EspoCRM source file: the
+           Appropriate Legal Notices in the user interface must retain the display of the
+           "EspoCRM" word. Sealed does not change EspoCRM's user interface.
+  Source:  https://github.com/espocrm/espocrm/tree/10.0.11
+           (tag 10.0.11, commit 32d559ba86d3be607599d1325c359668c1178850)
 
-  AGPL section 13: Sealed runs the upstream image without modification, so the corresponding
-  source is the upstream tag above. If Sealed ever patches Twenty, the patched source will be
-  published next to this notice before the patched image is released.
+  AGPL section 13: Sealed runs the EspoCRM release unmodified. The image only removes the web
+  installer (install/ and public/install/) and moves data/, custom/ and client/custom/ into
+  volumes; settings are applied through EspoCRM's own override files at start. The
+  corresponding source is the upstream tag above plus catalog/apps/crm/images/espocrm in this
+  repository.
 
-  Enterprise-licensed files (decision D-019, escalated; this release is blocked until it is
-  resolved): Twenty has no enterprise directory. Files whose first line is
-  "/* @license Enterprise */" are under the Twenty.com Commercial License at the end of
-  LICENSES/twenty-v2.52.0-LICENSE, and the official image compiles them into the same server and
-  front-end bundles as the AGPL code, so no path can be left out. What that means here:
-    - The enterprise-marked modules are in the image, and some of them run on every start with
-      no key set: module setup (it reads the validity token from the database), entitlement
-      checks, billing module wiring with billing off, and enterprise cron jobs that return early.
-    - Features that need a valid enterprise key stay locked, because ENTERPRISE_KEY and
-      ENTERPRISE_VALIDITY_TOKEN are never set: SSO, row-level permissions, audit logs, more than
-      five workspaces. ENTERPRISE_API_URL is empty, IS_BILLING_ENABLED is false, and
-      IS_CONFIG_VARIABLES_IN_DB_ENABLED is false, so no key can be stored from the admin panel.
-      The egress policy allows no host, so twenty.com cannot be reached.
-    - The Commercial License says that part of the software "may only be used in production"
-      with an Enterprise subscription, and that otherwise "it is forbidden to copy, merge,
-      publish, distribute, sublicense, and/or sell the Software". The release job mirrors the
-      image to the catalog registry, which distributes those files.
-  Because of the last point Sealed does not mirror or publish this app until the decision is
-  made: either an image built from the tag with the enterprise-marked files removed, or a
-  recorded exemption.
+  Bundled third-party code in the release: 117 Composer packages (105 MIT, 3 BSD-3-Clause,
+  3 BSD-2-Clause, 1 Apache-2.0, 1 MIT OR Apache-2.0, 4 LGPL, per vendor/composer/installed.json;
+  the image build fails on any other license) and the front-end libraries in client/lib (jQuery,
+  Backbone, Handlebars, Ace and others, under MIT, BSD and Apache-2.0 headers).
+
+  Enterprise code: none. The release contains one module (Crm). EspoCRM's paid extensions are
+  separate downloads that are not in the image, and extension uploads from the admin panel are
+  turned off.
+
+Runtime from Debian trixie packages (snapshot.debian.org 20261027T000000Z)
+  Apache httpd 2.4 (Apache-2.0), PHP 8.4 with mod_php (PHP-3.01; the Zend Engine part is under
+  the Zend Engine License 2.00), Node.js 20 (MIT) for the bootstrap job, and their libraries.
+  These are OS distribution packages (decisions D-021, D-050). License texts are in each
+  package's /usr/share/doc/<package>/copyright inside the image, and the release SBOM
+  (sbom/espocrm.spdx.json) lists every package. PHP upstream accepted relicensing PHP and the
+  Zend Engine under BSD-3-Clause for a later PHP 8 release (https://wiki.php.net/rfc/php_license_update).
 
 PostgreSQL 16.15
   Image:   docker.io/library/postgres:16.15
            sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
   License: PostgreSQL License. Text: LICENSES/postgresql-16.15-COPYRIGHT
   Source:  https://github.com/postgres/postgres/tree/REL_16_15
-
-Valkey 9.0.7 (used instead of Redis, decision D-020)
-  Image:   docker.io/valkey/valkey:9.0.7
-           sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d
-  License: BSD-3-Clause. Text: LICENSES/valkey-9.0.7-COPYING
-  Source:  https://github.com/valkey-io/valkey/tree/9.0.7
 
 The base operating system packages inside these images are distribution components under their
 own licenses (decision D-021). The release SBOMs (sbom/*.spdx.json) list every package.

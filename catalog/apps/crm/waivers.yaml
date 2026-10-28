@@ -2,7 +2,7 @@
 # that is not listed here with an expiry date in the future.
 # Entry format:
 #   - id: CVE-2026-12345          # vulnerability id as Grype reports it
-#     image: twenty               # manifest images[].name
+#     image: espocrm              # manifest images[].name
 #     package: example-package    # affected package name
 #     expires: 2026-12-31         # date (UTC); the waiver stops applying after this day
 #     reason: why the finding does not apply or what blocks the fix

@@ -1,163 +1,186 @@
+// The real A6 helper (scripts/a6-crm.mjs) against fake-espocrm.mjs, through a stand-in of the
+// composer's gated Caddy site in both shapes (fake-gate.mjs), with the API key that a real
+// bootstrap run wrote.
+
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { bootstrap, loadConfig } from "../bootstrap/bootstrap.mjs";
-import { gateHeaders, runA6, UsageError } from "../scripts/a6-crm.mjs";
+import { API_KEY_FILE, run as bootstrap } from "../bootstrap/bootstrap.mjs";
+import { UsageError, credentials, gateHeaders, runA6 } from "../scripts/a6-crm.mjs";
+import { createFakeEspoCrm, initialState, readState, writeState } from "./lib/fake-espocrm.mjs";
 import { createFakeGate } from "./lib/fake-gate.mjs";
-import { createFakeTwenty } from "./lib/fake-twenty.mjs";
 
-const ORIGIN = "https://crm.34-1-2-3.sslip.io";
-const ADMIN = { ADMIN_EMAIL: "admin@example.com", ADMIN_PASSWORD: "correct-horse-battery" };
-const GATE_PASSWORD = "gate-password-1";
-const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const here = dirname(fileURLToPath(import.meta.url));
+const appDir = join(here, "..");
+const PUBLIC_URL = "https://crm.34-1-2-3.sslip.io";
+const GATE_PASSWORD = "gate-password-1234";
+const ADMIN_PASSWORD = "Correct-Horse-Battery-9";
+const SWITCH_ENV = Object.fromEntries(
+  Object.entries((await import("yaml")).parse(await readFile(join(appDir, "manifest.yaml"), "utf8")).telemetry_off_env),
+);
 
 const cleanups = [];
 afterEach(async () => {
-  while (cleanups.length) await cleanups.pop()();
+  while (cleanups.length > 0) await cleanups.pop()();
 });
 
-// A fake Twenty that has been through the real bootstrap, plus the api-key.json it wrote.
-async function bootstrapped() {
-  const fake = createFakeTwenty({ origin: ORIGIN });
-  const base = await fake.start();
+// A bootstrapped instance: the real bootstrap ran against the fake, so the API user, role and
+// key file are what the VM would have.
+async function instance({ stripAuthorization = true, gateMode = "forward_auth", ready } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "crm-a6-"));
-  cleanups.push(() => fake.stop(), () => rm(dir, { recursive: true, force: true }));
-  await bootstrap(
-    loadConfig({ CRM_BASE_URL: base, SEALED_PUBLIC_URL_CRM: ORIGIN, STATE_DIR: dir, POLL_INTERVAL_MS: "10", ...ADMIN }),
+  const espoDir = join(dir, "espo");
+  await mkdir(join(espoDir, "data"), { recursive: true });
+  const write = spawnSync("/bin/sh", [join(appDir, "images/espocrm/sealed-espocrm.sh"), "write-config", join(espoDir, "data")], {
+    env: { PATH: process.env.PATH, SEALED_PUBLIC_URL_CRM: PUBLIC_URL, PG_DATABASE_PASSWORD: "ab12".repeat(16), ...SWITCH_ENV },
+    encoding: "utf8",
+  });
+  assert.equal(write.status, 0, write.stderr);
+  const stateFile = join(dir, "state.json");
+  writeState(stateFile, initialState(espoDir));
+  const command = join(dir, "espo-command");
+  await writeFile(command, `#!/bin/sh\nFAKE_ESPO_STATE='${stateFile}' exec '${process.execPath}' '${join(here, "lib/fake-espo-command.mjs")}' "$@"\n`);
+  await chmod(command, 0o755);
+  const app = createFakeEspoCrm({ stateFile, stripAuthorization });
+  const appUrl = await app.start();
+  const logs = [];
+  const code = await bootstrap(
+    {
+      CRM_BASE_URL: appUrl, STATE_DIR: join(dir, "state"), ESPO_DIR: espoDir, ESPO_COMMAND: command,
+      ADMIN_USERNAME: "admin", ADMIN_PASSWORD, API_USER_NAME: "sealed-customer", SEALED_PUBLIC_URL_CRM: PUBLIC_URL,
+      HEALTH_TIMEOUT_S: "3", POLL_MS: "20",
+    },
+    { log: (m) => logs.push(m) },
   );
-  return { fake, base, keyFile: join(dir, "api-key.json") };
+  assert.equal(code, 0, logs.join("\n"));
+  const gate = createFakeGate({ upstream: appUrl, mode: gateMode, password: GATE_PASSWORD, ready });
+  const url = await gate.start();
+  cleanups.push(async () => {
+    await gate.stop();
+    await app.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+  return { dir, url, app, gate, stateFile, keyFile: join(dir, "state", API_KEY_FILE) };
 }
 
-describe("a6-crm", () => {
-  test("creates a linked company, person and opportunity with the bootstrap API key", async () => {
-    const { fake, base, keyFile } = await bootstrapped();
-    const result = await runA6({ CRM_URL: `${base}/`, API_KEY_FILE: keyFile });
+const env = (t, extra = {}) => ({ CRM_URL: t.url, API_KEY_FILE: t.keyFile, GATE_BASIC: `sealed:${GATE_PASSWORD}`, ...extra });
+const fixedNow = () => new Date("2026-10-28T12:00:00Z");
+
+describe("A6 through the forward_auth gate (D-044)", () => {
+  test("creates a company, a contact and a deal with the bootstrap's API key and checks the links", async () => {
+    const t = await instance();
+    const before = t.app.seen.length;
+    const result = await runA6(env(t), { now: fixedNow });
     assert.equal(result.ok, true);
-    const opp = fake.state.records.opportunities.get(result.opportunityId);
-    assert.equal(opp.companyId, result.companyId);
-    assert.equal(opp.pointOfContactId, result.personId);
-    assert.deepEqual(opp.amount, { amountMicros: 1_000_000_000, currencyCode: "USD" });
-    assert.equal(fake.state.records.people.get(result.personId).companyId, result.companyId);
+    const s = readState(t.stateFile);
+    const account = s.records.Account.find((a) => a.id === result.accountId);
+    const contact = s.records.Contact.find((c) => c.id === result.contactId);
+    const deal = s.records.Opportunity.find((o) => o.id === result.opportunityId);
+    assert.equal(account.name, "A6 Company 20261028120000");
+    assert.equal(contact.accountId, account.id);
+    assert.equal(deal.accountId, account.id);
+    assert.deepEqual(deal.contactsIds, [contact.id]);
+    assert.equal(deal.closeDate, "2026-11-27");
+    const apiUser = s.users.find((u) => u.type === "api");
+    assert.ok([account, contact, deal].every((r) => r.createdById === apiUser.id), "records are created by the API user");
+    // The first call passes on Basic and gets the cookie; the rest pass on the cookie.
+    assert.equal(t.gate.seen[0].outcome, "basic");
+    assert.ok(t.gate.seen.slice(1).every((r) => r.outcome === "cookie"), JSON.stringify(t.gate.seen));
+    // The gate's Basic header reaches the app (forward_auth leaves Authorization alone) and
+    // does not get in the way, because the image drops it before EspoCRM.
+    const viaGate = t.app.seen.slice(before);
+    assert.ok(viaGate.length >= 8 && viaGate.every((r) => r.authorization?.startsWith("Basic ")));
   });
 
-  test("A6_CLEANUP deletes the records", async () => {
-    const { fake, base, keyFile } = await bootstrapped();
-    const result = await runA6({ CRM_URL: base, API_KEY_FILE: keyFile, A6_CLEANUP: "1" });
-    assert.equal(result.cleanedUp, true);
-    for (const table of Object.values(fake.state.records)) assert.equal(table.size, 0);
-  });
-
-  test("mints a one-day key from the admin login and revokes it afterwards", async () => {
-    const { fake, base } = await bootstrapped();
-    const before = fake.state.apiKeys.size;
-    const now = Date.parse("2026-10-28T00:00:00Z");
-    await runA6({ CRM_URL: base, CRM_ORIGIN: ORIGIN, ...ADMIN }, { now });
-    const keys = [...fake.state.apiKeys.values()];
-    assert.equal(keys.length, before + 1);
-    const minted = keys.find((k) => k.name === "sealed-a6");
-    assert.equal(minted.revoked, true);
-    assert.ok(Date.parse(minted.expiresAt) - Date.now() <= 86_400_000 + 1000);
-  });
-
-  test("revokes the minted key even when a step fails", async () => {
-    const { fake, base } = await bootstrapped();
-    const realCreate = fake.state.records.people;
-    fake.state.records.people = undefined;
-    await assert.rejects(runA6({ CRM_URL: base, CRM_ORIGIN: ORIGIN, ...ADMIN }), /POST \/rest\/people: HTTP 404/);
-    fake.state.records.people = realCreate;
-    assert.equal([...fake.state.apiKeys.values()].find((k) => k.name === "sealed-a6").revoked, true);
-  });
-
-  test("reports an invalid API key with the server's message", async () => {
-    const { base } = await bootstrapped();
-    await assert.rejects(runA6({ CRM_URL: base, API_KEY: "nope" }), /POST \/rest\/companies: HTTP 401 Token invalid\./);
-  });
-
-  test("usage errors", async () => {
-    await assert.rejects(runA6({}), UsageError);
-    const { base } = await bootstrapped();
-    await assert.rejects(runA6({ CRM_URL: base }), UsageError);
-    assert.throws(() => gateHeaders({ GATE_BASIC: "no-colon" }), UsageError);
-    assert.throws(() => gateHeaders({ GATE_BASIC: "sealed:" }), UsageError);
-    assert.deepEqual(gateHeaders({}), {});
-    assert.deepEqual(gateHeaders({ GATE_BASIC: "sealed:pw" }), { authorization: `Basic ${Buffer.from("sealed:pw").toString("base64")}` });
-  });
-
-  test("the shell wrapper runs the helper and prints one JSON line", async () => {
-    const { base, keyFile } = await bootstrapped();
-    const child = spawn("bash", [join(appDir, "scripts/a6-crm.sh")], {
-      env: { PATH: process.env.PATH, CRM_URL: base, API_KEY_FILE: keyFile },
+  // A browser that passed the gate keeps sending its Basic credentials. EspoCRM's web app adds
+  // Espo-Authorization to its API calls, which wins, but entry points (attachments, images,
+  // downloads) carry only the auth-token cookie, and EspoCRM reads a Basic header before the
+  // cookie (Espo\Core\Api\Auth). The image drops the header; without that, those fail.
+  for (const [strip, expected] of [[true, 200], [false, 401]]) {
+    test(`a cookie-only request with the gate's Basic header gets ${expected} when the image ${strip ? "drops" : "keeps"} Authorization`, async () => {
+      const t = await instance({ stripAuthorization: strip });
+      const s = readState(t.stateFile);
+      const admin = s.users.find((u) => u.type === "admin");
+      s.tokens["browser-token"] = admin.id;
+      writeState(t.stateFile, s);
+      const res = await fetch(`${t.url}/api/v1/Account?maxSize=1`, {
+        headers: {
+          authorization: `Basic ${Buffer.from(`sealed:${GATE_PASSWORD}`).toString("base64")}`,
+          cookie: "auth-token=browser-token",
+        },
+      });
+      assert.equal(res.status, expected);
     });
-    let out = "";
-    child.stdout.on("data", (d) => (out += d));
-    const code = await new Promise((resolve) => child.on("close", resolve));
-    assert.equal(code, 0);
-    const lines = out.trim().split("\n");
-    assert.equal(lines.length, 1);
-    assert.equal(JSON.parse(lines[0]).ok, true);
+  }
+
+  test("A11: --check reads the same ids back, and fails once a record is gone", async () => {
+    const t = await instance();
+    const result = await runA6(env(t), { now: fixedNow });
+    const ids = join(t.dir, "ids.json");
+    await writeFile(ids, JSON.stringify(result));
+    const checked = await runA6(env(t), { argv: ["--check", ids] });
+    assert.equal(checked.checked.opportunityId, result.opportunityId);
+    const s = readState(t.stateFile);
+    s.records.Contact = [];
+    writeState(t.stateFile, s);
+    await assert.rejects(runA6(env(t), { argv: ["--check", ids] }), /GET \/Contact\/\S+: HTTP 404/);
   });
 
-  test("the shell wrapper exits 2 on bad usage", async () => {
-    const child = spawn("bash", [join(appDir, "scripts/a6-crm.sh")], { env: { PATH: process.env.PATH } });
-    const code = await new Promise((resolve) => child.on("close", resolve));
-    assert.equal(code, 2);
+  test("A6_CLEANUP=1 deletes the three records", async () => {
+    const t = await instance();
+    const result = await runA6(env(t, { A6_CLEANUP: "1" }), { now: fixedNow });
+    assert.equal(result.cleanedUp, true);
+    const s = readState(t.stateFile);
+    assert.deepEqual([s.records.Account.length, s.records.Contact.length, s.records.Opportunity.length], [0, 0, 0]);
+  });
+
+  test("works as the administrator too", async () => {
+    const t = await instance();
+    const result = await runA6(env(t, { API_KEY_FILE: undefined, ADMIN_PASSWORD }), { now: fixedNow });
+    assert.equal(result.ok, true);
+  });
+
+  test("says when the gate password is missing or the route is still starting", async () => {
+    const t = await instance();
+    await assert.rejects(runA6(env(t, { GATE_BASIC: undefined })), /HTTP 401 from the Sealed gate \(set GATE_BASIC/);
+    const starting = await instance({ ready: () => false });
+    await assert.rejects(runA6(env(starting)), /HTTP 503 \(the crm route opens when crm-bootstrap is done\)/);
+  });
+
+  test("an API user without the role is refused by EspoCRM's ACL", async () => {
+    const t = await instance();
+    const s = readState(t.stateFile);
+    s.users.find((u) => u.type === "api").rolesIds = [];
+    writeState(t.stateFile, s);
+    await assert.rejects(runA6(env(t)), /POST \/Account: HTTP 403/);
   });
 });
 
-describe("a6-crm through the Sealed gate", () => {
-  async function behindGate(mode) {
-    const stack = await bootstrapped();
-    const gate = createFakeGate({ upstream: stack.base, mode, password: GATE_PASSWORD });
-    const url = await gate.start();
-    cleanups.push(() => gate.stop());
-    return { ...stack, gate, url };
-  }
-  const GATE_BASIC = `sealed:${GATE_PASSWORD}`;
-
-  test("auth: gate (what the composer allows today) refuses every Twenty bearer call", async () => {
-    const { gate, url, keyFile } = await behindGate("gate");
-    await assert.rejects(
-      runA6({ CRM_URL: url, API_KEY_FILE: keyFile, GATE_BASIC }),
-      /POST \/rest\/companies: HTTP 401 from the Sealed gate, which refuses Twenty's bearer token .*interface change 6/,
-    );
-    assert.equal(gate.seen.find((r) => r.path === "/healthz").outcome, "gated", "the gate password itself works");
-    assert.equal(gate.seen.find((r) => r.path === "/rest/companies").outcome, "refused");
-  });
-
-  test("auth: gate also breaks the admin login flow at the first call with a session token", async () => {
-    const { url } = await behindGate("gate");
-    await assert.rejects(runA6({ CRM_URL: url, CRM_ORIGIN: ORIGIN, GATE_BASIC, ...ADMIN }), /getApiKeyRoles: HTTP 401/);
-  });
-
-  test("bearer-passthrough (interface change 6): API key calls pass, the rest uses the gate password", async () => {
-    const { gate, url, keyFile } = await behindGate("bearer-passthrough");
-    const result = await runA6({ CRM_URL: url, API_KEY_FILE: keyFile, GATE_BASIC });
+describe("A6 through the basic_auth gate (composer before brief item 9)", () => {
+  test("passes the same way; Caddy strips Authorization before EspoCRM", async () => {
+    const t = await instance({ gateMode: "basic_auth" });
+    const result = await runA6(env(t), { now: fixedNow });
     assert.equal(result.ok, true);
-    assert.equal(gate.seen.find((r) => r.path === "/healthz").outcome, "gated");
-    assert.ok(gate.seen.filter((r) => r.path.startsWith("/rest/")).every((r) => r.outcome === "passthrough"));
+    assert.ok(t.app.seen.every((r) => r.authorization === undefined));
+  });
+});
+
+describe("usage", () => {
+  test("needs CRM_URL and credentials, and a well-formed GATE_BASIC", async () => {
+    await assert.rejects(runA6({}), UsageError);
+    await assert.rejects(runA6({ CRM_URL: "http://x" }), /set API_KEY, API_KEY_FILE or ADMIN_PASSWORD/);
+    assert.throws(() => gateHeaders({ GATE_BASIC: "nocolon" }), /user:password/);
+    assert.deepEqual(await credentials({ API_KEY: "k" }), { "x-api-key": "k" });
+    await assert.rejects(credentials({ API_KEY_FILE: "/nonexistent/api-key.json" }), /cannot read API_KEY_FILE: ENOENT/);
   });
 
-  test("bearer-passthrough: the admin login goes through the gate and the key calls pass through", async () => {
-    const { fake, gate, url } = await behindGate("bearer-passthrough");
-    await runA6({ CRM_URL: url, CRM_ORIGIN: ORIGIN, GATE_BASIC, ...ADMIN });
-    assert.equal([...fake.state.apiKeys.values()].find((k) => k.name === "sealed-a6").revoked, true);
-    const metadata = gate.seen.filter((r) => r.path === "/metadata").map((r) => r.outcome);
-    assert.deepEqual(metadata.slice(0, 2), ["gated", "gated"], "login token and its exchange carry no bearer");
-    assert.ok(metadata.slice(2).every((o) => o === "passthrough"), "role lookup and key minting use the session token");
-  });
-
-  test("without the gate password A6 stops at GET /healthz", async () => {
-    const { url, keyFile } = await behindGate("bearer-passthrough");
-    await assert.rejects(runA6({ CRM_URL: url, API_KEY_FILE: keyFile }), /HTTP 401 from the Sealed gate \(set GATE_BASIC/);
-  });
-
-  test("bearer-passthrough: Twenty still refuses a bearer token it did not issue", async () => {
-    const { url } = await behindGate("bearer-passthrough");
-    await assert.rejects(runA6({ CRM_URL: url, API_KEY: "made-up", GATE_BASIC }), /POST \/rest\/companies: HTTP 401 Token invalid\./);
+  test("the shell wrapper exits 2 on bad usage", () => {
+    const res = spawnSync("bash", [join(appDir, "scripts/a6-crm.sh")], { env: { PATH: process.env.PATH }, encoding: "utf8" });
+    assert.equal(res.status, 2, res.stderr);
+    assert.match(res.stderr, /a6-crm: set CRM_URL/);
   });
 });
