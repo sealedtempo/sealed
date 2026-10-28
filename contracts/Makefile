@@ -17,7 +17,7 @@ FEE_TOKEN_ADDRESS ?= 0x20c0000000000000000000000000000000000000
 MAINNET_DEPLOYMENTS := deployments/tempo-mainnet.json
 CONTRACTS := PlatformRegistry AppRegistry OracleSignatureVerifier DeploymentRegistry FeeSplitter
 
-.PHONY: help deps build test test-ci test-fork local-e2e deploy-mainnet record-mainnet verify-mainnet \
+.PHONY: help deps build test test-ci test-fork local-e2e deploy-mainnet record-mainnet verify-mainnet fee-token-pref \
 	estimate-mainnet abi coverage gas-report fmt fmt-check clean
 
 help:
@@ -59,8 +59,8 @@ deploy-mainnet:
 	@test -n "$$OWNER_PRIVATE_KEY" || { echo "OWNER_PRIVATE_KEY is not set (see $(SEALED_ENV))"; exit 1; }
 	@test "$$(cast chain-id --rpc-url $(RPC))" = "4217" || { echo "RPC is not Tempo mainnet (4217)"; exit 1; }
 ifeq ($(BROADCAST),1)
-	forge script script/Deploy.s.sol:Deploy --rpc-url $(RPC) --broadcast --skip-simulation --slow \
-		--tempo.fee-token $(FEE_TOKEN_ADDRESS)
+	@test "$$(cast call 0xfeec000000000000000000000000000000000000 'userTokens(address)(address)' $$(cast wallet address --private-key $$OWNER_PRIVATE_KEY) --rpc-url $(RPC) | tr A-F a-f)" = "$$(echo $(FEE_TOKEN_ADDRESS) | tr A-F a-f)" || { echo "OWNER's fee token preference is not FEE_TOKEN; run make fee-token-pref KEY_VAR=OWNER_PRIVATE_KEY"; exit 1; }
+	FOUNDRY_PROFILE=deploy forge script script/Deploy.s.sol:Deploy --rpc-url $(RPC) --broadcast --skip-simulation --slow
 	script/record-deployment.sh $(MAINNET_DEPLOYMENTS) broadcast/Deploy.s.sol/4217/run-latest.json
 	$(MAKE) abi
 	@echo "Deployed. Next: make verify-mainnet, then log the fees in MAINNET_LEDGER.md."
@@ -73,6 +73,14 @@ record-mainnet:
 	script/record-deployment.sh $(MAINNET_DEPLOYMENTS) broadcast/Deploy.s.sol/4217/run-latest.json
 
 # Sourcify-compatible verification. Pass the host only: forge appends /v2/verify/<chainId>/<address>.
+# Foundry 1.7.1 cannot build a Tempo 0x76 transaction for contract creation (--tempo.fee-token makes CREATE fail with
+# "missing keys: gas"). Instead each sending account sets FeeManager.setUserToken(FEE_TOKEN) once with a plain call,
+# and later type-2 transactions pay fees in that token. KEY_VAR names the .env variable holding the key.
+fee-token-pref:
+	@test -n "$(KEY_VAR)" || { echo "usage: make fee-token-pref KEY_VAR=OPS_PRIVATE_KEY"; exit 1; }
+	cast send 0xfeec000000000000000000000000000000000000 'setUserToken(address)' $(FEE_TOKEN_ADDRESS) \
+		--private-key $$$(KEY_VAR) --rpc-url $(RPC) --tempo.fee-token $(FEE_TOKEN_ADDRESS)
+
 verify-mainnet:
 	@test -f $(MAINNET_DEPLOYMENTS) || { echo "missing $(MAINNET_DEPLOYMENTS)"; exit 1; }
 	@set -e; for c in $(CONTRACTS); do \

@@ -26,6 +26,13 @@ fs_permissions = [
     { access = "read", path = "./out" },
 ]
 
+# Mainnet broadcasts. Same compiler settings (identical bytecode), but standard EIP-1559 transactions:
+# Foundry 1.7.1 cannot build a Tempo 0x76 transaction for contract creation. Fees are paid in the sender's
+# FeeManager.setUserToken preference (make fee-token-pref).
+[profile.deploy]
+network = "ethereum"
+hardfork = "osaka"
+
 [profile.default.fuzz]
 runs = 256
 seed = "0x5ea1ed"
