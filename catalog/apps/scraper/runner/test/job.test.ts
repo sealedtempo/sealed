@@ -95,6 +95,9 @@ describe('parseJobSpec', () => {
     expect(fields({ ...base, extract: ['h1'] })).toEqual(['extract']);
     expect(fields({ ...base, extract: { '1bad': 'h1', 'has space': 'h1', ok: 'h1' } })).toEqual(['extract.1bad', 'extract.has space']);
     expect(fields({ ...base, extract: { url: 'a@href' } })).toEqual(['extract.url']);
+    // A JSON body can carry "__proto__" as an ordinary key; it must be refused, not dropped.
+    const proto = JSON.parse('{"__proto__": "h1", "constructor": "h2", "prototype": "h3", "b": "p"}') as unknown;
+    expect(fields({ ...base, extract: proto })).toEqual(['extract.__proto__', 'extract.constructor', 'extract.prototype']);
     expect(fields({ ...base, extract: { a: '', b: 7, c: 'a[' } })).toEqual(['extract.a', 'extract.b', 'extract.c']);
     expect(fields({ ...base, extract: { a: 'p'.repeat(501) } })).toEqual(['extract.a']);
     const many = Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`f${i}`, 'p']));

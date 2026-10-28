@@ -58,21 +58,27 @@ const lines = (text: string) =>
 
 export function formToJob(form: JobForm): { job: Record<string, unknown>; errors: FieldError[] } {
   const errors: FieldError[] = [];
-  const extract: Record<string, string> = {};
+  // A Map, so every name (even "__proto__") reaches parseJobSpec as an own key and gets checked.
+  const extract = new Map<string, string>();
   lines(form.extract).forEach((line, i) => {
     const eq = line.indexOf('=');
     if (eq <= 0) {
       errors.push({ field: 'extract', message: `line ${i + 1} must look like name = selector` });
       return;
     }
-    extract[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+    const name = line.slice(0, eq).trim();
+    if (extract.has(name)) {
+      errors.push({ field: 'extract', message: `line ${i + 1} repeats the field name ${name}` });
+      return;
+    }
+    extract.set(name, line.slice(eq + 1).trim());
   });
   const job: Record<string, unknown> = {
     start_urls: lines(form.start_urls),
     crawler: form.crawler,
     same_domain: form.same_domain,
     respect_robots: form.respect_robots,
-    extract,
+    extract: Object.fromEntries(extract),
   };
   for (const key of ['max_pages', 'max_concurrency', 'max_requests_per_minute'] as const) {
     const value = numberOrRaw(form[key]);

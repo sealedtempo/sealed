@@ -36,8 +36,9 @@ const DEFAULT_CONCURRENCY: Record<CrawlerKind, number> = { cheerio: 4, playwrigh
 const DEFAULT_REQUESTS_PER_MINUTE = 60;
 const DEFAULT_MAX_PAGES = 100;
 const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
-// Columns the exports add themselves.
-export const RESERVED_FIELDS = new Set(['url']);
+// The column the exports add themselves, and names that are object internals in JavaScript (an
+// item key "__proto__" would silently vanish).
+export const RESERVED_FIELDS = new Set(['url', '__proto__', 'constructor', 'prototype']);
 const KEYS = new Set([
   'start_urls',
   'max_pages',

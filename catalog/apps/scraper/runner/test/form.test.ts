@@ -34,6 +34,14 @@ describe('UI form', () => {
     expect(parseJobSpec(job).ok).toBe(true);
   });
 
+  it('reports repeated field names and passes __proto__ on to validation', () => {
+    const { job, errors } = formToJob(readForm({ start_urls: 'https://a.test/', extract: 'a = h1\na = h2\n__proto__ = p' }));
+    expect(errors).toEqual([{ field: 'extract', message: 'line 2 repeats the field name a' }]);
+    expect(Object.keys(job.extract as object)).toEqual(['a', '__proto__']);
+    const parsed = parseJobSpec(job);
+    expect(parsed.ok ? [] : parsed.errors).toEqual([{ field: 'extract.__proto__', message: 'is reserved' }]);
+  });
+
   it('reports malformed field lines and passes bad numbers through to validation', () => {
     const { job, errors } = formToJob(readForm({ start_urls: 'https://a.test/', extract: 'just-a-selector\n= h1', max_pages: 'ten' }));
     expect(errors).toEqual([
