@@ -24,6 +24,9 @@ the result must equal the onchain bundleHash byte for byte.
 
 A manifest image whose digest is still the all-zero placeholder (D-028) cannot boot, so build refuses it unless
 --dev-allow-unbuilt is given with SEALED_DEV_SIM=1 (local devnets only; such a bundle is never a real release).
+
+The output also names where the release's assets are published under the release asset base (D-046): the
+bundle, its signature, certificate and provenance, and each image's SBOM.
 `
 
 func runRelease(ctx context.Context, args []string, e *Env) error {
@@ -129,6 +132,15 @@ func runRelease(ctx context.Context, args []string, e *Env) error {
 	}
 	info := b.Info()
 	doc := map[string]any{"release": info, "bundleBytes": len(b.Tar)}
+	base := c.assetBase
+	if base == "" {
+		base = s.ReleaseAssetBase()
+	}
+	assets, err := releaseAssetURLs(b, base)
+	if err != nil {
+		return err
+	}
+	doc["assets"] = assets
 	if unbuilt := unbuiltImages(b); len(unbuilt) > 0 {
 		doc["unbuilt"] = unbuilt
 	}
@@ -154,6 +166,7 @@ func runRelease(ctx context.Context, args []string, e *Env) error {
 		if out != "" {
 			e.printf("bundle           %s (%d bytes)\n", out, len(b.Tar))
 		}
+		e.printf("published at     %s\n", assets.Bundle)
 		if check != "" {
 			if match {
 				e.printf("\nreproduced: the bundle equals release %s onchain (bundleHash %s)\n", onchainVersion, onchainHash.Hex())
@@ -169,6 +182,33 @@ func runRelease(ctx context.Context, args []string, e *Env) error {
 		return &exitError{code: ExitFailed}
 	}
 	return nil
+}
+
+// assetURLs are a release's asset URLs under a release asset base, as release CI publishes them.
+type assetURLs struct {
+	Tag         string            `json:"tag"`
+	Bundle      string            `json:"bundle"`
+	Signature   string            `json:"signature"`
+	Certificate string            `json:"certificate"`
+	Provenance  string            `json:"provenance"`
+	SBOM        map[string]string `json:"sbom"`
+}
+
+// releaseAssetURLs applies runtime/composer's asset rule (D-046) to a built bundle.
+func releaseAssetURLs(b *composer.Bundle, base string) (*assetURLs, error) {
+	a, err := b.Assets(base)
+	if err != nil {
+		return nil, err
+	}
+	out := &assetURLs{Tag: a.Tag, Bundle: a.Bundle, Signature: a.Signature, Certificate: a.Certificate, Provenance: a.Provenance, SBOM: map[string]string{}}
+	for _, img := range b.Manifest.Images {
+		u, err := a.SBOM(img.Name)
+		if err != nil {
+			return nil, err
+		}
+		out.SBOM[img.Name] = u
+	}
+	return out, nil
 }
 
 // unbuiltImages names the manifest images that still carry the all-zero placeholder digest.

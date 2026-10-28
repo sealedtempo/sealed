@@ -85,7 +85,8 @@ attest hosts, `--dev-allow-http-assets` for a local devnet's plain http release 
 `catalog list` and `show` read AppRegistry (`appCount`, `appAt`, `getApp`, `latestRelease`, `releaseAt`,
 `getRelease`); `show` downloads the latest bundle, checks it against bundleHash and prints its manifest.
 `release build <app>` builds the deterministic bundle from `catalog/apps/<app>` and prints the publishRelease
-arguments; `--check` rebuilds a published release with the SBOMs and scans of the published bundle (CI generates
+arguments and the URLs its assets are published at (D-046: bundle, signature, certificate, provenance, one SBOM
+per image, under `--release-asset-base` or `catalog.release_asset_base`); `--check` rebuilds a published release with the SBOMs and scans of the published bundle (CI generates
 them) and must match the onchain bundleHash byte for byte, or lists the files that differ. A manifest image whose
 digest is still the all-zero placeholder (D-028) cannot boot, so `release build` refuses it; only a local devnet
 builds such bundles, with `--dev-allow-unbuilt` and `SEALED_DEV_SIM=1` (the JSON output lists them as `unbuilt`).

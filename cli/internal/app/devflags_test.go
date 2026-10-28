@@ -64,10 +64,21 @@ func TestReleaseBuildRefusesUnbuiltImages(t *testing.T) {
 		Unbuilt []string `json:"unbuilt"`
 		Release struct {
 			BundleHash string `json:"bundleHash"`
+			Version    string `json:"version"`
 		} `json:"release"`
+		Assets struct {
+			Bundle, Provenance string
+			SBOM               map[string]string
+		} `json:"assets"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil || len(doc.Unbuilt) != 1 || doc.Unbuilt[0] != "notes-web" || doc.Release.BundleHash == "" {
 		t.Fatalf("dev build output: %v %s", err, stdout)
+	}
+	// The asset URLs come from runtime/composer's rule (D-046) under the release asset base.
+	tag := h.bundles.URL + "/notes-v" + doc.Release.Version
+	if doc.Assets.Bundle != tag+"/notes-"+doc.Release.Version+".bundle.tar" || doc.Assets.Provenance != doc.Assets.Bundle+".intoto.jsonl" ||
+		doc.Assets.SBOM["notes-web"] != tag+"/sbom.notes-web.spdx.json" {
+		t.Fatalf("asset URLs: %+v", doc.Assets)
 	}
 	if _, err := os.Stat(out); err != nil {
 		t.Fatal(err)
