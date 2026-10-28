@@ -2,17 +2,11 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/sealed-dev/sealed/runtime/composer"
 )
-
-// releaseVersionRe is the manifest schema's release_version pattern without "+": GitHub renames release
-// assets whose names contain characters other than letters, digits, ".", "-" and "_", which would break
-// the asset URL rule.
-var releaseVersionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`)
 
 // AssetNames are the GitHub Release tag and asset file names of one app release (D-046, brief item 18):
 //
@@ -51,11 +45,13 @@ func (a AssetNames) All() []string {
 	return out
 }
 
-// CheckReleaseVersion rejects versions that cannot be released under the asset URL rule. A leading "v"
-// is rejected too: the tag would read <appId>-vv<...>, forever, because the version is part of releaseId.
+// CheckReleaseVersion rejects versions that cannot be released under the asset URL rule
+// (composer.CheckReleaseVersion: GitHub renames asset names with other characters than letters, digits, ".",
+// "-" and "_", "+" included). A leading "v" is rejected too: the tag would read <appId>-vv<...>, forever,
+// because the version is part of releaseId.
 func CheckReleaseVersion(version string) error {
-	if !releaseVersionRe.MatchString(version) {
-		return fmt.Errorf("release version %q must match %s", version, releaseVersionRe)
+	if err := composer.CheckReleaseVersion(version); err != nil {
+		return err
 	}
 	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') && version[1] >= '0' && version[1] <= '9' {
 		return fmt.Errorf("release version %q starts with %q; set release_version without it (the tag would be <appId>-v%s)", version, version[:1], version)
@@ -68,21 +64,22 @@ func Assets(d Defaults, app, version string, images []string) (AssetNames, error
 	if err := CheckReleaseVersion(version); err != nil {
 		return AssetNames{}, err
 	}
-	stem := app + "-" + version
+	// The names the key broker, verifierd and the CLI fetch come from runtime/composer (one rule, D-046).
+	bundle := composer.BundleAssetName(app, version)
 	a := AssetNames{
-		Tag:            app + "-v" + version,
-		Bundle:         stem + ".bundle.tar",
+		Tag:            composer.ReleaseTag(app, version),
+		Bundle:         bundle,
 		SBOM:           map[string]string{},
 		Scan:           map[string]string{},
-		ReleaseJSON:    stem + ".release.json",
-		Signature:      stem + ".bundle.tar.sig",
-		Certificate:    stem + ".bundle.tar.crt",
-		SigstoreBundle: stem + ".bundle.tar.sigstore.json",
-		Provenance:     stem + ".bundle.tar.intoto.jsonl",
+		ReleaseJSON:    app + "-" + version + ".release.json",
+		Signature:      bundle + ".sig",
+		Certificate:    bundle + ".crt",
+		SigstoreBundle: bundle + ".sigstore.json",
+		Provenance:     bundle + ".intoto.jsonl",
 	}
 	a.BaseURL = d.ReleaseAssetBase + "/" + a.Tag
 	for _, img := range images {
-		a.SBOM[img] = "sbom." + img + ".spdx.json"
+		a.SBOM[img] = composer.SBOMAssetName(img)
 		a.Scan[img] = "scan." + img + ".json"
 	}
 	return a, nil

@@ -48,6 +48,16 @@ func TestAssetsRule(t *testing.T) {
 	if got := a.URL(a.Bundle); got != "https://github.com/sealedtempo/sealed/releases/download/scraper-v0.1.0/scraper-0.1.0.bundle.tar" {
 		t.Fatalf("bundle URL %s", got)
 	}
+	// What the release publishes is what the key broker, verifierd and the CLI fetch (composer.NewReleaseAssets).
+	ra, err := composer.NewReleaseAssets(d.ReleaseAssetBase, "scraper", "0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sbom, _ := ra.SBOM("postgres")
+	if a.URL(a.Bundle) != ra.Bundle || a.URL(a.Signature) != ra.Signature || a.URL(a.Certificate) != ra.Certificate ||
+		a.URL(a.Provenance) != ra.Provenance || a.URL(a.SBOM["postgres"]) != sbom || a.Tag != ra.Tag {
+		t.Fatalf("release CI names %+v differ from the fetchers' %+v", a, ra)
+	}
 	for asset, want := range map[string]string{
 		a.Signature: "scraper-0.1.0.bundle.tar.sig", a.Certificate: "scraper-0.1.0.bundle.tar.crt",
 		a.Provenance: "scraper-0.1.0.bundle.tar.intoto.jsonl", a.SigstoreBundle: "scraper-0.1.0.bundle.tar.sigstore.json",
