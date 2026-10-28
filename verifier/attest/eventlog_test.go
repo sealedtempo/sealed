@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -210,12 +211,48 @@ func TestReplayTampering(t *testing.T) {
 }
 
 func TestParseEventLog(t *testing.T) {
-	raw := `[{"imr":3,"event_type":134217729,"digest":"ab","event":"system-preparing","event_payload":"","extra":1}]`
+	digest := strings.Repeat("ab", 48)
+	raw := `[{"imr":3,"event_type":134217729,"digest":"` + digest + `","event":"system-preparing","event_payload":"","extra":1}]`
 	evs, err := ParseEventLog([]byte(raw))
 	if err != nil || len(evs) != 1 || evs[0].Event != "system-preparing" {
 		t.Fatalf("%v %+v", err, evs)
 	}
 	if _, err := ParseEventLog([]byte(`{"not":"an array"}`)); !errors.Is(err, ErrRTMR3Replay) {
 		t.Fatal("object accepted")
+	}
+}
+
+// V-4: digests and payloads only in dstack's spelling, so the same events cannot be re-spelled into another
+// eventLogHash for the same quote. Applies to every imr (entries of imr 0 to 2 are not replayed).
+func TestParseEventLogRequiresDstackHex(t *testing.T) {
+	digest := strings.Repeat("ab", 48)
+	entry := func(imr int, digest, payload string) string {
+		return fmt.Sprintf(`[{"imr":%d,"event_type":10,"digest":%q,"event":"acpi-loader","event_payload":%q}]`, imr, digest, payload)
+	}
+	if _, err := ParseEventLog([]byte(entry(0, digest, "0a0b"))); err != nil {
+		t.Fatalf("dstack spelling refused: %v", err)
+	}
+	for name, raw := range map[string]string{
+		"0x digest":           entry(3, "0x"+digest, ""),
+		"uppercase digest":    entry(0, strings.ToUpper(digest), ""),
+		"short digest":        entry(1, digest[:94], ""),
+		"long digest":         entry(2, digest+"ab", ""),
+		"sha256-sized digest": entry(3, strings.Repeat("ab", 32), ""),
+		"not hex":             entry(3, strings.Repeat("zz", 48), ""),
+		"0x payload":          entry(3, digest, "0x0a"),
+		"uppercase payload":   entry(0, digest, "0A"),
+		"odd payload":         entry(3, digest, "abc"),
+	} {
+		if _, err := ParseEventLog([]byte(raw)); !errors.Is(err, ErrRTMR3Replay) {
+			t.Errorf("%s accepted: %v", name, err)
+		}
+	}
+	// The real GCP capture is in that spelling.
+	raw, err := os.ReadFile(filepath.Join("testdata", "gcp", "eventlog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evs, err := ParseEventLog(raw); err != nil || len(evs) != 45 {
+		t.Fatalf("GCP event log: %d events, %v", len(evs), err)
 	}
 }
