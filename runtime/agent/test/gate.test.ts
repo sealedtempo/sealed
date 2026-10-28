@@ -79,8 +79,13 @@ describe("password gate (/v1/gate)", () => {
     expect(await gate.check({ route: "crm", authorization: basic("admin", PASSWORD), client: "c" })).toEqual({ status: 401 });
     expect(await gate.check({ route: "crm", authorization: basic("sealed", "x".repeat(73)), client: "c" })).toEqual({ status: 401 });
     expect(await gate.check({ route: "crm", authorization: "Basic !!!", client: "c" })).toEqual({ status: 401 });
-    // bcrypt ran for the one plausible attempt only.
-    expect(calls).toEqual(["wrong"]);
+    // Caddy strips the gate's credentials only after "Basic" and spaces, so a tab-separated header is not
+    // the gate's: it must not pass, or the password would reach the app (review finding, Caddyfile 1.2.0).
+    const tabbed = basic("sealed", PASSWORD).replace(" ", "\t");
+    expect(await gate.check({ route: "crm", authorization: tabbed, client: "c" })).toEqual({ status: 401 });
+    expect(await gate.check({ route: "crm", authorization: basic("sealed", PASSWORD).replace(" ", "   "), client: "c2" })).toMatchObject({ status: 200, stripAuthorization: true });
+    // bcrypt ran for the plausible attempts only.
+    expect(calls).toEqual(["wrong", PASSWORD]);
   });
 
   it("refuses forged, expired and other-boot cookies", async () => {

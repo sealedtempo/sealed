@@ -123,9 +123,14 @@ export interface GateOptions {
 
 const b64url = (b: Uint8Array) => Buffer.from(b).toString("base64url");
 
-/** The gate's Basic credentials, or undefined when the header is not Basic auth. */
+/**
+ * The gate's Basic credentials, or undefined when the header is not Basic auth. The scheme and the
+ * credentials are separated by spaces only: Caddy removes the gate's own Authorization header by
+ * matching `^[Bb][Aa][Ss][Ii][Cc] +c2VhbGVkO` (composer 1.2.0), so a header the gate accepts must be
+ * one Caddy strips before the app (review finding: a tab separator passed the gate and reached the app).
+ */
 function parseBasic(header: string | undefined): { user: string; password: Buffer } | undefined {
-  const m = /^Basic[ \t]+([A-Za-z0-9+/=]+)[ \t]*$/i.exec(header ?? "");
+  const m = /^Basic +([A-Za-z0-9+/=]+)[ \t]*$/i.exec(header ?? "");
   if (!m) return undefined;
   const raw = Buffer.from(m[1] as string, "base64");
   const colon = raw.indexOf(0x3a);
