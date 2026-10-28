@@ -1,5 +1,5 @@
 import type { CrawlFn, CrawlSink } from '../crawl/types.js';
-import type { RunStore, Run, RunStatus } from '../db/store.js';
+import { isRunId, type RunStore, type Run, type RunStatus } from '../db/store.js';
 import type { JobSpec } from '../job.js';
 import { errorMessage, silentLogger, type Logger } from '../log.js';
 import type { Meter } from '../meter.js';
@@ -52,6 +52,7 @@ export class RunManager {
   }
 
   async cancel(id: string): Promise<CancelResult> {
+    if (!isRunId(id)) return 'not-found';
     const running = this.active.get(id);
     if (running) {
       running.abort.abort();

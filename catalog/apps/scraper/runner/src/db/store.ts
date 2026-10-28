@@ -39,6 +39,8 @@ export interface RunEvent {
   at: Date;
 }
 
+// A malformed run id is an unknown run: reads give null or [] and state changes give false.
+// Writing items or events for a malformed or unknown run id fails.
 export interface RunStore {
   ping(): Promise<void>;
   createRun(spec: JobSpec): Promise<Run>;
@@ -150,6 +152,7 @@ export class PgRunStore implements RunStore {
   }
 
   async markRunning(id: string): Promise<boolean> {
+    if (!isRunId(id)) return false;
     const res = await this.pool.query(
       "UPDATE runs SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued'",
       [id],
@@ -158,6 +161,7 @@ export class PgRunStore implements RunStore {
   }
 
   async finishRun(id: string, status: RunStatus, error: string | null = null): Promise<void> {
+    if (!isRunId(id)) return;
     await this.pool.query(
       "UPDATE runs SET status = $2, finished_at = now(), error = $3 WHERE id = $1 AND status IN ('queued', 'running')",
       [id, status, error ? clean(error, MAX_DETAIL) : null],
@@ -173,6 +177,7 @@ export class PgRunStore implements RunStore {
   }
 
   async cancelQueued(id: string): Promise<boolean> {
+    if (!isRunId(id)) return false;
     const res = await this.pool.query(
       "UPDATE runs SET status = 'cancelled', finished_at = now() WHERE id = $1 AND status = 'queued'",
       [id],
@@ -181,6 +186,7 @@ export class PgRunStore implements RunStore {
   }
 
   async deleteRun(id: string): Promise<boolean> {
+    if (!isRunId(id)) return false;
     const res = await this.pool.query(
       "DELETE FROM runs WHERE id = $1 AND status IN ('succeeded', 'failed', 'cancelled')",
       [id],

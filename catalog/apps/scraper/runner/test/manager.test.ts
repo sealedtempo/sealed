@@ -99,6 +99,7 @@ describe('RunManager', () => {
     expect(c.started).toEqual(['https://a.example/']);
     expect(await manager.cancel(first.id)).toBe('finished');
     expect(await manager.cancel('00000000-0000-4000-8000-000000000000')).toBe('not-found');
+    expect(await manager.cancel('not-a-uuid')).toBe('not-found');
   });
 
   it('marks a run failed when the crawl throws', async () => {

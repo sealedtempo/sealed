@@ -3,10 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs
 import { createServer, type AddressInfo } from 'node:net';
 import { join, resolve } from 'node:path';
 import type { TestProject } from 'vitest/node';
+import { pgPolicy } from './pg-requirement.js';
 
 // Starts one throwaway PostgreSQL cluster for the whole test run, on 127.0.0.1 and a random port,
-// under the worktree's tmp/ (gitignored). Tests that need Postgres skip when the binaries are
-// missing. Each test file creates its own database (see helpers/pg.ts).
+// under the worktree's tmp/ (gitignored). Locally, tests that need Postgres skip when the binaries
+// are missing; on CI they fail instead (see pg-requirement.ts). Each test file creates its own
+// database (see helpers/pg.ts).
 
 declare module 'vitest' {
   export interface ProvidedContext {
@@ -51,8 +53,12 @@ async function waitReady(bin: string, port: number, child: ChildProcess): Promis
 }
 
 export default async function setup(project: TestProject) {
-  const bin = findPgBin();
-  if (!bin || process.env.SCRAPER_SKIP_PG === '1') {
+  const policy = pgPolicy(process.env);
+  const bin = policy.skip ? null : findPgBin();
+  if (!bin) {
+    if (policy.required) {
+      throw new Error('Postgres tests are required here (CI or SCRAPER_REQUIRE_PG=1) but initdb was not found; install PostgreSQL 17 or set PG_BIN');
+    }
     project.provide('pgUrl', '');
     return;
   }

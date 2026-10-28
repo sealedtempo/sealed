@@ -117,6 +117,17 @@ describe.runIf(hasPostgres)('end to end: job -> crawl -> Postgres -> CSV export 
     expect(page).toContain('Wood screw &quot;No. 8&quot;');
   });
 
+  it('answers 404, not 500, for malformed run ids on every route', async () => {
+    const post = (path: string) => fetch(`${base}${path}`, { method: 'POST', redirect: 'manual' });
+    expect((await post('/api/v1/runs/not-a-uuid/cancel')).status).toBe(404);
+    expect((await fetch(`${base}/api/v1/runs/not-a-uuid`, { method: 'DELETE' })).status).toBe(404);
+    expect((await fetch(`${base}/api/v1/runs/not-a-uuid`)).status).toBe(404);
+    expect((await fetch(`${base}/api/v1/runs/not-a-uuid/export.csv`)).status).toBe(404);
+    expect((await post('/runs/not-a-uuid/cancel')).status).toBe(404);
+    expect((await post('/runs/not-a-uuid/delete')).status).toBe(404);
+    expect((await fetch(`${base}/runs/not-a-uuid`)).status).toBe(404);
+  });
+
   it('refuses peers outside the client allowlist on a real socket, except /healthz', async () => {
     const guarded = createApp({ store: new PgRunStore(db.pool), runs: manager, crawlers: ['cheerio'], clients: parseAllowedClients('172.30.0.4') });
     const server = serve({ fetch: guarded.fetch, port: 0, hostname: '127.0.0.1' });
