@@ -1,0 +1,9 @@
+# Egress policy for llm-gateway (INTERFACES section 7). Hashed as sha256(CJSON(parsed)).
+version: 1
+default_allow: []
+customer_additions_allowed: true
+notes: >-
+  No egress by default. local/* runs in the VM and relay/* goes through sealed-mpp-payer, which has its
+  own measured allowlist, so the gateway itself never needs the internet. A customer who stores a
+  byok or external provider key adds that provider's host:port (for example inference.tinfoil.sh:443)
+  as an egress addition for llm-gateway.

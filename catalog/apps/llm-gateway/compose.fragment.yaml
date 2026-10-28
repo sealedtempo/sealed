@@ -1,0 +1,94 @@
+# llm-gateway compose fragment (INTERFACES section 14).
+# The composer adds networks, fixed IPs, DNS, proxy env, telemetry_off_env, envexec,
+# secret mounts, restart and logging. Only llm-gateway-litellm is reachable by other
+# apps (alias llm-gateway); Ollama and Postgres have no route out of the VM.
+services:
+  llm-gateway-litellm:
+    image: "{{image:litellm}}"
+    entrypoint: ["/app/.venv/bin/python", "-I", "/etc/litellm/sealed_entrypoint.py"]
+    command: ["--port", "4000", "--num_workers", "2"]
+    x-sealed-secrets:
+      - LITELLM_MASTER_KEY
+      - LITELLM_SALT_KEY
+      - POSTGRES_PASSWORD
+      - BYOK_TINFOIL_API_KEY
+      - BYOK_REDPILL_API_KEY
+      - BYOK_NEARAI_API_KEY
+      - EXTERNAL_ROUTES_ENABLED
+      - EXTERNAL_OPENAI_API_KEY
+      - EXTERNAL_OPENROUTER_API_KEY
+      - EXTERNAL_GROQ_API_KEY
+      - EXTERNAL_MISTRAL_API_KEY
+    environment:
+      SEALED_SECRETS_DIR: /run/sealed/secrets/llm-gateway
+      SEALED_LITELLM_RENDER_DIR: /run/litellm
+      SEALED_DB_HOST: llm-gateway-db
+      SEALED_USAGE_URL: http://sealed-agent:7070/v1/usage-events
+      STORE_MODEL_IN_DB: "False"
+      LITELLM_LOG: ERROR
+      LITELLM_MODE: PRODUCTION
+    tmpfs:
+      - /run/litellm:size=4m,mode=0755
+      - /tmp:size=256m,mode=1777
+    depends_on:
+      llm-gateway-db:
+        condition: service_healthy
+      llm-gateway-ollama:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -I
+        - -c
+        - "import sys, urllib.request as u; o = u.build_opener(u.ProxyHandler({})); sys.exit(0 if o.open('http://127.0.0.1:4000/health/liveliness', timeout=3).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 180s
+    mem_limit: 2g
+    stop_grace_period: 30s
+
+  llm-gateway-db:
+    image: "{{image:postgres}}"
+    entrypoint: ["docker-entrypoint.sh"]
+    command: ["postgres", "-c", "max_connections=50"]
+    x-sealed-secrets:
+      - POSTGRES_PASSWORD
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_DB: litellm
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=trust"
+    volumes:
+      - llm-gateway-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "litellm", "-d", "litellm", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    shm_size: 128m
+    mem_limit: 1g
+    stop_grace_period: 60s
+
+  llm-gateway-ollama:
+    image: "{{image:local-model}}"
+    entrypoint: ["/bin/ollama"]
+    command: ["serve"]
+    read_only: true
+    tmpfs:
+      - /root/.ollama:size=1m,mode=0700
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      # 127.0.0.1 (loopback) so the Ollama client never goes through HTTP_PROXY.
+      test: ["CMD", "/usr/bin/env", "OLLAMA_HOST=127.0.0.1:11434", "/bin/ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    mem_limit: 8g
+    stop_grace_period: 10s
+
+volumes:
+  llm-gateway-pgdata: {}

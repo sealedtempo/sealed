@@ -1,0 +1,131 @@
+schema: sealed-manifest/v1
+id: llm-gateway
+name: LLM gateway
+category: ai
+description: >-
+  OpenAI-compatible LLM gateway (LiteLLM proxy, MIT core) with its own Postgres for virtual keys,
+  a local CPU model (Qwen3-4B-Instruct-2507 on Ollama) that keeps data in your VM, and paid relay
+  routes to attested providers. Prompts and outputs never leave the gateway for metering.
+upstream:
+  repo: https://github.com/BerriAI/litellm
+  version: v1.106.5
+  license_spdx: MIT
+  source_url: https://github.com/BerriAI/litellm/tree/v1.106.5
+maintainer:
+  name: Sealed
+  payout_address: ${MAINTAINER_DEFAULT_ADDRESS}
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: llm-gateway-litellm
+images:
+  # Derived from ghcr.io/berriai/litellm-database:v1.106.5@sha256:0d10536ce596ef74bf5bbd3244310bb11c2cadd8f92d2f22d587cc0b9fc16e01
+  # with enterprise/ and litellm_enterprise removed, flattened. Digest pinned after the image workflow builds it.
+  - name: litellm
+    source: build:images/litellm
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    platform: linux/amd64
+    license_spdx: MIT
+  - name: postgres
+    source: docker.io/library/postgres:16.15
+    digest: sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+    platform: linux/amd64
+    license_spdx: PostgreSQL
+  # Built from runtime/images/local-model: Ollama 0.40.12 CPU only plus qwen3:4b-instruct-2507-q4_K_M.
+  - name: local-model
+    source: build:images/local-model
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    platform: linux/amd64
+    license_spdx: MIT AND Apache-2.0
+resources:
+  cpu: 4
+  memory_gb: 12
+  disk_gb: 20
+routes:
+  - name: gateway
+    service: llm-gateway-litellm
+    internal_port: 4000
+    path_or_host: gateway
+    auth: bearer-passthrough
+healthcheck:
+  service: llm-gateway-litellm
+  http: /health/liveliness
+  port: 4000
+  start_period_s: 180
+metering:
+  unit: tokens
+  source: callback
+secrets:
+  - name: LITELLM_MASTER_KEY
+    description: Admin key for the gateway API (creates virtual keys for apps). Starts with sk-.
+    generate: sk-hex32
+  - name: LITELLM_SALT_KEY
+    description: Encrypts credentials LiteLLM stores in its Postgres. Set once and never change it.
+    generate: sk-hex32
+  - name: POSTGRES_PASSWORD
+    description: Password of the gateway's own Postgres (virtual keys and spend logs).
+    generate: hex32
+  - name: BYOK_TINFOIL_API_KEY
+    description: Your Tinfoil API key. Enables byok/tinfoil/<model>. Also add inference.tinfoil.sh:443 to egress.
+    generate: none
+    optional: true
+  - name: BYOK_REDPILL_API_KEY
+    description: Your Phala RedPill API key. Enables byok/redpill/<model>. Also add api.redpill.ai:443 to egress.
+    generate: none
+    optional: true
+  - name: BYOK_NEARAI_API_KEY
+    description: Your NEAR AI Cloud API key. Enables byok/nearai/<model>. Also add cloud-api.near.ai:443 to egress.
+    generate: none
+    optional: true
+  - name: EXTERNAL_ROUTES_ENABLED
+    description: Set to true to allow external/<provider> routes. Data leaves your cloud on those routes.
+    generate: none
+    optional: true
+  - name: EXTERNAL_OPENAI_API_KEY
+    description: OpenAI key for external/openai/<model> (data leaves your cloud). Needs EXTERNAL_ROUTES_ENABLED and egress api.openai.com:443.
+    generate: none
+    optional: true
+  - name: EXTERNAL_OPENROUTER_API_KEY
+    description: OpenRouter key for external/openrouter/<model> (data leaves your cloud). Needs EXTERNAL_ROUTES_ENABLED and egress openrouter.ai:443.
+    generate: none
+    optional: true
+  - name: EXTERNAL_GROQ_API_KEY
+    description: Groq key for external/groq/<model> (data leaves your cloud). Needs EXTERNAL_ROUTES_ENABLED and egress api.groq.com:443.
+    generate: none
+    optional: true
+  - name: EXTERNAL_MISTRAL_API_KEY
+    description: Mistral key for external/mistral/<model> (data leaves your cloud). Needs EXTERNAL_ROUTES_ENABLED and egress api.mistral.ai:443.
+    generate: none
+    optional: true
+telemetry_off_env:
+  LITELLM_LOCAL_MODEL_COST_MAP: "True"
+  LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS: "True"
+  LITELLM_LOCAL_AUTOROUTER_PRESETS: "True"
+  LITELLM_LOCAL_POLICY_TEMPLATES: "True"
+  LITELLM_LOCAL_BLOG_POSTS: "True"
+  LITELLM_OFFLINE_MODE: "true"
+  LITELLM_DISABLE_LATEST_RELEASE_CHECK: "true"
+  LITELLM_DONT_SHOW_FEEDBACK_BOX: "true"
+  CHECKPOINT_DISABLE: "1"
+  PRISMA_OFFLINE_MODE: "true"
+  HF_HUB_OFFLINE: "1"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  DISABLE_ADMIN_UI: "True"
+  NO_DOCS: "True"
+  NO_REDOC: "True"
+  OLLAMA_NO_CLOUD: "1"
+  DO_NOT_TRACK: "1"
+license_exclusions:
+  - "/app/enterprise/**"
+  - "**/litellm_enterprise/**"
+  - "**/litellm_enterprise-*.dist-info/**"
+  - "BerriAI/litellm:enterprise/"
+  - "/usr/lib/ollama/cuda_v12/**"
+  - "/usr/lib/ollama/cuda_v13/**"
+  - "/usr/lib/ollama/mlx_cuda_v13/**"
+  - "/usr/lib/ollama/vulkan/**"
+notes: >-
+  Routes: local/<model> (Ollama in the VM), relay/<model> (sealed-mpp-payer to the platform relay, paid
+  per token), byok/<provider>/<model> (only when the provider key secret exists), external/<provider>/<model>
+  (off unless EXTERNAL_ROUTES_ENABLED=true and a key exists; data leaves your cloud). Apps reach the gateway
+  at http://llm-gateway:4000. The usage callback posts token counts only.
