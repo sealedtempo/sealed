@@ -24,6 +24,8 @@ import (
 const (
 	// CheckConfigChain requires config.chainId and config.contracts to name this broker's chain and registries.
 	CheckConfigChain = "config_chain"
+	// CheckChain pins every registry read of the decision to the current head block.
+	CheckChain = "chain"
 	// ReasonInternal answers 500: a defect in the broker itself.
 	ReasonInternal = "internal"
 )
@@ -101,12 +103,24 @@ func (s *session) pass(name, detail string, data map[string]any) {
 	s.d.Checks = append(s.d.Checks, Check{Name: name, OK: true, Detail: detail, Data: data})
 }
 
+// maxDetail bounds a detail string; details can quote request content and land in every log entry.
+const maxDetail = 2000
+
+func clip(detail string) string {
+	if len(detail) <= maxDetail {
+		return detail
+	}
+	return detail[:maxDetail] + "..."
+}
+
 func (s *session) deny(name, reason, detail string, data map[string]any) *stop {
+	detail = clip(detail)
 	s.d.Checks = append(s.d.Checks, Check{Name: name, OK: false, Reason: reason, Detail: detail, Data: data})
 	return &stop{status: http.StatusForbidden, decision: DecisionDenied, reason: reason, detail: detail}
 }
 
 func (s *session) badRequest(name, detail string) *stop {
+	detail = clip(detail)
 	s.d.Checks = append(s.d.Checks, Check{Name: name, OK: false, Reason: ReasonBadRequest, Detail: detail})
 	return &stop{status: http.StatusBadRequest, decision: DecisionDenied, reason: ReasonBadRequest, detail: detail}
 }
@@ -116,6 +130,7 @@ func (s *session) unavailable(name, reason, detail string) *stop {
 	if reason == "" {
 		reason = ReasonUnavailable
 	}
+	detail = clip(detail)
 	s.d.Checks = append(s.d.Checks, Check{Name: name, OK: false, Reason: reason, Detail: detail})
 	return &stop{status: http.StatusServiceUnavailable, decision: DecisionError, reason: reason, detail: detail}
 }
@@ -221,14 +236,15 @@ func (s *session) checkReportData(context.Context) *stop {
 
 func (s *session) pinChain(ctx context.Context) *stop {
 	if err := s.b.CheckChain(ctx); err != nil {
-		return s.unavailable(CheckImage, "", err.Error())
+		return s.unavailable(CheckChain, "", err.Error())
 	}
 	reg, block, err := s.b.deps.Chain.Pin(ctx)
 	if err != nil {
-		return s.unavailable(CheckImage, "", err.Error())
+		return s.unavailable(CheckChain, "", err.Error())
 	}
 	s.reg = reg
 	s.d.Hashes.BlockNumber = block
+	s.pass(CheckChain, fmt.Sprintf("registry reads pinned to block %d of chain %d", block, s.b.cfg.ChainID), map[string]any{"blockNumber": block})
 	return nil
 }
 

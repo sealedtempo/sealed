@@ -27,7 +27,7 @@ import (
 )
 
 var allowedChecks = []string{
-	keybroker.CheckNonce, keybroker.CheckRequest, keybroker.CheckQuote, keybroker.CheckReportData, keybroker.CheckImage,
+	keybroker.CheckNonce, keybroker.CheckRequest, keybroker.CheckQuote, keybroker.CheckReportData, keybroker.CheckChain, keybroker.CheckImage,
 	keybroker.CheckRTMR3, keybroker.CheckComposeHash, keybroker.CheckStackRecompute, keybroker.CheckCustomer,
 	keybroker.CheckConfigChain, keybroker.CheckStackApproved, keybroker.CheckApprovalReleases, keybroker.CheckSecrets,
 	keybroker.CheckKeys, keybroker.CheckSeal,
