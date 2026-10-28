@@ -124,7 +124,7 @@ type Entry struct {
 	Name       string
 	Stored     string // Secret Manager name holding the value
 	Generate   string // generator of the stored value
-	Optional   bool   // false when any app of the stack needs it
+	Optional   bool   // the declaring manifest's optional flag (a required reference never names an optional secret)
 	SameAs     string // "<app>/<NAME>" when the value is another app's secret
 	Desc       string
 	ReferredBy []string // "<app>/<NAME>" entries that reuse this one
@@ -156,9 +156,9 @@ func (p *Plan) Find(app, name string) (Entry, bool) {
 	return Entry{}, false
 }
 
-// NewPlan resolves the secrets of the stack's apps. A same_as reference must name an app of the stack that
-// declares the secret and is not itself a reference (no chains), as the composer requires (D-043). A referenced
-// optional secret becomes required when a required secret refers to it.
+// NewPlan resolves the secrets of the stack's apps with the composer's rules (D-043, D-059): a same_as reference
+// must name an app of the stack that declares the secret, which is not itself a reference (no chains), lists the
+// referencing app in its share_with, and is not optional when the reference is required.
 func NewPlan(apps []*App) (*Plan, error) {
 	byID := map[string]*App{}
 	for _, a := range apps {
@@ -193,13 +193,16 @@ func NewPlan(apps []*App) (*Plan, error) {
 		if ts.SameAs != "" {
 			return nil, fmt.Errorf("%s/%s refers to %s, which itself refers to %s (no chains)", e.App, e.Name, e.SameAs, ts.SameAs)
 		}
+		if !ts.SharedWith(e.App) {
+			return nil, fmt.Errorf("%s/%s is the same as %s, but %s does not share it with %s: the key broker would refuse this stack (D-059: %s must list %s in share_with)", e.App, e.Name, e.SameAs, refApp, e.App, e.SameAs, e.App)
+		}
+		if ts.Optional && !e.Optional {
+			return nil, fmt.Errorf("%s/%s is required but refers to %s, which is optional in %s (the composer refuses this stack)", e.App, e.Name, e.SameAs, refApp)
+		}
 		t := &p.Entries[index[e.SameAs]]
 		e.Stored = t.Stored
 		e.Generate = t.Generate
 		t.ReferredBy = append(t.ReferredBy, e.App+"/"+e.Name)
-		if !e.Optional {
-			t.Optional = false
-		}
 	}
 	sort.SliceStable(p.Entries, func(i, j int) bool {
 		if p.Entries[i].App != p.Entries[j].App {

@@ -25,7 +25,8 @@ const secretsUsage = `Usage:
 
 Secrets live in your project's Secret Manager as sealed-<app>-<NAME>; the key broker may read only those.
 The gate password is stored as its bcrypt hash in sealed-gate-password. Values are never printed or read back.
-A secret declared with same_as is stored once, under the app it refers to.
+A secret declared with same_as is stored once, under the app it refers to, which must list the referencing app in
+its share_with (D-059).
 `
 
 type secretsFlags struct {
@@ -250,6 +251,12 @@ func secretsSet(ctx context.Context, e *Env, f *secretsFlags, pos []string) erro
 	}
 	if decl.SameAs != "" {
 		ref := strings.SplitN(decl.SameAs, "/", 2)
+		// D-059: say so now when the source app does not share the secret, rather than at deploy.
+		if src, err := f.manifests(ctx, e, stack, []string{ref[0]}); err == nil && len(src) == 1 {
+			if t, ok := src[0].Secret(ref[1]); ok && !t.SharedWith(app) {
+				return fmt.Errorf("%s/%s is the same as %s, but %s does not share it with %s (its share_with), so the key broker would refuse the stack (D-059)", app, name, decl.SameAs, ref[0], app)
+			}
+		}
 		return fmt.Errorf("%s/%s is the same as %s: set that one (sealed secrets set %s %s); the key broker hands it to %s too", app, name, decl.SameAs, ref[0], ref[1], app)
 	}
 	var value string

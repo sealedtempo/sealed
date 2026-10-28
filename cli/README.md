@@ -45,8 +45,13 @@ Secrets are Secret Manager entries `sealed-<app>-<NAME>` in your project; the ke
 Manifests come from `--catalog <catalog/apps>` (default `./catalog/apps` when present) or from the release bundles
 of `--config` (fetched by onchain bundleHash). Generators: `hex32` (64 hex), `base64-32` (44 base64), `sk-hex32`
 (`sk-` + 64 hex), `password` (24 of [A-Za-z0-9]); `none` means you supply the value. A secret declared with
-`same_as: <app>/<NAME>` is stored once, under the referenced app, and the key broker hands it to both apps. An
-existing secret is never overwritten without `--rotate`. Values are never taken from flags, printed or read back,
+`same_as: <app>/<NAME>` is stored once, under the referenced app, and the key broker hands it to both apps, but
+only when the referenced secret opts in: its own manifest entry must list the referencing app in
+`share_with: [<appId>]` (D-059; llm-gateway's `APP_KEY_CODING_AGENT` declares `share_with: [coding-agent]`). The
+CLI applies the composer's rules before it stores anything: the referenced app is in the stack and declares the
+secret, which is not itself a reference, is shared with the referencing app, and is not optional when the
+reference is required. `set --missing`, `list` and `deploy` refuse a stack that breaks them, and
+`set <app> <NAME>` on an unshared reference says so. An existing secret is never overwritten without `--rotate`. Values are never taken from flags, printed or read back,
 except a generated gate password, which is shown once. `sealed-gate-password` holds the bcrypt hash (cost 12) of
 the gate password, so the VM never sees the password itself.
 

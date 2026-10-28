@@ -151,7 +151,7 @@ secrets:
   - name: APP_KEY_CODING_AGENT
     description: coding agent key
     generate: sk-hex32
-    optional: true
+    share_with: [coding-agent]
   - name: BYOK_TINFOIL_API_KEY
     description: byok
     generate: none
@@ -184,13 +184,18 @@ func mustApp(t *testing.T, y string) *App {
 
 func TestParseManifestRejects(t *testing.T) {
 	for name, y := range map[string]string{
-		"unknown key":    "id: a\nsecrets:\n  - name: A\n    description: x\n    generate: hex32\n    rotate: true\n",
-		"bad generator":  "id: a\nsecrets:\n  - name: A\n    description: x\n    generate: uuid\n",
-		"bad name":       "id: a\nsecrets:\n  - name: a\n    description: x\n    generate: hex32\n",
-		"duplicate":      "id: a\nsecrets:\n  - {name: A, description: x, generate: hex32}\n  - {name: A, description: x, generate: hex32}\n",
-		"self reference": "id: a\nsecrets:\n  - {name: A, description: x, generate: none, same_as: a/B}\n",
-		"bad reference":  "id: a\nsecrets:\n  - {name: A, description: x, generate: none, same_as: B}\n",
-		"bad id":         "id: A\n",
+		"unknown key":     "id: a\nsecrets:\n  - name: A\n    description: x\n    generate: hex32\n    rotate: true\n",
+		"bad generator":   "id: a\nsecrets:\n  - name: A\n    description: x\n    generate: uuid\n",
+		"bad name":        "id: a\nsecrets:\n  - name: a\n    description: x\n    generate: hex32\n",
+		"duplicate":       "id: a\nsecrets:\n  - {name: A, description: x, generate: hex32}\n  - {name: A, description: x, generate: hex32}\n",
+		"self reference":  "id: a\nsecrets:\n  - {name: A, description: x, generate: none, same_as: a/B}\n",
+		"bad reference":   "id: a\nsecrets:\n  - {name: A, description: x, generate: none, same_as: B}\n",
+		"bad id":          "id: A\n",
+		"share_with app":  "id: a\nsecrets:\n  - {name: A, description: x, generate: hex32, share_with: [B]}\n",
+		"share_with self": "id: a\nsecrets:\n  - {name: A, description: x, generate: hex32, share_with: [a]}\n",
+		"share_with dup":  "id: a\nsecrets:\n  - {name: A, description: x, generate: hex32, share_with: [b, b]}\n",
+		"shared ref":      "id: a\nsecrets:\n  - {name: A, description: x, generate: none, same_as: b/B, share_with: [c]}\n",
+		"share_with type": "id: a\nsecrets:\n  - {name: A, description: x, generate: hex32, share_with: b}\n",
 	} {
 		if _, err := ParseManifest([]byte(y)); err == nil {
 			t.Errorf("%s accepted", name)
@@ -200,6 +205,9 @@ func TestParseManifestRejects(t *testing.T) {
 
 func TestPlanSameAs(t *testing.T) {
 	gw, agent := mustApp(t, gatewayManifest), mustApp(t, agentManifest)
+	if s, _ := gw.Secret("APP_KEY_CODING_AGENT"); !s.SharedWith("coding-agent") || s.SharedWith("crm") {
+		t.Fatalf("share_with parsed as %v", s.ShareWith)
+	}
 	p, err := NewPlan([]*App{agent, gw})
 	if err != nil {
 		t.Fatal(err)
@@ -210,17 +218,12 @@ func TestPlanSameAs(t *testing.T) {
 	}
 	target, _ := p.Find("llm-gateway", "APP_KEY_CODING_AGENT")
 	if target.Optional || len(target.ReferredBy) != 1 || target.ReferredBy[0] != "coding-agent/LLM_GATEWAY_KEY" {
-		t.Fatalf("a required reference makes the target required: %+v", target)
+		t.Fatalf("target %+v", target)
 	}
 	for _, e := range p.Stored() {
 		if e.SameAs != "" {
 			t.Fatal("Stored lists references")
 		}
-	}
-	// The gateway alone keeps the key optional.
-	p2, _ := NewPlan([]*App{mustApp(t, gatewayManifest)})
-	if e, _ := p2.Find("llm-gateway", "APP_KEY_CODING_AGENT"); !e.Optional {
-		t.Fatal("without coding-agent the key stays optional")
 	}
 	// The referenced app must be in the stack.
 	if _, err := NewPlan([]*App{mustApp(t, agentManifest)}); err == nil || !strings.Contains(err.Error(), "not in the stack") {
@@ -235,6 +238,58 @@ func TestPlanSameAs(t *testing.T) {
 	c := mustApp(t, "id: c\nsecrets:\n  - {name: X, description: x, generate: none, same_as: coding-agent/LLM_GATEWAY_KEY}\n")
 	if _, err := NewPlan([]*App{agent, gw, c}); err == nil || !strings.Contains(err.Error(), "no chains") {
 		t.Fatalf("chain: %v", err)
+	}
+}
+
+// TestPlanSameAsNeedsShareWith: D-059. Another app's secret can be referenced only when its own manifest entry
+// lists the referencing app in share_with, exactly as the composer and the key broker require.
+func TestPlanSameAsNeedsShareWith(t *testing.T) {
+	agent := mustApp(t, agentManifest)
+	for name, tc := range map[string]struct{ gateway, want string }{
+		"no share_with": {
+			"id: llm-gateway\nsecrets:\n  - {name: APP_KEY_CODING_AGENT, description: x, generate: sk-hex32}\n",
+			"llm-gateway does not share it with coding-agent",
+		},
+		"shared with another app": {
+			"id: llm-gateway\nsecrets:\n  - {name: APP_KEY_CODING_AGENT, description: x, generate: sk-hex32, share_with: [scraper]}\n",
+			"must list coding-agent in share_with",
+		},
+		"another secret is shared": {
+			"id: llm-gateway\nsecrets:\n  - {name: APP_KEY_CODING_AGENT, description: x, generate: sk-hex32}\n  - {name: OTHER, description: x, generate: hex32, share_with: [coding-agent]}\n",
+			"does not share it",
+		},
+		"required reference to an optional secret": {
+			"id: llm-gateway\nsecrets:\n  - {name: APP_KEY_CODING_AGENT, description: x, generate: sk-hex32, optional: true, share_with: [coding-agent]}\n",
+			"which is optional in llm-gateway",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewPlan([]*App{agent, mustApp(t, tc.gateway)})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+	// An optional reference may name an optional, shared secret.
+	optAgent := mustApp(t, "id: coding-agent\nsecrets:\n  - {name: K, description: x, generate: none, optional: true, same_as: llm-gateway/APP_KEY_CODING_AGENT}\n")
+	optGW := mustApp(t, "id: llm-gateway\nsecrets:\n  - {name: APP_KEY_CODING_AGENT, description: x, generate: sk-hex32, optional: true, share_with: [coding-agent]}\n")
+	p, err := NewPlan([]*App{optAgent, optGW})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := p.Find("llm-gateway", "APP_KEY_CODING_AGENT"); !e.Optional {
+		t.Fatal("an optional reference keeps the target optional")
+	}
+	// The real catalog: every same_as must be shared (D-059 requires llm-gateway's APP_KEY_CODING_AGENT to declare
+	// share_with: [coding-agent]).
+	dir := filepath.Join("..", "..", "..", "catalog", "apps")
+	ids := []string{"coding-agent", "crm", "internal-tools", "llm-gateway", "scraper"}
+	apps, err := LoadCatalog(dir, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewPlan(apps); err != nil {
+		t.Fatalf("real catalog: %v", err)
 	}
 }
 

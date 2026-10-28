@@ -558,7 +558,7 @@ func TestSecretsSameAsIsStoredOnce(t *testing.T) {
 	cat := filepath.Join(h.dir, "cat")
 	os.MkdirAll(filepath.Join(cat, "gw"), 0o755)
 	os.MkdirAll(filepath.Join(cat, "agent"), 0o755)
-	os.WriteFile(filepath.Join(cat, "gw", "manifest.yaml"), []byte("id: gw\nsecrets:\n  - {name: APP_KEY_AGENT, description: x, generate: sk-hex32, optional: true}\n"), 0o644)
+	os.WriteFile(filepath.Join(cat, "gw", "manifest.yaml"), []byte("id: gw\nsecrets:\n  - {name: APP_KEY_AGENT, description: x, generate: sk-hex32, share_with: [agent]}\n"), 0o644)
 	os.WriteFile(filepath.Join(cat, "agent", "manifest.yaml"), []byte("id: agent\nsecrets:\n  - {name: GW_KEY, description: x, generate: none, same_as: gw/APP_KEY_AGENT}\n"), 0o644)
 	if code, _, errs := h.run("secrets", "set", "agent", "GW_KEY", "--generate", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "set that one (sealed secrets set gw APP_KEY_AGENT)") {
 		t.Fatalf("same_as set: %d %s", code, errs)
@@ -573,6 +573,22 @@ func TestSecretsSameAsIsStoredOnce(t *testing.T) {
 	code, out, _ = h.run("secrets", "list", "--apps", "agent,gw", "--catalog", cat, "--project", "acme-prod-4417")
 	if code != ExitOK || !strings.Contains(out, "same as gw/APP_KEY_AGENT (set)") {
 		t.Fatalf("list:\n%s", out)
+	}
+
+	// D-059: without share_with in gw's manifest, nothing is stored and every command says why.
+	os.WriteFile(filepath.Join(cat, "gw", "manifest.yaml"), []byte("id: gw\nsecrets:\n  - {name: APP_KEY_AGENT, description: x, generate: sk-hex32}\n"), 0o644)
+	delete(h.store.v, "sealed-gw-APP_KEY_AGENT")
+	if code, _, errs := h.run("secrets", "set", "--missing", "--apps", "agent,gw", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "gw does not share it with agent") {
+		t.Fatalf("unshared --missing: %d %s", code, errs)
+	}
+	if _, ok := h.store.v["sealed-gw-APP_KEY_AGENT"]; ok {
+		t.Fatal("an unshared reference was generated")
+	}
+	if code, _, errs := h.run("secrets", "set", "agent", "GW_KEY", "--generate", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "gw does not share it with agent (its share_with)") {
+		t.Fatalf("unshared set: %d %s", code, errs)
+	}
+	if code, _, errs := h.run("secrets", "list", "--apps", "agent,gw", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "D-059") {
+		t.Fatalf("unshared list: %d %s", code, errs)
 	}
 }
 
