@@ -1,4 +1,4 @@
-import './env-guard.js';
+import { dropSecrets } from './env-guard.js';
 import { log as crawleeLog } from '@crawlee/core';
 import { serve } from '@hono/node-server';
 import { loadConfig } from './config.js';
@@ -13,6 +13,7 @@ import { RunManager } from './runs/manager.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  dropSecrets(process.env);
   const log = createLogger(config.logLevel);
   // Crawlee logs every URL it touches at INFO; keep only its warnings and errors.
   crawleeLog.setLevel(crawleeLog.LEVELS.WARNING);

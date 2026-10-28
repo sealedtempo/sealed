@@ -4,7 +4,7 @@ import { firefox } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectCrawlers } from '../src/crawl/index.js';
 import { jobConfiguration } from '../src/crawl/common.js';
-import { firefoxPrefs, playwrightOptions, runPlaywright } from '../src/crawl/playwright.js';
+import { browserEnv, firefoxPrefs, playwrightOptions, runPlaywright } from '../src/crawl/playwright.js';
 import { a6Job, expected, FIXTURE_HOST, memorySink, SITE, testDeps } from './helpers/fixture.js';
 import { startStaticServer, type StaticServer } from './helpers/static-server.js';
 import { startTestProxy, type TestProxy } from './helpers/test-proxy.js';
@@ -28,6 +28,33 @@ describe('Playwright crawler configuration (no browser needed)', () => {
     expect(launch.acceptDownloads).toBe(false);
     expect(launch.firefoxUserPrefs).toEqual(firefoxPrefs('SealedScraper/1.0 (+test)'));
     expect(jobConfiguration(1024).get('disableBrowserSandbox')).toBe(false);
+  });
+
+  it('starts Firefox with an allowlisted environment, never the runner secrets', () => {
+    const env = browserEnv({
+      HOME: '/tmp',
+      PATH: '/usr/bin',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C',
+      XDG_CACHE_HOME: '/tmp/.cache',
+      PLAYWRIGHT_BROWSERS_PATH: '/ms-playwright',
+      SCRAPER_DB_PASSWORD: 's3cret',
+      SCRAPER_DB_PASSWORD_FILE: '/run/sealed/secrets/scraper/SCRAPER_DB_PASSWORD',
+      DATABASE_URL: 'postgres://scraper@scraper-db:5432/scraper',
+      HTTP_PROXY: 'http://172.30.0.2:3128',
+      MOZ_DISABLE_CONTENT_SANDBOX: '1',
+      SEALED_AGENT_URL: 'http://sealed-agent:7070',
+    });
+    expect(env).toEqual({
+      HOME: '/tmp',
+      PATH: '/usr/bin',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C',
+      XDG_CACHE_HOME: '/tmp/.cache',
+      PLAYWRIGHT_BROWSERS_PATH: '/ms-playwright',
+    });
+    const launch = playwrightOptions(a6Job({ crawler: 'playwright' }), testDeps('http://172.30.0.2:3128'), memorySink().sink).launchContext?.launchOptions;
+    expect(launch?.env).toEqual(browserEnv(process.env));
   });
 
   it('routes loopback through the proxy and turns off background traffic', () => {

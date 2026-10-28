@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigError, DEFAULT_USER_AGENT, loadConfig, resolveProxyUrl } from '../src/config.js';
-import { hardenEnv } from '../src/env-guard.js';
+import { dropSecrets, hardenEnv } from '../src/env-guard.js';
 
 const base = { DATABASE_URL: 'postgres://scraper@scraper-db:5432/scraper', HTTP_PROXY: 'http://172.30.0.2:3128' };
 
@@ -77,6 +77,16 @@ describe('resolveProxyUrl', () => {
     expect(resolveProxyUrl({ SCRAPER_PROXY_URL: 'http://c:1', HTTP_PROXY: 'http://a:1' })).toBe('http://c:1');
     expect(resolveProxyUrl({ https_proxy: 'http://d:1' })).toBe('http://d:1');
     expect(resolveProxyUrl({})).toBeUndefined();
+  });
+});
+
+describe('dropSecrets', () => {
+  it('removes the database password variables after the config has read them', () => {
+    const env: NodeJS.ProcessEnv = { ...base, SCRAPER_DB_PASSWORD: 's3cret', SCRAPER_DB_PASSWORD_FILE: '/run/x', KEEP: 'me' };
+    expect(loadConfig(env).dbPassword).toBe('s3cret');
+    expect(dropSecrets(env).sort()).toEqual(['SCRAPER_DB_PASSWORD', 'SCRAPER_DB_PASSWORD_FILE']);
+    expect(env).toEqual({ ...base, KEEP: 'me' });
+    expect(dropSecrets(env)).toEqual([]);
   });
 });
 

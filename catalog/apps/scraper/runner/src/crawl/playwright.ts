@@ -36,6 +36,19 @@ export function firefoxPrefs(userAgent: string): Record<string, string | number 
   };
 }
 
+// Firefox gets only what it needs to run, never the runner's own configuration or secrets.
+const BROWSER_ENV = new Set(['HOME', 'PATH', 'LANG', 'LANGUAGE', 'TZ', 'TMPDIR', 'PLAYWRIGHT_BROWSERS_PATH', 'FONTCONFIG_PATH', 'FONTCONFIG_FILE']);
+const BROWSER_ENV_PREFIXES = ['XDG_', 'LC_'];
+
+export function browserEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (BROWSER_ENV.has(key) || BROWSER_ENV_PREFIXES.some((p) => key.startsWith(p))) out[key] = value;
+  }
+  return out;
+}
+
 export class SealedPlaywrightCrawler extends PlaywrightCrawler {
   constructor(
     options: PlaywrightCrawlerOptions,
@@ -64,6 +77,7 @@ export function playwrightOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSin
       launchOptions: {
         headless: true,
         acceptDownloads: false,
+        env: browserEnv(process.env),
         firefoxUserPrefs: firefoxPrefs(deps.userAgent),
       },
     },

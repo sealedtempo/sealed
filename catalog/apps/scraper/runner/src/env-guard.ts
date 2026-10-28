@@ -36,4 +36,14 @@ export function hardenEnv(env: NodeJS.ProcessEnv): string[] {
   return changed;
 }
 
+// Read once by loadConfig, then removed so no child process (Firefox and its content processes,
+// which render untrusted pages) inherits the database credential.
+export const SECRET_VARS = ['SCRAPER_DB_PASSWORD', 'SCRAPER_DB_PASSWORD_FILE'];
+
+export function dropSecrets(env: NodeJS.ProcessEnv): string[] {
+  const dropped = SECRET_VARS.filter((key) => key in env);
+  for (const key of dropped) delete env[key];
+  return dropped;
+}
+
 hardenEnv(process.env);
