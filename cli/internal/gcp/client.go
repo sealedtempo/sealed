@@ -16,6 +16,8 @@ import (
 const (
 	SecretManagerRoot = "https://secretmanager.googleapis.com/v1"
 	ComputeRoot       = "https://compute.googleapis.com/compute/v1"
+	StorageUploadRoot = "https://storage.googleapis.com/upload/storage/v1"
+	StorageObjectRoot = "https://storage.googleapis.com"
 )
 
 // Client sends authenticated JSON requests.
@@ -76,6 +78,11 @@ func (c *Client) Do(ctx context.Context, method, url string, body, out any) erro
 			return err
 		}
 	}
+	return c.DoRaw(ctx, method, url, "application/json", payload, out)
+}
+
+// DoRaw sends payload (nil for none) with contentType and decodes a JSON response into out.
+func (c *Client) DoRaw(ctx context.Context, method, url, contentType string, payload []byte, out any) error {
 	retries := c.Retries
 	if retries == 0 {
 		retries = 3
@@ -107,7 +114,7 @@ func (c *Client) Do(ctx context.Context, method, url string, body, out any) erro
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		if payload != nil {
-			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Type", contentType)
 		}
 		if c.UserAgent != "" {
 			req.Header.Set("User-Agent", c.UserAgent)

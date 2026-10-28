@@ -305,3 +305,67 @@ func (c *Compute) StopInstance(ctx context.Context, zone, name string) error {
 func (c *Compute) DeleteInstance(ctx context.Context, zone, name string) error {
 	return c.instanceAction(ctx, zone, name, "delete")
 }
+
+// Image is a Compute Engine image.
+type Image struct {
+	Name            string            `json:"name"`
+	Description     string            `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	RawDisk         *RawDisk          `json:"rawDisk,omitempty"`
+	GuestOsFeatures []GuestOsFeature  `json:"guestOsFeatures,omitempty"`
+	Status          string            `json:"status,omitempty"`
+	SelfLink        string            `json:"selfLink,omitempty"`
+}
+
+type RawDisk struct {
+	Source string `json:"source"`
+}
+
+type GuestOsFeature struct {
+	Type string `json:"type"`
+}
+
+// GetImage returns an image of this project.
+func (c *Compute) GetImage(ctx context.Context, name string) (*Image, error) {
+	img := &Image{}
+	u := fmt.Sprintf("%s/global/images/%s", c.base(), url.PathEscape(name))
+	if err := c.C.Do(ctx, "GET", u, nil, img); err != nil {
+		return nil, err
+	}
+	return img, nil
+}
+
+// InsertImage creates an image from a raw disk tarball in Cloud Storage and waits for it.
+func (c *Compute) InsertImage(ctx context.Context, img Image) error {
+	op := &Operation{}
+	u := fmt.Sprintf("%s/global/images", c.base())
+	if err := c.C.Do(ctx, "POST", u, img, op); err != nil {
+		return err
+	}
+	return c.wait(ctx, "global", op)
+}
+
+// Storage uploads objects.
+type Storage struct {
+	C          *Client
+	UploadRoot string // default StorageUploadRoot
+	ObjectRoot string // default StorageObjectRoot
+}
+
+// Upload stores data as bucket/object (simple media upload) and returns the object's https URL, the form
+// images.insert accepts as rawDisk.source.
+func (s *Storage) Upload(ctx context.Context, bucket, object, contentType string, data []byte) (string, error) {
+	root := s.UploadRoot
+	if root == "" {
+		root = StorageUploadRoot
+	}
+	u := fmt.Sprintf("%s/b/%s/o?uploadType=media&name=%s", root, url.PathEscape(bucket), url.QueryEscape(object))
+	if err := s.C.DoRaw(ctx, "POST", u, contentType, data, nil); err != nil {
+		return "", err
+	}
+	objRoot := s.ObjectRoot
+	if objRoot == "" {
+		objRoot = StorageObjectRoot
+	}
+	return objRoot + "/" + bucket + "/" + object, nil
+}

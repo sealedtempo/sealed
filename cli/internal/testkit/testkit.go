@@ -305,7 +305,7 @@ func (m *MemChain) Approve(customer common.Address, stack [32]byte, releases [][
 }
 
 func (m *MemChain) ChainID(context.Context) (uint64, error) { return m.ID, m.Err }
-func (m *MemChain) Addresses() chain.Addresses               { return m.Addrs }
+func (m *MemChain) Addresses() chain.Addresses              { return m.Addrs }
 
 func (m *MemChain) GetImage(_ context.Context, id [32]byte) (*chain.Image, error) {
 	if m.Err != nil {
