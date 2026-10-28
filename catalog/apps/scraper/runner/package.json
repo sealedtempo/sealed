@@ -1,0 +1,43 @@
+{
+  "name": "@sealed/scraper-runner",
+  "version": "0.1.0",
+  "description": "Sealed first-party scraper: Crawlee jobs behind a small REST API and UI, results in its own Postgres",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.21.0"
+  },
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:playwright": "SCRAPER_PLAYWRIGHT_TESTS=1 vitest run test/playwright.test.ts"
+  },
+  "dependencies": {
+    "@crawlee/cheerio": "3.18.2",
+    "@crawlee/core": "3.18.2",
+    "@crawlee/memory-storage": "3.18.2",
+    "@crawlee/utils": "3.18.2",
+    "@hono/node-server": "2.1.5",
+    "cheerio": "1.0.0-rc.12",
+    "got-scraping": "4.2.2",
+    "hono": "4.13.13",
+    "pg": "8.23.1",
+    "robots-parser": "3.0.1"
+  },
+  "optionalDependencies": {
+    "@crawlee/playwright": "3.18.2",
+    "playwright": "1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "ajv": "8.20.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12",
+    "yaml": "2.9.1"
+  }
+}

@@ -1,0 +1,47 @@
+import type { MiddlewareHandler } from 'hono';
+import { secureHeaders } from 'hono/secure-headers';
+
+// The UI renders scraped text, so it is served with a strict CSP: no scripts at all, styles only
+// from our own stylesheet, forms only back to this origin, never framed.
+export const pageSecurity = secureHeaders({
+  contentSecurityPolicy: {
+    defaultSrc: ["'none'"],
+    styleSrc: ["'self'"],
+    imgSrc: ["'self'"],
+    formAction: ["'self'"],
+    frameAncestors: ["'none'"],
+    baseUri: ["'none'"],
+  },
+  referrerPolicy: 'no-referrer',
+  crossOriginResourcePolicy: 'same-origin',
+  strictTransportSecurity: false,
+});
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+// The UI sits behind Caddy's basic_auth gate, and browsers attach basic auth credentials to
+// cross-site requests too. Refuse state-changing requests that a browser marks as cross-site or
+// whose Origin is not this host. Clients that send neither header (curl, scripts) are unaffected.
+export function sameOriginGuard(): MiddlewareHandler {
+  return async (c, next) => {
+    if (SAFE_METHODS.has(c.req.method)) return next();
+    const site = c.req.header('sec-fetch-site');
+    if (site && site !== 'same-origin' && site !== 'none') {
+      return c.json({ error: { code: 'cross_site', message: 'cross-site request refused' } }, 403);
+    }
+    const origin = c.req.header('origin');
+    if (origin) {
+      const host = c.req.header('x-forwarded-host') ?? c.req.header('host');
+      let originHost: string | null = null;
+      try {
+        originHost = origin === 'null' ? null : new URL(origin).host;
+      } catch {
+        originHost = null;
+      }
+      if (!host || originHost !== host) {
+        return c.json({ error: { code: 'cross_site', message: 'cross-site request refused' } }, 403);
+      }
+    }
+    return next();
+  };
+}

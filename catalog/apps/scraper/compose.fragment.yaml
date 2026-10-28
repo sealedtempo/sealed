@@ -1,0 +1,61 @@
+# Scraper: the runner (API, UI, Cheerio and Firefox crawlers) and its own Postgres.
+# The composer adds the apps network, sealed-egress DNS and proxy variables, NO_PROXY,
+# envexec, the secrets mount, restart and logging settings (INTERFACES 14).
+services:
+  scraper-runner:
+    image: "{{image:scraper-runner-playwright}}"
+    entrypoint: ["/usr/bin/tini", "--", "node", "/app/dist/server.js"]
+    x-sealed-secrets: [SCRAPER_DB_PASSWORD]
+    environment:
+      PORT: "8080"
+      # Only Caddy (fixed apps-network address, INTERFACES 6) may call the runner; /healthz is open.
+      SCRAPER_ALLOWED_CLIENTS: "172.30.0.4"
+      DATABASE_URL: postgres://scraper@scraper-db:5432/scraper
+      SEALED_AGENT_URL: http://sealed-agent:7070
+      SCRAPER_MAX_RUNS: "2"
+      CRAWLEE_PERSIST_STORAGE: "false"
+      CRAWLEE_STORAGE_DIR: /tmp/crawlee
+      CRAWLEE_MEMORY_MBYTES: "2048"
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+    depends_on:
+      scraper-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "/app/dist/healthcheck.js"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    shm_size: 1gb
+    mem_limit: 3g
+    cpus: 2
+    stop_grace_period: 30s
+
+  scraper-db:
+    image: "{{image:postgres}}"
+    entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
+    command: ["postgres"]
+    x-sealed-secrets: [SCRAPER_DB_PASSWORD]
+    environment:
+      POSTGRES_USER: scraper
+      POSTGRES_DB: scraper
+      POSTGRES_PASSWORD_FILE: /run/sealed/secrets/scraper/SCRAPER_DB_PASSWORD
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - scraper-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "scraper", "-d", "scraper", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    shm_size: 256mb
+    mem_limit: 1g
+    stop_grace_period: 60s
+
+volumes:
+  scraper-db-data: {}
