@@ -639,3 +639,32 @@ func TestVpcRangesAvoidAppNetworks(t *testing.T) {
 		t.Errorf("range outside the VM networks: %v", err)
 	}
 }
+
+// TestThreeAppStackIsDeterministic repeats the determinism check on a stack
+// that uses every 1.2.0 feature: three app networks, secret files, the
+// relay on the attest host, volume owners and debug logging.
+func TestThreeAppStackIsDeterministic(t *testing.T) {
+	notes, gw, relay := buildFixture(t, "notes"), buildFixture(t, "llm-gateway"), buildFixture(t, "inference-relay")
+	cfg := testConfig(notes, gw, relay)
+	cfg.Debug = true
+	first := mustCompose(t, cfg, notes, gw, relay)
+	raw, err := cfg.CanonicalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		cfg2, err := ParseConfig(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order := []*Bundle{buildFixture(t, "inference-relay"), buildFixture(t, "notes"), buildFixture(t, "llm-gateway")}
+		r := mustCompose(t, cfg2, order...)
+		if r.StackHash != first.StackHash || string(r.StackInfo) != string(first.StackInfo) || string(r.EgressConfig) != string(first.EgressConfig) {
+			t.Fatalf("run %d differs", i)
+		}
+	}
+	doc := composeDoc(t, first)
+	if n := len(doc["networks"].(map[string]any)); n != 5 {
+		t.Errorf("%d networks, want apps, edge and three app networks", n)
+	}
+}

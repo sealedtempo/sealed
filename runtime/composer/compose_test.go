@@ -142,6 +142,7 @@ func TestOneByteChangesStackHash(t *testing.T) {
 	}
 	mutateFile(FragmentFile)
 	mutateFile(EgressFile)
+	mutateFile(ManifestFile)
 
 	raw, err := cfg.CanonicalJSON()
 	if err != nil {
