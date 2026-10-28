@@ -1,16 +1,16 @@
 schema: sealed-manifest/v1
 id: crm
-name: CRM (Twenty)
+name: CRM (EspoCRM)
 category: crm
 description: >-
-  Twenty, an open-source CRM for companies, people and opportunities, with a REST and GraphQL
-  API. Single workspace, sign-up closed after the first admin, email and calendar sync off,
-  telemetry off, no enterprise key.
+  EspoCRM, an open-source CRM for accounts, contacts, leads, opportunities, cases and
+  activities, with a REST API and API keys. Runs on PostgreSQL. No self sign-up, update checks
+  and the admin-panel news frame off, no extension uploads from the UI, no enterprise code.
 upstream:
-  repo: https://github.com/twentyhq/twenty
-  version: v2.52.0
-  license_spdx: AGPL-3.0-only
-  source_url: https://github.com/twentyhq/twenty/tree/twenty/v2.52.0
+  repo: https://github.com/espocrm/espocrm
+  version: 10.0.11
+  license_spdx: AGPL-3.0-or-later
+  source_url: https://github.com/espocrm/espocrm/tree/10.0.11
 maintainer:
   name: Sealed
   payout_address: "${MAINTAINER_DEFAULT_ADDRESS}"
@@ -19,88 +19,78 @@ compose_fragment: compose.fragment.yaml
 egress_policy: egress.yaml
 primary_service: crm-server
 images:
-  # Index digests (multi-arch). linux/amd64 manifests: twenty
-  # sha256:356a3d5c39bdf452cf5260f28fd47fcc499d13c70a9dd6e2a4fd47b9a3ea16fd, postgres
-  # sha256:b95b87e93ceb7594715d5c71fb6e09f6fc878851ab537735d617325eb9ba8b1b, valkey
-  # sha256:be4238e32d835947409227c1527aa372783df8bbbfa1f7f7c842f084896e5ec9.
-  - name: twenty
-    source: docker.io/twentycrm/twenty:v2.52.0
-    digest: sha256:20b1010a975c42954d9f90698564795daf106da964bc95028836b09a8f424839
+  # Built by images/espocrm/Dockerfile from Debian trixie packages (base
+  # docker.io/library/debian:trixie-20261020-slim, index
+  # sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad, packages from the
+  # snapshot.debian.org date 20261027T000000Z) and the EspoCRM 10.0.11 release zip (sha256
+  # cdd04f7efa52a59025ef824c75b06e0a84cf986724a8c5bc4b56fcd2ce8e0ab1). The digest is pinned
+  # after the runtime image workflow builds it (D-028).
+  - name: espocrm
+    source: build:images/espocrm
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     platform: linux/amd64
-    license_spdx: AGPL-3.0-only
+    license_spdx: AGPL-3.0-or-later
+  # Index digest (multi-arch). linux/amd64 manifest:
+  # sha256:b95b87e93ceb7594715d5c71fb6e09f6fc878851ab537735d617325eb9ba8b1b.
   - name: postgres
     source: docker.io/library/postgres:16.15
     digest: sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
     platform: linux/amd64
     license_spdx: PostgreSQL
-  - name: valkey
-    source: docker.io/valkey/valkey:9.0.7
-    digest: sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d
-    platform: linux/amd64
-    license_spdx: BSD-3-Clause
 resources:
   cpu: 2
-  # Sum of the fragment's mem_limit values: 2g + 2g + 1g + 512m + 256m = 5.75 GiB.
-  memory_gb: 6
+  # Sum of the fragment's mem_limit values: 1g + 512m + 1g + 256m = 2.75 GiB.
+  memory_gb: 3
   disk_gb: 10
 routes:
   - name: crm
     service: crm-server
-    internal_port: 3000
+    internal_port: 8080
     path_or_host: crm
-    # Blocked on interface change 6. Twenty's web app and API send "Authorization: Bearer" on
-    # every signed-in call and Twenty reads its token from nowhere else, while the basic-auth
-    # gate refuses that header and strips it. The composer allows bearer-passthrough only for
-    # the gateway route, so crm uses gate until a cookie gate or bearer-passthrough for crm is
-    # decided; until then Twenty works only up to the login page.
+    # Gate via forward_auth (D-044). EspoCRM never reads the standard Authorization header (the
+    # image drops it), so the gate's Basic credentials and its cookie do not interfere with
+    # EspoCRM's own login (Espo-Authorization, auth-token cookie) or API keys (X-Api-Key).
     auth: gate
 healthcheck:
   service: crm-server
-  http: /healthz
-  port: 3000
+  http: /api/v1/Settings
+  port: 8080
   start_period_s: 300
 metering:
   unit: app_hour
   source: heartbeat
 secrets:
-  - name: ENCRYPTION_KEY
-    description: >-
-      Twenty ENCRYPTION_KEY (32 random bytes, base64). Encrypts OAuth tokens, signing keys and
-      TOTP secrets in the database. Never rotate it without FALLBACK_ENCRYPTION_KEY.
-    generate: base64-32
   - name: PG_DATABASE_PASSWORD
-    description: Password of the postgres user of crm-db (hex only, it is placed unencoded in the connection URL).
+    description: >-
+      Password of the espocrm user of crm-db. EspoCRM reads it from
+      data/config-internal-override.php, which sealed-espocrm writes on every start (hex, so it
+      needs no quoting).
     generate: hex32
-  - name: VALKEY_PASSWORD
-    description: Password of crm-valkey, which holds the BullMQ job queues.
-    generate: hex32
-  - name: ADMIN_EMAIL
-    description: Email of the first CRM admin, created by the bootstrap job.
-    generate: none
   - name: ADMIN_PASSWORD
-    description: Password of the first CRM admin, 8 to 50 characters.
+    description: >-
+      Password of the EspoCRM administrator "admin", created by the bootstrap job. 8 to 128
+      characters on one line. Changing it later in EspoCRM is fine; the bootstrap only needs it on
+      the first start.
     generate: none
 telemetry_off_env:
-  TELEMETRY_ENABLED: "false"
-  ANALYTICS_ENABLED: "false"
-  ALLOW_REQUESTS_TO_TWENTY_ICONS: "false"
-  MARKETPLACE_CATALOG_SYNC_CRON_ENABLED: "false"
-  ENTERPRISE_API_URL: ""
-  SUPPORT_DRIVER: "NONE"
-  IS_BILLING_ENABLED: "false"
-  IS_CONFIG_VARIABLES_IN_DB_ENABLED: "false"
+  ESPOCRM_CONFIG_USE_WEB_SOCKET: "false"
+  ESPOCRM_CONFIG_ADMIN_NOTIFICATIONS: "false"
+  ESPOCRM_CONFIG_ADMIN_NOTIFICATIONS_NEW_VERSION: "false"
+  ESPOCRM_CONFIG_ADMIN_NOTIFICATIONS_NEW_EXTENSION_VERSION: "false"
+  ESPOCRM_CONFIG_ADMIN_PANEL_IFRAME_DISABLED: "true"
+  ESPOCRM_CONFIG_ADMIN_EXTENSION_UPLOAD: "false"
+  ESPOCRM_CONFIG_ADMIN_UPGRADE_DISABLED: "true"
 license_exclusions: []
 bootstrap:
   service: crm-bootstrap
   done_file: crm-bootstrap/done.json
 notes: >-
-  Release blocked on D-019: Twenty has no enterprise directory. Files marked "@license
-  Enterprise" (Twenty.com Commercial License) are compiled into the official image together with
-  the AGPL code; some of them run without a key (module setup, entitlement checks, billing
-  wiring with billing off, enterprise cron no-ops). That license allows production use only with
-  an Enterprise subscription and forbids redistribution, while the release mirrors the image to
-  GHCR. license_exclusions stays empty because there is no path that is left out of the image, so
-  the composer lint refuses this release until the lead decides between an image built without
-  those files and a recorded exemption. No ENTERPRISE_KEY or ENTERPRISE_VALIDITY_TOKEN is set,
-  ENTERPRISE_API_URL is empty, billing is off and config variables in the database are off.
-  Redis is replaced by Valkey (D-020).
+  D-049a: crm is EspoCRM, not Twenty. Twenty's official image compiles files under the
+  Twenty.com Commercial License into the core, and a build without them is a fork (README,
+  "Why not Twenty"). EspoCRM is AGPL-3.0-or-later in full: one module (Crm), no paid extensions
+  in the release, and the image build fails if an application file lacks the AGPL header or a
+  Composer package is outside the allowlist. The telemetry_off_env values are checked by
+  sealed-espocrm, which writes the matching settings into data/config-override.php (version
+  checks against s.espocrm.com, the admin-panel iframe from s.espocrm.com, WebSocket, extension
+  uploads and UI upgrades all off). The release stays blocked until the runtime image workflow
+  builds images/espocrm and its digest is pinned (D-028).

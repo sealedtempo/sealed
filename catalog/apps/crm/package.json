@@ -3,7 +3,7 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Sealed catalog app crm (Twenty): bootstrap job, A6 helper and catalog checks",
+  "description": "Sealed catalog app crm (EspoCRM): image, bootstrap job, A6 helper and catalog checks",
   "engines": {
     "node": ">=22"
   },

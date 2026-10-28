@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# A6 acceptance helper for crm: create a company, a person and an opportunity through Twenty's
-# REST API with an API key, and check the links between them. The work is done by a6-crm.mjs
-# (Node 22+, no dependencies); see its header for the environment variables.
+# A6 acceptance helper for crm: create an account, a contact and an opportunity through
+# EspoCRM's REST API with an API key, and check the links between them. The work is done by
+# a6-crm.mjs (Node 22+, no dependencies); see its header for the environment variables.
 #
 #   CRM_URL=https://crm.34-1-2-3.sslip.io API_KEY_FILE=./api-key.json GATE_BASIC=sealed:... \
-#     catalog/apps/crm/scripts/a6-crm.sh
+#     catalog/apps/crm/scripts/a6-crm.sh > a6-ids.json
+#   # A11, after the reboot:
+#   CRM_URL=... API_KEY_FILE=... GATE_BASIC=... catalog/apps/crm/scripts/a6-crm.sh --check a6-ids.json
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

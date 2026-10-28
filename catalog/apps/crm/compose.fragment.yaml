@@ -1,146 +1,58 @@
-# crm: Twenty v2.52.0 (server, worker), PostgreSQL 16.15, Valkey 9.0.7, one-shot bootstrap.
-# Follows packages/twenty-docker/docker-compose.yml at twenty/v2.52.0 with Redis replaced by
-# Valkey (D-020). Rules: docs/INTERFACES.md section 14. Every "$" that the shell or Node must
-# see is written "$$" so that compose interpolation leaves it alone. Telemetry and enterprise
-# switches come from the manifest's telemetry_off_env, which the composer adds to every service.
+# crm: EspoCRM 10.0.11 (server, job daemon), PostgreSQL 16.15, one-shot bootstrap (D-049a).
+# All three EspoCRM services run the derived image from images/espocrm (Debian packages plus the
+# EspoCRM release). Rules: docs/INTERFACES.md section 14. Every "$" that the shell or Node must
+# see is written "$$" so that compose interpolation leaves it alone. Telemetry and update-check
+# switches are fixed by sealed-espocrm in data/config-override.php; the manifest's
+# telemetry_off_env lists them for the catalog checks.
 #
-# Route closed until the bootstrap is done: crm-server listens on CRM_SETUP_PORT (3001), which
-# no Caddy route points at, until crm-bootstrap writes crm-bootstrap/done.json. Only then does
-# it restart Twenty on NODE_PORT (3000), the port of the crm route. The first admin is therefore
-# created before anyone outside the VM can reach Twenty.
+# Route closed until the bootstrap is done: the gate (sealed-agent /v1/gate, D-044) answers 503
+# until crm-bootstrap/done.json exists. EspoCRM has no self sign-up and its web installer is not
+# in the image, so nobody can create the first admin through the route in any case.
 services:
   crm-server:
-    image: "{{image:twenty}}"
-    user: "1000:1000"
-    x-sealed-secrets: [ENCRYPTION_KEY, PG_DATABASE_PASSWORD, VALKEY_PASSWORD]
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        : "$${SEALED_PUBLIC_URL_CRM:?the composer must set SEALED_PUBLIC_URL_CRM}"
-        export SERVER_URL="$$SEALED_PUBLIC_URL_CRM"
-        export PG_DATABASE_URL="postgres://postgres:$${PG_DATABASE_PASSWORD}@crm-db:5432/default"
-        export REDIS_URL="redis://:$${VALKEY_PASSWORD}@crm-valkey:6379"
-        unset PG_DATABASE_PASSWORD VALKEY_PASSWORD
-        done_file=/sealed-bootstrap/done.json
-        if [ ! -f "$$done_file" ]; then
-          NODE_PORT="$$CRM_SETUP_PORT" /app/entrypoint.sh "$$@" &
-          pid=$$!
-          stopping=0
-          trap 'stopping=1; kill -TERM "$$pid" 2>/dev/null || true' TERM INT
-          ( while [ ! -f "$$done_file" ] && kill -0 "$$pid" 2>/dev/null; do sleep 2; done
-            kill -TERM "$$pid" 2>/dev/null || true ) &
-          watcher=$$!
-          status=0
-          while :; do
-            wait "$$pid" || status=$$?
-            kill -0 "$$pid" 2>/dev/null || break
-          done
-          kill "$$watcher" 2>/dev/null || true
-          trap - TERM INT
-          [ "$$stopping" = 0 ] || exit 143
-          if [ ! -f "$$done_file" ]; then
-            echo "crm-server: Twenty exited ($$status) before crm-bootstrap finished" >&2
-            exit 1
-          fi
-          echo "crm-server: crm-bootstrap is done, serving on port $$NODE_PORT" >&2
-        fi
-        exec /app/entrypoint.sh "$$@"
-      - crm-server
-    command: ["node", "dist/main"]
-    environment:
-      NODE_PORT: "3000"
-      CRM_SETUP_PORT: "3001"
-      STORAGE_TYPE: "local"
-      IS_MULTIWORKSPACE_ENABLED: "false"
-      IS_WORKSPACE_CREATION_LIMITED_TO_SERVER_ADMINS: "true"
-      EMAIL_DRIVER: "LOGGER"
-      IS_EMAIL_VERIFICATION_REQUIRED: "false"
-      IS_IMAP_SMTP_CALDAV_ENABLED: "false"
-      MESSAGING_PROVIDER_GMAIL_ENABLED: "false"
-      CALENDAR_PROVIDER_GOOGLE_ENABLED: "false"
-      MESSAGING_PROVIDER_MICROSOFT_ENABLED: "false"
-      CALENDAR_PROVIDER_MICROSOFT_ENABLED: "false"
-      AUTH_GOOGLE_ENABLED: "false"
-      AUTH_MICROSOFT_ENABLED: "false"
-      IS_CONNECTED_ACCOUNT_WEBHOOK_SUBSCRIPTION_ENABLED: "false"
-      IS_MAPS_AND_ADDRESS_AUTOCOMPLETE_ENABLED: "false"
-      IS_ONBOARDING_AI_CHAT_ENABLED: "false"
-      LOGIC_FUNCTION_TYPE: "DISABLED"
-      CODE_INTERPRETER_TYPE: "DISABLED"
+    image: "{{image:espocrm}}"
+    x-sealed-secrets: [PG_DATABASE_PASSWORD]
+    # Starts as root only to give the volumes to www-data, then drops to uid 33 with no
+    # capabilities (sealed-espocrm). Apache listens on 8080.
+    entrypoint: ["/usr/local/bin/sealed-espocrm", "server"]
     volumes:
-      - crm-local-storage:/app/packages/twenty-server/.local-storage
-      - crm-bootstrap:/sealed-bootstrap:ro
+      - crm-data:/var/www/html/data
+      - crm-custom:/var/www/html/custom
+      - crm-client-custom:/var/www/html/client/custom
     depends_on:
       crm-db:
-        condition: service_healthy
-      crm-valkey:
         condition: service_healthy
     healthcheck:
-      # Healthy on either port, so crm-worker and crm-bootstrap can start during setup.
+      # PHP's HTTP client ignores the composer's HTTP_PROXY, so this reaches Apache directly.
       test:
-        - CMD-SHELL
-        - curl -fsS --max-time 4 -o /dev/null http://localhost:3000/healthz || curl -fsS --max-time 4 -o /dev/null http://localhost:3001/healthz
+        - CMD
+        - php
+        - -r
+        - "exit(@file_get_contents('http://127.0.0.1:8080/api/v1/Settings', false, stream_context_create(['http' => ['timeout' => 4]])) === false ? 1 : 0);"
       interval: 10s
       timeout: 5s
-      retries: 20
-      # First boot runs database:init and upgrade before Node listens.
+      retries: 30
+      # The first start waits for crm-bootstrap to install EspoCRM (rebuild takes a minute).
       start_period: 300s
     stop_grace_period: 30s
-    mem_limit: 2g
+    mem_limit: 1g
 
-  crm-worker:
-    image: "{{image:twenty}}"
-    user: "1000:1000"
-    x-sealed-secrets: [ENCRYPTION_KEY, PG_DATABASE_PASSWORD, VALKEY_PASSWORD]
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        : "$${SEALED_PUBLIC_URL_CRM:?the composer must set SEALED_PUBLIC_URL_CRM}"
-        export SERVER_URL="$$SEALED_PUBLIC_URL_CRM"
-        export PG_DATABASE_URL="postgres://postgres:$${PG_DATABASE_PASSWORD}@crm-db:5432/default"
-        export REDIS_URL="redis://:$${VALKEY_PASSWORD}@crm-valkey:6379"
-        unset PG_DATABASE_PASSWORD VALKEY_PASSWORD
-        exec /app/entrypoint.sh "$$@"
-      - crm-worker
-    command: ["yarn", "worker:prod"]
-    environment:
-      NODE_PORT: "3000"
-      CRM_SETUP_PORT: "3001"
-      STORAGE_TYPE: "local"
-      IS_MULTIWORKSPACE_ENABLED: "false"
-      IS_WORKSPACE_CREATION_LIMITED_TO_SERVER_ADMINS: "true"
-      EMAIL_DRIVER: "LOGGER"
-      IS_EMAIL_VERIFICATION_REQUIRED: "false"
-      IS_IMAP_SMTP_CALDAV_ENABLED: "false"
-      MESSAGING_PROVIDER_GMAIL_ENABLED: "false"
-      CALENDAR_PROVIDER_GOOGLE_ENABLED: "false"
-      MESSAGING_PROVIDER_MICROSOFT_ENABLED: "false"
-      CALENDAR_PROVIDER_MICROSOFT_ENABLED: "false"
-      AUTH_GOOGLE_ENABLED: "false"
-      AUTH_MICROSOFT_ENABLED: "false"
-      IS_CONNECTED_ACCOUNT_WEBHOOK_SUBSCRIPTION_ENABLED: "false"
-      IS_MAPS_AND_ADDRESS_AUTOCOMPLETE_ENABLED: "false"
-      IS_ONBOARDING_AI_CHAT_ENABLED: "false"
-      LOGIC_FUNCTION_TYPE: "DISABLED"
-      CODE_INTERPRETER_TYPE: "DISABLED"
-      # Migrations and cron registration already run in crm-server.
-      DISABLE_DB_MIGRATIONS: "true"
-      DISABLE_CRON_JOBS_REGISTRATION: "true"
+  crm-daemon:
+    image: "{{image:espocrm}}"
+    x-sealed-secrets: [PG_DATABASE_PASSWORD]
+    # EspoCRM's job daemon (scheduled jobs: cleanup, reminders, email queue when configured).
+    entrypoint: ["/usr/local/bin/sealed-espocrm", "daemon"]
     volumes:
-      - crm-local-storage:/app/packages/twenty-server/.local-storage
+      - crm-data:/var/www/html/data
+      - crm-custom:/var/www/html/custom
+      - crm-client-custom:/var/www/html/client/custom
     depends_on:
       crm-db:
         condition: service_healthy
-      crm-valkey:
-        condition: service_healthy
-      crm-server:
-        condition: service_healthy
+      crm-bootstrap:
+        condition: service_completed_successfully
     stop_grace_period: 30s
-    mem_limit: 2g
+    mem_limit: 512m
 
   crm-db:
     image: "{{image:postgres}}"
@@ -156,13 +68,13 @@ services:
       - crm-db
     command: ["postgres"]
     environment:
-      POSTGRES_DB: "default"
-      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "espocrm"
+      POSTGRES_USER: "espocrm"
       PGDATA: "/var/lib/postgresql/data/pgdata"
     volumes:
       - crm-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -U espocrm -h localhost -d espocrm"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -171,530 +83,422 @@ services:
     shm_size: 256m
     mem_limit: 1g
 
-  crm-valkey:
-    image: "{{image:valkey}}"
-    x-sealed-secrets: [VALKEY_PASSWORD]
-    # The password goes into a config file on tmpfs (printf is a shell builtin), never into
-    # argv where any process listing would show it.
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        conf=/run/valkey/valkey.conf
-        (umask 077 && printf 'requirepass "%s"\n' "$$VALKEY_PASSWORD" > "$$conf")
-        unset VALKEY_PASSWORD
-        chown valkey:valkey "$$conf"
-        exec tini -- docker-entrypoint.sh valkey-server "$$conf" "$$@"
-      - crm-valkey
-    # BullMQ needs noeviction. Queue state is kept on the encrypted data disk.
-    command: ["--maxmemory-policy", "noeviction", "--appendonly", "yes"]
-    tmpfs:
-      - /run/valkey
-    volumes:
-      - crm-valkey-data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "VALKEYCLI_AUTH=\"$$(cat /run/sealed/secrets/crm/VALKEY_PASSWORD)\" valkey-cli ping | grep -q PONG"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    stop_grace_period: 30s
-    mem_limit: 512m
-
-  # One-shot job on the setup port: first admin, the single workspace, invite link off, checks
-  # that nobody else got in first, customer API key, then crm-bootstrap/done.json. On later
-  # starts it only re-checks GET /client-config on the route port.
+  # One-shot job: EspoCRM install with its CLI, admin login, account check, the "Sealed API" role
+  # and API user (key in crm-bootstrap/api-key.json), settings check, then
+  # crm-bootstrap/done.json. On later starts it only re-checks the settings, read-only.
   crm-bootstrap:
-    image: "{{image:twenty}}"
-    user: "1000:1000"
-    x-sealed-secrets: [ADMIN_EMAIL, ADMIN_PASSWORD]
-    entrypoint: ["node"]
+    image: "{{image:espocrm}}"
+    x-sealed-secrets: [PG_DATABASE_PASSWORD, ADMIN_PASSWORD]
+    entrypoint: ["/usr/local/bin/sealed-espocrm", "bootstrap"]
     command:
+      - node
       - --input-type=module
       - --eval
       # >>> embedded: bootstrap/bootstrap.mjs (run tools/embed-bootstrap.mjs, do not edit here)
       - |
-        // Sealed crm bootstrap for Twenty v2.52.
+        // Sealed crm bootstrap for EspoCRM 10.0.
         //
-        // Runs inside the VM. Until done.json exists, crm-server listens only on its setup port
-        // (CRM_SETUP_URL, http://crm-server:3001), which no Caddy route points at; this job creates
-        // the first admin and the single workspace there, activates it, turns the public invite link
-        // off, checks that nobody else got in first, writes an API key for the customer and then
-        // done.json. crm-server then moves to the route port (CRM_BASE_URL, http://crm-server:3000).
-        // On every later start the job only re-checks the public client config, read-only.
+        // Runs inside the VM in the crm image (Node 20 from Debian), as www-data, with the EspoCRM
+        // directory as its working directory. The first run installs EspoCRM with its CLI
+        // (bin/command: config:populate, rebuild, create-admin-user, set-password,
+        // populate-scheduled-jobs, app-check, isInstalled), then talks to crm-server over the app
+        // network (CRM_BASE_URL, http://crm-server:8080): admin login, a check that nobody else has an
+        // account, a "Sealed API" role, an API user for the customer whose key goes to
+        // crm-bootstrap/api-key.json, a check that the key works, and a check of the settings Sealed
+        // fixes. Then it writes done.json, which opens the crm route (the gate answers 503 until then).
+        // Every later start only re-checks those settings, read-only, without the admin password.
         //
-        // Twenty grants server admin (full admin panel and impersonation) to the first account that
-        // signs up on an instance with no server admin, so the job fails closed unless its admin holds
-        // both flags, is the only server admin, the only user, and owns the only workspace.
+        // EspoCRM has no self sign-up, so the first admin is always ours; the account check still fails
+        // closed, because a data disk that already holds accounts is not one this job created.
         //
         // Safe to re-run: every step checks what already exists. This file is embedded verbatim into
         // compose.fragment.yaml (tools/embed-bootstrap.mjs), so it may only import node: builtins.
-        // Secrets (ADMIN_EMAIL, ADMIN_PASSWORD) arrive as env vars from envexec. They and every token
-        // are kept out of logs and error messages.
+        // Secrets (ADMIN_PASSWORD) arrive as env vars from envexec. They and every token are kept out of
+        // logs and error messages.
 
-        import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+        import { spawn } from "node:child_process";
+        import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
         import { join } from "node:path";
 
-        export const ADMIN_ROLE_UID = "20202020-02c2-43f2-b94d-cab1f2b532eb";
         export const DONE_FILE = "done.json";
-        export const STATE_FILE = "state.json";
         export const API_KEY_FILE = "api-key.json";
-        const DAY_MS = 86_400_000;
+        export const ROLE_NAME = "Sealed API";
+        // Scopes the customer's API user may use. Full access to the CRM records, nothing in
+        // administration (users, roles, settings stay with the admin).
+        export const API_ROLE_SCOPES = [
+          "Account", "Contact", "Lead", "Opportunity", "Case", "Task", "Call", "Meeting", "Document",
+        ];
+        // Settings sealed-espocrm writes into data/config-override.php. The bootstrap checks them in
+        // the admin's view of GET /api/v1/Settings on the first run and through the CLI on every run.
+        export const SETTINGS_EXPECTED = {
+          useWebSocket: false,
+          adminNotifications: false,
+          adminNotificationsNewVersion: false,
+          adminNotificationsNewExtensionVersion: false,
+          adminPanelIframeDisabled: true,
+        };
+        // System parameters (never sent to the browser), read with bin/command config:get.
+        export const SYSTEM_EXPECTED = {
+          adminExtensionUpload: "false",
+          adminUpgrade: "false",
+          adminUpgradeDisabled: "true",
+        };
 
         export class BootstrapError extends Error {}
 
-        // Someone other than the bootstrap admin holds rights on the instance. Never retried into
-        // success: the data has to be deleted and the app deployed again.
+        // Someone other than the bootstrap admin and its API user holds an account. Never retried
+        // into success: the data has to be deleted and the app deployed again.
         export class UnsafeInstanceError extends BootstrapError {
           constructor(reason) {
             super(`$${reason}. Do not use this instance: delete the crm data and deploy again`);
           }
         }
 
-        export class GraphQLRequestError extends BootstrapError {
-          constructor(operation, errors) {
-            const messages = errors.map((e) => e?.message ?? "unknown error").join("; ");
-            super(`$${operation}: $${messages}`);
-            this.operation = operation;
-            this.codes = errors.map((e) => e?.extensions?.subCode ?? e?.extensions?.code).filter(Boolean);
-          }
-        }
-
-        export const QUERIES = {
-          checkUserExists:
-            "query CheckUserExists($$email: String!) { checkUserExists(email: $$email) { exists availableWorkspacesCount } }",
-          signUp:
-            "mutation SignUp($$email: String!, $$password: String!) { signUp(email: $$email, password: $$password) { tokens { accessOrWorkspaceAgnosticToken { token } } } }",
-          signIn:
-            "mutation SignIn($$email: String!, $$password: String!) { signIn(email: $$email, password: $$password) { availableWorkspaces { availableWorkspacesForSignIn { id loginToken } } tokens { accessOrWorkspaceAgnosticToken { token } } } }",
-          signUpInNewWorkspace:
-            "mutation SignUpInNewWorkspace($$input: SignUpInNewWorkspaceInput) { signUpInNewWorkspace(input: $$input) { loginToken { token } workspace { id workspaceUrls { subdomainUrl customUrl } } } }",
-          getLoginTokenFromCredentials:
-            "mutation GetLoginTokenFromCredentials($$email: String!, $$password: String!, $$origin: String!) { getLoginTokenFromCredentials(email: $$email, password: $$password, origin: $$origin) { loginToken { token } } }",
-          getAuthTokensFromLoginToken:
-            "mutation GetAuthTokensFromLoginToken($$loginToken: String!, $$origin: String!) { getAuthTokensFromLoginToken(loginToken: $$loginToken, origin: $$origin) { tokens { accessOrWorkspaceAgnosticToken { token } } } }",
-          currentUser: "query CurrentUser { currentUser { id email canAccessFullAdminPanel canImpersonate } }",
-          workspaceMembers:
-            "query WorkspaceMembers { currentUser { email workspaceMembers { id userEmail } currentWorkspace { id } } }",
-          currentWorkspace:
-            "query CurrentWorkspace { currentWorkspace { id activationStatus isPublicInviteLinkEnabled } }",
-          activateWorkspace:
-            "mutation ActivateWorkspace($$input: ActivateWorkspaceInput!) { activateWorkspace(data: $$input) { id activationStatus } }",
-          closePublicInviteLink:
-            "mutation UpdateWorkspace($$input: UpdateWorkspaceInput!) { updateWorkspace(data: $$input) { id isPublicInviteLinkEnabled } }",
-          getApiKeyRoles:
-            "query GetApiKeyRoles { getApiKeyRoles { id label universalIdentifier canBeAssignedToApiKeys } }",
-          createApiKey:
-            "mutation CreateApiKey($$input: CreateApiKeyInput!) { createApiKey(input: $$input) { id name expiresAt } }",
-          generateApiKeyToken:
-            "mutation GenerateApiKeyToken($$apiKeyId: UUID!, $$expiresAt: String!) { generateApiKeyToken(apiKeyId: $$apiKeyId, expiresAt: $$expiresAt) { token } }",
-          revokeApiKey: "mutation RevokeApiKey($$input: RevokeApiKeyInput!) { revokeApiKey(input: $$input) { id } }",
-          // Served on /admin-panel; they need the server admin flags the first account receives.
-          getServerAdmins: "query GetServerAdmins { getServerAdmins { id email canAccessFullAdminPanel canImpersonate } }",
-          adminPanelTopWorkspaces: "query AdminPanelTopWorkspaces { adminPanelTopWorkspaces { id totalUsers } }",
-          adminPanelRecentUsers: "query AdminPanelRecentUsers { adminPanelRecentUsers { id email } }",
-        };
-
-        // Values GET /client-config must report (Twenty v2.52 field paths). A missing field fails the
-        // check too, so a renamed or dropped switch cannot pass silently.
-        export const CLIENT_CONFIG_EXPECTED = {
-          isMultiWorkspaceEnabled: false,
-          "billing.isBillingEnabled": false,
-          analyticsEnabled: false,
-          allowRequestsToTwentyIcons: false,
-          isConfigVariablesInDbEnabled: false,
-          isImapSmtpCaldavEnabled: false,
-          isGoogleMessagingEnabled: false,
-          isGoogleCalendarEnabled: false,
-          isMicrosoftMessagingEnabled: false,
-          isMicrosoftCalendarEnabled: false,
-          "authProviders.google": false,
-          "authProviders.microsoft": false,
-          canManageFeatureFlags: false,
-          isOnboardingAiChatEnabled: false,
-          isClickHouseConfigured: false,
-          isCloudflareIntegrationEnabled: false,
-          "support.supportDriver": "NONE",
-        };
-
-        function trimSlash(url) {
-          return url.replace(/\/+$$/, "");
-        }
-
-        function positiveInt(env, name, fallback, max) {
-          const raw = env[name] ?? String(fallback);
-          const value = Number(raw);
-          if (!Number.isInteger(value) || value < 1 || value > max) {
-            throw new BootstrapError(`$${name} must be an integer between 1 and $${max}`);
-          }
-          return value;
-        }
-
-        function httpUrl(name, value) {
-          const url = trimSlash(value);
-          if (!/^https?:\/\/[^/]+$$/.test(url)) throw new BootstrapError(`$${name} must be a scheme and host with no path`);
-          return url;
-        }
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const trimSlash = (s) => s.replace(/\/+$$/, "");
 
         export function loadConfig(env) {
-          const required = (name) => {
-            const value = env[name];
-            if (!value) throw new BootstrapError(`missing env $${name}`);
-            return value;
-          };
-          const email = required("ADMIN_EMAIL").trim().toLowerCase();
-          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$$/.test(email)) throw new BootstrapError("ADMIN_EMAIL is not an email address");
-          const password = required("ADMIN_PASSWORD");
-          // Twenty's PASSWORD_REGEX is /^.{8,50}$$/.
-          if (password.length < 8 || password.length > 50) {
-            throw new BootstrapError("ADMIN_PASSWORD must be 8 to 50 characters");
+          const required = ["CRM_BASE_URL", "STATE_DIR", "ADMIN_USERNAME", "ADMIN_PASSWORD", "API_USER_NAME", "SEALED_PUBLIC_URL_CRM"];
+          for (const name of required) {
+            if (!env[name]) throw new BootstrapError(`missing env $${name}`);
           }
-          const origin = httpUrl("SEALED_PUBLIC_URL_CRM", required("SEALED_PUBLIC_URL_CRM"));
-          const baseUrl = httpUrl("CRM_BASE_URL", required("CRM_BASE_URL"));
+          if (!/^[a-z][a-z0-9_.-]{1,49}$$/.test(env.ADMIN_USERNAME)) throw new BootstrapError("ADMIN_USERNAME is not a valid EspoCRM user name");
+          if (!/^[a-z][a-z0-9_.-]{1,49}$$/.test(env.API_USER_NAME)) throw new BootstrapError("API_USER_NAME is not a valid EspoCRM user name");
+          if (env.ADMIN_USERNAME === env.API_USER_NAME) throw new BootstrapError("ADMIN_USERNAME and API_USER_NAME must differ");
+          if (env.ADMIN_PASSWORD.length < 8 || env.ADMIN_PASSWORD.length > 128 || /[\r\n]/.test(env.ADMIN_PASSWORD)) {
+            throw new BootstrapError("ADMIN_PASSWORD must be 8 to 128 characters on one line");
+          }
+          const origin = trimSlash(env.SEALED_PUBLIC_URL_CRM);
+          if (!/^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$$/.test(origin)) throw new BootstrapError("SEALED_PUBLIC_URL_CRM must be https://<host>");
           return {
-            baseUrl,
-            setupUrl: env.CRM_SETUP_URL ? httpUrl("CRM_SETUP_URL", env.CRM_SETUP_URL) : baseUrl,
+            baseUrl: trimSlash(env.CRM_BASE_URL),
             origin,
-            stateDir: required("STATE_DIR"),
-            email,
-            password,
-            workspaceName: env.WORKSPACE_NAME || "CRM",
-            apiKeyName: env.API_KEY_NAME || "sealed-customer",
-            apiKeyTtlDays: positiveInt(env, "API_KEY_TTL_DAYS", 365, 36500),
-            healthTimeoutMs: positiveInt(env, "HEALTH_TIMEOUT_S", 900, 86400) * 1000,
-            pollMs: positiveInt(env, "POLL_INTERVAL_MS", 5000, 600000),
-            headers: {},
+            stateDir: env.STATE_DIR,
+            espoDir: env.ESPO_DIR || process.cwd(),
+            // The CLI: "php bin/command" in the image; tests point ESPO_COMMAND at a stand-in.
+            command: env.ESPO_COMMAND ? [env.ESPO_COMMAND] : ["php", "bin/command"],
+            username: env.ADMIN_USERNAME,
+            password: env.ADMIN_PASSWORD,
+            apiUserName: env.API_USER_NAME,
+            healthTimeoutMs: Number(env.HEALTH_TIMEOUT_S || 900) * 1000,
+            pollMs: Number(env.POLL_MS || 3000),
+            commandTimeoutMs: Number(env.COMMAND_TIMEOUT_S || 900) * 1000,
           };
         }
 
-        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        // Runs one bin/command subcommand. stdin, when given, is written and closed (set-password reads
+        // the new password from it). Output is returned, never logged, so it cannot leak secrets.
+        export function espoCommand(cfg, args, { stdin } = {}) {
+          const [file, ...pre] = cfg.command;
+          return new Promise((resolve, reject) => {
+            const child = spawn(file, [...pre, ...args], { cwd: cfg.espoDir, stdio: ["pipe", "pipe", "pipe"] });
+            let stdout = "";
+            let stderr = "";
+            const timer = setTimeout(() => child.kill("SIGKILL"), cfg.commandTimeoutMs);
+            child.stdout.on("data", (d) => (stdout += d));
+            child.stderr.on("data", (d) => (stderr += d));
+            child.on("error", (err) => {
+              clearTimeout(timer);
+              reject(new BootstrapError(`bin/command $${args[0]}: $${err.code ?? err.message}`));
+            });
+            child.on("close", (code) => {
+              clearTimeout(timer);
+              resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
+            });
+            child.stdin.on("error", () => {});
+            child.stdin.end(stdin ?? "");
+          });
+        }
 
-        export async function gql(cfg, path, operation, variables = {}, token = undefined) {
-          const headers = { "content-type": "application/json", ...cfg.headers };
-          if (token) headers.authorization = `Bearer $${token}`;
+        async function mustRun(cfg, args, opts) {
+          const res = await espoCommand(cfg, args, opts);
+          if (res.code !== 0) {
+            // Only the first line of the output, and never for set-password.
+            const detail = args[0] === "set-password" ? "" : `: $${(res.stdout || res.stderr).split("\n")[0].slice(0, 200)}`;
+            throw new BootstrapError(`bin/command $${args[0]} exited $${res.code}$${detail}`);
+          }
+          return res.stdout;
+        }
+
+        export async function configGet(cfg, name) {
+          const res = await espoCommand(cfg, ["config:get", name]);
+          return res.code === 0 ? res.stdout : undefined;
+        }
+
+        export async function isInstalled(cfg) {
+          return (await configGet(cfg, "isInstalled")) === "true";
+        }
+
+        async function waitForDatabase(cfg, log) {
+          const deadline = Date.now() + cfg.healthTimeoutMs;
+          for (;;) {
+            const res = await espoCommand(cfg, ["db:check"]);
+            if (res.code === 0) return;
+            if (Date.now() >= deadline) throw new BootstrapError("the database did not answer in time");
+            log("waiting for crm-db");
+            await sleep(cfg.pollMs);
+          }
+        }
+
+        // EspoCRM's CLI install, the same steps as EspoCRM's own image, with the database settings
+        // coming from data/config-internal-override.php (written by sealed-espocrm).
+        export async function install(cfg, log) {
+          await waitForDatabase(cfg, log);
+          log("installing EspoCRM");
+          await rm(join(cfg.espoDir, "data/cache"), { recursive: true, force: true });
+          await mustRun(cfg, ["config:populate"]);
+          await mustRun(cfg, ["config:set", "defaultPermissions.user", "www-data"]);
+          await mustRun(cfg, ["config:set", "defaultPermissions.group", "www-data"]);
+          await mustRun(cfg, ["rebuild"]);
+          const created = await espoCommand(cfg, ["create-admin-user", cfg.username]);
+          if (created.code !== 0 && !/already exists/.test(created.stdout)) {
+            throw new BootstrapError(`bin/command create-admin-user exited $${created.code}`);
+          }
+          await mustRun(cfg, ["set-password", cfg.username], { stdin: `$${cfg.password}\n` });
+          await mustRun(cfg, ["populate-scheduled-jobs"]);
+          await mustRun(cfg, ["config:set", "jobRunInParallel", "true", "--type=bool"]);
+          await mustRun(cfg, ["app-check"]);
+          await mustRun(cfg, ["config:set", "isInstalled", "true", "--type=bool"]);
+        }
+
+        function basic(user, secret) {
+          return Buffer.from(`$${user}:$${secret}`).toString("base64");
+        }
+
+        // One API call. auth is {password} or {token} for the admin, or {apiKey}.
+        export async function api(cfg, method, path, { auth, body, allow = [] } = {}) {
+          const headers = { accept: "application/json" };
+          if (auth?.password !== undefined) {
+            headers["espo-authorization"] = basic(cfg.username, auth.password);
+            headers["espo-authorization-by-token"] = "false";
+          } else if (auth?.token !== undefined) {
+            headers["espo-authorization"] = basic(cfg.username, auth.token);
+            headers["espo-authorization-by-token"] = "true";
+          } else if (auth?.apiKey !== undefined) {
+            headers["x-api-key"] = auth.apiKey;
+          }
+          if (body !== undefined) headers["content-type"] = "application/json";
           let res;
           try {
-            res = await fetch(`$${cfg.baseUrl}/$${path}`, {
-              method: "POST",
+            res = await fetch(`$${cfg.baseUrl}/api/v1$${path}`, {
+              method,
               headers,
-              body: JSON.stringify({ query: QUERIES[operation], variables }),
+              body: body === undefined ? undefined : JSON.stringify(body),
+              signal: AbortSignal.timeout(60_000),
             });
           } catch (err) {
-            throw new BootstrapError(`$${operation}: request failed ($${err.cause?.code ?? err.message})`);
+            throw new BootstrapError(`$${method} $${path.split("?")[0]}: $${err.cause?.code ?? err.name}`);
           }
           const text = await res.text();
-          let body;
-          try {
-            body = JSON.parse(text);
-          } catch {
-            throw new BootstrapError(`$${operation}: HTTP $${res.status} with a non-JSON body`);
+          if (!res.ok && !allow.includes(res.status)) {
+            throw new BootstrapError(`$${method} $${path.split("?")[0]}: HTTP $${res.status}`);
           }
-          if (Array.isArray(body.errors) && body.errors.length > 0) throw new GraphQLRequestError(operation, body.errors);
-          if (!res.ok || !body.data) throw new BootstrapError(`$${operation}: HTTP $${res.status}`);
-          return body.data;
+          let json;
+          try {
+            json = text ? JSON.parse(text) : undefined;
+          } catch {
+            if (res.ok) throw new BootstrapError(`$${method} $${path.split("?")[0]}: the response is not JSON`);
+          }
+          return { status: res.status, json };
         }
 
-        export async function waitHealthy(cfg, log) {
+        export async function waitForServer(cfg, log) {
           const deadline = Date.now() + cfg.healthTimeoutMs;
           for (;;) {
             try {
-              const res = await fetch(`$${cfg.baseUrl}/healthz`, { headers: cfg.headers });
-              if (res.status === 200) return;
-            } catch {
-              // server not listening yet
+              const res = await api(cfg, "GET", "/Settings");
+              if (res.json && typeof res.json === "object") return res.json;
+            } catch (err) {
+              if (!(err instanceof BootstrapError)) throw err;
             }
-            if (Date.now() >= deadline) {
-              throw new BootstrapError(`server not healthy at $${cfg.baseUrl} after $${cfg.healthTimeoutMs / 1000}s`);
-            }
-            log(`waiting for $${cfg.baseUrl}/healthz`);
+            if (Date.now() >= deadline) throw new BootstrapError("crm-server did not become ready in time");
+            log("waiting for crm-server");
             await sleep(cfg.pollMs);
           }
         }
 
-        async function readJson(file) {
+        export async function adminLogin(cfg) {
+          const res = await api(cfg, "GET", "/App/user", { auth: { password: cfg.password }, allow: [401] });
+          if (res.status === 401) throw new BootstrapError("the admin login was refused");
+          const user = res.json?.user;
+          if (user?.type !== "admin" || user?.userName !== cfg.username) {
+            throw new UnsafeInstanceError("the bootstrap account is not an EspoCRM admin");
+          }
+          if (!res.json.token) throw new BootstrapError("GET /App/user returned no token");
+          return { token: res.json.token, userId: user.id };
+        }
+
+        const listQuery = (params) =>
+          new URLSearchParams({ maxSize: "200", offset: "0", ...params }).toString();
+
+        // Fails unless the only accounts are the admin, the API user (once created) and EspoCRM's
+        // built-in system user.
+        export async function checkSoleOwner(cfg, token) {
+          const res = await api(cfg, "GET", `/User?$${listQuery({ select: "id,userName,type,isActive" })}`, { auth: { token } });
+          const list = res.json?.list;
+          if (!Array.isArray(list)) throw new BootstrapError("GET /User returned no list");
+          if (typeof res.json.total === "number" && res.json.total > list.length) {
+            throw new UnsafeInstanceError("EspoCRM has more accounts than this job created");
+          }
+          for (const u of list) {
+            if (u.type === "system") continue;
+            if (u.userName === cfg.username && u.type === "admin") continue;
+            if (u.userName === cfg.apiUserName && u.type === "api") continue;
+            throw new UnsafeInstanceError("EspoCRM has accounts other than the bootstrap admin and its API user");
+          }
+        }
+
+        function roleData() {
+          const levels = { create: "yes", read: "all", edit: "all", delete: "all", stream: "all" };
+          return Object.fromEntries(API_ROLE_SCOPES.map((scope) => [scope, { ...levels }]));
+        }
+
+        export async function ensureRole(cfg, token) {
+          const where = { "where[0][type]": "equals", "where[0][attribute]": "name", "where[0][value]": ROLE_NAME };
+          const found = await api(cfg, "GET", `/Role?$${listQuery({ select: "id,name", ...where })}`, { auth: { token } });
+          const existing = (found.json?.list ?? []).find((r) => r.name === ROLE_NAME);
+          if (existing?.id) return existing.id;
+          const created = await api(cfg, "POST", "/Role", {
+            auth: { token },
+            body: {
+              name: ROLE_NAME,
+              data: roleData(),
+              fieldData: {},
+              assignmentPermission: "all",
+              userPermission: "all",
+              exportPermission: "yes",
+              massUpdatePermission: "yes",
+            },
+          });
+          if (!created.json?.id) throw new BootstrapError("POST /Role: response has no id");
+          return created.json.id;
+        }
+
+        async function readState(cfg, name) {
           try {
-            return JSON.parse(await readFile(file, "utf8"));
+            return JSON.parse(await readFile(join(cfg.stateDir, name), "utf8"));
           } catch (err) {
             if (err.code === "ENOENT") return undefined;
-            throw new BootstrapError(`cannot read $${file}: $${err.message}`);
+            throw new BootstrapError(`$${name} is unreadable`);
           }
         }
 
-        async function writeJsonAtomic(file, value, mode = 0o600) {
-          const tmp = `$${file}.tmp`;
+        async function writeState(cfg, name, value, mode = 0o600) {
+          await mkdir(cfg.stateDir, { recursive: true });
+          const target = join(cfg.stateDir, name);
+          const tmp = `$${target}.tmp`;
           await writeFile(tmp, `$${JSON.stringify(value, null, 2)}\n`, { mode });
-          await rename(tmp, file);
+          await rename(tmp, target);
         }
 
-        function accessToken(data, field) {
-          const token = data?.[field]?.tokens?.accessOrWorkspaceAgnosticToken?.token;
-          if (!token) throw new BootstrapError(`$${field}: response has no token`);
-          return token;
+        async function findApiUser(cfg, token) {
+          const where = { "where[0][type]": "equals", "where[0][attribute]": "userName", "where[0][value]": cfg.apiUserName };
+          const found = await api(cfg, "GET", `/User?$${listQuery({ select: "id,userName,type", ...where })}`, { auth: { token } });
+          return (found.json?.list ?? []).find((u) => u.userName === cfg.apiUserName);
         }
 
-        async function exchangeLoginToken(cfg, loginToken) {
-          const data = await gql(cfg, "metadata", "getAuthTokensFromLoginToken", { loginToken, origin: cfg.origin });
-          return accessToken(data, "getAuthTokensFromLoginToken");
-        }
-
-        // Logs in to the existing workspace with the admin password.
-        export async function login(cfg) {
-          const data = await gql(cfg, "metadata", "getLoginTokenFromCredentials", {
-            email: cfg.email,
-            password: cfg.password,
-            origin: cfg.origin,
-          });
-          const loginToken = data?.getLoginTokenFromCredentials?.loginToken?.token;
-          if (!loginToken) throw new BootstrapError("getLoginTokenFromCredentials: response has no login token");
-          return exchangeLoginToken(cfg, loginToken);
-        }
-
-        // Gets a session for a workspace the bootstrap created earlier, even one that is not active
-        // yet (password login may refuse it, while signIn still lists it with a login token).
-        async function resume(cfg, workspaceId) {
-          try {
-            return await login(cfg);
-          } catch (err) {
-            if (!workspaceId) throw err;
+        // The customer's API user: EspoCRM generates the key on create and shows it to admins only.
+        export async function ensureApiUser(cfg, token, roleId) {
+          const saved = await readState(cfg, API_KEY_FILE);
+          let user = await findApiUser(cfg, token);
+          if (user && user.type !== "api") throw new UnsafeInstanceError(`the account $${cfg.apiUserName} is not an API user`);
+          if (!user) {
+            const created = await api(cfg, "POST", "/User", {
+              auth: { token },
+              body: {
+                userName: cfg.apiUserName,
+                type: "api",
+                authMethod: "ApiKey",
+                lastName: "Sealed customer API",
+                isActive: true,
+                rolesIds: [roleId],
+              },
+            });
+            if (!created.json?.id) throw new BootstrapError("POST /User: response has no id");
+            user = created.json;
           }
-          const data = await gql(cfg, "metadata", "signIn", { email: cfg.email, password: cfg.password });
-          const listed = data?.signIn?.availableWorkspaces?.availableWorkspacesForSignIn ?? [];
-          const ws = listed.find((w) => w.id === workspaceId);
-          if (!ws?.loginToken) throw new BootstrapError("signIn: the bootstrap workspace is not available to the admin");
-          return exchangeLoginToken(cfg, ws.loginToken);
-        }
-
-        // Creates the admin (or signs in an admin left without a workspace) and the single workspace.
-        async function createAdminAndWorkspace(cfg, userExists) {
-          const credentials = { email: cfg.email, password: cfg.password };
-          const agnostic = userExists
-            ? accessToken(await gql(cfg, "metadata", "signIn", credentials), "signIn")
-            : accessToken(await gql(cfg, "metadata", "signUp", credentials), "signUp");
-          const data = await gql(
-            cfg,
-            "metadata",
-            "signUpInNewWorkspace",
-            { input: { displayName: cfg.workspaceName } },
-            agnostic,
-          );
-          const result = data?.signUpInNewWorkspace;
-          if (!result?.loginToken?.token || !result?.workspace?.id) {
-            throw new BootstrapError("signUpInNewWorkspace: response has no login token or workspace");
+          const full = (await api(cfg, "GET", `/User/$${encodeURIComponent(user.id)}`, { auth: { token } })).json;
+          if (full?.type !== "api" || full?.authMethod !== "ApiKey") throw new BootstrapError("the API user does not use API key authentication");
+          if (!(full.rolesIds ?? []).includes(roleId)) {
+            await api(cfg, "PUT", `/User/$${encodeURIComponent(user.id)}`, { auth: { token }, body: { rolesIds: [...(full.rolesIds ?? []), roleId] } });
           }
-          return { workspaceId: result.workspace.id, token: await exchangeLoginToken(cfg, result.loginToken.token) };
-        }
-
-        const sameEmail = (a, b) => typeof a === "string" && a.trim().toLowerCase() === b;
-
-        // The session must belong to the bootstrap admin, and that admin must hold both server admin
-        // flags. If another account signed up first, it holds them instead and this fails.
-        export async function verifyAdminIdentity(cfg, token) {
-          const user = (await gql(cfg, "metadata", "currentUser", {}, token)).currentUser;
-          if (!sameEmail(user?.email, cfg.email)) throw new BootstrapError("currentUser is not the bootstrap admin");
-          if (user.canAccessFullAdminPanel !== true || user.canImpersonate !== true) {
-            throw new UnsafeInstanceError(
-              `the bootstrap admin is not Twenty's server admin (canAccessFullAdminPanel=$${user.canAccessFullAdminPanel}, ` +
-                `canImpersonate=$${user.canImpersonate}), so another account signed up first`,
-            );
+          if (full.isActive === false) throw new BootstrapError("the API user is deactivated");
+          if (typeof full.apiKey !== "string" || full.apiKey.length < 16) throw new BootstrapError("EspoCRM returned no API key");
+          if (saved?.apiKey !== full.apiKey || saved?.userId !== full.id) {
+            await writeState(cfg, API_KEY_FILE, {
+              schema: "sealed-crm-api-key/v1",
+              userId: full.id,
+              userName: cfg.apiUserName,
+              header: "X-Api-Key",
+              apiKey: full.apiKey,
+              url: `$${cfg.origin}/api/v1/`,
+            });
           }
+          return full.apiKey;
         }
 
-        // The admin must be the only member of the workspace, the only server admin and the only user,
-        // and the workspace must be the only one on the instance.
-        export async function verifySoleOwner(cfg, token, workspaceId) {
-          const me = (await gql(cfg, "metadata", "workspaceMembers", {}, token)).currentUser;
-          if (me?.currentWorkspace?.id !== workspaceId) throw new BootstrapError("the session is not on the bootstrap workspace");
-          const members = me.workspaceMembers ?? [];
-          if (members.length !== 1 || !sameEmail(members[0]?.userEmail, cfg.email)) {
-            throw new UnsafeInstanceError(`the workspace has $${members.length} members, expected only the bootstrap admin`);
-          }
-          const admins = (await gql(cfg, "admin-panel", "getServerAdmins", {}, token)).getServerAdmins ?? [];
-          if (admins.length !== 1 || !sameEmail(admins[0]?.email, cfg.email)) {
-            throw new UnsafeInstanceError(`Twenty has $${admins.length} server admins, expected only the bootstrap admin`);
-          }
-          const workspaces = (await gql(cfg, "admin-panel", "adminPanelTopWorkspaces", {}, token)).adminPanelTopWorkspaces ?? [];
-          if (workspaces.length !== 1 || workspaces[0]?.id !== workspaceId) {
-            throw new UnsafeInstanceError(`Twenty has $${workspaces.length} workspaces, expected only the bootstrap workspace`);
-          }
-          // At most the 10 newest users; any account besides the admin shows up in that list.
-          const users = (await gql(cfg, "admin-panel", "adminPanelRecentUsers", {}, token)).adminPanelRecentUsers ?? [];
-          if (users.length !== 1 || !sameEmail(users[0]?.email, cfg.email)) {
-            throw new UnsafeInstanceError("Twenty has user accounts other than the bootstrap admin");
-          }
+        export async function verifyApiKey(cfg, apiKey) {
+          const res = await api(cfg, "GET", `/Account?$${listQuery({ maxSize: "1", select: "id" })}`, { auth: { apiKey }, allow: [401, 403] });
+          if (res.status !== 200) throw new BootstrapError(`the API key cannot list accounts (HTTP $${res.status})`);
         }
 
-        async function ensureActive(cfg, token, status, log) {
-          const deadline = Date.now() + cfg.healthTimeoutMs;
-          let current = status;
-          for (;;) {
-            if (current === "ACTIVE") return;
-            if (current === "PENDING_CREATION") {
-              log("activating workspace (builds the workspace schema)");
-              const data = await gql(cfg, "metadata", "activateWorkspace", { input: {} }, token);
-              current = data?.activateWorkspace?.activationStatus ?? "ONGOING_CREATION";
-              continue;
-            }
-            if (current !== "ONGOING_CREATION") throw new BootstrapError(`workspace is $${current}, expected ACTIVE`);
-            if (Date.now() >= deadline) throw new BootstrapError("workspace activation did not finish in time");
-            await sleep(cfg.pollMs);
-            current = (await gql(cfg, "metadata", "currentWorkspace", {}, token)).currentWorkspace?.activationStatus;
-          }
-        }
-
-        async function closePublicInviteLink(cfg, token) {
-          const data = await gql(cfg, "metadata", "closePublicInviteLink", { input: { isPublicInviteLinkEnabled: false } }, token);
-          if (data?.updateWorkspace?.isPublicInviteLinkEnabled !== false) {
-            throw new BootstrapError("updateWorkspace did not disable the public invite link");
-          }
-        }
-
-        export async function pickAdminRole(cfg, token) {
-          const roles = (await gql(cfg, "metadata", "getApiKeyRoles", {}, token)).getApiKeyRoles ?? [];
-          const role =
-            roles.find((r) => r.universalIdentifier === ADMIN_ROLE_UID) ??
-            roles.find((r) => r.label === "Admin" && r.canBeAssignedToApiKeys !== false);
-          if (!role) throw new BootstrapError("no Admin role can be assigned to API keys");
-          return role.id;
-        }
-
-        export async function createApiKey(cfg, token, { name, ttlDays, now = Date.now() }) {
-          const roleId = await pickAdminRole(cfg, token);
-          const expiresAt = new Date(now + ttlDays * DAY_MS).toISOString();
-          const created = (await gql(cfg, "metadata", "createApiKey", { input: { name, expiresAt, roleId } }, token)).createApiKey;
-          if (!created?.id) throw new BootstrapError("createApiKey: response has no id");
-          const minted = await gql(cfg, "metadata", "generateApiKeyToken", { apiKeyId: created.id, expiresAt }, token);
-          const apiKey = minted?.generateApiKeyToken?.token;
-          if (!apiKey) throw new BootstrapError("generateApiKeyToken: response has no token");
-          return { id: created.id, name, expiresAt, token: apiKey };
-        }
-
-        export async function revokeApiKey(cfg, token, id) {
-          await gql(cfg, "metadata", "revokeApiKey", { input: { id } }, token);
-        }
-
-        function valueAt(object, path) {
-          return path.split(".").reduce((v, key) => (v === null || typeof v !== "object" ? undefined : v[key]), object);
-        }
-
-        // Fails unless the public client config reports every switch the manifest sets, with the
-        // expected value, the configured public URL and no SSO provider.
-        export async function verifyClientConfig(cfg) {
-          let conf;
-          try {
-            const res = await fetch(`$${cfg.baseUrl}/client-config`, { headers: cfg.headers });
-            if (!res.ok) throw new BootstrapError(`/client-config: HTTP $${res.status}`);
-            conf = await res.json();
-          } catch (err) {
-            if (err instanceof BootstrapError) throw err;
-            throw new BootstrapError(`/client-config: $${err.cause?.code ?? err.message}`);
-          }
+        // siteUrl must be the public URL and every fixed switch present with its value; a renamed or
+        // dropped setting fails too, so a release whose defaults changed fails loudly.
+        export function checkSettings(cfg, settings, expected = SETTINGS_EXPECTED) {
           const missing = [];
           const wrong = [];
-          for (const [path, expected] of Object.entries(CLIENT_CONFIG_EXPECTED)) {
-            const value = valueAt(conf, path);
-            if (value === undefined) missing.push(path);
-            else if (value !== expected) wrong.push(`$${path}=$${JSON.stringify(value)}`);
+          for (const [key, value] of Object.entries(expected)) {
+            if (!(key in settings)) missing.push(key);
+            else if (settings[key] !== value) wrong.push(`$${key}=$${JSON.stringify(settings[key])}`);
           }
-          const sso = valueAt(conf, "authProviders.sso");
-          if (sso === undefined) missing.push("authProviders.sso");
-          else if (!Array.isArray(sso) || sso.length > 0) wrong.push("authProviders.sso is not empty");
-          const serverUrl = valueAt(conf, "serverUrl");
-          if (serverUrl === undefined) missing.push("serverUrl");
-          else if (typeof serverUrl !== "string" || trimSlash(serverUrl) !== cfg.origin) wrong.push("serverUrl is not SEALED_PUBLIC_URL_CRM");
+          if (settings.siteUrl === undefined) missing.push("siteUrl");
+          else if (typeof settings.siteUrl !== "string" || trimSlash(settings.siteUrl) !== cfg.origin) wrong.push("siteUrl is not SEALED_PUBLIC_URL_CRM");
           if (missing.length > 0 || wrong.length > 0) {
             const parts = [];
             if (missing.length > 0) parts.push(`missing $${missing.join(", ")}`);
             if (wrong.length > 0) parts.push(`unexpected $${wrong.join(", ")}`);
-            throw new BootstrapError(`client-config check failed: $${parts.join("; ")}`);
+            throw new BootstrapError(`settings: $${parts.join("; ")}`);
           }
         }
 
-        export async function bootstrap(cfg, { log = () => {}, now = () => Date.now() } = {}) {
-          const doneFile = join(cfg.stateDir, DONE_FILE);
-          const stateFile = join(cfg.stateDir, STATE_FILE);
-          const apiKeyFile = join(cfg.stateDir, API_KEY_FILE);
-          const setup = { ...cfg, baseUrl: cfg.setupUrl };
-
-          const done = await readJson(doneFile);
-          if (done?.complete === true) {
-            log("already bootstrapped, re-checking the client config");
-            await waitHealthy(cfg, log);
-            await verifyClientConfig(cfg);
-            return { status: "already-done", workspaceId: done.workspaceId };
+        export async function checkSystemSettings(cfg) {
+          for (const [name, value] of Object.entries(SYSTEM_EXPECTED)) {
+            const got = await configGet(cfg, name);
+            if (got !== value) throw new BootstrapError(`config $${name} is $${got === undefined ? "not set" : JSON.stringify(got)}, expected $${value}`);
           }
-          await mkdir(cfg.stateDir, { recursive: true });
-          await waitHealthy(setup, log);
-
-          const state = (await readJson(stateFile)) ?? {};
-          const exists = (await gql(setup, "metadata", "checkUserExists", { email: cfg.email })).checkUserExists;
-          let token;
-          let workspaceId = state.workspaceId;
-          let status;
-          if (state.workspaceId || (exists?.exists && exists.availableWorkspacesCount > 0)) {
-            log("admin and workspace exist, logging in");
-            token = await resume(setup, state.workspaceId);
-            await verifyAdminIdentity(setup, token);
-            const ws = (await gql(setup, "metadata", "currentWorkspace", {}, token)).currentWorkspace;
-            if (state.workspaceId && ws?.id !== state.workspaceId) {
-              throw new BootstrapError("the admin's workspace is not the one this bootstrap created");
-            }
-            workspaceId = ws?.id;
-            status = ws?.activationStatus;
-          } else {
-            log(exists?.exists ? "admin exists without a workspace, creating it" : "creating admin and workspace");
-            ({ workspaceId, token } = await createAdminAndWorkspace(setup, Boolean(exists?.exists)));
-            await writeJsonAtomic(stateFile, { workspaceId, workspaceCreatedAt: new Date(now()).toISOString() });
-            await verifyAdminIdentity(setup, token);
-            status = "PENDING_CREATION";
-          }
-          if (!workspaceId) throw new BootstrapError("could not determine the workspace id");
-
-          await ensureActive(setup, token, status, log);
-          log("closing the public invite link");
-          await closePublicInviteLink(setup, token);
-          log("checking that the admin is the only account and the only server admin");
-          await verifySoleOwner(setup, token, workspaceId);
-
-          const existingKey = await readJson(apiKeyFile);
-          if (!existingKey?.token) {
-            log("creating the customer API key");
-            const key = await createApiKey(setup, token, { name: cfg.apiKeyName, ttlDays: cfg.apiKeyTtlDays, now: now() });
-            await writeJsonAtomic(apiKeyFile, {
-              schema: "sealed-crm-api-key/v1",
-              id: key.id,
-              name: key.name,
-              expiresAt: key.expiresAt,
-              createdAt: new Date(now()).toISOString(),
-              url: cfg.origin,
-              token: key.token,
-            });
-          }
-
-          await verifyClientConfig(setup);
-          await writeJsonAtomic(
-            doneFile,
-            {
-              schema: "sealed-bootstrap-done/v1",
-              app: "crm",
-              complete: true,
-              completedAt: new Date(now()).toISOString(),
-              workspaceId,
-              apiKeyFile: API_KEY_FILE,
-            },
-            0o644,
-          );
-          if (cfg.setupUrl !== cfg.baseUrl) {
-            log("done.json written, waiting for crm-server on the route port");
-            await waitHealthy(cfg, log);
-            await verifyClientConfig(cfg);
-          }
-          log("bootstrap complete");
-          return { status: "bootstrapped", workspaceId };
+          const siteUrl = await configGet(cfg, "siteUrl");
+          if (siteUrl === undefined || trimSlash(siteUrl) !== cfg.origin) throw new BootstrapError("config siteUrl is not SEALED_PUBLIC_URL_CRM");
         }
 
-        export async function run(env, log = (line) => console.log(`[crm-bootstrap] $${line}`)) {
+        export async function run(env, { log = (m) => console.log(`[crm-bootstrap] $${m}`) } = {}) {
           try {
-            await bootstrap(loadConfig(env), { log });
+            const cfg = loadConfig(env);
+            const done = await readState(cfg, DONE_FILE);
+            const installed = await isInstalled(cfg);
+            if (done) {
+              if (!installed) throw new BootstrapError("done.json exists but EspoCRM is not installed");
+              log("already bootstrapped: checking settings");
+              await checkSystemSettings(cfg);
+              const anonymous = await waitForServer(cfg, log);
+              checkSettings(cfg, anonymous, { useWebSocket: false });
+              log("settings ok");
+              return 0;
+            }
+            if (!installed) await install(cfg, log);
+            else log("EspoCRM is installed: resuming");
+            await checkSystemSettings(cfg);
+            await waitForServer(cfg, log);
+            const { token } = await adminLogin(cfg);
+            await checkSoleOwner(cfg, token);
+            const roleId = await ensureRole(cfg, token);
+            const apiKey = await ensureApiUser(cfg, token, roleId);
+            await checkSoleOwner(cfg, token);
+            await verifyApiKey(cfg, apiKey);
+            const settings = (await api(cfg, "GET", "/Settings", { auth: { token } })).json ?? {};
+            checkSettings(cfg, settings);
+            const version = await configGet(cfg, "version");
+            await writeState(cfg, DONE_FILE, { schema: "sealed-crm-bootstrap/v1", app: "espocrm", version, at: new Date().toISOString() }, 0o644);
+            log("done: the crm route opens");
             return 0;
           } catch (err) {
             log(`failed: $${err instanceof BootstrapError ? err.message : "unexpected error"}`);
@@ -709,23 +513,24 @@ services:
       # <<< embedded
     environment:
       SEALED_BOOTSTRAP: "run"
-      CRM_BASE_URL: "http://crm-server:3000"
-      CRM_SETUP_URL: "http://crm-server:3001"
+      CRM_BASE_URL: "http://crm-server:8080"
       STATE_DIR: "/sealed-bootstrap"
-      WORKSPACE_NAME: "CRM"
-      API_KEY_NAME: "sealed-customer"
-      API_KEY_TTL_DAYS: "365"
+      ADMIN_USERNAME: "admin"
+      API_USER_NAME: "sealed-customer"
       HEALTH_TIMEOUT_S: "900"
     volumes:
+      - crm-data:/var/www/html/data
+      - crm-custom:/var/www/html/custom
+      - crm-client-custom:/var/www/html/client/custom
       - crm-bootstrap:/sealed-bootstrap
     depends_on:
-      crm-server:
+      crm-db:
         condition: service_healthy
-    read_only: true
     mem_limit: 256m
 
 volumes:
+  crm-data: {}
+  crm-custom: {}
+  crm-client-custom: {}
   crm-db-data: {}
-  crm-local-storage: {}
-  crm-valkey-data: {}
   crm-bootstrap: {}
