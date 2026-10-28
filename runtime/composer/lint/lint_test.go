@@ -194,7 +194,7 @@ func TestOSPackagesMayUseSystemLicenses(t *testing.T) {
 }
 
 func TestLintBundle(t *testing.T) {
-	b, err := composer.BuildBundle(composer.BuildInput{AppDir: filepath.Join(fixtures, "notes"), Registry: "ghcr.io/sealed-dev"})
+	b, err := composer.BuildBundle(composer.BuildInput{AppDir: filepath.Join(fixtures, "notes"), Registry: "ghcr.io/sealedtempo"})
 	if err != nil {
 		t.Fatal(err)
 	}

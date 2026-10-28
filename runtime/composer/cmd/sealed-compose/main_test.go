@@ -16,7 +16,7 @@ const apps = "../../testdata/apps"
 func TestBundleCommand(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "notes.tar")
 	var stdout, stderr bytes.Buffer
-	err := run([]string{"bundle", "--registry", "ghcr.io/sealed-dev", "--app-dir", filepath.Join(apps, "notes"), "--out", out}, &stdout, &stderr)
+	err := run([]string{"bundle", "--registry", "ghcr.io/sealedtempo", "--app-dir", filepath.Join(apps, "notes"), "--out", out}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, stderr.String())
 	}
@@ -65,7 +65,7 @@ func TestComposeCommand(t *testing.T) {
 		t.Fatalf("unbuilt stack passed --require-built: %v", err)
 	}
 	// Without --fill-release-ids the placeholder ids do not match.
-	if err := run([]string{"compose", "--config", "../../testdata/config.json", "--registry", "ghcr.io/sealed-dev",
+	if err := run([]string{"compose", "--config", "../../testdata/config.json", "--registry", "ghcr.io/sealedtempo",
 		"--app-dir", filepath.Join(apps, "notes"), "--app-dir", filepath.Join(apps, "llm-gateway")}, &stdout, &stderr); err == nil {
 		t.Fatal("placeholder releaseIds accepted")
 	}

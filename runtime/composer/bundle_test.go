@@ -124,7 +124,7 @@ func TestBundleHashes(t *testing.T) {
 func TestBundleResolvesImageRefs(t *testing.T) {
 	b := buildFixture(t, "notes")
 	img, _ := b.Manifest.Image("postgres")
-	if img.Ref != "ghcr.io/sealed-dev/postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b" {
+	if img.Ref != "ghcr.io/sealedtempo/postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b" {
 		t.Fatalf("ref %q", img.Ref)
 	}
 	if !bytes.Contains(b.Files[ManifestFile], []byte("# Fixture app for composer tests")) {

@@ -135,7 +135,7 @@ func TestForbiddenMountsAndValues(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			frag := fragmentWith(c.extra)
 			if c.name == "tag image" {
-				frag = []byte("services:\n  notes-web:\n    image: ghcr.io/sealed-dev/notes-web:latest\n    entrypoint: [x]\nvolumes: {uploads: }\n")
+				frag = []byte("services:\n  notes-web:\n    image: ghcr.io/sealedtempo/notes-web:latest\n    entrypoint: [x]\nvolumes: {uploads: }\n")
 			} else {
 				frag = append(frag, []byte("volumes: {uploads: }\n")...)
 			}

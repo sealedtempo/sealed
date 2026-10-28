@@ -431,7 +431,7 @@ func toStrings(v []any) []string {
 
 func TestComposeRejectsForeignRegistry(t *testing.T) {
 	gw := buildFixture(t, "llm-gateway")
-	for _, reg := range []string{"docker.io/evil", "ghcr.io/evil", "ghcr.io/sealed-dev/sub"} {
+	for _, reg := range []string{"docker.io/evil", "ghcr.io/evil", "ghcr.io/sealedtempo/sub"} {
 		b, err := BuildBundle(BuildInput{AppDir: fixtureDir("notes"), Registry: reg})
 		if err != nil {
 			t.Fatal(err)
@@ -926,7 +926,7 @@ func TestRuntimeImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ri.Images["caddy"].Ref; got != "ghcr.io/sealed-dev/caddy@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f" {
+	if got := ri.Images["caddy"].Ref; got != "ghcr.io/sealedtempo/caddy@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f" {
 		t.Errorf("caddy ref %s", got)
 	}
 	unbuilt := ri.Unbuilt()

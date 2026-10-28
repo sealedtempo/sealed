@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const testRegistry = "ghcr.io/sealed-dev"
+const testRegistry = "ghcr.io/sealedtempo"
 
 func fixtureDir(app string) string { return filepath.Join("testdata", "apps", app) }
 
