@@ -22,12 +22,14 @@ export interface AgentSettings {
   healthIntervalSec: number;
   pollIntervalSec: number;
   devSim: boolean;
+  /** uid[:gid] to switch to once the root-only boot steps are done. */
+  runAs?: string;
 }
 
-const num = (v: string | undefined, d: number) => {
+const num = (v: string | undefined, d: number, min = 1) => {
   if (v === undefined || v === "") return d;
   const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid number ${v}`);
+  if (!Number.isFinite(n) || n < min) throw new Error(`invalid number ${v}`);
   return n;
 };
 
@@ -42,7 +44,7 @@ export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): AgentSett
     defaultsPath: env.SEALED_DEFAULTS_PATH || undefined,
     testOverrides: env.SEALED_TEST_OVERRIDES === "1",
     listenHost: host || "0.0.0.0",
-    listenPort: num(port, 7070),
+    listenPort: num(port, 7070, 0),
     secretsDir: env.SEALED_SECRETS_DIR ?? "/run/sealed/secrets",
     readyFile: env.SEALED_READY_FILE ?? "/run/sealed/ready",
     dataMount: env.SEALED_DATA_MOUNT ?? "/mnt/sealed-data",
@@ -57,5 +59,6 @@ export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): AgentSett
     healthIntervalSec: num(env.SEALED_HEALTH_INTERVAL_S, 60),
     pollIntervalSec: num(env.SEALED_POLL_INTERVAL_S, 30),
     devSim: env.SEALED_DEV_SIM === "1",
+    runAs: env.SEALED_RUN_AS || undefined,
   };
 }

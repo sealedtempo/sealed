@@ -1,10 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": ".",
+    "rootDir": "../..",
     "outDir": "dist-typecheck",
     "types": ["node"],
-    "lib": ["ES2023", "DOM"]
+    "lib": ["ES2023", "DOM"],
+    "paths": {
+      "@sealed/core": ["../../packages/core/src/index.ts"],
+      "@sealed/core/testing": ["../../packages/core/src/testing/index.ts"]
+    }
   },
   "include": ["main.ts", "sim.ts", "src/**/*.ts", "sim/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

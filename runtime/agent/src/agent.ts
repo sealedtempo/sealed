@@ -1,6 +1,7 @@
 // sealed-agent: the boot sequence of spec 5.6 and the long-running loops (metering, settlement,
 // health reports, re-attestation). Dependencies are injectable so the whole flow runs against
 // the dstack simulator, a fake key broker and a fake platform in tests.
+import { mkdir } from "node:fs/promises";
 import type http from "node:http";
 import { join } from "node:path";
 import {
@@ -29,6 +30,7 @@ import { Ledger } from "./metering/ledger.js";
 import { type FeePayer, TempoFeePayer } from "./payments/feePayer.js";
 import { type SettlementResult, Settler } from "./payments/settler.js";
 import { liveAttestation } from "./attest.js";
+import { dropPrivileges, parseRunAs } from "./privileges.js";
 import { every } from "./scheduler.js";
 import { writePayerSecrets, writeReadyFlag, writeSecrets } from "./secrets.js";
 import { type ApiHandlers, createApiServer, listen, UsageRejected } from "./server.js";
@@ -121,14 +123,17 @@ export class Agent {
     keys.diskKey.fill(0);
     await createVolumeDirs(volumeDirsFromAppCompose(appCompose, s.dataMount));
 
-    this.store = await StateStore.open(join(s.stateDir ?? join(s.dataMount, ".sealed-agent"), "state.json"), this.clock.now());
+    const stateDir = s.stateDir ?? join(s.dataMount, ".sealed-agent");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    this.store = await StateStore.open(join(stateDir, "state.json"), this.clock.now());
 
     const layout = { secretsDir: s.secretsDir, readyFile: s.readyFile };
     await writeSecrets(layout, keys.secrets);
     await writePayerSecrets(layout, keys.enclaveKey, config.settlement.spendLimitPerDay);
 
-    this.setupMetering(ctx, keys, defaults, log);
     await writeReadyFlag(layout, this.clock.now());
+    await dropPrivileges(parseRunAs(s.runAs), [stateDir], log);
+    this.setupMetering(ctx, keys, defaults, log);
     this.ready = true;
     log.info("secrets written, apps may start", { enclaveSigner: keys.enclaveSigner, secretApps: Object.keys(keys.secrets).length });
 
