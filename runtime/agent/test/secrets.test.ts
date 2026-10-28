@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,6 +23,23 @@ describe("tmpfs secrets (INTERFACES 14-15)", () => {
     await writeSecrets(layout, { crm: { APP_SECRET: "s2" } }, owners);
     expect(await readdir(join(layout.secretsDir, "crm"))).toEqual(["APP_SECRET"]);
     expect(await readFile(join(layout.secretsDir, "crm", "APP_SECRET"), "utf8")).toBe("s2");
+  });
+
+  // devnet-e2e open issue: a service binds its secret file (D-042), which pins the file's inode. The agent replaces a
+  // file by temp file and rename, so a value the agent writes again (an agent restart after a rotation in Secret
+  // Manager) reaches a running service only when that service restarts and binds the path again (README, Secrets).
+  it("replaces a secret by rename: a holder of the old file keeps the old value, the path has the new one", async () => {
+    await writeSecrets(layout, { crm: { APP_SECRET: "before-rotation" } }, owners);
+    const path = join(layout.secretsDir, "crm", "APP_SECRET");
+    // A hard link holds the inode the way a running container's single-file bind does.
+    const bound = join(dir, "bound-APP_SECRET");
+    await link(path, bound);
+    const inode = (await stat(path)).ino;
+    await writeSecrets(layout, { crm: { APP_SECRET: "after-rotation" } }, owners);
+    expect(await readFile(path, "utf8")).toBe("after-rotation");
+    expect((await stat(path)).ino).not.toBe(inode);
+    expect(await readFile(bound, "utf8")).toBe("before-rotation");
+    expect((await stat(bound)).ino).toBe(inode);
   });
 
   it("rejects path-like owners and names, the reserved payer directory and owners outside the stack", async () => {
