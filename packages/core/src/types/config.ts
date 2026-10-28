@@ -13,7 +13,9 @@ export const hostnamesSchema = z.discriminatedUnion("scheme", [
 export const settlementSchema = z.object({
   mode: z.enum(["access-key", "enclave-account"]),
   intervalMinutes: z.number().int().positive(),
-  gracePeriodMinutes: z.number().int().positive(),
+  // As the composer's Config.Validate: 0 means no grace period (the first failed settlement switches routes to
+  // the payment-needed page). A stricter twin would refuse a config that composed and was approved.
+  gracePeriodMinutes: z.number().int().nonnegative(),
   spendLimitPerDay: decimalString,
 });
 

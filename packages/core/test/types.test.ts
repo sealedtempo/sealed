@@ -63,6 +63,14 @@ describe("sealed-config/v1", () => {
     expect(sealedConfigSchema.safeParse({ ...exampleConfig, settlement: { ...exampleConfig.settlement, mode: "card" } }).success).toBe(false);
     expect(sealedConfigSchema.safeParse({ ...exampleConfig, settlement: { ...exampleConfig.settlement, spendLimitPerDay: "2.5" } }).success).toBe(false);
   });
+  // Regression (devnet-e2e): the composer accepts gracePeriodMinutes 0 (no grace period), so such a stack composed
+  // and was approved, but the agent refused its config at boot and the deployment never started.
+  it("accepts gracePeriodMinutes 0 like the composer, and refuses negative or zero intervals", () => {
+    const s = exampleConfig.settlement;
+    expect(sealedConfigSchema.parse({ ...exampleConfig, settlement: { ...s, gracePeriodMinutes: 0 } }).settlement.gracePeriodMinutes).toBe(0);
+    expect(sealedConfigSchema.safeParse({ ...exampleConfig, settlement: { ...s, gracePeriodMinutes: -1 } }).success).toBe(false);
+    expect(sealedConfigSchema.safeParse({ ...exampleConfig, settlement: { ...s, intervalMinutes: 0 } }).success).toBe(false);
+  });
   it("derives route hostnames", () => {
     const cfg = sealedConfigSchema.parse(exampleConfig);
     expect(routeHostname(cfg, "attest")).toBe("attest.34-1-2-3.sslip.io");

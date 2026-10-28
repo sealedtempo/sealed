@@ -181,3 +181,20 @@ func TestConfigCounts(t *testing.T) {
 		t.Fatalf("too many ranges: %v", err)
 	}
 }
+
+// The TypeScript twin (@sealed/core sealedConfigSchema) must accept every settlement block this accepts, or a stack
+// composes and is approved but the agent refuses its config at boot (found by make devnet-e2e).
+func TestSettlementGracePeriodZeroIsValid(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/config.json")
+	base := string(raw)
+	grace := `"gracePeriodMinutes": 1440`
+	if !strings.Contains(base, grace) {
+		t.Fatalf("fixture changed: no %s", grace)
+	}
+	if _, err := ParseConfig([]byte(strings.Replace(base, grace, `"gracePeriodMinutes": 0`, 1))); err != nil {
+		t.Fatalf("grace period 0: %v", err)
+	}
+	if _, err := ParseConfig([]byte(strings.Replace(base, grace, `"gracePeriodMinutes": -1`, 1))); err == nil {
+		t.Fatal("a negative grace period must be refused")
+	}
+}
