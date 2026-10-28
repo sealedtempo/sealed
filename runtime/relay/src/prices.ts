@@ -22,7 +22,11 @@ export type PriceTable = {
   markupBps: number
   defaultMaxTokens: number
   models: ModelPrice[]
+  /** Preference order for the `default` model name (llm-gateway's relay/default route). */
+  defaultModels: string[]
 }
+
+export const DEFAULT_MODEL_ALIAS = 'default'
 
 const TOKENS_PER_PRICE_UNIT = 1_000_000n
 const BPS = 10_000n
@@ -123,13 +127,24 @@ export function parsePriceTable(json: unknown, markupBps: number): PriceTable {
       maxOutputTokens,
     }
   })
-  return { currency: currency.toLowerCase() as `0x${string}`, decimals, markupBps, defaultMaxTokens, models }
+  const defaultModels = raw.default_models ?? [models[0]!.id]
+  if (!Array.isArray(defaultModels) || defaultModels.some((id) => typeof id !== 'string' || !seen.has(id)))
+    throw new Error('price table: default_models must list known model ids')
+  return { currency: currency.toLowerCase() as `0x${string}`, decimals, markupBps, defaultMaxTokens, models, defaultModels: defaultModels as string[] }
 }
 
 export function loadPriceTable(path: string, markupBps: number): PriceTable {
   return parsePriceTable(JSON.parse(readFileSync(path, 'utf8')), markupBps)
 }
 
-export function findModel(table: PriceTable, id: string): ModelPrice | undefined {
+/**
+ * Resolves a requested model name. `default` maps to the first preferred model whose provider is
+ * usable right now (per `usable`), else the first preferred model.
+ */
+export function findModel(table: PriceTable, id: string, usable: (m: ModelPrice) => boolean = () => true): ModelPrice | undefined {
+  if (id === DEFAULT_MODEL_ALIAS) {
+    const preferred = table.defaultModels.map((d) => table.models.find((m) => m.id === d)!)
+    return preferred.find(usable) ?? preferred[0]
+  }
   return table.models.find((m) => m.id === id)
 }

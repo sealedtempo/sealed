@@ -2,6 +2,7 @@
   "currency": "0x20c0000000000000000000000000000000000000",
   "decimals": 6,
   "default_max_tokens": 1024,
+  "default_models": ["phala/openai/gpt-oss-120b", "privatemode/gpt-oss-120b", "tinfoil/gpt-oss-120b", "nearai/deepseek/deepseek-v3.2"],
   "notes": "Provider list prices in pathUSD base units per 1M tokens (1000000 = 1 USD). The relay charges list x (1 + relay_markup_bps/10000). checked: 2026-10-28.",
   "models": [
     {

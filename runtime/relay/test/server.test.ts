@@ -11,6 +11,7 @@ const prices: PriceTable = parsePriceTable(
     currency: '0x20c0000000000000000000000000000000000000',
     decimals: 6,
     default_max_tokens: 256,
+    default_models: ['tinfoil/gpt-oss-120b', 'nearai/z-ai/glm-5.3'],
     models: [
       { id: 'tinfoil/gpt-oss-120b', provider: 'tinfoil', upstream_model: 'gpt-oss-120b', input_per_1m: 240000, output_per_1m: 780000, max_output_tokens: 512 },
       { id: 'nearai/z-ai/glm-5.3', provider: 'nearai', upstream_model: 'z-ai/glm-5.3', input_per_1m: 1800000, output_per_1m: 5750000 },
@@ -98,6 +99,14 @@ describe('relay front', () => {
     expect(doc.data.find((m: any) => m.id === 'nearai/z-ai/glm-5.3').sealed.available).toBe(false)
     const status = await (await relay.request('/v1/attest-status')).json()
     expect(status.providers.nearai).toMatchObject({ verified: false, detail: 'quote: bad measurement' })
+  })
+
+  it('resolves the default model to the first preferred usable provider', async () => {
+    const { relay, recorded } = app('none', { tinfoil: false, nearai: true })
+    await relay.request('/v1/chat/completions', chat({ model: 'default', messages }))
+    expect(recorded.offers[0]!.description).toMatch(/^nearai\/z-ai\/glm-5.3/)
+    const doc = await (await relay.request('/v1/models')).json()
+    expect(doc.default_model).toBe('nearai/z-ai/glm-5.3')
   })
 
   it('rejects unknown models and refuses providers whose attestation failed, before any payment', async () => {

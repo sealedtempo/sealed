@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { SessionMeter } from './metering.js'
 import type { Payments } from './payments.js'
 import {
+  DEFAULT_MODEL_ALIAS,
   type ModelPrice,
   type PriceTable,
   costInBaseUnits,
@@ -46,8 +47,10 @@ export function perRequestPrice(prices: PriceTable, model: ModelPrice, body: Cha
 }
 
 export function modelsDocument(prices: PriceTable, gate: RelayDeps['gate']) {
+  const defaultModel = findModel(prices, DEFAULT_MODEL_ALIAS, (m) => gate.allows(m.provider))
   return {
     object: 'list',
+    default_model: defaultModel?.id,
     data: prices.models.map((m) => {
       const status = gate.status(m.provider)
       return {
@@ -111,7 +114,8 @@ export function createRelayApp(deps: RelayDeps): Hono {
     } catch {
       return errorResponse(400, 'invalid_request', 'body must be a JSON object')
     }
-    const model = typeof body.model === 'string' ? findModel(deps.prices, body.model) : undefined
+    const model =
+      typeof body.model === 'string' ? findModel(deps.prices, body.model, (m) => deps.gate.allows(m.provider)) : undefined
     if (!model) return errorResponse(404, 'model_not_found', `unknown model ${String(body.model)}`)
     if (!deps.gate.allows(model.provider)) {
       const status = deps.gate.status(model.provider)
