@@ -1,0 +1,5 @@
+{
+  "description": "Self-signed P-256 test certificate (attest.crt, private key discarded). spkiSha256 was computed with: openssl x509 -pubkey -noout | openssl pkey -pubin -outform DER | shasum -a 256",
+  "host": "attest.34-1-2-3.sslip.io",
+  "spkiSha256": "0x9a53fab9ed9edad334fa1f3be655c65d92014911b2b44e544f68b8143ad22a93"
+}

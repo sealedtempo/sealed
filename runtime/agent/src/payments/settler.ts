@@ -1,0 +1,254 @@
+// Settlement (spec 5.6 steps 6-8, 7.3): every interval, close the usage period, submit signed
+// reports, and pay each app's unpaid reports in one transaction within the FeeSplitter daily cap
+// and the payer's budget. A (report, app) leg is settled only when FeeSplitter's usagePaid reaches
+// the report's fee: a leg paid short (the customer can pay first with any amount) is topped up with
+// the shortfall, so it is never settled for less.
+//
+// Billing fails closed. Anything that keeps due fees from being paid counts as a failure: a chain
+// read error (the customer controls the VPC firewall and can block the RPC), a deployment that is
+// still not registered (measured from the oldest unpaid report, so blocking the platform API does
+// not help either), a reverted estimate or transaction, a leg that cannot be topped up. Failures that
+// last the grace period switch Caddy to the measured payment-needed Caddyfile; a Closed deployment
+// (terminal) switches at once. The next successful settlement restores the normal Caddyfile. Only
+// limits the operator sets onchain are deferrals: the daily cap, and legs above a lowered
+// per-payment cap (reported as overCap, never paid at that cap).
+import type { Hex } from "@sealed/core";
+import type { CaddySwitch } from "../caddy.js";
+import type { PlatformClient } from "../evidence.js";
+import { errorFields, type Logger } from "../log.js";
+import type { Ledger, UnpaidEntry } from "../metering/ledger.js";
+import type { PaymentStatus } from "../state.js";
+import { type Budget, type DeploymentStatus, type FeePayer, MAX_LINES_PER_TX, type PaymentLine } from "./feePayer.js";
+
+export type AppOutcome =
+  | { app: string; result: "paid"; txHash: Hex; amount: bigint; reports: number }
+  | { app: string; result: "deferred"; reason: "daily_cap" | "over_payment_cap" }
+  | { app: string; result: "failed"; reason: string };
+
+export interface SettlementResult {
+  at: number;
+  reportCut: boolean;
+  submitted: number;
+  outcome: "nothing_due" | "deployment_not_registered" | "deployment_closed" | "settled" | "partial" | "failed";
+  apps: AppOutcome[];
+  paymentNeeded: boolean;
+}
+
+/** An unpaid leg with what FeeSplitter already recorded for it and what is still owed (fee - paid). */
+type Due = UnpaidEntry & { paid: bigint; owed: bigint };
+
+export interface SettlerDeps {
+  ledger: Ledger;
+  payer: FeePayer;
+  platform: PlatformClient;
+  gate?: CaddySwitch;
+  status: PaymentStatus;
+  graceSec: number;
+  save: () => Promise<void>;
+  log: Logger;
+  /** Receives the onchain per-payment cap at every settlement (the ledger cuts reports at it). */
+  onPerPaymentCap?: (cap: bigint) => void;
+}
+
+const sumOwed = (es: Due[]) => es.reduce((s, e) => s + e.owed, 0n);
+/** Content-free failure code for a budget that cannot cover the next leg. */
+const shortfall = (b: Budget) => b.problem ?? (b.binding === "spend_limit" ? "spend_limit" : "insufficient_balance");
+const asLines = (es: Due[]): PaymentLine[] => es.map((e) => ({ appId: e.appId, amount: e.owed, usageHash: e.usageHash, paid: e.paid }));
+
+export class Settler {
+  constructor(private readonly d: SettlerDeps) {}
+
+  private async submitReports(): Promise<number> {
+    let n = 0;
+    for (const r of this.d.ledger.unsubmitted()) {
+      try {
+        await this.d.platform.postUsage({ report: r.report, signature: r.signature });
+        this.d.ledger.markSubmitted(r.usageHash);
+        n++;
+      } catch (err) {
+        this.d.log.warn("usage report submission failed", { usageHash: r.usageHash, ...errorFields(err) });
+        break;
+      }
+    }
+    return n;
+  }
+
+  /** Groups unpaid entries per app, oldest app first, keeping FIFO order inside each app. */
+  private byApp(entries: UnpaidEntry[]): Map<string, UnpaidEntry[]> {
+    const m = new Map<string, UnpaidEntry[]>();
+    for (const e of entries) m.set(e.app, [...(m.get(e.app) ?? []), e]);
+    return m;
+  }
+
+  private async payApps(now: number): Promise<AppOutcome[]> {
+    const { ledger, payer, log } = this.d;
+    const outcomes: AppOutcome[] = [];
+    const cap = await payer.perPaymentCap();
+    this.d.onPerPaymentCap?.(cap);
+    let daily = await payer.dailyRemaining();
+    let overCap = 0;
+    for (const [app, all] of this.byApp(ledger.unpaid())) {
+      const due: Due[] = [];
+      let appOverCap = 0;
+      let mismatched = 0;
+      for (const e of all) {
+        const paid = await payer.paidAmount(e.usageHash, e.appId);
+        if (paid >= e.fee) {
+          ledger.markPaid(e.usageHash, app, undefined, now);
+          continue;
+        }
+        if (e.fee > cap) {
+          appOverCap++;
+          continue;
+        }
+        if (paid > 0n) {
+          if ((await payer.legToken(e.usageHash, e.appId)) !== payer.feeToken) {
+            mismatched++;
+            continue;
+          }
+          log.warn("usage paid short onchain, topping up to the report's fee", { app, usageHash: e.usageHash, paid: paid.toString(), fee: e.fee.toString() });
+        }
+        due.push({ ...e, paid, owed: e.fee - paid });
+      }
+      overCap += appOverCap;
+      if (appOverCap > 0) {
+        log.warn("legs above the onchain per-payment cap cannot be paid", { app, legs: appOverCap, cap: cap.toString() });
+        outcomes.push({ app, result: "deferred", reason: "over_payment_cap" });
+      }
+      if (mismatched > 0) {
+        log.warn("legs opened in another token cannot be topped up", { app, legs: mismatched });
+        outcomes.push({ app, result: "failed", reason: "leg_token_mismatch" });
+      }
+      if (due.length === 0) continue;
+      if (!(await payer.appInDeployment((due[0] as Due).appId))) {
+        outcomes.push({ app, result: "failed", reason: "not_in_deployment" });
+        continue;
+      }
+      try {
+        const o = await this.payApp(app, due, daily, now);
+        if (o.result === "paid") daily -= o.amount;
+        outcomes.push(o);
+      } catch (err) {
+        log.warn("fee payment failed", { app, ...errorFields(err) });
+        outcomes.push({ app, result: "failed", reason: "tx_failed" });
+      }
+    }
+    this.d.status.overCap = overCap;
+    return outcomes;
+  }
+
+  /**
+   * Picks the oldest legs that fit the daily cap and the payer's balance and limit, then estimates the
+   * network fee for exactly that batch, shrinking it while the estimate reverts or the fee does not fit.
+   */
+  private async payApp(app: string, due: Due[], daily: bigint, now: number): Promise<AppOutcome> {
+    const { ledger, payer, log } = this.d;
+    const raw = await payer.budget(0n);
+    const limit = raw.spendable < daily ? raw.spendable : daily;
+    let chosen: Due[] = [];
+    let sum = 0n;
+    for (const e of due) {
+      if (chosen.length >= MAX_LINES_PER_TX || sum + e.owed > limit) break;
+      chosen.push(e);
+      sum += e.owed;
+    }
+    const first = (due[0] as Due).owed;
+    if (chosen.length === 0) {
+      if (daily < first && raw.spendable >= first) return { app, result: "deferred", reason: "daily_cap" };
+      return { app, result: "failed", reason: shortfall(raw) };
+    }
+    for (;;) {
+      let reserve: bigint;
+      try {
+        reserve = await payer.feeReserve(asLines(chosen));
+      } catch (err) {
+        if (chosen.length === 1) {
+          log.warn("payment estimate reverted", { app, usageHash: (chosen[0] as Due).usageHash, ...errorFields(err) });
+          return { app, result: "failed", reason: "estimate_reverted" };
+        }
+        chosen = chosen.slice(0, Math.ceil(chosen.length / 2));
+        continue;
+      }
+      if (sumOwed(chosen) + reserve <= raw.spendable) break;
+      if (chosen.length === 1) {
+        return { app, result: "failed", reason: shortfall(await payer.budget(reserve)) };
+      }
+      chosen = chosen.slice(0, -1);
+    }
+    sum = sumOwed(chosen);
+    const { txHash, gasUsed } = await payer.pay(asLines(chosen));
+    for (const e of chosen) ledger.markPaid(e.usageHash, app, txHash, now);
+    const topUps = chosen.filter((e) => e.paid > 0n).length;
+    log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, topUps, txHash, gasUsed, mode: payer.mode });
+    return { app, result: "paid", txHash, amount: sum, reports: chosen.length };
+  }
+
+  async tick(now: number): Promise<SettlementResult> {
+    const { ledger, status, log, payer } = this.d;
+    const reportCut = (await ledger.closePeriod(now)) !== undefined;
+    const submitted = await this.submitReports();
+    const unpaid = ledger.unpaid();
+    let deployment: DeploymentStatus | "unknown";
+    try {
+      deployment = await payer.deploymentStatus();
+    } catch (err) {
+      log.warn("chain read failed", errorFields(err));
+      deployment = "unknown";
+    }
+    let apps: AppOutcome[] = [];
+    let outcome: SettlementResult["outcome"];
+    if (deployment === "closed") outcome = "deployment_closed";
+    else if (unpaid.length === 0) outcome = "nothing_due";
+    else if (deployment === "unknown") {
+      outcome = "failed";
+      apps = [{ app: "*", result: "failed", reason: "rpc_error" }];
+    } else if (deployment === "none") outcome = "deployment_not_registered";
+    else {
+      try {
+        apps = await this.payApps(now);
+      } catch (err) {
+        log.warn("settlement failed", errorFields(err));
+        apps = [{ app: "*", result: "failed", reason: "rpc_error" }];
+      }
+      const failed = apps.some((a) => a.result === "failed");
+      const paid = apps.some((a) => a.result === "paid");
+      outcome = failed ? (paid ? "partial" : "failed") : "settled";
+    }
+    status.lastAttemptAt = now;
+    status.lastOutcome = apps.find((a) => a.result === "failed")?.reason ?? outcome;
+    if (outcome === "deployment_closed") status.failingSince ??= now;
+    else if (outcome === "deployment_not_registered") {
+      const oldest = Math.min(...unpaid.map((e) => e.createdAt));
+      status.failingSince = status.failingSince === null ? oldest : Math.min(status.failingSince, oldest);
+    } else if (apps.some((a) => a.result === "failed")) status.failingSince ??= now;
+    else status.failingSince = null;
+    if (apps.some((a) => a.result === "paid")) status.lastPaidAt = now;
+    await this.updateGate(now, outcome === "deployment_closed", ledger.unpaid().length === 0 || apps.some((a) => a.result === "paid"));
+    await this.d.save();
+    return { at: now, reportCut, submitted, outcome, apps, paymentNeeded: status.paymentNeeded };
+  }
+
+  private async updateGate(now: number, closed: boolean, recovered: boolean): Promise<void> {
+    const { status, gate, log } = this.d;
+    try {
+      if (closed || (status.failingSince !== null && now - status.failingSince >= this.d.graceSec)) {
+        if (!status.paymentNeeded) {
+          log.warn(closed ? "deployment is closed onchain, switching to the payment-needed page" : "payments failing beyond the grace period, switching to the payment-needed page", {
+            failingSince: status.failingSince,
+          });
+        }
+        status.paymentNeeded = true;
+        await gate?.apply("payment-needed");
+      } else if (status.paymentNeeded && status.failingSince === null && recovered) {
+        await gate?.apply("normal");
+        status.paymentNeeded = false;
+        log.info("payment succeeded, app routes restored");
+      } else if (status.paymentNeeded) {
+        // Re-applied every tick: Caddy restarts from the normal Caddyfile.
+        await gate?.apply("payment-needed");
+      }
+    } catch (err) {
+      log.error("could not update Caddy routes", errorFields(err));
+    }
+  }
+}

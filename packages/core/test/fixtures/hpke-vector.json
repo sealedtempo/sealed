@@ -1,0 +1,12 @@
+{
+  "description": "HPKE base mode, DHKEM(X25519,HKDF-SHA256)/HKDF-SHA256/AES-256-GCM, wire enc||ct. tsWire was produced by @hpke/core 1.9.0 with a fixed ephemeral ikm and opened by Go 1.27.3 crypto/hpke; goWire was sealed by Go crypto/hpke (random ephemeral) to the same recipient. The recipient key comes from DeriveKeyPair(ikm) in both libraries.",
+  "ikm": "0101010101010101010101010101010101010101010101010101010101010101",
+  "ephemeralIkm": "0202020202020202020202020202020202020202020202020202020202020202",
+  "info": "sealed/kb-release/v1",
+  "aad": "abababababababababababababababababababababababababababababababab",
+  "recipientPublicKey": "41852320ff367495fa522c94cb83af391e4e89018392725bbf2098dd931bc424",
+  "tsPlaintext": "{\"diskKey\":\"0x00\",\"secrets\":{},\"signerSeed\":\"0x00\"}",
+  "tsWire": "6080bbe51005ea9acc863580ce57317d46bef6333558d5bfa97e4613429850053f472b21a83410a0ce1f05ab47dc2ae722a292c197ddcfefa935bbc9ccde5fc3ef059df14f1462f8f4e770127fee2224155a6fe533542a205a87ab9fd866656c1b36c8",
+  "goPlaintext": "sealed by go crypto/hpke",
+  "goWire": "843d219cc825ef541083715cdef9ea05dd955d0e5fa92b74fd17b4be42d756771ac8bdf99c70170df21e44e52157a887eaa63027c03b9c142aa20a4d0f503b7a236fbc01808f0dd9"
+}

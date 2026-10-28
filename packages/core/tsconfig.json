@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist-typecheck",
+    "types": ["node"],
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}
