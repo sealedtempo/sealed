@@ -98,10 +98,11 @@ const (
 var intelPCSHosts = []string{"api.trustedservices.intel.com:443", "certificates.trustedservices.intel.com:443"}
 
 // releaseAssetHosts are where sealed-verifierd fetches the relay stack's release bundles to recompute
-// it (D-046): the host of catalog.release_asset_base and the host GitHub redirects release asset
-// downloads to (observed 2026-10-28). Without them stack_recompute fails closed and the payer never
-// opens the relay. TestReleaseAssetHostsMatchDefaults keeps the first in step with config/defaults.yaml.
-var releaseAssetHosts = []string{"github.com:443", "release-assets.githubusercontent.com:443"}
+// it (D-046, D-061): the host of catalog.release_asset_base and the hosts GitHub redirects release
+// asset downloads to (release-assets.githubusercontent.com observed 2026-10-28, and the older
+// objects.githubusercontent.com). Without them stack_recompute fails closed and the payer never opens
+// the relay. TestReleaseAssetHostsMatchDefaults keeps the first in step with config/defaults.yaml.
+var releaseAssetHosts = []string{"github.com:443", "objects.githubusercontent.com:443", "release-assets.githubusercontent.com:443"}
 
 // Compose builds the stack for a config and its release bundles using the
 // embedded runtime images.

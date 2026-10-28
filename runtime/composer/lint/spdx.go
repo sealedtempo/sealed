@@ -74,7 +74,7 @@ var DataOnlyPackages = []string{"caniuse-lite"}
 // or alpm purls (D-021, D-050). The first group is OSI-approved, except
 // GPL-1.0-or-later, which can be used under GPL-2.0 or GPL-3.0. The second
 // group is free but not OSI-approved and was allowed for OS packages by
-// D-050.
+// D-050 and D-069.
 var systemLicenses = set(
 	"GPL-2.0-only", "GPL-1.0-or-later", "Artistic-1.0-Perl", "Artistic-2.0", "MPL-1.1", "EPL-1.0", "EPL-2.0",
 	"Apache-1.1", "OFL-1.1", "NCSA", "Unicode-DFS-2016", "Unicode-3.0", "BSD-1-Clause", "OLDAP-2.8",
@@ -82,6 +82,8 @@ var systemLicenses = set(
 	// D-050: OS packages only.
 	"X11", "BSD-4-Clause", "BSD-4-Clause-UC", "OpenSSL", "OpenSSL-standalone", "curl", "IJG", "IJG-short",
 	"Libpng", "libpng-2.0", "libtiff", "FTL", "bzip2-1.0.5", "bzip2-1.0.6", "Ruby", "Vim",
+	// D-069: Debian's php8.4 packages in crm's EspoCRM image, OS packages only.
+	"Zend-2.0",
 )
 
 // isGFDL matches the GNU Free Documentation License ids (GFDL-1.1, 1.2 and

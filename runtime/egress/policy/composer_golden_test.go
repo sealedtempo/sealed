@@ -30,7 +30,8 @@ func TestComposerGoldenEgressConfig(t *testing.T) {
 		{"172.30.0.3", "sealed-agent", "rpc.tempo.xyz", "github.com", 443},
 		{"172.30.1.3", "sealed-agent--app-llm-gateway", "rpc.tempo.xyz", "github.com", 443},
 		{"172.30.0.6", "sealed-verifierd", "github.com", "example.com", 443},
-		{"172.30.0.6", "sealed-verifierd", "release-assets.githubusercontent.com", "objects.githubusercontent.com", 443},
+		{"172.30.0.6", "sealed-verifierd", "release-assets.githubusercontent.com", "api.github.com", 443},
+		{"172.30.0.6", "sealed-verifierd", "objects.githubusercontent.com", "gist.githubusercontent.com", 443},
 		{"172.30.0.17", "notes-web--apps", "api.example.com", "rpc.tempo.xyz", 443},
 		{"172.30.2.16", "notes-web", "api.example.com", "rpc.tempo.xyz", 443},
 	} {

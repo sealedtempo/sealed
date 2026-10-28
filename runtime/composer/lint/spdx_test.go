@@ -62,6 +62,8 @@ func TestEvaluateLicense(t *testing.T) {
 		{"bzip2-1.0.6", SystemOnly, "bzip2-1.0.6", 0},
 		{"Ruby", SystemOnly, "Ruby", 0},
 		{"Vim", SystemOnly, "Vim", 0},
+		// D-069: Zend-2.0 (Debian's PHP), OS packages only.
+		{"Zend-2.0", SystemOnly, "Zend-2.0", 0},
 		{"GFDL-1.3-or-later", SystemOnly, "GFDL-1.3-or-later", 0},
 		{"GFDL-1.2-no-invariants-only", SystemOnly, "GFDL-1.2-no-invariants-only", 0},
 		{"GFDL-2.0", Unknown, "GFDL-2.0", 0},

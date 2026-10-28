@@ -222,7 +222,7 @@ One caller per source address, sorted by address. A caller is `{name, ip, allow}
 | sealed-agent | `sealed-agent` and `sealed-agent--app-<appId>` | `172.30.0.3`, `172.30.<n>.3` | key broker, platform API, Tempo RPC |
 | Caddy | `caddy` | `172.30.0.4` | `acme-v02.api.letsencrypt.org:443` |
 | sealed-mpp-payer | `sealed-mpp-payer` | `172.30.0.5` | relay, Tempo RPC |
-| sealed-verifierd | `sealed-verifierd` | `172.30.0.6` | `api.trustedservices.intel.com:443`, `certificates.trustedservices.intel.com:443`, Tempo RPC, relay attest host, and the release asset hosts `github.com:443` and `release-assets.githubusercontent.com:443` (bundles for `stack_recompute`, D-046) |
+| sealed-verifierd | `sealed-verifierd` | `172.30.0.6` | `api.trustedservices.intel.com:443`, `certificates.trustedservices.intel.com:443`, Tempo RPC, relay attest host, and the release asset hosts `github.com:443`, `objects.githubusercontent.com:443` and `release-assets.githubusercontent.com:443` (bundles for `stack_recompute`, D-046, D-061) |
 | app service | `<service>` | its app-network address | the app's `default_allow` plus the config's `egressAdditions` |
 | app primary on `apps` | `<service>--apps` | its `apps` address | the same as the service |
 
@@ -252,7 +252,7 @@ Exactly `allowed_envs`, `docker_compose_file`, `gateway_enabled`, `key_provider`
 
 ## Determinism and versioning
 
-Every output is built from sorted inputs and serialized as CJSON or rendered from fixed templates; map iteration order never reaches the output. `composer.Version` (`1.2.0`) must equal `config.composerVersion`. Any change to composed bytes (this code, `runtime-images.json`, the Caddy template, the host rules) needs a new version, because approved stacks pin the old bytes. `testdata/golden/` pins the fixture stack's outputs (stackHash `0xafa301f7...7c70` for composer 1.2.0): when it fails on purpose, bump `Version`, then `go test ./runtime/composer -run Golden -update`; `-update` refuses to rewrite changed files while `summary.json` still records the current `Version`. The golden files double as cross-implementation vectors; consumers that copy them (`runtime/agent/test/fixtures/composer-golden`) copy them again.
+Every output is built from sorted inputs and serialized as CJSON or rendered from fixed templates; map iteration order never reaches the output. `composer.Version` (`1.2.0`) must equal `config.composerVersion`. Any change to composed bytes (this code, `runtime-images.json`, the Caddy template, the host rules) needs a new version, because approved stacks pin the old bytes. `testdata/golden/` pins the fixture stack's outputs (stackHash `0xb31a58ae...727d` for composer 1.2.0): when it fails on purpose, bump `Version`, then `go test ./runtime/composer -run Golden -update`; `-update` refuses to rewrite changed files while `summary.json` still records the current `Version`. The golden files double as cross-implementation vectors; consumers that copy them (`runtime/agent/test/fixtures/composer-golden`) copy them again.
 
 ## Lint
 
