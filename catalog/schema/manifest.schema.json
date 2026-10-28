@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sealed.dev/schema/manifest.schema.json",
+  "title": "Sealed catalog app manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "id", "name", "category", "description", "upstream", "maintainer",
+    "maintainer_share_bps", "compose_fragment", "egress_policy", "primary_service", "images",
+    "resources", "routes", "healthcheck", "metering", "secrets", "telemetry_off_env",
+    "license_exclusions"
+  ],
+  "properties": {
+    "schema": { "const": "sealed-manifest/v1" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "category": { "enum": ["ai", "data", "crm", "developer", "internal-tools", "infrastructure"] },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "version", "license_spdx", "source_url"],
+      "properties": {
+        "repo": { "type": "string", "format": "uri" },
+        "version": { "type": "string", "minLength": 1 },
+        "license_spdx": { "type": "string", "minLength": 1 },
+        "source_url": { "type": "string", "format": "uri" }
+      }
+    },
+    "maintainer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "payout_address"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "payout_address": { "type": "string", "pattern": "^(0x[0-9a-fA-F]{40}|\\$\\{MAINTAINER_DEFAULT_ADDRESS\\})$" }
+      }
+    },
+    "maintainer_share_bps": { "type": "integer", "minimum": 0, "maximum": 5000 },
+    "compose_fragment": { "const": "compose.fragment.yaml" },
+    "egress_policy": { "const": "egress.yaml" },
+    "primary_service": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "source", "digest", "license_spdx"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Short name; mirrored as <catalog.registry>/<name>@<digest> and referenced in fragments as {{image:<name>}}" },
+          "source": { "type": "string", "description": "Upstream reference including tag, or 'build:images/<dir>' for images built by the runtime image workflow" },
+          "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "platform": { "const": "linux/amd64" },
+          "license_spdx": { "type": "string" }
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memory_gb", "disk_gb"],
+      "properties": {
+        "cpu": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "memory_gb": { "type": "integer", "minimum": 1, "maximum": 512 },
+        "disk_gb": { "type": "integer", "minimum": 1, "maximum": 2000 }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "service", "internal_port", "path_or_host", "auth"],
+        "properties": {
+          "name": { "enum": ["gateway", "scraper", "crm", "code", "tools", "relay"] },
+          "service": { "type": "string" },
+          "internal_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "path_or_host": { "type": "string", "description": "host label (route name) or a path prefix starting with /" },
+          "auth": { "enum": ["gate", "bearer-passthrough", "public"] }
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "http"],
+      "properties": {
+        "service": { "type": "string" },
+        "http": { "type": "string", "description": "path probed on the primary service, for example /healthz" },
+        "port": { "type": "integer" },
+        "start_period_s": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "metering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "source"],
+      "properties": {
+        "unit": { "enum": ["tokens", "pages", "app_hour"] },
+        "source": { "enum": ["callback", "heartbeat"] }
+      }
+    },
+    "secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description", "generate"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "description": { "type": "string" },
+          "generate": { "enum": ["none", "hex32", "base64-32", "sk-hex32"], "description": "how sealed secrets set --generate creates a value when the customer does not supply one" },
+          "optional": { "type": "boolean" }
+        }
+      }
+    },
+    "telemetry_off_env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Env vars that disable telemetry and update checks; applied to every service of the app"
+    },
+    "license_exclusions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths that are never shipped (enterprise directories, proprietary packages). CI fails if an SBOM or image layer contains them."
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional one-shot job run inside the VM before the app's routes open (first admin, closing sign-up)",
+      "properties": {
+        "service": { "type": "string" },
+        "done_file": { "type": "string" }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

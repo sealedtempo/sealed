@@ -50,3 +50,9 @@ network:
   egress_edge_ip: 172.31.0.2
   dns_ip: 172.30.0.2
   allowed_ports: [443, 80]
+
+# Catalog image registry. Images are mirrored here with identical digests
+# (spec 5.3). Rewritten to ghcr.io/<public repo owner> once GITHUB_PUBLIC_REPO is set.
+catalog:
+  registry: ghcr.io/sealed-dev
+  release_asset_base: https://github.com/sealed-dev/sealed/releases/download
