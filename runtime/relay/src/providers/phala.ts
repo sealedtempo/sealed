@@ -59,9 +59,10 @@ export function phalaVerifier(options: PhalaOptions = {}): ProviderVerifier {
       const connect = options.connect ?? officialConnect
       let aci: AciConnectionLike
       try {
+        const accepted = options.acceptedComposeHashes ?? []
         aci = await connect({
           baseURL,
-          policy: { acceptedComposeHashes: options.acceptedComposeHashes ?? [] },
+          ...(accepted.length > 0 ? { policy: { acceptedComposeHashes: accepted } } : {}),
           serving: { requireVerified: true, requireReceipt: options.requireReceipt ?? false },
           pccsUrl: options.pccsUrl ?? INTEL_PCS_URL,
           proxy: options.proxy ?? proxyFor(new URL(baseURL)),

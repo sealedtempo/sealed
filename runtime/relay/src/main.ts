@@ -89,6 +89,7 @@ async function main(): Promise<void> {
     event: 'relay_started',
     port: config.port,
     sessions: payments.sessionsEnabled,
+    settler: settler?.address.toLowerCase(),
     providers: config.providers.filter((p) => p.enabled).map((p) => p.provider),
   })
 
