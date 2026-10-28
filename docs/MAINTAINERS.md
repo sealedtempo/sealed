@@ -102,7 +102,8 @@ The full contract is [runtime/composer/README.md](../runtime/composer/README.md)
 
 - List every secret in `secrets` with `name`, `description` and `generate` (`none`, `hex32`, `base64-32`, `sk-hex32`, `password`), and `optional: true` where it is. Customers store them with `sealed secrets set`, which can generate them.
 - A service that needs secrets lists them in `x-sealed-secrets` and gets exactly those files, read-only, at `/run/sealed/secrets/<id>/<NAME>`; envexec exports them as environment variables. Never put a secret in `environment`.
-- `same_as: "<other-app>/<NAME>"` (with `generate: none`) reuses another app's secret, for example a gateway key. The other app must be in the stack. Reviewers check every reference, because it gives your app that value.
+- `same_as: "<other-app>/<NAME>"` (with `generate: none`) reuses another app's secret, for example a gateway key. The other app must be in the stack, and its own entry for that secret must opt in with `share_with: [<your-app>]` (D-059); without that, composing the stack fails. llm-gateway's `APP_KEY_CODING_AGENT` lists `share_with: [coding-agent]`. Reviewers check every reference and every `share_with` entry, because they give your app that value.
+- Secret names are at most 128 characters and may not be a variable the composer sets (proxy variables, `NODE_USE_ENV_PROXY`, `SEALED_PUBLIC_URL_*`) or one of your `telemetry_off_env` keys.
 - `GATE_PASSWORD_BCRYPT` is reserved.
 
 ### Bootstrap, health and metering

@@ -78,7 +78,7 @@ Every check is listed in the report, and a check whose inputs are missing fails 
 | `chain` | the RPC's chain id, the bundle's and the config's are equal (4217 on mainnet), their registry addresses are the verifier's, and the block every read is pinned to has a timestamp within 60 seconds of your clock (D-060) | evidence from another chain or a look-alike contract fails, and a stale or lagging RPC fails this check instead of hiding a revocation |
 | `quote_hash` | `sha256(quote)` equals `quoteHash` | ties the quote to the record |
 | `quote` | the quote is exactly the signed quote, with no trailing bytes (D-052); its signature, PCK chain to Intel's root, QE report, collateral and CRLs verify; the TCB status is in the policy | proves real TDX hardware with an allowed TCB; unsigned padding would let one quote carry many quoteHash values |
-| `td_attributes` | no debug bits, not migratable, `SEPT_VE_DISABLE` set, no reserved bits, and TD_ATTRIBUTES and XFAM equal the values pinned for the image (on Google Cloud C3, `0x10000000` and `0x602e7`, D-052) | a debug TD can be inspected by the host, and the host chooses both fields while no register measures them |
+| `td_attributes` | no debug bits, not migratable, `SEPT_VE_DISABLE` set, no reserved bits (on Google Cloud C3 TD_ATTRIBUTES is `0x10000000`); the data shows `tdAttributes` and `xfam`, and XFAM (`0x602e7` on C3) is not compared with a pinned value yet (D-070) | a debug TD can be inspected by the host, and the host chooses both fields while no register measures them; check XFAM yourself (step 3) until it is pinned |
 | `image_measurements` | `keccak256(mrtd, rtmr0, rtmr1, rtmr2)` equals `PlatformRegistry.getImage(imageId).measurementsHash` | the VM booted that registered OS image |
 | `image_approved` | `isApprovedImage(imageId)` and the image is not a debug image | the image is still approved |
 | `event_log_hash` | `sha256(CJSON(eventLog))` equals `eventLogHash` | ties the event log to the record |
@@ -176,7 +176,7 @@ jq -r .chainId,.contracts $E                          # same chain, same registr
      -td_attributes <td_attributes> -xfam <xfam>
    ```
 
-   Its TCB rule is its own; compare the reported status with `tcb_policy.allowed_statuses` in `config/defaults.yaml` (`UpToDate`, `SWHardeningNeeded`). The checker accepts trailing bytes, which is why step 2 checks the length. td_attributes must have no debug bit (bit 0 of the first byte). On Google Cloud C3, td_attributes must be `0000001000000000` and xfam `e702060000000000`, the values `0x10000000` (`SEPT_VE_DISABLE` only) and `0x602e7` in the quote's little-endian byte order; the host chooses both and no register measures them, so they are pinned per image (D-052).
+   Its TCB rule is its own; compare the reported status with `tcb_policy.allowed_statuses` in `config/defaults.yaml` (`UpToDate`, `SWHardeningNeeded`). The checker accepts trailing bytes, which is why step 2 checks the length. td_attributes must have no debug bit (bit 0 of the first byte). On Google Cloud C3, td_attributes must be `0000001000000000` and xfam `e702060000000000`, the values `0x10000000` (`SEPT_VE_DISABLE` only) and `0x602e7` in the quote's little-endian byte order; the host chooses both and no register measures them. `sealed verify` checks TD_ATTRIBUTES by rule but does not pin XFAM yet (D-070), so compare XFAM here.
 
 4. RTMR3 replay and the compose hash:
 
