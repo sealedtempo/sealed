@@ -1,6 +1,7 @@
 import { Credential } from 'mppx'
 import { Mppx, type Store, tempo } from 'mppx/server'
-import type { Account, Client } from 'viem'
+import { type Account, type Client, keccak256 } from 'viem'
+import { Transaction } from 'viem/tempo'
 import { formatUnits } from './prices.js'
 
 /**
@@ -32,10 +33,23 @@ export type PaymentResult =
   | { status: 402; challenge: Response }
   | { status: 200; intent: 'charge' | 'session'; withReceipt: (response?: unknown) => Response | Promise<Response>; channelId?: `0x${string}` }
 
+/**
+ * What a request's per-request charge credential would do, checked without broadcasting it.
+ * none: the request carries no charge credential (a session credential, or none at all).
+ * invalid: a charge credential that cannot settle; handle() answers it with a fresh 402.
+ * valid: it would settle; validBefore (unix seconds) is when its signed transaction expires.
+ */
+export type ChargePreflight = { kind: 'none' } | { kind: 'invalid' } | { kind: 'valid'; validBefore?: number }
+
 export type Payments = {
   sessionsEnabled: boolean
   /** Runs the MPP exchange for a request: a 402 with every applicable offer, or the verified payment. */
   handle(request: Request, offers: { chargeAmount?: bigint; description?: string }): Promise<PaymentResult>
+  /**
+   * Validates a per-request charge credential without broadcasting it, so the relay can settle
+   * the charge only once the upstream has produced its first byte (never for a failed upstream).
+   */
+  preflightCharge(request: Request, offers: { chargeAmount?: bigint; description?: string }): Promise<ChargePreflight>
   credit(channelId: `0x${string}`, amount: bigint, idempotencyKey: string): Promise<'credited' | 'declined' | 'unknown'>
 }
 
@@ -46,7 +60,10 @@ export function createPayments(config: PaymentsConfig): Payments {
     store: config.store,
     getClient: config.getClient,
   }
-  const [chargeMethod] = tempo.charge({ ...common, recipient: config.recipient } as never) as unknown as [unknown]
+  // Pull mode only: the relay broadcasts the payer's signed transaction itself, after the
+  // upstream answered, so a failed upstream never costs the payer a charge. A push-mode
+  // credential would arrive already paid.
+  const [chargeMethod] = tempo.charge({ ...common, recipient: config.recipient, supportedModes: ['pull'] } as never) as unknown as [unknown]
   const sessionMethod = config.settler
     ? (tempo.session({
         ...common,
@@ -67,6 +84,7 @@ export function createPayments(config: PaymentsConfig): Payments {
     methods: (sessionMethod ? [chargeMethod, sessionMethod] : [chargeMethod]) as never,
   }) as unknown as {
     compose(...entries: unknown[]): (request: Request) => Promise<{ status: 402; challenge: Response } | { status: 200; withReceipt: (r?: unknown) => Response }>
+    validateCredential(credential: Credential.Credential, options: { request: Record<string, unknown> }): Promise<unknown>
   }
 
   return {
@@ -89,6 +107,33 @@ export function createPayments(config: PaymentsConfig): Payments {
         withReceipt: (response?: unknown) => result.withReceipt(response),
         channelId: intent === 'session' ? credential.payload.channelId : undefined,
       }
+    },
+    async preflightCharge(request, offers) {
+      let credential: Credential.Credential<{ type?: string; signature?: string }>
+      try {
+        credential = Credential.fromRequest<{ type?: string; signature?: string }>(request)
+      } catch {
+        return { kind: 'none' }
+      }
+      if (credential.challenge.method !== 'tempo' || credential.challenge.intent !== 'charge') return { kind: 'none' }
+      if (offers.chargeAmount === undefined || offers.chargeAmount <= 0n || credential.payload.type !== 'transaction') return { kind: 'invalid' }
+      try {
+        // The route binding: the credential must pay exactly this request's quoted amount (the
+        // description is a challenge field, bound by the challenge HMAC). Includes a simulation.
+        await mppx.validateCredential(credential, { request: { amount: formatUnits(offers.chargeAmount, config.decimals) } })
+      } catch {
+        return { kind: 'invalid' }
+      }
+      // A transaction mppx already settled (or is settling) is a replay: no upstream call for it.
+      // Same key as mppx 0.15.0's charge replay marker (Charge.js getHashStoreKey).
+      const hash = keccak256(credential.payload.signature as `0x${string}`).toLowerCase()
+      if ((await config.store.get(`mppx:charge:${hash}` as never)) != null) return { kind: 'invalid' }
+      let validBefore: number | undefined
+      try {
+        const tx = Transaction.deserialize(credential.payload.signature as `0x76${string}`) as { validBefore?: number | bigint }
+        validBefore = tx.validBefore !== undefined && Number(tx.validBefore) > 0 ? Number(tx.validBefore) : undefined
+      } catch {}
+      return { kind: 'valid', validBefore }
     },
     async credit(channelId, amount, idempotencyKey) {
       const outcome = await tempo.session.credit(config.store as never, channelId, amount, { idempotencyKey })

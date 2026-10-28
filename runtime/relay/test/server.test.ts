@@ -39,6 +39,9 @@ type Recorded = { offers: { chargeAmount?: bigint; description?: string }[]; cre
 function payments(intent: 'none' | 'charge' | 'session', recorded: Recorded): Payments {
   return {
     sessionsEnabled: true,
+    async preflightCharge() {
+      return intent === 'charge' ? { kind: 'valid' } : { kind: 'none' }
+    },
     async handle(_request, offers): Promise<PaymentResult> {
       recorded.offers.push(offers)
       if (intent === 'none') return { status: 402, challenge: new Response('pay', { status: 402 }) }

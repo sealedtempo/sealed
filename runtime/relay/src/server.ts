@@ -22,6 +22,15 @@ import { type UsageEvent, stripUsageChunks, tapUsage } from './usage.js'
 /** Large enough for the biggest priced context (128k tokens of text plus tools) with JSON overhead. */
 export const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
 
+/**
+ * A per-request charge is settled only after the upstream's first byte. The payer's signed
+ * transaction expires at its validBefore (mppx: 25 s after signing), and the broadcast needs
+ * time to be included, so the first byte must arrive this long before validBefore.
+ */
+export const SETTLE_MARGIN_MS = 6_000
+/** Without a validBefore, the longest the relay waits for the first byte before refusing. */
+export const MAX_FIRST_BYTE_WAIT_MS = 20_000
+
 export type RelayDeps = {
   prices: PriceTable
   gate: Pick<ProviderGate, 'allows' | 'status' | 'all'> & Partial<Pick<ProviderGate, 'refresh'>>
@@ -37,6 +46,15 @@ export type RelayDeps = {
   /** Limits requests that carry no payment credential, per client. */
   unpaidLimiter?: Pick<RateLimiter, 'take'>
   clientKey?: (c: Context) => string
+  now?: () => number
+}
+
+/** The same request without its payment credential (to answer it with a fresh challenge). */
+function withoutCredential(request: Request, body: string): Request {
+  const headers = new Headers(request.headers)
+  headers.delete('authorization')
+  headers.delete('payment-authorization')
+  return new Request(request.url, { method: request.method, headers, body })
 }
 
 function hasPaymentCredential(request: Request): boolean {
@@ -100,6 +118,107 @@ export function createRelayApp(deps: RelayDeps): Hono {
   const app = new Hono()
   const log = deps.log ?? (() => {})
   const onUsage = deps.onUsage ?? (() => {})
+
+  const now = deps.now ?? Date.now
+
+  /**
+   * Per-request charge: the credential was validated (not broadcast). The upstream is called
+   * first; the charge is settled only when the upstream answered 2xx and produced its first
+   * byte. An upstream that fails or stays silent before that costs the payer nothing: the
+   * answer carries no payment receipt and the signed transaction expires unbroadcast.
+   */
+  async function chargeAfterFirstByte(parameters: {
+    request: Request
+    offers: { chargeAmount: bigint; description: string }
+    validBefore?: number
+    upstreamBody: Record<string, unknown>
+    model: ModelPrice
+    quote: { amount: bigint; promptTokens: number; maxTokens: number }
+    requestId: string
+    sanitized: ReturnType<typeof sanitizeChatRequest>
+  }): Promise<Response> {
+    const { request, offers, upstreamBody, model, quote, requestId, sanitized } = parameters
+    const start = now()
+    const deadline = parameters.validBefore !== undefined ? parameters.validBefore * 1000 - SETTLE_MARGIN_MS : start + MAX_FIRST_BYTE_WAIT_MS
+    const abort = new AbortController()
+    const signal = AbortSignal.any([request.signal, abort.signal])
+    const notCharged = (status: number, type: string, message: string, upstreamStatus: number) => {
+      log({ requestId, model: model.id, provider: model.provider, intent: 'charge', charged: '0', upstreamStatus })
+      return errorResponse(status, type, message, { charged: false, ...(upstreamStatus ? { upstream_status: upstreamStatus } : {}) })
+    }
+    type First =
+      | { ok: true; upstream: Response; reader: ReadableStreamDefaultReader<Uint8Array>; chunk: Uint8Array }
+      | { ok: false; status: number; upstreamStatus: number }
+    let timer: NodeJS.Timeout | undefined
+    const first = await Promise.race<First | 'timeout'>([
+      (async (): Promise<First> => {
+        let upstream: Response
+        try {
+          upstream = await deps.upstream.chatCompletions(upstreamBody, signal)
+        } catch {
+          return { ok: false, status: 502, upstreamStatus: 0 }
+        }
+        if (!upstream.ok || !upstream.body) {
+          await upstream.body?.cancel().catch(() => {})
+          return { ok: false, status: upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502, upstreamStatus: upstream.status }
+        }
+        const reader = upstream.body.getReader()
+        try {
+          for (;;) {
+            const { value, done } = await reader.read()
+            if (done) return { ok: false, status: 502, upstreamStatus: upstream.status }
+            if (value && value.byteLength > 0) return { ok: true, upstream, reader, chunk: value }
+          }
+        } catch {
+          return { ok: false, status: 502, upstreamStatus: upstream.status }
+        }
+      })(),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), Math.max(0, deadline - start))
+        timer.unref?.()
+      }),
+    ])
+    if (timer) clearTimeout(timer)
+    if (first === 'timeout') {
+      abort.abort()
+      return notCharged(504, 'upstream_timeout', 'the upstream did not answer before the payment expired; no charge was taken', 0)
+    }
+    if (!first.ok) return notCharged(first.status, 'upstream_error', 'the upstream failed before its first byte; no charge was taken', first.upstreamStatus)
+
+    // The upstream is answering: take the charge now.
+    const pay = await deps.payments.handle(request, offers).catch(() => undefined)
+    if (!pay || pay.status === 402 || pay.intent !== 'charge') {
+      abort.abort()
+      await first.reader.cancel().catch(() => {})
+      log({ requestId, model: model.id, provider: model.provider, intent: 'charge', charged: '0', upstreamStatus: first.upstream.status, settled: false })
+      if (pay?.status === 402) return pay.challenge
+      return errorResponse(502, 'charge_failed', 'the charge could not be settled; no charge was taken', { charged: false })
+    }
+    log({ requestId, model: model.id, provider: model.provider, intent: 'charge', charged: quote.amount.toString(), upstreamStatus: first.upstream.status })
+    const { reader, chunk, upstream } = first
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk)
+      },
+      async pull(controller) {
+        try {
+          const { value, done } = await reader.read()
+          if (done) controller.close()
+          else controller.enqueue(value)
+        } catch (error) {
+          controller.error(error)
+        }
+      },
+      async cancel(reason) {
+        await reader.cancel(reason).catch(() => {})
+      },
+    })
+    const headers = new Headers({ 'content-type': upstream.headers.get('content-type') ?? 'application/json' })
+    const tapped = tapUsage(new Response(body, { status: upstream.status, headers }), (usage) => {
+      onUsage({ model: model.id, promptTokens: usage?.prompt_tokens ?? quote.promptTokens, completionTokens: usage?.completion_tokens ?? 0 })
+    })
+    return pay.withReceipt(sanitized.stream && !sanitized.wantsUsage ? stripUsageChunks(tapped) : tapped)
+  }
 
   app.get('/healthz', (c) => c.json({ ok: true }))
   app.get('/v1/models', (c) => c.json(modelsDocument(deps.prices, deps.gate)))
@@ -174,26 +293,21 @@ export function createRelayApp(deps: RelayDeps): Hono {
     }
 
     const quote = perRequestPrice(deps.prices, model, body)
-    const pay = await deps.payments.handle(request, {
-      chargeAmount: quote.amount,
-      description: `${model.id}, up to ${quote.maxTokens} output tokens`,
-    })
-    if (pay.status === 402) return pay.challenge
-
+    const offers = { chargeAmount: quote.amount, description: `${model.id}, up to ${quote.maxTokens} output tokens` }
     const requestId = randomUUID()
     const upstreamBody = buildUpstreamBody(sanitized, model, quote.maxTokens, body)
 
+    const preflight = await deps.payments.preflightCharge(request, offers)
+    if (preflight.kind === 'valid') {
+      return chargeAfterFirstByte({ request, offers, validBefore: preflight.validBefore, upstreamBody, model, quote, requestId, sanitized })
+    }
+    // A charge credential that failed the preflight is never handed to mppx (which could still
+    // settle it): the request is answered with a fresh challenge instead.
+    const pay = await deps.payments.handle(preflight.kind === 'invalid' ? withoutCredential(request, text) : request, offers)
+    if (pay.status === 402) return pay.challenge
     if (pay.intent === 'charge') {
-      // Per-request charges are final: the transfer settled before the upstream call (no refunds).
-      const upstream = await deps.upstream.chatCompletions(upstreamBody, request.signal).catch(() => undefined)
-      log({ requestId, model: model.id, provider: model.provider, intent: 'charge', charged: quote.amount.toString(), upstreamStatus: upstream?.status ?? 0 })
-      if (!upstream) return pay.withReceipt(errorResponse(502, 'upstream_unreachable', 'relay upstream unavailable'))
-      const headers = new Headers({ 'content-type': upstream.headers.get('content-type') ?? 'application/json' })
-      const tapped = tapUsage(new Response(upstream.body, { status: upstream.status, headers }), (usage) => {
-        if (upstream.ok)
-          onUsage({ model: model.id, promptTokens: usage?.prompt_tokens ?? quote.promptTokens, completionTokens: usage?.completion_tokens ?? 0 })
-      })
-      return pay.withReceipt(sanitized.stream && !sanitized.wantsUsage ? stripUsageChunks(tapped) : tapped)
+      // Not reached: only a session credential or none gets here.
+      return pay.withReceipt(errorResponse(500, 'charge_not_deferred', 'per-request charge settled outside the deferred path'))
     }
 
     const channelId = pay.channelId

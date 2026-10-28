@@ -1,6 +1,7 @@
-import { Challenge } from 'mppx'
+import { Challenge, Credential } from 'mppx'
 import { Mppx as ClientMppx, tempo as clientTempo } from 'mppx/client'
 import { Store } from 'mppx/server'
+import { keccak256 } from 'viem'
 import { Account } from 'viem/tempo'
 import { generatePrivateKey } from 'viem/accounts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -43,8 +44,7 @@ describe.skipIf(!anvilAvailable())('MPP per-request charge, end to end on a loca
   })
   afterAll(() => node?.stop())
 
-  function relayWith(settler = false) {
-    const llm = fakeLiteLLM()
+  function relayWith(settler = false, llm = fakeLiteLLM()) {
     const payments = createPayments({
       realm: 'relay.sealed.test',
       secretKey: 'test-secret-key-that-is-at-least-32-bytes',
@@ -122,9 +122,14 @@ describe.skipIf(!anvilAvailable())('MPP per-request charge, end to end on a loca
     const relay = relayWith(false)
     const root = Account.fromSecp256k1(DEV_KEYS[4])
     const accessKey = Account.fromSecp256k1(generatePrivateKey(), { access: root })
-    // Foundry 1.7.1's T4 node drops key authorizations that carry spending limits (viem 2.57.13 encodes the
-    // post-T3 limit format), so the local key is authorized without limits; limits are verified on mainnet only.
-    await node.client.accessKey.authorize({ account: root, accessKey, expiry: Math.floor(Date.now() / 1000) + 3600 } as never)
+    // A spending limit in the token (Foundry 1.8.6's T12 node enforces it); the full D-054 call
+    // scopes are exercised in runtime/mpp-payer/test/access-key-d054.e2e.test.ts.
+    await node.client.accessKey.authorize({
+      account: root,
+      accessKey,
+      expiry: Math.floor(Date.now() / 1000) + 3600,
+      limits: [{ token: PATHUSD, limit: 1_000_000n, period: 86_400 }],
+    } as never)
     await waitFor(async () => {
       const meta = (await node.client.accessKey.getMetadata({ account: root.address, accessKey: accessKey.accessKeyAddress } as never)) as { address: string }
       return meta.address.toLowerCase() === accessKey.accessKeyAddress.toLowerCase()
@@ -147,6 +152,34 @@ describe.skipIf(!anvilAvailable())('MPP per-request charge, end to end on a loca
     expect((await balanceOf(node.client, treasury)) - treasuryBefore).toBe(quoted)
     // the customer's root account pays (the amount plus its own network fee)
     expect(rootBefore - (await balanceOf(node.client, root.address)) >= quoted).toBe(true)
+  })
+
+  it('takes no charge when the upstream fails before its first byte: the signed transaction is never broadcast', async () => {
+    const relay = relayWith(false, fakeLiteLLM({ status: 503 }))
+    const payer = Account.fromSecp256k1(DEV_KEYS[3])
+    let hash: `0x${string}` | undefined
+    const client = ClientMppx.create({
+      polyfill: false,
+      fetch: async (input, init) => {
+        const auth = new Headers(init?.headers).get('authorization')
+        if (auth?.startsWith('Payment ')) hash = keccak256((Credential.deserialize<{ signature: `0x${string}` }>(auth).payload.signature))
+        return relay.fetch(input, init)
+      },
+      methods: [clientTempo.charge({ account: payer, getClient: () => node.client as never, currencies: [PATHUSD], expectedChainId: 4217, decimals: 6 } as never)],
+    })
+    const before = await balanceOf(node.client, treasury)
+    const res = await client.fetch('http://relay.sealed.test/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(503)
+    expect(res.headers.get('payment-receipt')).toBeNull()
+    expect((await res.json()).error).toMatchObject({ type: 'upstream_error', charged: false, upstream_status: 503 })
+    expect(relay.llm.calls.length).toBe(1)
+    expect(await balanceOf(node.client, treasury)).toBe(before)
+    expect(hash).toBeDefined()
+    await expect(node.client.getTransactionReceipt({ hash: hash! })).rejects.toThrow(/could not be found/)
   })
 
   it('refuses a replayed credential', async () => {

@@ -37,7 +37,7 @@ export async function startLocalTempo(): Promise<LocalTempo> {
   const port = await freePort()
   const proc: ChildProcess = spawn(
     'anvil',
-    ['--network', 'tempo', '--hardfork', 'T4', '--chain-id', '4217', '--block-time', '1', '--port', String(port), '--silent'],
+    ['--network', 'tempo', '--hardfork', process.env.SEALED_ANVIL_HARDFORK ?? 'T12', '--chain-id', '4217', '--block-time', '1', '--port', String(port), '--silent'],
     { stdio: 'ignore' },
   )
   const rpcUrl = `http://127.0.0.1:${port}`
