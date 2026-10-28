@@ -37,6 +37,6 @@ egressAdditions:
 
 endpoints:
   platformApi: https://api.example.com
-  relay: https://relay.example.com
+  relay: https://attest.relay.example.com
   relayAttest: https://attest.relay.example.com/attest
 relayOwner: "0x00000000000000000000000000000000000000b1"
