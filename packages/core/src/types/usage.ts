@@ -18,6 +18,28 @@ export const usageReportJsonSchema = z.object({
 
 export const usageSubmissionSchema = z.object({ report: usageReportJsonSchema, signature: hexString });
 
+/**
+ * One stored report of GET /v1/deployments/:id/usage-reports (API_CONTRACT 7, D-062): the report exactly as the
+ * agent sent it, with the platform's own key and receive time. Readers check the signature themselves.
+ */
+export const storedUsageReportSchema = z.object({
+  usageHash: bytes32,
+  periodStart: uint64,
+  periodEnd: uint64,
+  report: usageReportJsonSchema,
+  signature: hexString,
+  receivedAt: uint64,
+});
+export type StoredUsageReport = z.infer<typeof storedUsageReportSchema>;
+
+/** A page of stored reports in period order; `next` is the `after` cursor of the next page, null on the last. */
+export const usageReportsPageSchema = z.object({
+  deploymentId: bytes32,
+  reports: z.array(storedUsageReportSchema),
+  next: z.string().regex(/^[0-9]{1,20}:0x[0-9a-f]{64}$/).nullable(),
+});
+export type UsageReportsPage = z.infer<typeof usageReportsPageSchema>;
+
 /** POST /v1/usage-events body from apps (agent local API). */
 export const usageEventSchema = z.object({
   app: slug,
