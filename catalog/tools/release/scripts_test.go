@@ -1,11 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,34 +54,44 @@ func requireTools(t *testing.T, tools ...string) {
 	}
 }
 
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
-// startAnvil runs anvil --network tempo (chain 31337 unless chainID is set) and returns its URL.
+// startAnvil runs anvil --network tempo (chain 31337 unless chainID is set) on a port the kernel picks
+// (--port 0, read back from anvil's "Listening on" line, so parallel test packages cannot race for a port)
+// and returns its URL.
 func startAnvil(t *testing.T, chainID int) string {
 	t.Helper()
-	port := freePort(t)
-	args := []string{"--network", "tempo", "--hardfork", "T4", "--port", fmt.Sprint(port), "--gas-limit", "500000000", "--silent"}
+	args := []string{"--network", "tempo", "--hardfork", "T4", "--port", "0", "--gas-limit", "500000000"}
 	if chainID != 0 {
 		args = append(args, "--chain-id", fmt.Sprint(chainID))
 	}
 	cmd := exec.Command("anvil", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	url := fmt.Sprintf("http://127.0.0.1:%d", port)
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if out, err := exec.Command("cast", "chain-id", "--rpc-url", url).Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
-			return url
+	addr := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			if a, ok := strings.CutPrefix(strings.TrimSpace(sc.Text()), "Listening on "); ok {
+				addr <- a
+				break
+			}
 		}
+		_, _ = io.Copy(io.Discard, stdout)
+	}()
+	select {
+	case a := <-addr:
+		url := "http://" + a
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if out, err := exec.Command("cast", "chain-id", "--rpc-url", url).Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+				return url
+			}
+		}
+	case <-time.After(20 * time.Second):
 	}
 	t.Fatal("anvil did not start")
 	return ""
