@@ -33,7 +33,7 @@ Used for config, compose, egress policy and event log hashing.
 | sbomHash | `sha256(CJSON({"<image name>": "<sha256 hex of sbom file>"...}))` over the SBOM files in the bundle |
 | configHash | `sha256(CJSON(public config))` (section 5) |
 | stackHash | dstack compose hash: `sha256(app-compose.json bytes)` (section 6). Fallback runtime: `sha256(CJSON(compose))` |
-| quoteHash | `sha256(raw quote bytes)` |
+| quoteHash | `sha256(raw quote bytes)`: exactly the signed quote (header, TD body, signature data length and signature data). dstack's GetQuote returns it zero-padded to 8000 bytes; the padding is cut first (`trimQuote` in @sealed/core, `attest.TrimQuote`) and verifiers and the key broker refuse any trailing byte as `quote_invalid` |
 | eventLogHash | `sha256(CJSON(event log array))` |
 | usageHash | EIP-712 digest of the UsageReport (section 4.2) |
 

@@ -106,6 +106,57 @@ export function verifySealedEventLog(events: readonly DstackEvent[], appCompose:
   return replayRtmr3(rtmr3);
 }
 
+// --- TDX quote framing --------------------------------------------------------------------------
+
+const TDX_TEE_TYPE = 0x81;
+const QUOTE_HEADER_LEN = 48;
+const TD10_BODY_LEN = 584; // TD quote body v4, and v5 body type 2
+const TD15_BODY_LEN = 648; // v5 body type 3 (TDX 1.5)
+
+/**
+ * Length of the signed TDX quote (v4 or v5) at the start of `quote`: header, TD body, signature data length and
+ * signature data. Bytes after it are covered by no signature.
+ */
+export function signedQuoteLength(quote: Uint8Array): number {
+  const dv = new DataView(quote.buffer, quote.byteOffset, quote.byteLength);
+  if (quote.length < QUOTE_HEADER_LEN) throw new Error(`quote is ${quote.length} bytes, shorter than its header`);
+  const version = dv.getUint16(0, true);
+  const teeType = dv.getUint32(4, true);
+  if (teeType !== TDX_TEE_TYPE) throw new Error(`not a TDX quote (tee type 0x${teeType.toString(16)})`);
+  let off: number;
+  if (version === 4) {
+    off = QUOTE_HEADER_LEN + TD10_BODY_LEN;
+  } else if (version === 5) {
+    if (quote.length < QUOTE_HEADER_LEN + 6) throw new Error("v5 quote truncated in its body descriptor");
+    const bodyType = dv.getUint16(QUOTE_HEADER_LEN, true);
+    const bodySize = dv.getUint32(QUOTE_HEADER_LEN + 2, true);
+    const want = bodyType === 2 ? TD10_BODY_LEN : bodyType === 3 ? TD15_BODY_LEN : -1;
+    if (bodySize !== want) throw new Error(`unsupported v5 quote body (type ${bodyType}, size ${bodySize})`);
+    off = QUOTE_HEADER_LEN + 6 + bodySize;
+  } else {
+    throw new Error(`unsupported TDX quote version ${version}`);
+  }
+  if (quote.length < off + 4) throw new Error("quote truncated before its signature data length");
+  const total = off + 4 + dv.getUint32(off, true);
+  if (quote.length < total) throw new Error(`quote is ${quote.length} bytes, its signature data ends at ${total}`);
+  return total;
+}
+
+/**
+ * The signed TDX quote without the zero padding after it. dstack's GetQuote returns the quote in a zero-filled
+ * 8000-byte buffer (4935 signed bytes on GCP C3); verifiers refuse unsigned trailing bytes, and quoteHash
+ * (INTERFACES 2) is sha256 of exactly the signed bytes. Non-zero trailing bytes are refused. Simulated quotes are
+ * returned unchanged. Same rule as the Go verifier's attest.TrimQuote.
+ */
+export function trimQuote(quote: Uint8Array): Uint8Array {
+  if (isSimQuote(quote)) return quote;
+  const n = signedQuoteLength(quote);
+  for (let i = n; i < quote.length; i++) {
+    if (quote[i] !== 0) throw new Error(`quote has ${quote.length - n} trailing bytes after the signature data that are not zero padding`);
+  }
+  return n === quote.length ? quote : quote.slice(0, n);
+}
+
 // --- Simulated quotes (dev only; production verifiers reject them) ------------------------------
 
 export const SIM_QUOTE_MAGIC = "SEALEDSIM1";
