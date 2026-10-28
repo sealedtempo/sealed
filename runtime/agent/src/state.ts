@@ -8,6 +8,12 @@ import type { BudgetState } from "./payments/budget.js";
 export interface PaymentStatus {
   /** First failed settlement of the current failure streak (unix seconds), null when healthy. */
   failingSince: number | null;
+  /**
+   * D-073: since when settlement has been deferred because the platform api could not be reached (its stored
+   * reports could not be read, or it did not accept a report). While set, the grace period does not run; when
+   * settlement resumes, failingSince moves forward by the deferral.
+   */
+  deferredSince?: number;
   paymentNeeded: boolean;
   lastAttemptAt?: number;
   lastPaidAt?: number;

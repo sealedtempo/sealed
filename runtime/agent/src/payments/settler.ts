@@ -40,6 +40,13 @@ export interface SpendRecorder {
   resolvePendingFee(txHash: string, actual: bigint, now: number): void;
 }
 
+/**
+ * Failures on the platform's side (D-073): the platform api's stored reports could not be read (D-062) or it has
+ * not accepted a report yet, so nothing may be paid. Settlement is deferred and the grace period does not run;
+ * only failures on the customer's side (key, limit, balance, a reverted payment) count toward it.
+ */
+export const PLATFORM_SIDE_FAILURES: ReadonlySet<string> = new Set(["ledger_unverified", "usage_not_submitted"]);
+
 /** A transaction with no receipt after this long is no longer looked for; what was counted for it stays counted. */
 export const PENDING_GIVE_UP_SEC = 6 * 3600;
 
@@ -335,7 +342,7 @@ export class Settler {
         log.warn("settlement failed", errorFields(err));
         apps = [{ app: "*", result: "failed", reason: "rpc_error" }];
       }
-      // Paid only once the platform holds them (D-062): waiting reports keep billing failing until they are in.
+      // Paid only once the platform holds them (D-062): waiting reports defer settlement until they are in (D-073).
       if (waiting.length > 0) apps.push({ app: "*", result: "failed", reason: "usage_not_submitted" });
       const failed = apps.some((a) => a.result === "failed");
       const paid = apps.some((a) => a.result === "paid");
@@ -343,25 +350,41 @@ export class Settler {
     }
     status.lastAttemptAt = now;
     status.lastOutcome = apps.find((a) => a.result === "failed")?.reason ?? outcome;
-    if (outcome === "deployment_closed") status.failingSince ??= now;
-    else if (outcome === "deployment_not_registered") {
-      const oldest = Math.min(...unpaid.map((e) => e.createdAt));
-      status.failingSince = status.failingSince === null ? oldest : Math.min(status.failingSince, oldest);
-    } else if (apps.some((a) => a.result === "failed")) {
-      // Measured from the oldest report the platform has not accepted, so blocking the platform API does not help.
-      const since = waiting.length > 0 ? Math.min(now, ...waiting.map((e) => e.createdAt)) : now;
-      status.failingSince = status.failingSince === null ? since : Math.min(status.failingSince, since);
-    } else status.failingSince = null;
+    const failures = apps.filter((a) => a.result === "failed");
+    const customerSide = failures.some((a) => !PLATFORM_SIDE_FAILURES.has(a.reason));
+    const deferred = failures.length > 0 && !customerSide && outcome !== "deployment_closed" && outcome !== "deployment_not_registered";
+    if (deferred) {
+      // D-073: a platform outage defers settlement; the grace period is paused, never started by it.
+      status.deferredSince ??= now;
+    } else {
+      this.resumeGrace(now);
+      if (outcome === "deployment_closed") status.failingSince ??= now;
+      else if (outcome === "deployment_not_registered") {
+        const oldest = Math.min(...unpaid.map((e) => e.createdAt));
+        status.failingSince = status.failingSince === null ? oldest : Math.min(status.failingSince, oldest);
+      } else if (customerSide) status.failingSince ??= now;
+      else status.failingSince = null;
+    }
     if (apps.some((a) => a.result === "paid")) status.lastPaidAt = now;
     await this.updateGate(now, outcome === "deployment_closed", ledger.unpaid().length === 0 || apps.some((a) => a.result === "paid"));
     await this.d.save();
     return { at: now, reportCut, submitted, outcome, apps, paymentNeeded: status.paymentNeeded };
   }
 
+  /** Ends a D-073 deferral: the time the platform was unreachable does not count toward the grace period. */
+  private resumeGrace(now: number): void {
+    const { status } = this.d;
+    if (status.deferredSince === undefined) return;
+    if (status.failingSince !== null) status.failingSince = Math.min(now, status.failingSince + Math.max(0, now - status.deferredSince));
+    delete status.deferredSince;
+  }
+
   private async updateGate(now: number, closed: boolean, recovered: boolean): Promise<void> {
     const { status, gate, log } = this.d;
+    // While deferred (D-073) the grace clock stands still at the deferral's start.
+    const clock = status.deferredSince ?? now;
     try {
-      if (closed || (status.failingSince !== null && now - status.failingSince >= this.d.graceSec)) {
+      if (closed || (status.failingSince !== null && clock - status.failingSince >= this.d.graceSec)) {
         if (!status.paymentNeeded) {
           log.warn(closed ? "deployment is closed onchain, switching to the payment-needed page" : "payments failing beyond the grace period, switching to the payment-needed page", {
             failingSince: status.failingSince,

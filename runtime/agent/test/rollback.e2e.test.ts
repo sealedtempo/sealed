@@ -179,7 +179,9 @@ describe("D-062: a data disk rolled back to an older copy bills no leg twice", (
     now += 3600;
     const blind = await third.settle(now);
     expect(blind).toMatchObject({ outcome: "failed", reportCut: false, apps: [{ app: "*", result: "failed", reason: "ledger_unverified" }] });
-    expect(third.store?.state.payments.failingSince).toBe(now);
+    // D-073: a platform outage defers settlement; the grace period does not run.
+    expect(third.store?.state.payments.failingSince).toBeNull();
+    expect(third.store?.state.payments.deferredSince).toBe(now);
     expect(payer.paid).toHaveLength(paidBefore);
 
     // The platform is back: the rebuild drops U1 again, keeps the new usage and bills only that.

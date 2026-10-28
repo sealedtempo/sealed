@@ -405,18 +405,72 @@ describe("settlement, grace period and the payment-needed switch", () => {
   });
 
   // D-062: every paid period must be among the reports the platform stores, or a rolled-back disk could bill it again.
-  it("pays a report only once the platform accepted it; until then billing fails, measured from the report", async () => {
+  // D-073: while the platform does not accept them, settlement is deferred and the grace period does not run.
+  it("pays a report only once the platform accepted it; until then settlement is deferred without a grace clock", async () => {
     platformDown = true;
     await ledger.record("crm", "app_hour", 3600n, 1001);
     const r1 = await settler.tick(2000);
     expect(r1).toMatchObject({ outcome: "failed", submitted: 0, apps: [{ app: "*", result: "failed", reason: "usage_not_submitted" }] });
     expect(payer.paid).toEqual([]);
-    expect(status.failingSince).toBe(2000);
-    expect(status.lastOutcome).toBe("usage_not_submitted");
-    platformDown = false;
-    const r2 = await settler.tick(2100);
-    expect(r2.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" })]);
     expect(status.failingSince).toBeNull();
+    expect(status.deferredSince).toBe(2000);
+    expect(status.lastOutcome).toBe("usage_not_submitted");
+    // An outage far longer than the grace period never shows the payment-needed page.
+    const r2 = await settler.tick(2000 + 10 * GRACE);
+    expect(r2.paymentNeeded).toBe(false);
+    expect(paymentNeededShown()).toBe(false);
+    expect(status.failingSince).toBeNull();
+    platformDown = false;
+    const r3 = await settler.tick(2100 + 10 * GRACE);
+    expect(r3.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" })]);
+    expect(status.failingSince).toBeNull();
+    expect(status.deferredSince).toBeUndefined();
+  });
+
+  // D-073: a failure on the customer's side starts the grace clock; a platform outage pauses it, never resets it.
+  it("pauses a running grace period while the platform is unreachable and resumes it after", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
+    const t0 = 10_000;
+    await settler.tick(t0);
+    expect(status.failingSince).toBe(t0);
+    // 100 s into the grace period the VM reboots while the platform cannot be reached: the boot rebuild of the
+    // ledger (D-062) fails, so nothing is cut or paid, for three grace periods.
+    ledger.holdForRebuild();
+    let readable = false;
+    const gate = new DirectCaddySwitch(parseEndpoint(join(dir, "admin.sock")), { normal: CADDYFILE, paymentNeeded: CADDYFILE_PAYMENT_NEEDED });
+    settler = new Settler({
+      ledger,
+      payer,
+      gate,
+      platform: { postEvidence: async () => ({ deploymentId: "0x" }), postUsage: async (b) => usage.push(b), postHealth: async () => undefined },
+      status,
+      graceSec: GRACE,
+      save: async () => {},
+      log: silentLogger,
+      rebuild: async () => {
+        if (readable) ledger.adopt([]);
+        return readable;
+      },
+    });
+    const blind = await settler.tick(t0 + 100);
+    expect(blind.apps).toEqual([{ app: "*", result: "failed", reason: "ledger_unverified" }]);
+    await settler.tick(t0 + 100 + 3 * GRACE);
+    expect(status.deferredSince).toBe(t0 + 100);
+    expect(status.failingSince).toBe(t0);
+    expect(paymentNeededShown()).toBe(false);
+    // Back, and the customer's limit is still exhausted: the outage does not count, 100 s of the grace period were used.
+    readable = true;
+    const back = t0 + 100 + 3 * GRACE + 10;
+    expect((await settler.tick(back)).apps).toEqual([{ app: "crm", result: "failed", reason: "spend_limit" }]);
+    expect(status.deferredSince).toBeUndefined();
+    expect(status.failingSince).toBe(t0 + 3 * GRACE + 10);
+    expect(paymentNeededShown()).toBe(false);
+    await settler.tick(back + GRACE - 100 - 1);
+    expect(paymentNeededShown()).toBe(false);
+    const late = await settler.tick(back + GRACE - 100);
+    expect(late.paymentNeeded).toBe(true);
+    expect(paymentNeededShown()).toBe(true);
   });
 
   it("voids a report the platform refuses as overlapping a stored one, and never pays it", async () => {
