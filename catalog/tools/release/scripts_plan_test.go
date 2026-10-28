@@ -81,6 +81,15 @@ func TestPlanReleasesScriptOnAnvil(t *testing.T) {
 		!strings.Contains(r.output, "ok   llm-gateway: llm-gateway-v2.3.4 is not released yet") {
 		t.Fatalf("pr-check: %d\n%s", r.code, r.output)
 	}
+	// An app whose version cannot be released has no tag; pr-check skips it (plan warns) instead of
+	// misreading its fields.
+	writeFile(t, changed, "catalog/apps/notes/egress.yaml\n")
+	np := filepath.Join(root, CatalogDir, "notes/manifest.yaml")
+	writeFile(t, np, strings.Replace(readFile(t, np), "release_version: 1.0.0-sealed.1", "release_version: v1.0.0", 1))
+	r = runScriptIn(t, root, "plan-releases.sh", env, "pr-check", "--changed", changed)
+	if r.code != 0 || strings.Contains(f.calls(t), "gh release view v1.0.0") || !strings.Contains(r.output, "starts with \"v\"") {
+		t.Fatalf("pr-check with a version problem: %d\n%s", r.code, r.output)
+	}
 	// Unbuilt images make --strict fail in release mode.
 	p := filepath.Join(root, CatalogDir, "llm-gateway/manifest.yaml")
 	writeFile(t, p, strings.Replace(readFile(t, p), "sha256:"+strings.Repeat("2", 64), zeroDigest, 1))

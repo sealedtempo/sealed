@@ -44,15 +44,16 @@ add_cleanup "rm -f '$plan'"
 if [ "$MODE" = pr-check ]; then
 	release_tool plan "${sel[@]}" >"$plan"
 	bad=0
-	while IFS=$'\t' read -r app tag version; do
-		[ -n "$tag" ] || continue
+	# No empty fields: read collapses consecutive tabs (an app with a version problem has no tag).
+	while IFS=$'\t' read -r app version tag; do
+		[ "$tag" != "-" ] || continue
 		if [ "$(bash "$GH" state --tag "$tag")" != none ]; then
 			printf '::error file=catalog/apps/%s/manifest.yaml,title=release-version::%s %s is already released (%s); bump release_version so the change can be released\n' "$app" "$app" "$version" "$tag"
 			bad=1
 		else
 			log "ok   $app: $tag is not released yet"
 		fi
-	done < <(jq -r '.[] | [.app, .tag, .version] | @tsv' "$plan")
+	done < <(jq -r '.[] | [.app, .version, (if .tag == "" then "-" else .tag end)] | @tsv' "$plan")
 	exit "$bad"
 fi
 
