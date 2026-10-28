@@ -16,7 +16,11 @@ import {SealedTest} from "./utils/SealedTest.sol";
 
 contract DeploymentRegistryTest is SealedTest {
     event StackApproved(
-        address indexed customer, bytes32 indexed stackHash, bytes32 indexed imageId, bytes32[] releaseIds, uint64 expiry
+        address indexed customer,
+        bytes32 indexed stackHash,
+        bytes32 indexed imageId,
+        bytes32[] releaseIds,
+        uint64 expiry
     );
     event StackRevoked(address indexed customer, bytes32 indexed stackHash);
     event DeploymentRegistered(
@@ -279,9 +283,7 @@ contract DeploymentRegistryTest is SealedTest {
         _approveDefault();
         vm.startPrank(customer);
         registry.revokeStack(stackHash);
-        vm.expectRevert(
-            abi.encodeWithSelector(DeploymentRegistry.ApprovalAlreadyRevoked.selector, customer, stackHash)
-        );
+        vm.expectRevert(abi.encodeWithSelector(DeploymentRegistry.ApprovalAlreadyRevoked.selector, customer, stackHash));
         registry.revokeStack(stackHash);
         vm.stopPrank();
     }

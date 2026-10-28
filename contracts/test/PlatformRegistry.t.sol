@@ -51,9 +51,8 @@ contract PlatformRegistryTest is SealedTest {
     // ------------------------------------------------------------------------------------------------------
 
     function test_addImage_storesAndEmitsRawMeasurements() public {
-        bytes32 expectedHash = keccak256(
-            abi.encodePacked(_measurement(1), _measurement(2), _measurement(3), _measurement(4))
-        );
+        bytes32 expectedHash =
+            keccak256(abi.encodePacked(_measurement(1), _measurement(2), _measurement(3), _measurement(4)));
         vm.expectEmit(address(platform));
         emit ImageAdded(
             newId,
@@ -69,7 +68,15 @@ contract PlatformRegistryTest is SealedTest {
         );
         vm.prank(owner);
         bytes32 returned = platform.addImage(
-            newId, "sealed-os", "2.0.0", _measurement(1), _measurement(2), _measurement(3), _measurement(4), false, "uri"
+            newId,
+            "sealed-os",
+            "2.0.0",
+            _measurement(1),
+            _measurement(2),
+            _measurement(3),
+            _measurement(4),
+            false,
+            "uri"
         );
         assertEq(returned, expectedHash);
 
@@ -165,18 +172,23 @@ contract PlatformRegistryTest is SealedTest {
         );
     }
 
-    function testFuzz_computeMeasurementsHash(bytes32 a1, bytes16 a2, bytes32 b1, bytes16 b2, bytes32 c1, bytes16 c2, bytes32 d1, bytes16 d2)
-        public
-        view
-    {
+    function testFuzz_computeMeasurementsHash(
+        bytes32 a1,
+        bytes16 a2,
+        bytes32 b1,
+        bytes16 b2,
+        bytes32 c1,
+        bytes16 c2,
+        bytes32 d1,
+        bytes16 d2
+    ) public view {
         bytes memory m = abi.encodePacked(a1, a2);
         bytes memory r0 = abi.encodePacked(b1, b2);
         bytes memory r1 = abi.encodePacked(c1, c2);
         bytes memory r2 = abi.encodePacked(d1, d2);
         assertEq(platform.computeMeasurementsHash(m, r0, r1, r2), keccak256(abi.encodePacked(m, r0, r1, r2)));
         assertEq(
-            platform.computeMeasurementsHash(m, r0, r1, r2),
-            keccak256(abi.encodePacked(a1, a2, b1, b2, c1, c2, d1, d2))
+            platform.computeMeasurementsHash(m, r0, r1, r2), keccak256(abi.encodePacked(a1, a2, b1, b2, c1, c2, d1, d2))
         );
     }
 

@@ -74,7 +74,11 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     ///         and clear a previous revocation).
     /// @param expiry 0 for no expiry, otherwise the unix time at which the approval stops being valid.
     event StackApproved(
-        address indexed customer, bytes32 indexed stackHash, bytes32 indexed imageId, bytes32[] releaseIds, uint64 expiry
+        address indexed customer,
+        bytes32 indexed stackHash,
+        bytes32 indexed imageId,
+        bytes32[] releaseIds,
+        uint64 expiry
     );
 
     /// @notice Emitted by revokeStack.
@@ -176,9 +180,7 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     /// @param releaseIds 1..16 distinct releases, each Active (isApprovableRelease).
     /// @param imageId An approved platform image.
     /// @param expiry 0 for no expiry, or a unix time in the future.
-    function approveStack(bytes32 stackHash, bytes32[] calldata releaseIds, bytes32 imageId, uint64 expiry)
-        external
-    {
+    function approveStack(bytes32 stackHash, bytes32[] calldata releaseIds, bytes32 imageId, uint64 expiry) external {
         if (stackHash == bytes32(0)) revert ZeroStackHash();
         uint256 count = releaseIds.length;
         if (count == 0 || count > MAX_RELEASES_PER_STACK) revert InvalidReleaseCount(count);
@@ -303,10 +305,13 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     /// @param attestedAt Time of the new attestation.
     /// @param method Attestation method id.
     /// @param evidence Method-specific evidence over heartbeatDigest(deploymentId, quoteHash, attestedAt).
-    function heartbeat(bytes32 deploymentId, bytes32 quoteHash, uint64 attestedAt, uint8 method, bytes calldata evidence)
-        external
-        whenNotPaused
-    {
+    function heartbeat(
+        bytes32 deploymentId,
+        bytes32 quoteHash,
+        uint64 attestedAt,
+        uint8 method,
+        bytes calldata evidence
+    ) external whenNotPaused {
         Deployment storage d = _deployments[deploymentId];
         if (d.status != DeploymentStatus.Active) revert DeploymentNotActive(deploymentId);
         address customer = d.customer;
@@ -384,11 +389,7 @@ contract DeploymentRegistry is IDeploymentRegistry, OwnableNoRenounce, Pausable,
     /// @param quoteHash The new quote hash.
     /// @param attestedAt The new attestation time.
     /// @return The digest.
-    function heartbeatDigest(bytes32 deploymentId, bytes32 quoteHash, uint64 attestedAt)
-        public
-        view
-        returns (bytes32)
-    {
+    function heartbeatDigest(bytes32 deploymentId, bytes32 quoteHash, uint64 attestedAt) public view returns (bytes32) {
         return _hashTypedDataV4(keccak256(abi.encode(HEARTBEAT_TYPEHASH, deploymentId, quoteHash, attestedAt)));
     }
 

@@ -148,8 +148,8 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         uint256 perDeploymentDailyCap
     ) OwnableNoRenounce(initialOwner) {
         if (
-            address(deploymentRegistry_) == address(0) || address(appRegistry_) == address(0)
-                || feeToken == address(0) || treasury_ == address(0)
+            address(deploymentRegistry_) == address(0) || address(appRegistry_) == address(0) || feeToken == address(0)
+                || treasury_ == address(0)
         ) revert ZeroAddress();
         deploymentRegistry = deploymentRegistry_;
         appRegistry = appRegistry_;

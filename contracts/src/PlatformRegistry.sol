@@ -165,12 +165,11 @@ contract PlatformRegistry is IPlatformRegistry, OwnableNoRenounce {
     /// @param rtmr1 RTMR1.
     /// @param rtmr2 RTMR2.
     /// @return The measurements hash.
-    function computeMeasurementsHash(
-        bytes memory mrtd,
-        bytes memory rtmr0,
-        bytes memory rtmr1,
-        bytes memory rtmr2
-    ) public pure returns (bytes32) {
+    function computeMeasurementsHash(bytes memory mrtd, bytes memory rtmr0, bytes memory rtmr1, bytes memory rtmr2)
+        public
+        pure
+        returns (bytes32)
+    {
         if (mrtd.length != MEASUREMENT_LENGTH) revert InvalidMeasurementLength(0, mrtd.length);
         if (rtmr0.length != MEASUREMENT_LENGTH) revert InvalidMeasurementLength(1, rtmr0.length);
         if (rtmr1.length != MEASUREMENT_LENGTH) revert InvalidMeasurementLength(2, rtmr1.length);

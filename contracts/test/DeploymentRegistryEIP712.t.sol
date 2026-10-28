@@ -25,8 +25,7 @@ contract DeploymentRegistryEIP712Test is SealedTest {
         0x5006c22389c5fdb42fd699c22f11658c5ea40d3486a5bb2f8e7639b99e136c09;
     bytes32 internal constant VECTOR_HEARTBEAT_TYPEHASH =
         0x5a6a40c52f1b097970a0b914f2d09952d22fea27be00600dacb989697a697750;
-    bytes32 internal constant VECTOR_RECORD_DIGEST =
-        0x5b22ad0f2f063b043d53295ce89d6b6bf35afed7ada6893a7cc27dfc4781dfcd;
+    bytes32 internal constant VECTOR_RECORD_DIGEST = 0x5b22ad0f2f063b043d53295ce89d6b6bf35afed7ada6893a7cc27dfc4781dfcd;
     bytes32 internal constant VECTOR_HEARTBEAT_DIGEST =
         0xb12fb41b09faf4de1d741817dcb19ff0a34f7179feed00bb18f71e924006952d;
     /// @dev `cast wallet sign --no-hash <VECTOR_RECORD_DIGEST>` with anvil dev key #2.

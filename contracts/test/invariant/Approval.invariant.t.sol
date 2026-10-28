@@ -112,10 +112,15 @@ contract ApprovalInvariantTest is SealedTest {
         for (uint256 i; i < 200; ++i) {
             uint256 seed = uint256(keccak256(abi.encode(i)));
             uint256 action = seed % 6;
-            if (action <= 2) handler.approve(seed, seed >> 8, seed >> 16, seed >> 24, seed >> 32, (seed >> 40) % 2 == 0);
-            else if (action == 3) handler.revokeStack(seed, seed >> 8);
-            else if (action == 4) handler.revokeRelease(seed >> 8);
-            else handler.warp(seed >> 8);
+            if (action <= 2) {
+                handler.approve(seed, seed >> 8, seed >> 16, seed >> 24, seed >> 32, (seed >> 40) % 2 == 0);
+            } else if (action == 3) {
+                handler.revokeStack(seed, seed >> 8);
+            } else if (action == 4) {
+                handler.revokeRelease(seed >> 8);
+            } else {
+                handler.warp(seed >> 8);
+            }
             for (uint256 c; c < handler.customerCount(); ++c) {
                 for (uint256 s; s < handler.stackCount(); ++s) {
                     bool got = registry.isStackApproved(handler.customers(c), handler.stacks(s));

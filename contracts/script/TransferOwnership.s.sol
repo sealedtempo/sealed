@@ -11,15 +11,16 @@ abstract contract OwnedContracts is Script {
 
     function owned(string memory deployments) public view returns (Ownable2Step[5] memory list) {
         for (uint256 i; i < 5; ++i) {
-            list[i] =
-                Ownable2Step(vm.parseJsonAddress(deployments, string.concat(".contracts.", NAMES[i], ".address")));
+            list[i] = Ownable2Step(vm.parseJsonAddress(deployments, string.concat(".contracts.", NAMES[i], ".address")));
         }
     }
 
     function _deployments() internal view returns (string memory) {
         string memory def = block.chainid == 4217
             ? "deployments/tempo-mainnet.json"
-            : block.chainid == 31_337 ? "deployments/local.json" : string.concat("deployments/chain-", vm.toString(block.chainid), ".json");
+            : block.chainid == 31_337
+                ? "deployments/local.json"
+                : string.concat("deployments/chain-", vm.toString(block.chainid), ".json");
         return vm.readFile(vm.envOr("DEPLOYMENTS_FILE", def));
     }
 }

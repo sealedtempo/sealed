@@ -71,9 +71,7 @@ contract AppRegistry is IAppRegistry, OwnableNoRenounce, AccessControl {
     event ReleaseDeprecated(bytes32 indexed releaseId, bytes32 indexed appId);
 
     /// @notice Emitted when a release is revoked (terminal).
-    event ReleaseRevoked(
-        bytes32 indexed releaseId, bytes32 indexed appId, ReleaseStatus previousStatus, string reason
-    );
+    event ReleaseRevoked(bytes32 indexed releaseId, bytes32 indexed appId, ReleaseStatus previousStatus, string reason);
 
     /// @notice The zero address was given.
     error ZeroAddress();

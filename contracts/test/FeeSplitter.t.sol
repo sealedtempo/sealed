@@ -630,9 +630,7 @@ contract FeeSplitterTest is SealedTest {
             bytes32 usage = keccak256(abi.encode("u", i));
             vm.prank(customer);
             if (total + amount > dailyCap) {
-                vm.expectRevert(
-                    abi.encodeWithSelector(FeeSplitter.DailyCapExceeded.selector, total + amount, dailyCap)
-                );
+                vm.expectRevert(abi.encodeWithSelector(FeeSplitter.DailyCapExceeded.selector, total + amount, dailyCap));
                 splitter.payFees(deploymentId, appA, address(token), amount, usage);
             } else {
                 splitter.payFees(deploymentId, appA, address(token), amount, usage);
