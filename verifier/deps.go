@@ -80,6 +80,9 @@ type ComposeOutput struct {
 	StackHash    [32]byte
 	ConfigHash   [32]byte
 	DeploymentID [32]byte
+	// Unbuilt lists images still at the all-zero placeholder digest (runtime/composer Result.Unbuilt). Such a stack
+	// cannot boot; approval flows refuse it.
+	Unbuilt []string
 }
 
 // ErrComposerNotConfigured is returned by a nil Composer. Verification then fails closed.
