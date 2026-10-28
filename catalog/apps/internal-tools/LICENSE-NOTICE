@@ -41,5 +41,7 @@ Valkey 9.0.7 (used instead of Redis, decision D-020)
   Source:  https://github.com/valkey-io/valkey/tree/9.0.7
 
 The base operating system packages inside these images are distribution components under their
-own licenses (decision D-021). The release SBOMs (sbom/*.spdx.json) list every package, including
-the npm dependencies of ToolJet's server, frontend and data source plugins.
+own licenses (decisions D-021 and D-050: OSI-approved licenses, plus the free distribution licenses
+D-050 lists, such as X11, OpenSSL, curl and bzip2, for OS packages only). The release SBOMs
+(sbom/*.spdx.json) list every package, including the npm dependencies of ToolJet's server, frontend
+and data source plugins.

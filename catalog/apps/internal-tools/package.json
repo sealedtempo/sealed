@@ -3,7 +3,7 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Sealed catalog app internal-tools (ToolJet CE): bootstrap job, A6 helper, image checks and catalog checks",
+  "description": "Sealed catalog app internal-tools (ToolJet CE): bootstrap job, A6 helper, image checks, and tests that run the real composer",
   "engines": {
     "node": ">=22"
   },
@@ -13,8 +13,6 @@
     "test": "node tools/embed-bootstrap.mjs --check && node --test tests/*.test.mjs"
   },
   "devDependencies": {
-    "ajv": "8.20.0",
-    "ajv-formats": "3.0.1",
     "yaml": "2.9.1"
   }
 }

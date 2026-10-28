@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,34 +10,26 @@ import { fileURLToPath } from "node:url";
 
 import { parse } from "yaml";
 
+import { loadConfig } from "../bootstrap/bootstrap.mjs";
 import { findBlocks, render, unescapeFromCompose } from "../tools/embed-bootstrap.mjs";
+import { checkWaivers, composeConfig, dockerComposeAvailable, loadApp, memMiB, volumeOwners } from "./lib/app.mjs";
 import {
-  caddyHandles,
   caddySite,
-  composeConfig,
   composerLint,
   composeStack,
-  dockerComposeAvailable,
+  envexecSecrets,
   findComposer,
-  memMiB,
-  lintEgress,
-  lintFragment,
-  lintWaivers,
-  loadApp,
-  substituteImages,
-  validateManifestSchema,
-} from "./lib/catalog-lint.mjs";
+  secretMounts,
+  unexpectedFindings,
+} from "./lib/composer.mjs";
 
+// The catalog rules (schema, fragment rules of INTERFACES section 14, egress policy, licenses) are
+// checked by the real composer below; these tests add what is specific to this app.
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const schemaPath = join(appDir, "../../schema/manifest.schema.json");
 const app = loadApp(appDir);
 const services = app.fragment.services;
 
 describe("manifest", () => {
-  test("validates against catalog/schema/manifest.schema.json", () => {
-    assert.deepEqual(validateManifestSchema(app.manifest, schemaPath), []);
-  });
-
   test("pins upstream images by digest and builds the ToolJet image from this directory", () => {
     for (const image of app.manifest.images) {
       assert.match(image.digest, /^sha256:[0-9a-f]{64}$/);
@@ -75,6 +68,18 @@ describe("manifest", () => {
     }
   });
 
+  test("generates the admin password with the password generator, within ToolJet's limits", () => {
+    const secrets = Object.fromEntries(app.manifest.secrets.map((s) => [s.name, s]));
+    // Integration brief item 7: 24 characters from [A-Za-z0-9].
+    assert.equal(secrets.ADMIN_PASSWORD.generate, "password");
+    assert.equal(secrets.ADMIN_EMAIL.generate, "none");
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const generated = Array.from(randomBytes(24), (b) => alphabet[b % alphabet.length]).join("");
+    const cfg = loadConfig({ ADMIN_EMAIL: "a@example.com", ADMIN_PASSWORD: generated, SEALED_PUBLIC_URL_TOOLS: "https://tools.example.com", TOOLS_BASE_URL: "http://x:3000", STATE_DIR: "/tmp" });
+    assert.equal(cfg.password, generated);
+    for (const s of app.manifest.secrets) assert.equal(s.same_as, undefined, s.name);
+  });
+
   test("declares at least the memory the fragment's mem_limit values add up to", () => {
     assert.ok(Object.values(services).every((svc) => svc.mem_limit), "every service has a mem_limit");
     const total = Object.values(services).reduce((sum, svc) => sum + memMiB(svc.mem_limit), 0);
@@ -83,8 +88,18 @@ describe("manifest", () => {
 });
 
 describe("compose fragment", () => {
-  test("follows the INTERFACES section 14 rules", () => {
-    assert.deepEqual(lintFragment(app), []);
+  test("gives the bootstrap volume to uid 1000, the user of both services that mount it", () => {
+    // Integration brief item 11: sealed-agent creates the volume with this owner, so no service
+    // has to start as root to make it writable.
+    const owners = volumeOwners(app.fragment);
+    assert.equal(owners.get("internal-tools-bootstrap"), "1000:1000");
+    for (const [name, svc] of Object.entries(services)) {
+      for (const mount of svc.volumes ?? []) {
+        if (mount.startsWith("internal-tools-bootstrap:")) assert.equal(svc.user, "1000:1000", name);
+      }
+    }
+    assert.equal(services["internal-tools-bootstrap"].volumes[0], "internal-tools-bootstrap:/sealed-bootstrap");
+    assert.equal(services["internal-tools-server"].volumes[0], "internal-tools-bootstrap:/sealed-bootstrap:ro");
   });
 
   test("closes sign-up in the measured environment and runs the CE edition", () => {
@@ -178,34 +193,16 @@ describe("compose fragment", () => {
     for (const spec of imports) assert.match(spec, /^node:/);
   });
 
-  test("docker compose accepts the fragment with registry images substituted", { skip: !dockerComposeAvailable() && "docker compose not installed" }, async () => {
-    const dir = await mkdtemp(join(tmpdir(), "tools-compose-"));
-    try {
-      const file = join(dir, "compose.yaml");
-      await writeFile(file, substituteImages(app.fragmentText, app.manifest));
-      const result = composeConfig(file, "sealed-internal-tools-check");
-      assert.ok(result.ok, result.stderr);
-      assert.deepEqual(Object.keys(result.config.services).sort(), Object.keys(services).sort());
-      assert.equal(
-        result.config.services["internal-tools-postgrest"].image,
-        "ghcr.io/sealedtempo/postgrest@sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2",
-      );
-      assert.match(result.config.services["internal-tools-server"].image, /^ghcr\.io\/sealedtempo\/tooljet@sha256:[0-9a-f]{64}$/);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("egress, waivers, licenses and docs", () => {
   test("egress allows nothing by default and accepts customer additions", () => {
-    assert.deepEqual(lintEgress(app.egress), []);
     assert.deepEqual(app.egress.default_allow, []);
     assert.equal(app.egress.customer_additions_allowed, true);
   });
 
   test("waivers file is well formed", () => {
-    assert.deepEqual(lintWaivers(app.waivers, app.manifest), []);
+    assert.deepEqual(checkWaivers(app.waivers, app.manifest), []);
   });
 
   test("ships the upstream license texts named in LICENSE-NOTICE", async () => {
@@ -241,17 +238,17 @@ describe("egress, waivers, licenses and docs", () => {
 });
 
 const composer = findComposer(appDir);
-describe("the real composer (runtime/composer, ws/composer)", { skip: composer.skip }, () => {
+const brief = composer.brief ? false : `composer ${composer.version} predates integration brief items 5 to 11 (1.2.0)`;
+describe("the real composer (runtime/composer)", { skip: composer.skip }, () => {
   test("sealed-compose lint blocks the release only on the unbuilt ToolJet image (D-028)", () => {
     const findings = composerLint(composer, appDir);
+    assert.deepEqual(unexpectedFindings(findings), [], "only the unbuilt image and the SBOMs CI generates");
     const errors = findings.filter((f) => f.severity === "error").map((f) => `${f.code} ${f.field ?? ""}`.trim());
     const tooljet = app.manifest.images.findIndex((i) => i.name === "tooljet");
     const unbuilt = /^sha256:0{64}$/.test(app.manifest.images[tooljet].digest);
     // Until the runtime image workflow builds images/tooljet-ce and its digest is pinned, the
     // composer refuses the release. Any other error means this app drifted from its rules.
     assert.deepEqual(errors, unbuilt ? [`unbuilt-image images[${tooljet}].digest`] : []);
-    const warnings = new Set(findings.filter((f) => f.severity === "warning").map((f) => f.code));
-    assert.deepEqual([...warnings], ["sbom-missing"], "only the SBOMs CI generates are missing");
   });
 
   describe("composed stack", async () => {
@@ -259,13 +256,17 @@ describe("the real composer (runtime/composer, ws/composer)", { skip: composer.s
     after(() => rm(out, { recursive: true, force: true }));
     const stack = composeStack(composer, [appDir], out);
     const composed = stack.compose.services;
+    const site = caddySite(stack.caddyfile, "tools.34-1-2-3.sslip.io");
 
-    test("the Caddyfile gates tools with basic auth and never routes to the setup port", () => {
-      const handles = caddyHandles(caddySite(stack.caddyfile, "tools.34-1-2-3.sslip.io"));
-      assert.deepEqual(Object.keys(handles), [""]);
-      assert.match(handles[""], /basic_auth \{\n\t\t\tsealed \{env\.GATE_PASSWORD_BCRYPT\}/);
-      assert.match(handles[""], /reverse_proxy internal-tools-server:3000/);
+    test("the tools route goes to the route port, never to the setup port", () => {
+      assert.match(site, /reverse_proxy internal-tools-server:3000/);
       assert.doesNotMatch(stack.caddyfile, /internal-tools-server:3001/);
+    });
+
+    test("the tools route is gated by sealed-agent (forward_auth), not by Caddy basic_auth", { skip: brief }, () => {
+      assert.match(site, /forward_auth sealed-agent:7070/);
+      assert.match(site, /\/v1\/gate\?route=tools/);
+      assert.doesNotMatch(site, /basic_auth/);
     });
 
     test("internal-tools-server sees done.json read-only and keeps the fragment's healthcheck", () => {
@@ -277,6 +278,35 @@ describe("the real composer (runtime/composer, ws/composer)", { skip: composer.s
       assert.equal(composed["internal-tools-bootstrap"].restart, "on-failure");
       const tools = stack.stack.apps.find((a) => a.id === "internal-tools");
       assert.equal(tools.bootstrap.doneFile, "internal-tools-bootstrap/done.json");
+      assert.equal(tools.bootstrap.donePath, "/mnt/sealed-data/internal-tools/internal-tools-bootstrap/done.json");
+    });
+
+    test("each service exports exactly the secrets it lists", () => {
+      for (const [name, svc] of Object.entries(services)) {
+        assert.deepEqual([...envexecSecrets(composed[name])].sort(), [...(svc["x-sealed-secrets"] ?? [])].sort(), name);
+      }
+    });
+
+    test("each service gets bind mounts of exactly the secret files it lists", { skip: brief }, () => {
+      const root = "/run/sealed/secrets/internal-tools";
+      for (const [name, svc] of Object.entries(services)) {
+        const want = (svc["x-sealed-secrets"] ?? []).map((s) => `${root}/${s}`).sort();
+        assert.deepEqual([...secretMounts(composed[name], "internal-tools")].sort(), want, name);
+      }
+    });
+
+    test("the bootstrap volume's owner is recorded for sealed-agent", { skip: brief }, () => {
+      const tools = stack.stack.apps.find((a) => a.id === "internal-tools");
+      const entry = tools.volumes.find((v) => v.name === "internal-tools-bootstrap");
+      assert.ok(JSON.stringify(entry).includes('"1000:1000"'), JSON.stringify(entry));
+    });
+
+    // The ":?" guard in the entrypoints stops internal-tools-server and internal-tools-bootstrap
+    // when the composer does not set SEALED_PUBLIC_URL_TOOLS.
+    test("the composer sets SEALED_PUBLIC_URL_TOOLS on every internal-tools service", { skip: brief }, () => {
+      for (const name of Object.keys(services)) {
+        assert.equal(composed[name].environment.SEALED_PUBLIC_URL_TOOLS, "https://tools.34-1-2-3.sslip.io", name);
+      }
     });
 
     test("valkey's password stays out of the composed argv", () => {
@@ -287,14 +317,6 @@ describe("the real composer (runtime/composer, ws/composer)", { skip: composer.s
     test("docker compose accepts the composed document", { skip: !dockerComposeAvailable() && "docker compose not installed" }, () => {
       const result = composeConfig(stack.composePath, "sealed-tools-composed");
       assert.ok(result.ok, result.stderr);
-    });
-
-    // Interface change 1: until the composer sets SEALED_PUBLIC_URL_<ROUTE>, the ":?" guard in
-    // the entrypoints stops internal-tools-server and internal-tools-bootstrap on purpose.
-    test("the composer sets SEALED_PUBLIC_URL_TOOLS on every internal-tools service", { todo: "interface change 1 is not in the composer yet" }, () => {
-      for (const name of ["internal-tools-server", "internal-tools-bootstrap"]) {
-        assert.equal(composed[name].environment.SEALED_PUBLIC_URL_TOOLS, "https://tools.34-1-2-3.sslip.io", name);
-      }
     });
   });
 });
