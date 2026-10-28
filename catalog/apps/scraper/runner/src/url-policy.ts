@@ -2,7 +2,8 @@ import { BlockList, isIP } from 'node:net';
 
 // First line of defence against crawling the VM's own network. sealed-egress enforces the real
 // allowlist and IP range rules; this check gives early, readable errors and stops Firefox from
-// trying loopback or link-local addresses at all.
+// trying loopback or link-local addresses at all. With SCRAPER_ALLOW_NO_PROXY=1 (local
+// development only) it is the only check.
 
 const blocked = new BlockList();
 for (const [net, prefix] of [
@@ -20,13 +21,20 @@ for (const [net, prefix] of [
 ] as const) {
   blocked.addSubnet(net, prefix, 'ipv4');
 }
+// IPv6 ranges that are local themselves or carry an IPv4 address a gateway may unwrap.
 for (const [net, prefix] of [
-  ['::', 128],
-  ['::1', 128],
-  ['64:ff9b::', 96],
-  ['fc00::', 7],
-  ['fe80::', 10],
-  ['ff00::', 8],
+  ['::', 96], // unspecified, loopback and IPv4-compatible (::a.b.c.d)
+  ['::ffff:0:0:0', 96], // IPv4-translated (SIIT)
+  ['64:ff9b::', 96], // NAT64
+  ['64:ff9b:1::', 48], // local-use NAT64
+  ['100::', 64], // discard-only
+  ['2001::', 32], // Teredo
+  ['2001:db8::', 32], // documentation
+  ['2002::', 16], // 6to4
+  ['fc00::', 7], // unique local
+  ['fe80::', 10], // link-local
+  ['fec0::', 10], // site-local (deprecated)
+  ['ff00::', 8], // multicast
 ] as const) {
   blocked.addSubnet(net, prefix, 'ipv6');
 }
@@ -43,7 +51,9 @@ export function checkTargetUrl(raw: string): string | null {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'must use http or https';
   if (url.username || url.password) return 'must not contain credentials';
 
-  const host = url.hostname.toLowerCase();
+  // "localhost." and "sealed-agent." name the same hosts as without the dot.
+  const host = url.hostname.toLowerCase().replace(/\.+$/, '');
+  if (!host) return 'is not a valid URL';
   const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   const family = isIP(bare);
   if (family === 4 || family === 6) {
