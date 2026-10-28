@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createServer, type AddressInfo } from 'node:net';
 import { join, resolve } from 'node:path';
 import type { TestProject } from 'vitest/node';
@@ -14,8 +14,19 @@ declare module 'vitest' {
   }
 }
 
+// Debian and Ubuntu (including GitHub runners) keep the server binaries off PATH.
+function debianPgBins(): string[] {
+  try {
+    return readdirSync('/usr/lib/postgresql')
+      .sort((a, b) => Number(b) - Number(a))
+      .map((v) => `/usr/lib/postgresql/${v}/bin`);
+  } catch {
+    return [];
+  }
+}
+
 function findPgBin(): string | null {
-  const candidates = [process.env.PG_BIN, '/opt/homebrew/opt/postgresql@17/bin', '/usr/lib/postgresql/17/bin'];
+  const candidates = [process.env.PG_BIN, '/opt/homebrew/opt/postgresql@17/bin', ...debianPgBins()];
   for (const dir of candidates) if (dir && existsSync(join(dir, 'initdb'))) return dir;
   const which = spawnSync('which', ['initdb'], { encoding: 'utf8' });
   return which.status === 0 ? resolve(which.stdout.trim(), '..') : null;

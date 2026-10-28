@@ -254,7 +254,7 @@ describe('UI', () => {
     expect(page).toContain('<form method="post" action="/jobs">');
     expect(page).toContain('https://shop.example/');
     expect(page).toContain('Outbound traffic only reaches destinations you approve.');
-    expect(page).not.toContain('—');
+    expect(page).not.toMatch(/\u2014/);
     expect((await app.request('/assets/app.css')).headers.get('content-type')).toContain('text/css');
   });
 
