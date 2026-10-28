@@ -47,6 +47,8 @@ This is the public repository: everything that runs in a customer's cloud is her
 | `cli/` | the `sealed` command line: bootstrap, secrets, deploy, verify, catalog, release build | Go |
 | `infra/terraform/customer-bootstrap/` | what `sealed bootstrap` creates in the customer project | Terraform |
 | `scripts/iam-checks/` | spec 8.6 IAM checks run as the platform's deployer identity | Bash, Go |
+| `scripts/devnet/` | `make devnet-e2e`: the whole trust and payment flow on a local Tempo node, every component as a process | TypeScript, Bash |
+| `scripts/docker-checks/` | checks of the composed stack's isolation on a real Docker engine | Bash, Python |
 | `config/defaults.yaml` | public defaults every component reads (prices, caps, chain, networks, TCB policy, registry) | YAML |
 | `.github/workflows/` | catalog checks, tests, release and runtime image builds | GitHub Actions |
 
@@ -54,7 +56,7 @@ The catalog holds six apps: `llm-gateway` (LiteLLM MIT core with a local Ollama 
 
 ## Quick start for developers
 
-Requirements: Go 1.26 or newer (the `go` directive in `go.mod`), Node 22 or newer with pnpm 10.33.2, Foundry 1.7.1 (`anvil --network tempo`), Python 3 with PyYAML, httpx and jsonschema for the catalog tests, Terraform for the bootstrap module tests, and the docker CLI (only `docker compose config` is used by the tests; no daemon is needed).
+Requirements: Go 1.26 or newer (the `go` directive in `go.mod`), Node 22 or newer with pnpm 10.33.2, Foundry 1.8.6 (D-053; `anvil --network tempo --hardfork T12`, mainnet's hardfork, which every local test node runs), Python 3 with PyYAML, httpx and jsonschema for the catalog tests, Terraform for the bootstrap module tests, and the docker CLI (only `docker compose config` is used by the tests; no daemon is needed).
 
 ```sh
 git clone https://github.com/sealedtempo/sealed && cd sealed
@@ -89,14 +91,15 @@ The full suite is heavy (Postgres-backed scraper and relay tests, anvil chains, 
 
 ### The local devnet end to end
 
-Every end-to-end path runs on a local Tempo devnet, `anvil --network tempo`, with the real contracts built from `contracts/`. No mainnet transaction is sent and no cloud resource is touched. TDX quotes come from the dstack simulator (`runtime/agent/sim`), which production verifiers and key brokers refuse.
+Every end-to-end path runs on a local Tempo devnet, `anvil --network tempo --hardfork T12`, with the real contracts built from `contracts/`. No mainnet transaction is sent and no cloud resource is touched. TDX quotes come from the dstack simulator (`runtime/agent/sim`), which production verifiers and key brokers refuse.
 
 | command | what it runs |
 |---|---|
+| `make devnet-e2e` | the whole flow with every component as a process (`scripts/devnet/README.md`): contracts, images and releases registered, bundles served by the asset rule, the customer's approval of a composer 1.3.0 stack, the key broker (dev build), sealed-verifierd and the platform api with PostgreSQL 17, the agent's boot and key release against the dstack simulator, evidence registered by the oracle, `sealed verify` (evidence and live), fee settlement through the D-054 access key and in enclave-account mode, reboot and restart heartbeats, and denials (a changed byte, the debug image, no quote, a revoked stack, a revoked release); 16 steps and 817 assertions, passing on `ws/integration` since `17e277e` |
 | `make -C contracts local-e2e` | deploys the five contracts on anvil and drives registration, approval, records, heartbeats, fees, top-ups and withdrawals with `cast` |
 | `SEALED_REQUIRE_ANVIL=1 go test -count=1 -v -run TestComposedStackEndToEnd ./verifier/cmd/sealed-verifierd/` | bundles served like a GitHub release, releases published onchain, `/v1/compose`, the customer's approval, a simulated quote, the oracle's registration, a passing evidence bundle, then evidence, asset, cache and chain tamper cases that each fail exactly the expected checks |
 | `SEALED_REQUIRE_CHAIN_TESTS=1 pnpm --filter @sealed/agent test` | includes `test/catalog.e2e.test.ts`: the real composer composes the catalog apps, the agent boots on that app-compose against the simulator and a fake key broker, and the verifier library checks its evidence |
-| `make -C key-broker test-ci` | key release against the real registries on anvil, 54 denial cases, and a boot written only with `@sealed/core` released by the Go broker |
+| `make -C key-broker test-ci` | key release against the real registries on anvil, 57 denial cases, and a boot written only with `@sealed/core` released by the Go broker |
 | `go test -count=1 -run TestAnvilEndToEnd ./cli/internal/app/` | the `sealed` CLI against a local Tempo node with the real registries |
 | `SEALED_REQUIRE_CHAIN_TESTS=1 pnpm --filter @sealed/mpp-payer test` | MPP charges and sessions from an access key over the emulated escrow, drawing on the shared spend budget |
 
@@ -161,12 +164,13 @@ Deployed at block 46314877 and source-verified at https://contracts.tempo.xyz. F
 
 Attestation method 2 (`ZK_DCAP_V1`) is reserved and unset; see [docs/ZK_UPGRADE.md](docs/ZK_UPGRADE.md).
 
-## Status (2026-10-28)
+## Status (2026-10-29)
 
-- Contracts: deployed on mainnet and source-verified after a three-lens security review (no critical or high findings; every medium finding fixed). See `contracts/README.md`.
-- Runtime, catalog packages, verifier, key broker and CLI: built and tested locally and on the local devnet. The first boots on real TDX hardware are in progress, so the platform image measurements are not registered yet and will be recorded trust-on-first-use (see [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)).
-- The acceptance tests on mainnet and Google Cloud (bootstrap, deploy, verify, tamper, egress, fees, MPP, reboot, destroy) have not run yet. Until they do, every claim in these documents is backed by local tests only.
-- The fresh security review of the key broker, egress and agent is pending.
+- Contracts: deployed on mainnet and source-verified after a three-lens security review (no critical or high findings; every medium finding fixed). See `contracts/README.md`. No platform image and no app is registered on mainnet yet.
+- Runtime, catalog packages, verifier, key broker and CLI: built and tested locally, with the hardening round (D-058 to D-069, D-073) merged and composer 1.3.0. The full test matrix passes at `ws/integration` `e4054c0` (Go with anvil at T12, TypeScript, contracts on Foundry 1.8.6, the Python and node app suites, Terraform, actionlint; the two Docker-daemon composer tests skip without a daemon), and `make devnet-e2e` passes end to end (16 steps, 817 assertions) on a local Tempo node at mainnet's hardfork T12.
+- Real hardware: dstack 0.6.1 quotes captured on three Google Cloud C3 TDX VMs (c3-standard-4 twice, c3-standard-8 once) with the upstream image verify offline against recorded Intel collateral, with the exact RTMR3 event sequence and the D-052 quote trimming (`TestRealGCPGolden`, `TestRealGCPGoldenRejects`, `TestRealGCPMachineTypes` in `verifier/attest`). Our production image has not booted on TDX yet, so its measurements are not registered and will be recorded trust-on-first-use per machine type (see [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)).
+- The acceptance tests on mainnet and Google Cloud (bootstrap, deploy, verify, tamper, egress, fees, MPP, reboot, destroy) have not run yet. Until they do, every claim in these documents is backed by local tests and the recorded hardware quotes only.
+- The fresh security review of the hardened key broker, egress, agent, composer and verifier is pending.
 
 ## License
 
