@@ -32,15 +32,6 @@ resource "google_project_iam_member" "key_broker_secrets" {
   depends_on = [google_service_account.key_broker]
 }
 
-# The decision log (key-broker/gcp, Cloud Logging entries.write).
-resource "google_project_iam_member" "key_broker_logs" {
-  project = var.project_id
-  role    = module.iam.key_broker_log_role
-  member  = module.iam.key_broker_member
-
-  depends_on = [google_service_account.key_broker]
-}
-
 # Pull-through cache for ghcr.io (Cloud Run cannot pull from it directly).
 # Images keep their digests, which Cloud Run pins.
 resource "google_artifact_registry_repository" "ghcr" {
@@ -64,6 +55,33 @@ resource "google_artifact_registry_repository" "ghcr" {
   depends_on = [google_project_service.apis]
 }
 
+# The decision log (key-broker/gcp, Cloud Logging entries.write): the broker
+# writes every release decision there and withholds an allowed release when
+# that write fails, so it needs the log writer role (review F5).
+resource "google_project_iam_member" "key_broker_logging" {
+  project = var.project_id
+  role    = module.iam.key_broker_logging_role
+  member  = module.iam.key_broker_member
+
+  depends_on = [google_service_account.key_broker]
+}
+
+# The environment the broker reads, name for name (modules/key-broker-env).
+module "key_broker_env" {
+  source = "./modules/key-broker-env"
+
+  customer_address    = local.customer_address
+  tempo_rpc_url       = var.tempo_rpc_url
+  chain_id            = var.chain_id
+  platform_registry   = var.platform_registry
+  app_registry        = var.app_registry
+  deployment_registry = var.deployment_registry
+  release_asset_base  = var.release_asset_base
+  project_id          = var.project_id
+  project_number      = data.google_project.this.number
+  kms_crypto_key      = google_kms_crypto_key.hmac.id
+}
+
 resource "google_cloud_run_v2_service" "key_broker" {
   name     = local.key_broker_name
   project  = var.project_id
@@ -81,7 +99,9 @@ resource "google_cloud_run_v2_service" "key_broker" {
   template {
     service_account                  = google_service_account.key_broker.email
     max_instance_request_concurrency = 40
-    timeout                          = "60s"
+    # Above the broker's 90 s release deadline (which covers the 60 s bundle
+    # fetches of a cold start), so Cloud Run never cuts a release short.
+    timeout = "120s"
 
     scaling {
       min_instance_count = 0
@@ -92,66 +112,79 @@ resource "google_cloud_run_v2_service" "key_broker" {
       image = local.key_broker_image
 
       ports {
-        container_port = 8080
+        container_port = module.key_broker_env.container_port
       }
 
       resources {
         limits = {
           cpu    = "1"
-          memory = "512Mi"
+          memory = module.key_broker_env.memory_limit
         }
       }
 
+      # Exactly the variables key-broker/cmd/key-broker reads, with the values
+      # of modules/key-broker-env. tests/plan.tftest.hcl checks that these
+      # blocks equal the module's map, cli/internal/bootstrap runs the broker's
+      # parser on that map, and the broker's own test parses this list.
       env {
         name  = "SEALED_CUSTOMER_ADDRESS"
-        value = local.customer_address
-      }
-      env {
-        name  = "SEALED_GCP_PROJECT"
-        value = var.project_id
-      }
-      env {
-        name  = "SEALED_GCP_PROJECT_NUMBER"
-        value = data.google_project.this.number
-      }
-      env {
-        name  = "SEALED_SECRET_PREFIX"
-        value = local.secret_prefix
-      }
-      env {
-        name  = "SEALED_KMS_KEY_VERSION"
-        value = "${google_kms_crypto_key.hmac.id}/cryptoKeyVersions/1"
+        value = module.key_broker_env.env["SEALED_CUSTOMER_ADDRESS"]
       }
       env {
         name  = "TEMPO_RPC_URL"
-        value = var.tempo_rpc_url
+        value = module.key_broker_env.env["TEMPO_RPC_URL"]
       }
       env {
         name  = "TEMPO_CHAIN_ID"
-        value = tostring(var.chain_id)
+        value = module.key_broker_env.env["TEMPO_CHAIN_ID"]
       }
       env {
         name  = "SEALED_PLATFORM_REGISTRY"
-        value = lower(var.platform_registry)
+        value = module.key_broker_env.env["SEALED_PLATFORM_REGISTRY"]
       }
       env {
         name  = "SEALED_APP_REGISTRY"
-        value = lower(var.app_registry)
+        value = module.key_broker_env.env["SEALED_APP_REGISTRY"]
       }
       env {
         name  = "SEALED_DEPLOYMENT_REGISTRY"
-        value = lower(var.deployment_registry)
+        value = module.key_broker_env.env["SEALED_DEPLOYMENT_REGISTRY"]
       }
       env {
         name  = "SEALED_RELEASE_ASSET_BASE"
-        value = var.release_asset_base
+        value = module.key_broker_env.env["SEALED_RELEASE_ASSET_BASE"]
+      }
+      env {
+        name  = "SEALED_GCP_PROJECT"
+        value = module.key_broker_env.env["SEALED_GCP_PROJECT"]
+      }
+      env {
+        name  = "SEALED_GCP_PROJECT_NUMBER"
+        value = module.key_broker_env.env["SEALED_GCP_PROJECT_NUMBER"]
+      }
+      env {
+        name  = "SEALED_SECRET_PREFIX"
+        value = module.key_broker_env.env["SEALED_SECRET_PREFIX"]
+      }
+      env {
+        name  = "SEALED_KMS_KEY_VERSION"
+        value = module.key_broker_env.env["SEALED_KMS_KEY_VERSION"]
+      }
+
+      # Go runtime settings, not broker configuration.
+      dynamic "env" {
+        for_each = module.key_broker_env.runtime_env
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
     }
   }
 
   depends_on = [
     google_project_iam_member.key_broker_secrets,
-    google_project_iam_member.key_broker_logs,
+    google_project_iam_member.key_broker_logging,
     google_kms_crypto_key_iam_policy.hmac,
     google_artifact_registry_repository.ghcr,
   ]

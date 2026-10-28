@@ -3,6 +3,10 @@
 // the stack with runtime/composer, refuses to continue until the customer's wallet approved exactly that stack
 // (D-014), and creates the confidential VM through the Compute Engine API with no service account, no scopes, OS
 // Login and the serial port off, project SSH keys blocked, a persistent data disk and a static IP (spec 5.9).
+//
+// The data disk and the enclave signer follow the salt (D-058): the key broker derives the disk key and the
+// signer seed from (customer, salt), so an upgrade (new releases or a changed config, same salt) keeps both, and a
+// new salt means a fresh disk. The salt defaults to a value derived from project and name, so upgrades keep it.
 package deploy
 
 import (
@@ -51,7 +55,7 @@ type StackFile struct {
 
 // Image names the approved OS image and the GCE images it boots from.
 type Image struct {
-	// ID is the PlatformRegistry imageId (must be approved and not debug).
+	// ID is the PlatformRegistry imageId (approved and not debug, unless Debug is set).
 	ID string `yaml:"id"`
 	// Boot is the GCE image of the measured OS (projects/<p>/global/images/<name>).
 	Boot string `yaml:"boot"`
@@ -59,6 +63,10 @@ type Image struct {
 	SystemDisk string `yaml:"systemDisk"`
 	// VMConfig is the image's vm_config string for .sys-config.json (published with the image).
 	VMConfig string `yaml:"vmConfig"`
+	// Debug deploys a debug image (PlatformRegistry isDebug, spec 5.8) for development: it never receives
+	// production secrets, and the VM gets the bootstrap's log writer identity (logging.write only) so its
+	// container logs reach Cloud Logging. Production images refuse it; debug images require it.
+	Debug bool `yaml:"debug"`
 }
 
 // App selects one catalog app. Release is "latest" (default), a release version, or a 0x releaseId.
@@ -226,8 +234,10 @@ func (s *StackFile) Names() ResourceNames {
 	}
 }
 
-// SaltHex is the configured salt, or one derived from project and name so a redeploy of the same stack file keeps
-// its deploymentId.
+// SaltHex is the configured salt, or one derived from project and name only. It never depends on the apps, the
+// releases, the image or the config, so an upgrade keeps it, and with it the data disk key and the enclave signer
+// (D-058); a redeploy of an unchanged stack file also keeps its deploymentId. Changing the salt (or the name)
+// means a fresh data disk: the old one cannot be opened with the new key.
 func (s *StackFile) SaltHex() string {
 	if s.Salt != "" {
 		return s.Salt

@@ -25,6 +25,11 @@ type rendered struct {
 	KeyBrokerKMSPolicyJSON     string   `json:"key_broker_kms_policy_json"`
 	DeployerMember             string   `json:"deployer_member"`
 	KeyBrokerMember            string   `json:"key_broker_member"`
+	KeyBrokerLoggingRole       string   `json:"key_broker_logging_role"`
+	DebugLogsRole              string   `json:"debug_logs_role"`
+	DebugLogsSAPolicyJSON      string   `json:"debug_logs_sa_policy_json"`
+	DebugLogsMember            string   `json:"debug_logs_member"`
+	DebugVMScopes              []string `json:"debug_vm_scopes"`
 }
 
 const (
@@ -60,12 +65,13 @@ func render(t *testing.T) *rendered {
   platform_service_account   = %q
   deployer_service_account   = "sealed-deployer@%s.iam.gserviceaccount.com"
   key_broker_service_account = "sealed-key-broker@%s.iam.gserviceaccount.com"
+  debug_logs_service_account = "sealed-debug-logs@%s.iam.gserviceaccount.com"
 }
 
 output "iam" {
   value = module.iam
 }
-`, tProject, tNumber, tPlatform, tProject, tProject)), 0o644)
+`, tProject, tNumber, tPlatform, tProject, tProject, tProject)), 0o644)
 	tf := func(args ...string) []byte {
 		c := exec.Command("terraform", append([]string{"-chdir=" + dir}, args...)...)
 		c.Env = append(os.Environ(), "TF_IN_AUTOMATION=1")
@@ -299,6 +305,22 @@ func TestRenderedKeyBrokerPolicy(t *testing.T) {
 	if r.KeyBrokerSAPolicyJSON != `{"bindings":[]}` {
 		t.Fatalf("key broker service account policy %s", r.KeyBrokerSAPolicyJSON)
 	}
+	if r.KeyBrokerLoggingRole != "roles/logging.logWriter" {
+		t.Fatalf("key broker logging role %s", r.KeyBrokerLoggingRole)
+	}
+}
+
+// TestRenderedDebugLogWriter: the debug VM identity (spec 5.8) may only write logs, nobody holds a role on it, and
+// a debug VM gets only the logging.write scope.
+func TestRenderedDebugLogWriter(t *testing.T) {
+	r := render(t)
+	if r.DebugLogsRole != "roles/logging.logWriter" || r.DebugLogsSAPolicyJSON != `{"bindings":[]}` ||
+		r.DebugLogsMember != "serviceAccount:sealed-debug-logs@acme-prod-4417.iam.gserviceaccount.com" {
+		t.Fatalf("debug log writer %s %s %s", r.DebugLogsRole, r.DebugLogsSAPolicyJSON, r.DebugLogsMember)
+	}
+	if strings.Join(r.DebugVMScopes, " ") != "https://www.googleapis.com/auth/logging.write" {
+		t.Fatalf("debug VM scopes %v", r.DebugVMScopes)
+	}
 }
 
 // TestScriptListsMatchModule keeps check.sh's expected permission lists equal to the module's.
@@ -321,6 +343,9 @@ func TestScriptListsMatchModule(t *testing.T) {
 		"NAMED_ALLOWED":   r.DeployerNamedPermissions,
 		"PROJECT_ALLOWED": r.DeployerProjectPermissions,
 		"SUBNET_ALLOWED":  r.DeployerSubnetPermissions,
+		"KB_ROLES":        {r.KeyBrokerSecretRole, r.KeyBrokerLoggingRole},
+		"DEBUG_ROLES":     {r.DebugLogsRole},
+		"DEBUG_SCOPES":    r.DebugVMScopes,
 	} {
 		w := append([]string(nil), want...)
 		sort.Strings(w)

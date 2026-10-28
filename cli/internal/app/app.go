@@ -271,6 +271,8 @@ func Main(args []string, e *Env) int {
 		err = runRelease(ctx, args[1:], e)
 	case "version", "--version":
 		e.printf("sealed %s\n", Version)
+		e.printf("Apache-2.0. Statically linked with go-ethereum under LGPL-3.0-or-later and other libraries; their license texts\n" +
+			"and the LGPL notice are in licenses/ of the release archive (go run ./cli/release --licenses-only <dir> from source).\n")
 		return ExitOK
 	case "help", "-h", "--help":
 		fmt.Fprint(e.Stdout, usage)

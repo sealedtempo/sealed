@@ -76,6 +76,7 @@ const (
 	project  = "acme-prod-4417"
 	deployer = "sealed-deployer@acme-prod-4417.iam.gserviceaccount.com"
 	kbSA     = "sealed-key-broker@acme-prod-4417.iam.gserviceaccount.com"
+	debugSA  = "sealed-debug-logs@acme-prod-4417.iam.gserviceaccount.com"
 	platform = "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com"
 	crm      = "https://cloudresourcemanager.googleapis.com/v1/projects/" + project
 	iamv1    = "https://iam.googleapis.com/v1/projects/" + project
@@ -100,8 +101,17 @@ func compliant(w *world, mutate map[string]bool) {
 		map[string]any{"role": "projects/" + project + "/roles/sealedDeployer", "members": []string{"serviceAccount:" + deployer}, "condition": map[string]string{"title": "sealed-named-resources", "expression": cond}},
 		map[string]any{"role": "projects/" + project + "/roles/sealedDeployerAddresses", "members": []string{"serviceAccount:" + deployer}},
 		map[string]any{"role": "roles/secretmanager.secretAccessor", "members": []string{"serviceAccount:" + kbSA}, "condition": map[string]string{"title": "sealed-secrets-only", "expression": `(resource.type == "secretmanager.googleapis.com/Secret" || resource.type == "secretmanager.googleapis.com/SecretVersion") && resource.name.startsWith("projects/123456789012/secrets/sealed-")`}},
-		map[string]any{"role": "roles/logging.logWriter", "members": []string{"serviceAccount:" + kbSA}},
 		map[string]any{"role": "roles/owner", "members": []string{"user:owner@example.com"}},
+	}
+	if !mutate["kb-no-log-writer"] {
+		bindings = append(bindings, map[string]any{"role": "roles/logging.logWriter", "members": []string{"serviceAccount:" + kbSA}})
+	}
+	debug := mutate["debug-vm"] || mutate["debug-vm-broad-scope"] || mutate["debug-sa-unlabeled"] || mutate["debug-sa-extra-role"]
+	if debug {
+		bindings = append(bindings, map[string]any{"role": "roles/logging.logWriter", "members": []string{"serviceAccount:" + debugSA}})
+	}
+	if mutate["debug-sa-extra-role"] {
+		bindings = append(bindings, map[string]any{"role": "roles/storage.objectViewer", "members": []string{"serviceAccount:" + debugSA}})
 	}
 	if mutate["deployer-editor"] {
 		bindings = append(bindings, map[string]any{"role": "roles/editor", "members": []string{"serviceAccount:" + deployer}})
@@ -145,8 +155,12 @@ func compliant(w *world, mutate map[string]bool) {
 	}
 	w.add("POST", run+":testIamPermissions", "deployer-token", "*", 200, map[string]any{})
 	w.add("POST", kmsKey+":testIamPermissions", "deployer-token", "*", 200, map[string]any{})
-	w.add("GET", iamv1+"/serviceAccounts?pageSize=100", "operator-token", "*", 200, map[string]any{"accounts": []any{map[string]string{"email": deployer}, map[string]string{"email": kbSA}}})
-	for _, sa := range []string{deployer, kbSA, "123456789012-compute@developer.gserviceaccount.com"} {
+	accounts := []any{map[string]string{"email": deployer}, map[string]string{"email": kbSA}}
+	if debug {
+		accounts = append(accounts, map[string]string{"email": debugSA})
+	}
+	w.add("GET", iamv1+"/serviceAccounts?pageSize=100", "operator-token", "*", 200, map[string]any{"accounts": accounts})
+	for _, sa := range []string{deployer, kbSA, debugSA, "123456789012-compute@developer.gserviceaccount.com"} {
 		if sa == kbSA && mutate["kb-actas"] {
 			w.add("POST", "https://iam.googleapis.com/v1/projects/-/serviceAccounts/"+sa+":testIamPermissions", "deployer-token", "*", 200, perms("iam.serviceAccounts.actAs"))
 			continue
@@ -168,6 +182,16 @@ func compliant(w *world, mutate map[string]bool) {
 		"networkInterfaces": []any{map[string]any{"accessConfigs": []any{map[string]string{"natIP": "127.0.0.1"}}}}}
 	if mutate["vm-sa"] {
 		vm["serviceAccounts"] = []any{map[string]any{"email": "123456789012-compute@developer.gserviceaccount.com"}}
+	}
+	if debug {
+		scopes := []string{"https://www.googleapis.com/auth/logging.write"}
+		if mutate["debug-vm-broad-scope"] {
+			scopes = []string{"https://www.googleapis.com/auth/cloud-platform"}
+		}
+		vm["serviceAccounts"] = []any{map[string]any{"email": debugSA, "scopes": scopes}}
+		if !mutate["debug-sa-unlabeled"] {
+			vm["labels"] = map[string]string{"sealed": "deployment", "sealed-variant": "debug"}
+		}
 	}
 	w.add("GET", compute+"/zones/us-central1-a/instances?filter=name%3Dsealed-*", "operator-token", "*", 200, map[string]any{"items": []any{map[string]string{"name": "sealed-demo"}}})
 	w.add("GET", compute+"/zones/us-central1-a/instances/sealed-demo", "operator-token", "*", 200, vm)
@@ -233,7 +257,7 @@ func TestCheckScriptPassesOnACompliantProject(t *testing.T) {
 		"PASS  deployer identity: serviceAccountTokenCreator for the platform service account only",
 		"PASS  deployer project roles: sealedDeployer and sealedDeployerAddresses only",
 		"PASS  sealedDeployer is granted only on resources named sealed-*",
-		"PASS  key broker identity: secretAccessor on sealed-* secrets only, plus logWriter for its decision log",
+		"PASS  key broker identity: secretAccessor on sealed-* secrets only, and its decision log",
 		"PASS  firewall: ingress 80/443 to sealed-vm only",
 		"PASS  subnet sealed-subnet: the deployer may attach VMs to it",
 		"PASS  KMS HMAC key: only the key broker may use it",
@@ -263,6 +287,24 @@ func TestCheckScriptPassesOnACompliantProject(t *testing.T) {
 	}
 }
 
+// TestCheckScriptAcceptsADebugVM: the one identity exception (spec 5.8) is a VM labeled sealed-variant=debug with
+// exactly the log writer and its logging.write scope, and the log writer holds logging.logWriter only.
+func TestCheckScriptAcceptsADebugVM(t *testing.T) {
+	code, out, _ := runCheck(t, map[string]bool{"debug-vm": true})
+	if code != 0 || strings.Contains(out, "FAIL") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	for _, want := range []string{
+		"PASS  debug log writer identity: logging.logWriter only",
+		"PASS  VM sealed-demo (debug): TDX, only the log writer with logging.write",
+		"PASS  deployer cannot act as or mint tokens for " + debugSA,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+}
+
 func TestCheckScriptChangesNothingByDefault(t *testing.T) {
 	code, out, reqs := runCheck(t, nil)
 	if code != 0 {
@@ -278,17 +320,21 @@ func TestCheckScriptChangesNothingByDefault(t *testing.T) {
 
 func TestCheckScriptCatchesEachMisconfiguration(t *testing.T) {
 	for name, want := range map[string]string{
-		"extra-token-creator": "FAIL  deployer identity policy",
-		"deployer-editor":     "FAIL  deployer project roles",
-		"role-actas":          "FAIL  custom role sealedDeployer permissions differ (extra: compute.instances.setServiceAccount",
-		"ssh-firewall":        "FAIL  firewall rules of sealed-vpc",
-		"deployer-actas":      "FAIL  deployer holds forbidden project permissions",
-		"secret-readable":     "FAIL  reading sealed-gate-password as the deployer returned HTTP 200",
-		"kb-actas":            "FAIL  deployer holds iam.serviceAccounts.actAs on service account " + kbSA,
-		"serial-on":           "FAIL  VM sealed-demo: serial port not off",
-		"vm-sa":               "FAIL  VM sealed-demo: has a service account",
-		"kb-releases":         "FAIL  key broker answered HTTP 200",
-		"no-impersonation":    "FAIL  impersonate the deployer",
+		"extra-token-creator":  "FAIL  deployer identity policy",
+		"deployer-editor":      "FAIL  deployer project roles",
+		"role-actas":           "FAIL  custom role sealedDeployer permissions differ (extra: compute.instances.setServiceAccount",
+		"ssh-firewall":         "FAIL  firewall rules of sealed-vpc",
+		"deployer-actas":       "FAIL  deployer holds forbidden project permissions",
+		"secret-readable":      "FAIL  reading sealed-gate-password as the deployer returned HTTP 200",
+		"kb-actas":             "FAIL  deployer holds iam.serviceAccounts.actAs on service account " + kbSA,
+		"serial-on":            "FAIL  VM sealed-demo: serial port not off",
+		"vm-sa":                "FAIL  VM sealed-demo: has a service account",
+		"debug-vm-broad-scope": "FAIL  VM sealed-demo: debug VM identity is not exactly " + debugSA + " with https://www.googleapis.com/auth/logging.write",
+		"debug-sa-unlabeled":   "FAIL  VM sealed-demo: has a service account",
+		"debug-sa-extra-role":  "FAIL  debug log writer " + debugSA + " holds [roles/logging.logWriter roles/storage.objectViewer]",
+		"kb-no-log-writer":     "FAIL  key broker project roles [roles/secretmanager.secretAccessor]",
+		"kb-releases":          "FAIL  key broker answered HTTP 200",
+		"no-impersonation":     "FAIL  impersonate the deployer",
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, out, _ := runCheck(t, map[string]bool{name: true})

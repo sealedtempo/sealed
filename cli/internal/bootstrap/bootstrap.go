@@ -44,6 +44,8 @@ type Params struct {
 	SubnetCIDR       string
 	KMSProtection    string
 	EnableAPIs       bool
+	// EnableDebugLogging creates sealed-debug-logs, the log writer identity debug VMs get (spec 5.8).
+	EnableDebugLogging bool
 }
 
 var (
@@ -78,6 +80,9 @@ func (p *Params) Validate() error {
 	if !strings.HasPrefix(p.TempoRPC, "https://") {
 		errs = append(errs, "--tempo-rpc must be an https URL")
 	}
+	if p.ChainID == 0 {
+		errs = append(errs, "the chain id is not set")
+	}
 	if err := p.Registries.Validate(); err != nil {
 		errs = append(errs, err.Error())
 	}
@@ -102,6 +107,7 @@ func (p *Params) Vars() map[string]any {
 		"deployment_registry":      lower(p.Registries.DeploymentRegistry),
 		"release_asset_base":       strings.TrimRight(p.ReleaseAssetBase, "/"),
 		"enable_apis":              p.EnableAPIs,
+		"enable_debug_logging":     p.EnableDebugLogging,
 	}
 	if p.SubnetCIDR != "" {
 		v["subnet_cidr"] = p.SubnetCIDR
@@ -256,6 +262,10 @@ type Outputs struct {
 	KMSKeyVersion   string
 	KeyBrokerSA     string
 	BootBucket      string // optional
+	// TempoRPC is the RPC the key broker reads approvals from (optional: older modules lack the output).
+	TempoRPC string
+	// DebugLogSA is the log writer identity for debug VMs, empty unless enabled.
+	DebugLogSA string
 }
 
 // Run initializes and applies (or plans) the module, then reads its outputs. Outputs are nil for a plan.
@@ -318,8 +328,10 @@ func ParseOutputs(raw []byte) (*Outputs, error) {
 		}
 		*f.dst = v
 	}
-	if v, ok := doc["boot_bucket"]; ok {
-		_ = json.Unmarshal(v.Value, &o.BootBucket)
+	for k, dst := range map[string]*string{"boot_bucket": &o.BootBucket, "tempo_rpc_url": &o.TempoRPC, "debug_log_service_account": &o.DebugLogSA} {
+		if v, ok := doc[k]; ok {
+			_ = json.Unmarshal(v.Value, dst)
+		}
 	}
 	return o, nil
 }

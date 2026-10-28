@@ -67,8 +67,13 @@ variable "tempo_rpc_url" {
 
 variable "chain_id" {
   type        = number
-  description = "Tempo chain id."
+  description = "Tempo chain id the key broker expects from tempo_rpc_url."
   default     = 4217
+
+  validation {
+    condition     = var.chain_id > 0 && floor(var.chain_id) == var.chain_id
+    error_message = "chain_id must be a positive integer."
+  }
 }
 
 variable "platform_registry" {
@@ -149,6 +154,12 @@ variable "key_broker_deletion_protection" {
   type        = bool
   description = "Refuse to delete the key broker service on destroy."
   default     = true
+}
+
+variable "enable_debug_logging" {
+  type        = bool
+  description = "Create sealed-debug-logs, a service account that may only write logs, for debug VMs (spec 5.8). Production VMs never get it."
+  default     = false
 }
 
 variable "create_boot_bucket" {

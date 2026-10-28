@@ -1,8 +1,10 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +32,7 @@ type Compute interface {
 	EnsureDisk(ctx context.Context, zone string, d gcp.Disk) (*gcp.Disk, bool, error)
 	InsertInstance(ctx context.Context, zone string, in *gcp.Instance, requestID string) error
 	GetInstance(ctx context.Context, zone, name string) (*gcp.Instance, error)
+	DeleteInstance(ctx context.Context, zone, name string) error
 }
 
 // SharedDisk turns the dstack shared files (app-compose.json, .sys-config.json, .instance_info) into a GCE image
@@ -54,6 +57,9 @@ type Deployer struct {
 	// AllowUnbuilt composes stacks whose sidecar or app images still carry the all-zero placeholder digest.
 	// Such a stack cannot boot; the CLI allows it only in dev mode (SEALED_DEV_SIM=1).
 	AllowUnbuilt bool
+	// Replace lets Apply delete a VM of the same name that runs another deployment (an upgrade) and create the
+	// new one; the data disk is kept and checked against the salt first (D-058).
+	Replace bool
 }
 
 // Plan is a composed, checked deploy.
@@ -72,6 +78,10 @@ type Plan struct {
 	MissingSecrets []string
 	MachineType    string
 	DataDiskGB     int
+	// Debug is a debug image deploy (spec 5.8): never approvable onchain, no production secrets, and the VM gets
+	// DebugLogSA with the logging.write scope only.
+	Debug      bool
+	DebugLogSA string
 }
 
 // Approval is the onchain approval state of the plan's stack.
@@ -163,7 +173,17 @@ func (d *Deployer) Prepare(ctx context.Context, s *StackFile, reserveIP bool) (*
 	if err != nil {
 		return nil, err
 	}
-	if img.IsDebug || !approvedImage {
+	switch {
+	case img.IsDebug && !s.Image.Debug:
+		return nil, fmt.Errorf("image %s (%s %s) is a debug image, not an approved production image: it never receives production secrets (set image.debug: true to run it for development)", s.Image.ID, img.Name, img.Version)
+	case !img.IsDebug && s.Image.Debug:
+		return nil, fmt.Errorf("image.debug is set, but image %s (%s %s) is a production image: production VMs never get a service account (remove image.debug)", s.Image.ID, img.Name, img.Version)
+	case img.IsDebug && img.Status != chain.ImageActive:
+		return nil, fmt.Errorf("debug image %s (%s %s) is not active", s.Image.ID, img.Name, img.Version)
+	case img.IsDebug:
+		p.Debug, p.DebugLogSA = true, DebugLogServiceAccount(s.Project)
+		d.logf("image    %s %s is a DEBUG image: the key broker gives it no secrets; container logs go to Cloud Logging as %s", img.Name, img.Version, p.DebugLogSA)
+	case !approvedImage:
 		return nil, fmt.Errorf("image %s (%s %s) is not an approved production image", s.Image.ID, img.Name, img.Version)
 	}
 	p.Image = img
@@ -197,8 +217,11 @@ func (d *Deployer) Prepare(ctx context.Context, s *StackFile, reserveIP bool) (*
 	if err := p.Result.RequireBuilt(); err != nil && !d.AllowUnbuilt {
 		return nil, err
 	}
-	p.Approval, err = d.checkApproval(ctx, s, p)
-	if err != nil {
+	if p.Debug {
+		// approveStack requires an approved image, so a debug stack can never be approved, and the key broker
+		// refuses it whatever the chain says. Nothing waits for the wallet.
+		p.Approval = Approval{Problems: []string{"a debug image is never approved onchain; the key broker releases nothing to it"}}
+	} else if p.Approval, err = d.checkApproval(ctx, s, p); err != nil {
 		return nil, err
 	}
 	if d.Secrets != nil {
@@ -275,6 +298,14 @@ func (d *Deployer) buildConfig(s *StackFile, p *Plan) (*composer.Config, error) 
 	if err != nil {
 		return nil, err
 	}
+	debugSwitch := p.Debug && composerHasDebug()
+	if debugSwitch {
+		if raw, err = withConfigDebug(raw); err != nil {
+			return nil, err
+		}
+	} else if p.Debug {
+		d.logf("warning: composer %s has no config.debug, so containers log with the none driver and no container logs leave the debug VM", composer.Version)
+	}
 	canon, err := cjson.Canonicalize(raw)
 	if err != nil {
 		return nil, err
@@ -283,7 +314,92 @@ func (d *Deployer) buildConfig(s *StackFile, p *Plan) (*composer.Config, error) 
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	if debugSwitch {
+		if out, err := parsed.CanonicalJSON(); err != nil || !bytes.Contains(out, []byte(`"debug":true`)) {
+			return nil, errors.New("config: the composer dropped debug: true")
+		}
+	}
 	return parsed, nil
+}
+
+// composerHasDebug reports whether this composer's config has the debug switch (composer 1.2.0, integration item
+// 13): with it, containers log with the local driver that the debug image's exporter reads.
+func composerHasDebug() bool {
+	b, err := json.Marshal(composer.Config{})
+	if err != nil {
+		return false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(b, &m) != nil {
+		return false
+	}
+	_, ok := m["debug"]
+	return ok
+}
+
+// withConfigDebug sets debug: true in a marshaled config.
+func withConfigDebug(raw []byte) ([]byte, error) {
+	var m map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	m["debug"] = true
+	return json.Marshal(m)
+}
+
+// Data disk labels (D-058). The key broker derives the disk key from (customer, salt), both public in the config,
+// so the disk records which pair it was formatted for, and whether it belongs to a production or a debug
+// deployment. Deploy refuses to attach a disk the stack could not open, or production data to a debug VM.
+const DiskIDLabel = "sealed-disk-id"
+
+// DiskID names the (customer, salt) pair a data disk key belongs to without revealing anything else.
+func DiskID(customer, salt string) string {
+	h := sha256.Sum256([]byte("sealed/data-disk/v1\x00" + strings.ToLower(customer) + "\x00" + strings.ToLower(salt)))
+	return hex.EncodeToString(h[:20])
+}
+
+func variantOf(debug bool) string {
+	if debug {
+		return "debug"
+	}
+	return "production"
+}
+
+// checkDataDisk refuses an existing data disk this plan's VM could not open or must not get.
+func (d *Deployer) checkDataDisk(disk *gcp.Disk, p *Plan) error {
+	want := DiskID(p.Stack.Customer, p.Stack.SaltHex())
+	got, labeled := disk.Labels[DiskIDLabel]
+	variant := disk.Labels[VariantLabel]
+	switch {
+	case labeled && got != want:
+		return fmt.Errorf("data disk %s was created for another wallet or salt (disk id %s, this stack %s): the key broker derives the disk key from (customer, salt) (D-058), so this stack could not open it. Keep the salt the disk was created with, or deploy under a new name for a fresh disk", disk.Name, got, want)
+	case p.Debug && variant != "debug":
+		return fmt.Errorf("data disk %s is not a debug deployment's disk: a debug VM never gets production data; deploy the debug image under another name", disk.Name)
+	case !p.Debug && variant == "debug":
+		return fmt.Errorf("data disk %s belongs to a debug deployment; deploy the production image under another name", disk.Name)
+	case !labeled:
+		d.logf("warning: data disk %s has no %s label (created before D-058), so deploy cannot check that this salt opens it", disk.Name, DiskIDLabel)
+	}
+	return nil
+}
+
+// keepsDataDisk checks that deleting a VM leaves its data disk in place.
+func keepsDataDisk(in *gcp.Instance, dataDisk string) error {
+	for _, dk := range in.Disks {
+		if dk.DeviceName != DataDeviceName {
+			continue
+		}
+		if dk.AutoDelete {
+			return fmt.Errorf("its data disk would be deleted with it")
+		}
+		if !strings.HasSuffix(dk.Source, "/disks/"+dataDisk) {
+			return fmt.Errorf("its %s device is %s, not %s", DataDeviceName, dk.Source, dataDisk)
+		}
+		return nil
+	}
+	return fmt.Errorf("it has no %s disk", DataDeviceName)
 }
 
 func lowerHex(a common.Address) string { return "0x" + hex.EncodeToString(a[:]) }
@@ -396,6 +512,9 @@ type Outcome struct {
 	Zone         string
 	Created      bool // false when the VM already existed
 	AttestURL    string
+	// Replaced is the deploymentId of the VM an upgrade deleted (empty otherwise).
+	Replaced string
+	Debug    bool
 }
 
 // SharedFiles are the dstack shared disk files of a plan.
@@ -420,13 +539,14 @@ func (d *Deployer) SharedFiles(p *Plan) (map[string][]byte, error) {
 	return map[string][]byte{"app-compose.json": p.Result.AppCompose, ".sys-config.json": sys, ".instance_info": info}, nil
 }
 
-// Apply creates the data disk, the shared disk image and the VM for an approved plan, then reads the VM back and
-// checks spec 5.9 on what the API stored.
+// Apply creates the data disk, the shared disk image and the VM for an approved plan (or a debug plan), then reads
+// the VM back and checks spec 5.9 on what the API stored. A VM of the same name that runs another deployment is
+// replaced only with Replace (an upgrade), after the kept data disk was checked against the salt.
 func (d *Deployer) Apply(ctx context.Context, p *Plan) (*Outcome, error) {
-	if !p.Approval.Approved {
+	if !p.Approval.Approved && !p.Debug {
 		return nil, ErrNotApproved
 	}
-	if len(p.MissingSecrets) > 0 {
+	if len(p.MissingSecrets) > 0 && !p.Debug {
 		return nil, fmt.Errorf("the key broker would refuse this stack: missing secrets %s (run sealed secrets set --config <stack file> --missing)", strings.Join(p.MissingSecrets, ", "))
 	}
 	if p.Stack.Hostnames.Scheme == composer.SchemeSslip && !p.IPReserved {
@@ -435,17 +555,35 @@ func (d *Deployer) Apply(ctx context.Context, p *Plan) (*Outcome, error) {
 	s := p.Stack
 	out := &Outcome{
 		DeploymentID: p.Result.DeploymentID.Hex(), StackHash: p.Result.StackHash.Hex(), ConfigHash: p.Result.ConfigHash.Hex(),
-		IP: p.IP, Instance: p.Names.Instance, Zone: s.Zone,
+		IP: p.IP, Instance: p.Names.Instance, Zone: s.Zone, Debug: p.Debug,
 	}
 	if host, err := attestHost(p); err == nil {
 		out.AttestURL = "https://" + host + "/attest"
 	}
-	if existing, err := d.Compute.GetInstance(ctx, s.Zone, p.Names.Instance); err == nil {
-		if problems := CheckInstance(existing); len(problems) > 0 {
-			return out, fmt.Errorf("instance %s exists and does not comply: %s", p.Names.Instance, strings.Join(problems, "; "))
+	check := func(in *gcp.Instance) []string {
+		if p.Debug {
+			return CheckDebugInstance(in, p.DebugLogSA)
 		}
-		d.logf("instance %s already exists; nothing to create", p.Names.Instance)
-		return out, nil
+		return CheckInstance(in)
+	}
+	running := ""
+	if existing, err := d.Compute.GetInstance(ctx, s.Zone, p.Names.Instance); err == nil {
+		running = DeploymentIDOf(existing)
+		switch {
+		case strings.EqualFold(running, out.DeploymentID):
+			if problems := check(existing); len(problems) > 0 {
+				return out, fmt.Errorf("instance %s exists and does not comply: %s", p.Names.Instance, strings.Join(problems, "; "))
+			}
+			d.logf("instance %s already runs this deployment; nothing to create", p.Names.Instance)
+			return out, nil
+		case running == "":
+			return out, fmt.Errorf("instance %s exists but was not created by sealed deploy (no sealed-deployment-id); remove it or use another name", p.Names.Instance)
+		case !d.Replace:
+			return out, fmt.Errorf("instance %s runs deployment %s, not %s. To upgrade it, run sealed deploy again with --replace: the VM is deleted and created again with this stack, and the data disk %s is kept and opened with the same key, because the salt is unchanged (D-058)", p.Names.Instance, running, out.DeploymentID, p.Names.DataDisk)
+		}
+		if err := keepsDataDisk(existing, p.Names.DataDisk); err != nil {
+			return out, fmt.Errorf("instance %s cannot be replaced safely: %w", p.Names.Instance, err)
+		}
 	} else if !gcp.IsNotFound(err) {
 		return nil, err
 	}
@@ -463,7 +601,10 @@ func (d *Deployer) Apply(ctx context.Context, p *Plan) (*Outcome, error) {
 
 	disk, created, err := d.Compute.EnsureDisk(ctx, s.Zone, gcp.Disk{
 		Name: p.Names.DataDisk, SizeGb: fmt.Sprint(p.DataDiskGB), Type: diskType(s.Zone),
-		Labels:      map[string]string{"sealed": "data", "sealed-name": s.Name},
+		Labels: map[string]string{
+			"sealed": "data", "sealed-name": s.Name,
+			DiskIDLabel: DiskID(s.Customer, s.SaltHex()), VariantLabel: variantOf(p.Debug),
+		},
 		Description: "Sealed app data, LUKS2 inside the VM with the key broker's disk key",
 	})
 	if err != nil {
@@ -472,12 +613,22 @@ func (d *Deployer) Apply(ctx context.Context, p *Plan) (*Outcome, error) {
 	if created {
 		d.logf("disk     %s created (%d GB pd-balanced)", p.Names.DataDisk, p.DataDiskGB)
 	} else {
-		d.logf("disk     %s kept (existing data)", p.Names.DataDisk)
+		if err := d.checkDataDisk(disk, p); err != nil {
+			return out, err
+		}
+		d.logf("disk     %s kept (existing data, same salt)", p.Names.DataDisk)
+	}
+	if running != "" {
+		d.logf("instance %s runs %s; deleting it to start %s (the data disk stays)", p.Names.Instance, running, out.DeploymentID)
+		if err := d.Compute.DeleteInstance(ctx, s.Zone, p.Names.Instance); err != nil && !gcp.IsNotFound(err) {
+			return out, fmt.Errorf("delete the old instance: %w", err)
+		}
+		out.Replaced = running
 	}
 	in := BuildInstance(InstanceParams{
 		Project: s.Project, Region: s.Region, Zone: s.Zone, Names: p.Names, MachineType: p.MachineType,
 		BootImage: s.Image.Boot, SystemDiskImage: s.Image.SystemDisk, SharedDiskImage: sharedImage,
-		DataDiskSelfLink: disk.SelfLink, NatIP: p.IP, DeploymentID: out.DeploymentID,
+		DataDiskSelfLink: disk.SelfLink, NatIP: p.IP, DeploymentID: out.DeploymentID, DebugLogSA: p.DebugLogSA,
 	})
 	if in.Disks[3].Source == "" {
 		in.Disks[3].Source = "projects/" + s.Project + "/zones/" + s.Zone + "/disks/" + p.Names.DataDisk
@@ -491,10 +642,14 @@ func (d *Deployer) Apply(ctx context.Context, p *Plan) (*Outcome, error) {
 	if err != nil {
 		return out, fmt.Errorf("read back instance: %w", err)
 	}
-	if problems := CheckInstance(got); len(problems) > 0 {
+	if problems := check(got); len(problems) > 0 {
 		return out, fmt.Errorf("instance %s does not comply with spec 5.9: %s", p.Names.Instance, strings.Join(problems, "; "))
 	}
-	d.logf("instance %s created in %s (%s, TDX, no service account)", p.Names.Instance, s.Zone, p.MachineType)
+	identity := "no service account"
+	if p.Debug {
+		identity = "DEBUG, log writer " + p.DebugLogSA + " only"
+	}
+	d.logf("instance %s created in %s (%s, TDX, %s)", p.Names.Instance, s.Zone, p.MachineType, identity)
 	return out, nil
 }
 

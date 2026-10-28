@@ -1,6 +1,7 @@
 // Package secrets plans and generates the customer's app secrets (spec 8.4 `sealed secrets`, INTERFACES section
-// 9, D-043): which Secret Manager entries a stack needs, how missing values are generated, and how cross-app
-// references (`same_as: "<appId>/<NAME>"`) collapse two manifest entries into one stored secret.
+// 9, D-043, D-059): which Secret Manager entries a stack needs, how missing values are generated, and how
+// cross-app references (`same_as: "<appId>/<NAME>"`) collapse two manifest entries into one stored secret when
+// the source app shares that secret with the referencing app (`share_with: [<appId>]`).
 package secrets
 
 import (
@@ -25,6 +26,19 @@ type Secret struct {
 	// SameAs is "<appId>/<NAME>": the value is the referenced app's secret, stored once under that app's name
 	// (D-043). The key broker returns it under this app's name.
 	SameAs string `yaml:"same_as"`
+	// ShareWith lists the apps whose same_as may name this secret (D-059). A secret not shared with an app can
+	// never be referenced by it: the composer, the key broker and this CLI all refuse.
+	ShareWith []string `yaml:"share_with"`
+}
+
+// SharedWith reports whether the secret opts in to being referenced by app (D-059).
+func (s Secret) SharedWith(app string) bool {
+	for _, a := range s.ShareWith {
+		if a == app {
+			return true
+		}
+	}
+	return false
 }
 
 // App is the secrets view of one manifest.
@@ -94,6 +108,21 @@ func ParseManifest(data []byte) (*App, error) {
 			if ref == doc.ID {
 				return nil, fmt.Errorf("manifest %s: secret %s: same_as must name another app", doc.ID, s.Name)
 			}
+			if len(s.ShareWith) > 0 {
+				return nil, fmt.Errorf("manifest %s: secret %s: a same_as secret cannot be shared (share the original %s instead)", doc.ID, s.Name, s.SameAs)
+			}
+		}
+		shared := map[string]bool{}
+		for _, a := range s.ShareWith {
+			switch {
+			case !appIDRe.MatchString(a):
+				return nil, fmt.Errorf("manifest %s: secret %s: share_with entry %q is not an app id", doc.ID, s.Name, a)
+			case a == doc.ID:
+				return nil, fmt.Errorf("manifest %s: secret %s: share_with names the app itself", doc.ID, s.Name)
+			case shared[a]:
+				return nil, fmt.Errorf("manifest %s: secret %s: share_with lists %s twice", doc.ID, s.Name, a)
+			}
+			shared[a] = true
 		}
 		app.Secrets = append(app.Secrets, s)
 	}

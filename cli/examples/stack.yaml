@@ -14,11 +14,16 @@ keyBroker: https://sealed-key-broker-example-uc.a.run.app
 customer: "0x00000000000000000000000000000000000000c1"
 
 # Optional: zone (default <region>-a), machineType (default c3-standard-8), dataDiskGb (default 50),
-# salt (default derived from project and name, so a redeploy keeps its deploymentId),
-# bootBucket (default <project>-sealed-boot, created by sealed bootstrap).
+# salt (default derived from project and name only), bootBucket (default <project>-sealed-boot, created by
+# sealed bootstrap).
+# The salt picks the data disk key and the enclave signer (D-058): keep it across upgrades (new releases or a
+# changed config) and the new stack opens the same disk; a new salt means a fresh disk. sealed deploy --replace
+# upgrades a running VM in place and keeps its data disk.
 zone: us-central1-a
 
 # The approved OS image: its PlatformRegistry imageId and the GCE images it boots from.
+# debug: true only for a debug image (spec 5.8, development only): no production secrets, and the VM gets the
+# log writer identity from sealed bootstrap --debug-logging.
 image:
   id: "0x0000000000000000000000000000000000000000000000000000000000000000"
   boot: projects/example-images-1/global/images/sealed-os-0-6-1

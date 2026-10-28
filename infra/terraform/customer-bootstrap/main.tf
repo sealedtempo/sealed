@@ -34,10 +34,12 @@ locals {
   key_broker_name   = "sealed-key-broker"
   key_broker_sa_id  = "sealed-key-broker"
   deployer_sa_id    = "sealed-deployer"
+  debug_logs_sa_id  = "sealed-debug-logs"
   ghcr_remote_repo  = "sealed-ghcr"
   secret_prefix     = "sealed-"
   key_broker_sa_fqn = "${local.key_broker_sa_id}@${var.project_id}.iam.gserviceaccount.com"
   deployer_sa_fqn   = "${local.deployer_sa_id}@${var.project_id}.iam.gserviceaccount.com"
+  debug_logs_sa_fqn = "${local.debug_logs_sa_id}@${var.project_id}.iam.gserviceaccount.com"
 
   # Cloud Run pulls only from Artifact Registry and Docker Hub, so ghcr.io
   # images go through a remote repository. The digest is unchanged.
@@ -69,4 +71,5 @@ module "iam" {
   platform_service_account   = var.platform_service_account
   deployer_service_account   = local.deployer_sa_fqn
   key_broker_service_account = local.key_broker_sa_fqn
+  debug_logs_service_account = local.debug_logs_sa_fqn
 }

@@ -199,6 +199,13 @@ func (f *fakeCompute) GetInstance(_ context.Context, _, n string) (*gcp.Instance
 	}
 	return nil, nf()
 }
+func (f *fakeCompute) DeleteInstance(_ context.Context, _, n string) error {
+	if _, ok := f.instances[n]; !ok {
+		return nf()
+	}
+	delete(f.instances, n)
+	return nil
+}
 
 type fakeShared struct{ names []string }
 
@@ -226,6 +233,7 @@ func (f *fakeTerraform) Capture(_ context.Context, dir string, _ []string, args 
  "key_broker_service_account": {"value": "sealed-key-broker@acme-prod-4417.iam.gserviceaccount.com"},
  "key_broker_url": {"value": "https://sealed-key-broker-xyz-uc.a.run.app"},
  "subnetwork": {"value": "sealed-subnet"}, "boot_bucket": {"value": "acme-prod-4417-sealed-boot"},
+ "tempo_rpc_url": {"value": "https://rpc.tempo.xyz"}, "debug_log_service_account": {"value": ""},
  "kms_key_version": {"value": "projects/acme-prod-4417/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1"}
 }`), nil
 }
@@ -573,7 +581,7 @@ func TestSecretsSameAsIsStoredOnce(t *testing.T) {
 	cat := filepath.Join(h.dir, "cat")
 	os.MkdirAll(filepath.Join(cat, "gw"), 0o755)
 	os.MkdirAll(filepath.Join(cat, "agent"), 0o755)
-	os.WriteFile(filepath.Join(cat, "gw", "manifest.yaml"), []byte("id: gw\nsecrets:\n  - {name: APP_KEY_AGENT, description: x, generate: sk-hex32, optional: true}\n"), 0o644)
+	os.WriteFile(filepath.Join(cat, "gw", "manifest.yaml"), []byte("id: gw\nsecrets:\n  - {name: APP_KEY_AGENT, description: x, generate: sk-hex32, share_with: [agent]}\n"), 0o644)
 	os.WriteFile(filepath.Join(cat, "agent", "manifest.yaml"), []byte("id: agent\nsecrets:\n  - {name: GW_KEY, description: x, generate: none, same_as: gw/APP_KEY_AGENT}\n"), 0o644)
 	if code, _, errs := h.run("secrets", "set", "agent", "GW_KEY", "--generate", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "set that one (sealed secrets set gw APP_KEY_AGENT)") {
 		t.Fatalf("same_as set: %d %s", code, errs)
@@ -588,6 +596,22 @@ func TestSecretsSameAsIsStoredOnce(t *testing.T) {
 	code, out, _ = h.run("secrets", "list", "--apps", "agent,gw", "--catalog", cat, "--project", "acme-prod-4417")
 	if code != ExitOK || !strings.Contains(out, "same as gw/APP_KEY_AGENT (set)") {
 		t.Fatalf("list:\n%s", out)
+	}
+
+	// D-059: without share_with in gw's manifest, nothing is stored and every command says why.
+	os.WriteFile(filepath.Join(cat, "gw", "manifest.yaml"), []byte("id: gw\nsecrets:\n  - {name: APP_KEY_AGENT, description: x, generate: sk-hex32}\n"), 0o644)
+	delete(h.store.v, "sealed-gw-APP_KEY_AGENT")
+	if code, _, errs := h.run("secrets", "set", "--missing", "--apps", "agent,gw", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "gw does not share it with agent") {
+		t.Fatalf("unshared --missing: %d %s", code, errs)
+	}
+	if _, ok := h.store.v["sealed-gw-APP_KEY_AGENT"]; ok {
+		t.Fatal("an unshared reference was generated")
+	}
+	if code, _, errs := h.run("secrets", "set", "agent", "GW_KEY", "--generate", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "gw does not share it with agent (its share_with)") {
+		t.Fatalf("unshared set: %d %s", code, errs)
+	}
+	if code, _, errs := h.run("secrets", "list", "--apps", "agent,gw", "--catalog", cat, "--project", "acme-prod-4417"); code != ExitFailed || !strings.Contains(errs, "D-059") {
+		t.Fatalf("unshared list: %d %s", code, errs)
 	}
 }
 
@@ -647,6 +671,28 @@ relayOwner: "0x00000000000000000000000000000000000000b1"
 	if b, _ := os.ReadFile(filepath.Join(h.dir, "config.json")); !bytes.Contains(b, []byte(`"keyBroker":"https://kb.example.com"`)) {
 		t.Fatalf("config %s", b)
 	}
+	first := sum["deploymentId"]
+	// An upgrade (here a changed config) keeps the salt; the running VM is replaced only with --replace.
+	raw, _ := os.ReadFile(stack)
+	upgraded := h.write("stack-v2.yaml", string(raw)+"egressAdditions:\n  notes: [\"smtp.example.com:587\"]\n")
+	code, out, _ = h.run("deploy", "--config", upgraded, "--dev-allow-unbuilt", "--skip-secrets-check", "--plan")
+	if code != ExitNotApproved {
+		t.Fatalf("upgrade plan: %d %s", code, out)
+	}
+	sh2, _ := registry.ParseHash32(strings.Fields(out[strings.Index(out, "stackHash"):])[1])
+	h.chain.Approve(common.HexToAddress(w.Customer.Hex()), sh2, ids, w.ImageID)
+	if code, _, errs := h.run("deploy", "--config", upgraded, "--dev-allow-unbuilt", "--skip-secrets-check"); code != ExitFailed || !strings.Contains(errs, "--replace") {
+		t.Fatalf("upgrade without --replace: %d %s", code, errs)
+	}
+	code, out, errs = h.run("deploy", "--config", upgraded, "--dev-allow-unbuilt", "--skip-secrets-check", "--replace", "--json")
+	sum = nil
+	json.Unmarshal([]byte(out), &sum)
+	if code != ExitOK || sum["replaced"] != first || sum["deploymentId"] == first {
+		t.Fatalf("upgrade: %d %v %s", code, sum, errs)
+	}
+	if in := h.compute.instances["sealed-demo"]; deploy.DeploymentIDOf(in) != sum["deploymentId"] || len(h.compute.disks) != 1 {
+		t.Fatalf("after the upgrade: %v disks %d", deploy.DeploymentIDOf(in), len(h.compute.disks))
+	}
 	// Production mode refuses unbuilt images, and the dev flag needs SEALED_DEV_SIM.
 	if code, _, errs := h.run("deploy", "--config", stack, "--skip-secrets-check"); code != ExitFailed || !strings.Contains(errs, "unbuilt") {
 		t.Fatalf("unbuilt: %d %s", code, errs)
@@ -654,6 +700,55 @@ relayOwner: "0x00000000000000000000000000000000000000b1"
 	delete(h.env, "SEALED_DEV_SIM")
 	if code, _, _ := h.run("deploy", "--config", stack, "--dev-allow-unbuilt"); code != ExitUsage {
 		t.Fatal("dev flag without SEALED_DEV_SIM")
+	}
+}
+
+func TestDeployDebugImageCommand(t *testing.T) {
+	h := newHarness(t)
+	h.env["SEALED_DEV_SIM"] = "1"
+	w, _, _ := h.world(false)
+	h.chain.Images[w.ImageID].IsDebug = true
+	conn, _ := token.Encode(token.Connection{V: 1, Project: "acme-prod-4417", Region: "us-central1",
+		DeployerAccount: "sealed-deployer@acme-prod-4417.iam.gserviceaccount.com", KeyBrokerURL: "https://kb.example.com", Customer: w.Customer.Hex()})
+	body := fmt.Sprintf(`schema: sealed-deploy/v1
+name: dbg
+connection: %s
+image:
+  id: 0x%s
+  boot: projects/sealed-images-1/global/images/sealed-os-debug-0-6-1
+  systemDisk: projects/sealed-images-1/global/images/sealed-dstack-data-v1
+  debug: true
+apps:
+  - id: notes
+  - id: llm-gateway
+endpoints:
+  platformApi: https://api.sealed.example
+  relay: https://attest.relay.sealed.example
+  relayAttest: https://attest.relay.sealed.example/attest
+relayOwner: "0x00000000000000000000000000000000000000b1"
+`, conn, hex.EncodeToString(w.ImageID[:]))
+	stack := h.write("debug.yaml", body)
+	// The deployer can never attach the log writer (spec 8.6).
+	if code, _, errs := h.run("deploy", "--config", stack, "--dev-allow-unbuilt", "--as-deployer"); code != ExitUsage || !strings.Contains(errs, "deployer can never") {
+		t.Fatalf("debug as deployer: %d %s", code, errs)
+	}
+	// Without image.debug the debug image is refused.
+	if code, _, errs := h.run("deploy", "--config", h.write("nodebug.yaml", strings.Replace(body, "  debug: true\n", "", 1)), "--dev-allow-unbuilt"); code != ExitFailed || !strings.Contains(errs, "is a debug image") {
+		t.Fatalf("debug image without image.debug: %d %s", code, errs)
+	}
+	// No approval and no secrets needed: the key broker gives a debug image nothing.
+	code, out, errs := h.run("deploy", "--config", stack, "--dev-allow-unbuilt", "--json")
+	if code != ExitOK || !strings.Contains(errs, "DEBUG IMAGE") {
+		t.Fatalf("debug deploy: %d %s %s", code, out, errs)
+	}
+	var sum map[string]any
+	json.Unmarshal([]byte(out), &sum)
+	if sum["debug"] != true || sum["created"] != true {
+		t.Fatalf("summary %v", sum)
+	}
+	in := h.compute.instances["sealed-dbg"]
+	if in == nil || len(deploy.CheckDebugInstance(in, "sealed-debug-logs@acme-prod-4417.iam.gserviceaccount.com")) != 0 {
+		t.Fatalf("debug VM %+v", in)
 	}
 }
 
@@ -702,6 +797,59 @@ func TestBootstrapPrintsConnectionToken(t *testing.T) {
 	}
 	if code, _, _ := h.run("connect", "aws"); code != ExitUsage {
 		t.Fatal("connect aws")
+	}
+}
+
+// TestBootstrapNeverDropsTheCustomersRPC: the RPC the customer gave this command reaches the key broker's
+// variables when --tempo-rpc is not set (review F5), and is shown before Terraform runs.
+func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
+	base := []string{"bootstrap", "--plan", "--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
+		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
+		"--key-broker-image", "ghcr.io/sealedtempo/key-broker@sha256:" + strings.Repeat("ab", 32)}
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		args []string
+		want string
+	}{
+		"default":       {want: "https://rpc.tempo.xyz"},
+		"--rpc":         {args: []string{"--rpc", "https://tempo.customer-node.example/rpc"}, want: "https://tempo.customer-node.example/rpc"},
+		"TEMPO_RPC_URL": {env: map[string]string{"TEMPO_RPC_URL": "https://tempo.customer-node.example/env"}, want: "https://tempo.customer-node.example/env"},
+		"--tempo-rpc":   {args: []string{"--rpc", "https://reader.example", "--tempo-rpc", "https://broker.customer.example"}, want: "https://broker.customer.example"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			for k, v := range tc.env {
+				h.env[k] = v
+			}
+			work := filepath.Join(h.dir, "work")
+			code, _, errs := h.run(append(append(append([]string{}, base...), "--work-dir", work), tc.args...)...)
+			if code != ExitOK {
+				t.Fatalf("%d %s", code, errs)
+			}
+			var vars map[string]any
+			b, _ := os.ReadFile(filepath.Join(work, "terraform.tfvars.json"))
+			json.Unmarshal(b, &vars)
+			if vars["tempo_rpc_url"] != tc.want || vars["chain_id"] != float64(4217) || vars["enable_debug_logging"] != false {
+				t.Fatalf("vars %v", vars)
+			}
+			if !strings.Contains(errs, "The key broker will read Tempo chain 4217 through "+tc.want) {
+				t.Fatalf("effective RPC not shown: %s", errs)
+			}
+		})
+	}
+	h := newHarness(t)
+	work := filepath.Join(h.dir, "work")
+	if code, _, errs := h.run(append(append([]string{}, base...), "--work-dir", work, "--debug-logging", "--rpc", "http://plain.example")...); code != ExitUsage || !strings.Contains(errs, "https") {
+		t.Fatalf("plain http RPC for the broker: %d %s", code, errs)
+	}
+	if code, _, errs := h.run(append(append([]string{}, base...), "--work-dir", work, "--debug-logging")...); code != ExitOK {
+		t.Fatalf("%d %s", code, errs)
+	}
+	var vars map[string]any
+	b, _ := os.ReadFile(filepath.Join(work, "terraform.tfvars.json"))
+	json.Unmarshal(b, &vars)
+	if vars["enable_debug_logging"] != true {
+		t.Fatalf("--debug-logging: %v", vars)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/sealed-dev/sealed/cli/internal/embedded"
 	"github.com/sealed-dev/sealed/cli/internal/fatimg"
 	"github.com/sealed-dev/sealed/cli/internal/gcp"
 	"github.com/sealed-dev/sealed/cli/internal/settings"
@@ -82,6 +84,15 @@ func (f *fakeCompute) GetInstance(_ context.Context, zone, name string) (*gcp.In
 		return in, nil
 	}
 	return nil, notFound()
+}
+
+func (f *fakeCompute) DeleteInstance(_ context.Context, zone, name string) error {
+	f.calls = append(f.calls, "delete "+name)
+	if _, ok := f.instances[zone+"/"+name]; !ok {
+		return notFound()
+	}
+	delete(f.instances, zone+"/"+name)
+	return nil
 }
 
 type fakeShared struct{ files map[string][]byte }
@@ -532,5 +543,275 @@ func TestExampleStackFileParses(t *testing.T) {
 	}
 	if s.Name != "demo" || len(s.Apps) != 2 || s.Apps[0].Release != "latest" || s.Names().DataDisk != "sealed-demo-data" {
 		t.Fatalf("%+v", s)
+	}
+}
+
+func TestDebugInstanceGetsOnlyTheLogWriter(t *testing.T) {
+	sa := DebugLogServiceAccount("acme-prod-4417")
+	if sa != "sealed-debug-logs@acme-prod-4417.iam.gserviceaccount.com" {
+		t.Fatal(sa)
+	}
+	params := InstanceParams{Project: "acme-prod-4417", Region: "us-central1", Zone: "us-central1-a", Names: (&StackFile{Name: "dbg"}).Names(),
+		MachineType: "c3-standard-8", DataDiskSelfLink: "d", DeploymentID: "0x" + strings.Repeat("cd", 32), DebugLogSA: sa}
+	in := BuildInstance(params)
+	if len(in.ServiceAccounts) != 1 || in.ServiceAccounts[0].Email != sa || strings.Join(in.ServiceAccounts[0].Scopes, ",") != "https://www.googleapis.com/auth/logging.write" {
+		t.Fatalf("debug identity %+v", in.ServiceAccounts)
+	}
+	if in.Labels[VariantLabel] != "debug" || !strings.Contains(in.Description, "DEBUG") {
+		t.Fatalf("labels %v description %q", in.Labels, in.Description)
+	}
+	if p := CheckDebugInstance(in, sa); len(p) != 0 {
+		t.Fatal(p)
+	}
+	// Checked as production, the same VM fails: production VMs never have a service account.
+	if p := CheckInstance(in); len(p) == 0 {
+		t.Fatal("a VM with a service account passed the production check")
+	}
+	// A production VM never passes as a debug VM either, and carries no identity.
+	prod := BuildInstance(InstanceParams{Names: (&StackFile{Name: "x1"}).Names(), Zone: "z", Region: "r", Project: "p"})
+	if len(prod.ServiceAccounts) != 0 || prod.Labels[VariantLabel] != "production" || len(CheckDebugInstance(prod, sa)) == 0 {
+		t.Fatalf("production %+v %v", prod.ServiceAccounts, prod.Labels)
+	}
+	if len(CheckDebugInstance(in, "")) == 0 {
+		t.Fatal("a debug check without an identity passed")
+	}
+	for name, mut := range map[string]func(*gcp.Instance){
+		"broad scope": func(i *gcp.Instance) {
+			i.ServiceAccounts[0].Scopes = []string{"https://www.googleapis.com/auth/cloud-platform"}
+		},
+		"extra scope": func(i *gcp.Instance) {
+			i.ServiceAccounts[0].Scopes = append(i.ServiceAccounts[0].Scopes, "https://www.googleapis.com/auth/devstorage.read_only")
+		},
+		"other identity": func(i *gcp.Instance) {
+			i.ServiceAccounts[0].Email = "sealed-key-broker@acme-prod-4417.iam.gserviceaccount.com"
+		},
+		"two identities": func(i *gcp.Instance) { i.ServiceAccounts = append(i.ServiceAccounts, i.ServiceAccounts[0]) },
+		"no identity":    func(i *gcp.Instance) { i.ServiceAccounts = nil },
+		"not labeled":    func(i *gcp.Instance) { delete(i.Labels, VariantLabel) },
+		"serial port":    func(i *gcp.Instance) { i.Metadata.Items[3].Value = "TRUE" },
+	} {
+		c := BuildInstance(params)
+		mut(c)
+		if len(CheckDebugInstance(c, sa)) == 0 {
+			t.Errorf("%s: not detected", name)
+		}
+	}
+	// The names and the scope match the bootstrap module (debug_logging.tf, modules/iam).
+	mod := embedded.BootstrapModule()
+	main, _ := fs.ReadFile(mod, "main.tf")
+	iam, _ := fs.ReadFile(mod, "modules/iam/main.tf")
+	if !strings.Contains(string(main), `debug_logs_sa_id  = "`+DebugLogAccountID+`"`) || !strings.Contains(string(iam), `debug_vm_scopes      = ["`+DebugLogScopes[0]+`"]`) {
+		t.Fatal("the debug identity name or scope drifted from infra/terraform/customer-bootstrap")
+	}
+}
+
+// debugRig is a rig whose image is registered as a debug image.
+func debugRig(t *testing.T) *rig {
+	r := newRig(t)
+	r.chain.Images[testkit.SimImageID(false)].IsDebug = true
+	return r
+}
+
+func TestDeployDebugImage(t *testing.T) {
+	ctx := context.Background()
+	// image.debug on a production image is refused: a production VM never gets an identity.
+	r := newRig(t)
+	s, _ := ParseStackFile([]byte(strings.Replace(stackYAML(t, ""), "  vmConfig:", "  debug: true\n  vmConfig:", 1)))
+	if !s.Image.Debug {
+		t.Fatal("image.debug not parsed")
+	}
+	if _, err := r.d.Prepare(ctx, s, true); err == nil || !strings.Contains(err.Error(), "production VMs never get a service account") {
+		t.Fatalf("image.debug on a production image: %v", err)
+	}
+
+	r = debugRig(t)
+	store := &memSecrets{names: map[string]bool{}}
+	r.d.Secrets = store
+	p, err := r.d.Prepare(ctx, s, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Debug || p.DebugLogSA != "sealed-debug-logs@acme-prod-4417.iam.gserviceaccount.com" || p.Approval.Approved || len(p.MissingSecrets) == 0 {
+		t.Fatalf("plan debug=%v sa=%q approval=%+v missing=%v", p.Debug, p.DebugLogSA, p.Approval, p.MissingSecrets)
+	}
+	if composerHasDebug() {
+		if !bytes.Contains(p.ConfigJSON, []byte(`"debug":true`)) {
+			t.Fatalf("debug config %s", p.ConfigJSON)
+		}
+	} else if !strings.Contains(r.out.String(), "has no config.debug") {
+		t.Fatalf("no warning about the missing config.debug:\n%s", r.out)
+	}
+	// Never approvable and never given secrets, so neither gates a debug VM.
+	out, err := r.d.Apply(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Created || !out.Debug {
+		t.Fatalf("outcome %+v", out)
+	}
+	in := r.compute.instances["us-central1-a/sealed-demo"]
+	if p := CheckDebugInstance(in, "sealed-debug-logs@acme-prod-4417.iam.gserviceaccount.com"); len(p) != 0 {
+		t.Fatal(p)
+	}
+	if d := r.compute.disks["us-central1-a/sealed-demo-data"]; d.Labels[VariantLabel] != "debug" {
+		t.Fatalf("data disk labels %v", d.Labels)
+	}
+
+	// A debug VM never gets a production deployment's data disk.
+	r = debugRig(t)
+	r.compute.disks["us-central1-a/sealed-demo-data"] = &gcp.Disk{Name: "sealed-demo-data", Labels: map[string]string{VariantLabel: "production", DiskIDLabel: DiskID(customer.Hex(), s.SaltHex())}}
+	p, err = r.d.Prepare(ctx, s, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.d.Apply(ctx, p); err == nil || !strings.Contains(err.Error(), "never gets production data") {
+		t.Fatalf("debug VM on a production disk: %v", err)
+	}
+	if _, ok := r.compute.instances["us-central1-a/sealed-demo"]; ok {
+		t.Fatal("a VM was created")
+	}
+	// Nor an unlabeled one (it may hold production data).
+	r.compute.disks["us-central1-a/sealed-demo-data"].Labels = nil
+	if _, err := r.d.Apply(ctx, p); err == nil || !strings.Contains(err.Error(), "never gets production data") {
+		t.Fatalf("debug VM on an unlabeled disk: %v", err)
+	}
+
+	// A revoked debug image is refused.
+	r = debugRig(t)
+	r.chain.Images[testkit.SimImageID(false)].Status = chain.ImageRevoked
+	if _, err := r.d.Prepare(ctx, s, true); err == nil || !strings.Contains(err.Error(), "not active") {
+		t.Fatalf("revoked debug image: %v", err)
+	}
+}
+
+// TestDeployUpgradeKeepsSaltAndDisk: D-058. The salt depends only on project and name, so an upgrade (here a
+// changed config, which changes the stack and the deploymentId) keeps it, and with it the data disk key. The old VM
+// is replaced only with Replace, after the kept disk was checked.
+func TestDeployUpgradeKeepsSaltAndDisk(t *testing.T) {
+	ctx := context.Background()
+	base, _ := ParseStackFile([]byte(stackYAML(t, "")))
+	for _, edit := range [][2]string{
+		{"  - id: llm-gateway\n    release: 2.3.4\n", ""},
+		{"    release: 2.3.4", "    release: 9.9.9"},
+		{fmt.Sprintf("id: 0x%x", testkit.SimImageID(false)), "id: 0x" + strings.Repeat("ab", 32)},
+		{`notes: ["smtp.example.com:587"]`, `notes: ["smtp.example.com:465"]`},
+	} {
+		up, err := ParseStackFile([]byte(strings.Replace(stackYAML(t, ""), edit[0], edit[1], 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if up.SaltHex() != base.SaltHex() {
+			t.Fatalf("%q changed the salt", edit[1])
+		}
+	}
+
+	r := newRig(t)
+	first := r.plan(t, "")
+	r.approve(first)
+	first = r.plan(t, "")
+	if _, err := r.d.Apply(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	disk := r.compute.disks["us-central1-a/sealed-demo-data"]
+	if disk.Labels[DiskIDLabel] != DiskID(customer.Hex(), base.SaltHex()) || disk.Labels[VariantLabel] != "production" || len(disk.Labels[DiskIDLabel]) != 40 {
+		t.Fatalf("data disk labels %v", disk.Labels)
+	}
+
+	upgraded := strings.Replace(stackYAML(t, ""), `notes: ["smtp.example.com:587"]`, `notes: ["smtp.example.com:465"]`, 1)
+	plan := func() *Plan {
+		s, err := ParseStackFile([]byte(upgraded))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := r.d.Prepare(ctx, s, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	next := plan()
+	if next.Result.DeploymentID == first.Result.DeploymentID || next.Result.StackHash == first.Result.StackHash {
+		t.Fatal("the upgrade did not change the stack")
+	}
+	c1, _ := composer.ParseConfig(first.ConfigJSON)
+	c2, _ := composer.ParseConfig(next.ConfigJSON)
+	if c1.Salt != c2.Salt || c1.Salt != base.SaltHex() {
+		t.Fatalf("salt %s then %s", c1.Salt, c2.Salt)
+	}
+	r.approve(next)
+	next = plan()
+
+	// Without Replace the running VM is left alone, and the error says how to upgrade.
+	r.compute.calls = nil
+	if _, err := r.d.Apply(ctx, next); err == nil || !strings.Contains(err.Error(), "--replace") || !strings.Contains(err.Error(), "D-058") || !strings.Contains(err.Error(), first.Result.DeploymentID.Hex()) {
+		t.Fatalf("upgrade without --replace: %v", err)
+	}
+	for _, c := range r.compute.calls {
+		if strings.HasPrefix(c, "delete") || strings.HasPrefix(c, "instance") {
+			t.Fatalf("changed the running VM: %s", c)
+		}
+	}
+
+	// A changed salt would need another disk: refused before the old VM is touched.
+	r.d.Replace = true
+	other := strings.Replace(upgraded, "name: demo", "name: demo\nsalt: 0x"+strings.Repeat("ee", 32), 1)
+	s, _ := ParseStackFile([]byte(other))
+	po, err := r.d.Prepare(ctx, s, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.approve(po)
+	po, _ = r.d.Prepare(ctx, s, true)
+	r.compute.calls = nil
+	if _, err := r.d.Apply(ctx, po); err == nil || !strings.Contains(err.Error(), "another wallet or salt") {
+		t.Fatalf("new salt on the old disk: %v", err)
+	}
+	for _, c := range r.compute.calls {
+		if strings.HasPrefix(c, "delete") {
+			t.Fatal("the old VM was deleted before the disk check")
+		}
+	}
+
+	// With Replace: the old VM goes, the disk stays, the new VM runs the new deployment on it.
+	r.compute.calls = nil
+	out, err := r.d.Apply(ctx, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Replaced != first.Result.DeploymentID.Hex() || !out.Created || out.DeploymentID != next.Result.DeploymentID.Hex() {
+		t.Fatalf("outcome %+v", out)
+	}
+	calls := strings.Join(r.compute.calls, "|")
+	if !strings.Contains(calls, "delete sealed-demo|instance sealed-demo ") {
+		t.Fatalf("calls %s", calls)
+	}
+	if r.compute.disks["us-central1-a/sealed-demo-data"] != disk {
+		t.Fatal("the data disk was recreated")
+	}
+	in := r.compute.instances["us-central1-a/sealed-demo"]
+	if DeploymentIDOf(in) != next.Result.DeploymentID.Hex() || !strings.HasSuffix(in.Disks[3].Source, "/disks/sealed-demo-data") || len(CheckInstance(in)) != 0 {
+		t.Fatalf("new VM %+v", in)
+	}
+
+	// A VM whose data disk would go with it is never replaced, and neither is one sealed deploy did not create.
+	r.compute.instances["us-central1-a/sealed-demo"].Disks[3].AutoDelete = true
+	if _, err := r.d.Apply(ctx, first); err == nil || !strings.Contains(err.Error(), "data disk would be deleted") {
+		t.Fatalf("auto-delete data disk: %v", err)
+	}
+	r.compute.instances["us-central1-a/sealed-demo"].Metadata = nil
+	if _, err := r.d.Apply(ctx, first); err == nil || !strings.Contains(err.Error(), "not created by sealed deploy") {
+		t.Fatalf("foreign VM: %v", err)
+	}
+}
+
+func TestDeployWarnsOnUnlabeledDataDisk(t *testing.T) {
+	r := newRig(t)
+	r.approve(r.plan(t, ""))
+	r.compute.disks["us-central1-a/sealed-demo-data"] = &gcp.Disk{Name: "sealed-demo-data", SelfLink: "projects/acme-prod-4417/zones/us-central1-a/disks/sealed-demo-data"}
+	if _, err := r.d.Apply(context.Background(), r.plan(t, "")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.out.String(), "has no sealed-disk-id label") {
+		t.Fatalf("no warning:\n%s", r.out)
 	}
 }

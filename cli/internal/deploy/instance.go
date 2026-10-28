@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sealed-dev/sealed/cli/internal/gcp"
@@ -15,6 +16,21 @@ const SubnetName = "sealed-subnet"
 
 // DataDeviceName is the device name sealed-agent opens with LUKS (/dev/disk/by-id/google-sealed-data).
 const DataDeviceName = "sealed-data"
+
+// DebugLogAccountID is the log writer service account the bootstrap creates with enable_debug_logging
+// (infra/terraform/customer-bootstrap/debug_logging.tf). Only debug VMs get it (spec 5.8).
+const DebugLogAccountID = "sealed-debug-logs"
+
+// DebugLogScopes are the only OAuth scopes a debug VM gets: sealed-logship writes container logs, nothing else.
+var DebugLogScopes = []string{"https://www.googleapis.com/auth/logging.write"}
+
+// DebugLogServiceAccount is the debug log writer of a project.
+func DebugLogServiceAccount(project string) string {
+	return DebugLogAccountID + "@" + project + ".iam.gserviceaccount.com"
+}
+
+// VariantLabel marks a VM and its data disk as running the production or the debug image.
+const VariantLabel = "sealed-variant"
 
 // Metadata the VM must carry (spec 5.9). Values are the strings Compute Engine expects.
 var requiredMetadata = map[string]string{
@@ -37,17 +53,26 @@ type InstanceParams struct {
 	NatIP                 string // static IP
 	DeploymentID          string // 0x hex, public
 	Labels                map[string]string
+	// DebugLogSA is set only for a debug image (spec 5.8): the VM then gets this log writer identity with
+	// DebugLogScopes. Production VMs never have a service account.
+	DebugLogSA string
 }
 
 func diskType(zone string) string { return "zones/" + zone + "/diskTypes/pd-balanced" }
 
-// BuildInstance returns the instance resource. It never sets a service account (the list is explicitly empty, so
-// no scopes either), turns OS Login, the serial port and its logging off, blocks project SSH keys, and requires
-// TDX with host maintenance TERMINATE. Secure boot stays off because dstack's UKI is not signed for the default
-// db; the vTPM stays on because dstack mixes its key into the instance id.
+// BuildInstance returns the instance resource. A production VM never gets a service account (the list is
+// explicitly empty, so no scopes either); a debug VM gets only the log writer identity with the logging.write
+// scope. Both turn OS Login, the serial port and its logging off, block project SSH keys, and require TDX with
+// host maintenance TERMINATE. Secure boot stays off because dstack's UKI is not signed for the default db; the
+// vTPM stays on because dstack mixes its key into the instance id.
 func BuildInstance(p InstanceParams) *gcp.Instance {
 	t := true
-	labels := map[string]string{"sealed": "deployment", "sealed-name": strings.TrimPrefix(p.Names.Instance, "sealed-")}
+	variant, description, accounts := "production", "Sealed confidential deployment ", []gcp.ServiceAccount{}
+	if p.DebugLogSA != "" {
+		variant, description = "debug", "Sealed DEBUG deployment (no production secrets, container logs to Cloud Logging) "
+		accounts = []gcp.ServiceAccount{{Email: p.DebugLogSA, Scopes: append([]string(nil), DebugLogScopes...)}}
+	}
+	labels := map[string]string{"sealed": "deployment", "sealed-name": strings.TrimPrefix(p.Names.Instance, "sealed-"), VariantLabel: variant}
 	if len(p.DeploymentID) >= 18 {
 		labels["sealed-deployment"] = strings.TrimPrefix(p.DeploymentID, "0x")[:16]
 	}
@@ -63,7 +88,7 @@ func BuildInstance(p InstanceParams) *gcp.Instance {
 	}
 	return &gcp.Instance{
 		Name:        p.Names.Instance,
-		Description: "Sealed confidential deployment " + p.DeploymentID,
+		Description: description + p.DeploymentID,
 		MachineType: "zones/" + p.Zone + "/machineTypes/" + p.MachineType,
 		Labels:      labels,
 		Tags:        &gcp.Tags{Items: []string{VMTag}},
@@ -89,19 +114,56 @@ func BuildInstance(p InstanceParams) *gcp.Instance {
 				Type: "ONE_TO_ONE_NAT", Name: "External NAT", NatIP: p.NatIP, NetworkTier: "PREMIUM",
 			}},
 		}},
-		ServiceAccounts:            []gcp.ServiceAccount{},
+		ServiceAccounts:            accounts,
 		Scheduling:                 &gcp.Scheduling{OnHostMaintenance: "TERMINATE", AutomaticRestart: &t},
 		ConfidentialInstanceConfig: &gcp.ConfidentialInstanceConfig{ConfidentialInstanceType: "TDX"},
 		ShieldedInstanceConfig:     &gcp.ShieldedInstanceConfig{EnableSecureBoot: false, EnableVtpm: true, EnableIntegrityMonitoring: true},
 	}
 }
 
-// CheckInstance lists every way in which a VM read back from the API violates spec 5.9. An empty list means it
-// complies.
-func CheckInstance(in *gcp.Instance) []string {
+// CheckInstance lists every way in which a production VM read back from the API violates spec 5.9. An empty list
+// means it complies.
+func CheckInstance(in *gcp.Instance) []string { return checkInstance(in, "") }
+
+// CheckDebugInstance is CheckInstance for a debug VM (spec 5.8): its one exception is exactly the log writer
+// identity debugLogSA with only the logging.write scope, and the debug label.
+func CheckDebugInstance(in *gcp.Instance, debugLogSA string) []string {
+	if debugLogSA == "" {
+		return []string{"no debug log writer identity named"}
+	}
+	return checkInstance(in, debugLogSA)
+}
+
+// DeploymentIDOf is the sealed-deployment-id metadata of a VM sealed deploy created ("" otherwise).
+func DeploymentIDOf(in *gcp.Instance) string {
+	if in.Metadata != nil {
+		for _, it := range in.Metadata.Items {
+			if it.Key == "sealed-deployment-id" {
+				return it.Value
+			}
+		}
+	}
+	return ""
+}
+
+func checkInstance(in *gcp.Instance, debugLogSA string) []string {
 	var problems []string
-	if len(in.ServiceAccounts) != 0 {
+	switch {
+	case debugLogSA == "" && len(in.ServiceAccounts) != 0:
 		problems = append(problems, fmt.Sprintf("has service account %s", in.ServiceAccounts[0].Email))
+	case debugLogSA == "" && in.Labels[VariantLabel] == "debug":
+		problems = append(problems, "is labeled as a debug VM")
+	case debugLogSA != "":
+		if len(in.ServiceAccounts) != 1 || in.ServiceAccounts[0].Email != debugLogSA || !slices.Equal(in.ServiceAccounts[0].Scopes, DebugLogScopes) {
+			var got []string
+			for _, a := range in.ServiceAccounts {
+				got = append(got, a.Email+" "+strings.Join(a.Scopes, ","))
+			}
+			problems = append(problems, fmt.Sprintf("a debug VM must have exactly %s with scope %s, has [%s]", debugLogSA, strings.Join(DebugLogScopes, ","), strings.Join(got, "; ")))
+		}
+		if in.Labels[VariantLabel] != "debug" {
+			problems = append(problems, "the debug VM is not labeled "+VariantLabel+"=debug")
+		}
 	}
 	if in.ConfidentialInstanceConfig == nil || in.ConfidentialInstanceConfig.ConfidentialInstanceType != "TDX" {
 		problems = append(problems, "confidential compute TDX is not on")
