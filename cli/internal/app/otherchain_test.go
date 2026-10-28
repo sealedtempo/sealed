@@ -175,6 +175,9 @@ func TestBootstrapBrokerFeesAndAllowlist(t *testing.T) {
 		if r.code != ExitOK || r.vars["fee_splitter"] != "0x00000000000000000000000000000000000000e4" || r.vars["fee_token"] != nil {
 			t.Fatalf("%d %s %v", r.code, r.errs, r.vars)
 		}
+		if strings.Contains(r.errs, "D-060") {
+			t.Fatalf("mainnet chain warned about: %s", r.errs)
+		}
 		if !strings.Contains(r.errs, "It requires FeeSplitter 0x00000000000000000000000000000000000000e4 and fee token (mainnet's)") {
 			t.Fatalf("the broker's fee contracts are not shown: %s", r.errs)
 		}
@@ -186,6 +189,9 @@ func TestBootstrapBrokerFeesAndAllowlist(t *testing.T) {
 		if r.code != ExitOK || r.vars["chain_id"] != float64(testnetChainID) || r.vars["fee_splitter"] != "0x00000000000000000000000000000000000000e4" ||
 			r.vars["fee_token"] != "0x20c0000000000000000000000000000000000001" || r.vars["tempo_rpc_url"] != "https://rpc.testnet.example" {
 			t.Fatalf("%d %s %v", r.code, r.errs, r.vars)
+		}
+		if !strings.Contains(r.errs, "refuses to start on chain 42431 (D-060)") {
+			t.Fatalf("no warning that a production broker serves only mainnet: %s", r.errs)
 		}
 	})
 	t.Run("another chain without a fee token is refused", func(t *testing.T) {

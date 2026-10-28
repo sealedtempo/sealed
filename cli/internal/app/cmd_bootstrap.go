@@ -11,6 +11,7 @@ import (
 	"github.com/sealed-dev/sealed/cli/internal/bootstrap"
 	"github.com/sealed-dev/sealed/cli/internal/embedded"
 	"github.com/sealed-dev/sealed/cli/internal/settings"
+	"github.com/sealed-dev/sealed/verifier/chain"
 )
 
 func runBootstrap(ctx context.Context, args []string, e *Env) error {
@@ -110,6 +111,9 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	}
 	if len(p.AllowedImages) > 0 {
 		e.errorf("It releases only to your %d allowed image(s): %s.\n", len(p.AllowedImages), strings.Join(p.AllowedImages, ", "))
+	}
+	if p.ChainID != chain.MainnetChainID {
+		e.errorf("Warning: a production key broker image serves only Tempo mainnet (4217) and refuses to start on chain %d (D-060); other chains need a dev build of the broker.\n", p.ChainID)
 	}
 	out, err := bootstrap.Run(ctx, e.terraform(), bootstrap.Options{Dir: workDir, PlanOnly: planOnly, AutoApprove: yes, AccessToken: accessToken})
 	if err != nil {
