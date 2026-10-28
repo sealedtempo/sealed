@@ -23,6 +23,13 @@ import { type SettlementResult, Settler } from "./payments/settler.js";
 import { liveAttestation } from "./attest.js";
 import { dropPrivileges, parseRunAs } from "./privileges.js";
 import { every } from "./scheduler.js";
+import {
+  AGENT_SERVICE,
+  checkSecretMounts,
+  declaredSecretsFromAppCompose,
+  filesMountedIndividually,
+  secretMountsFromAppCompose,
+} from "./secretMounts.js";
 import { type SecretsLayout, writePayerSecrets, writeReadyFlag, writeSecrets } from "./secrets.js";
 import { type ApiHandlers, createApiServer, listen, UsageRejected } from "./server.js";
 import type { AgentSettings } from "./settings.js";
@@ -109,6 +116,9 @@ export class Agent {
     await checkMountedCopy(s.stackPath, requireMeasured(measuredConfigs(appCompose), COMPOSE_CONFIGS.stack), "stack file");
     await checkMountedCopy(s.caddyfilePath, ctx.caddyfiles.normal, "Caddyfile");
     await checkMountedCopy(s.caddyfilePaymentNeededPath, ctx.caddyfiles.paymentNeeded, "payment-needed Caddyfile");
+    // D-042: no service may see another owner's secrets; checked before any secret is released.
+    const secretMounts = secretMountsFromAppCompose(appCompose);
+    checkSecretMounts(secretMounts, ctx.stack);
     this.ctx = ctx;
     const log = this.log.child({ deploymentId: ctx.deploymentId });
     log.info("booting", { stackHash: ctx.stackHash, configHash: ctx.configHash, apps: ctx.apps.map((a) => a.id), devSim: s.devSim });
@@ -143,7 +153,19 @@ export class Agent {
     this.store = await StateStore.open(join(stateDir, "state.json"), this.clock.now());
 
     const layout: SecretsLayout = { secretsDir: s.secretsDir, readyDir: s.readyDir, requireTmpfs: s.requireTmpfs, fsType: this.deps.fsType };
-    await writeSecrets(layout, keys.secrets, new Set(["_gate", ...ctx.apps.map((a) => a.id)]));
+    const optional = new Map(ctx.stack.apps.map((a) => [a.id, new Set(a.secrets.filter((x) => x.optional).map((x) => x.name))]));
+    const written = await writeSecrets(layout, keys.secrets, new Set(["_gate", ...ctx.apps.map((a) => a.id)]), {
+      individually: filesMountedIndividually(secretMounts),
+      isOptional: (owner, name) => optional.get(owner)?.has(name) ?? false,
+      onDisk: new Set(secretMounts.filter((m) => m.service === AGENT_SERVICE && m.name === undefined).map((m) => m.owner)),
+    });
+    for (const d of declaredSecretsFromAppCompose(appCompose)) {
+      if (!d.optional && keys.secrets[d.app]?.[d.name] === undefined) {
+        log.error("a required secret was not released; the service that declares it cannot start", { app: d.app, secret: d.name, service: d.service });
+      }
+    }
+    if (written.placeholders.length > 0) log.info("optional secrets not released, mounted empty", { secrets: written.placeholders });
+    if (written.skipped.length > 0) log.info("released secrets that no container mounts were not written", { owners: written.skipped });
     if (ctx.payerIp) await writePayerSecrets(layout, keys.enclaveKey, config.settlement.spendLimitPerDay);
 
     const runAs = parseRunAs(s.runAs);

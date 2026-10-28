@@ -52,6 +52,30 @@ describe("tmpfs secrets (INTERFACES 14-15)", () => {
     expect(await readFile(join(layout.secretsDir, "crm", "APP_SECRET"), "utf8")).toBe("s");
   });
 
+  // D-042 (composer 1.2): a service mounts each declared secret as its own file, and Docker cannot
+  // start a container whose mount source is missing.
+  it("writes an empty placeholder for an optional secret mounted alone, and reports a missing required one", async () => {
+    const individually = new Map([["crm", new Set(["APP_SECRET", "SMTP_PASSWORD", "DB_PASSWORD"])]]);
+    const isOptional = (o: string, n: string) => o === "crm" && n === "SMTP_PASSWORD";
+    const r = await writeSecrets(layout, { crm: { APP_SECRET: "s1" } }, owners, { individually, isOptional });
+    expect(r).toEqual({ placeholders: ["crm/SMTP_PASSWORD"], missing: ["crm/DB_PASSWORD"], skipped: [] });
+    expect(await readFile(join(layout.secretsDir, "crm", "SMTP_PASSWORD"), "utf8")).toBe("");
+    expect((await readdir(join(layout.secretsDir, "crm"))).sort()).toEqual(["APP_SECRET", "SMTP_PASSWORD"]);
+    // Released later: the placeholder becomes the value; an owner with nothing released still gets its placeholders.
+    await writeSecrets(layout, { crm: { APP_SECRET: "s1", SMTP_PASSWORD: "smtp" } }, owners, { individually, isOptional });
+    expect(await readFile(join(layout.secretsDir, "crm", "SMTP_PASSWORD"), "utf8")).toBe("smtp");
+    await rm(join(layout.secretsDir, "crm"), { recursive: true });
+    const r2 = await writeSecrets(layout, {}, owners, { individually, isOptional });
+    expect(r2.placeholders).toEqual(["crm/SMTP_PASSWORD"]);
+  });
+
+  it("validates but does not write owners whose directory the compose does not mount into the agent", async () => {
+    const r = await writeSecrets(layout, { crm: { APP_SECRET: "s" }, _gate: { GATE_PASSWORD_BCRYPT: "$2a$" } }, owners, { onDisk: new Set(["crm"]) });
+    expect(r.skipped).toEqual(["_gate"]);
+    await expect(stat(join(layout.secretsDir, "_gate"))).rejects.toThrow();
+    await expect(writeSecrets(layout, { ghost: { A: "1" } }, owners, { onDisk: new Set(["crm"]) })).rejects.toThrow("invalid secret owner");
+  });
+
   it("writes the payer key and limit, then the ready marker inside the shared ready directory", async () => {
     await writePayerSecrets(layout, "0xkey", "2000000");
     expect(await readFile(join(layout.secretsDir, "sealed-mpp-payer", "ENCLAVE_KEY"), "utf8")).toBe("0xkey");
