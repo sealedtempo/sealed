@@ -4,3 +4,4 @@ packages:
   - runtime/mpp-payer
   - runtime/relay
   - catalog/apps/scraper/runner
+  - scripts/devnet

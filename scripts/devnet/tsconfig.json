@@ -1,0 +1,31 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rootDir": "../..",
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "paths": {
+      "@sealed/core": [
+        "../../packages/core/src/index.ts"
+      ],
+      "@sealed/core/testing": [
+        "../../packages/core/src/testing/index.ts"
+      ],
+      "@sealed/agent/dist/src/*": [
+        "../../runtime/agent/src/*"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts"
+  ]
+}
