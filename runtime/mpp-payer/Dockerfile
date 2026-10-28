@@ -21,7 +21,10 @@ ENV NODE_ENV=production \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     DO_NOT_TRACK=1
 COPY --from=build --chown=root:root /out /app
-# Spend state (the day's debits) lives in the container's writable layer, so a restart keeps it.
+# Payer state: the day's debits, the channel journal (descriptors for deposit recovery) and the
+# stored session channel. In the container's writable layer a restart keeps it; a persistent mount
+# here (owned by node, uid 1000) also keeps it across image updates and VM replacement. After
+# SIGTERM the payer needs up to 38 s (cooperative channel close), so stop_grace_period >= 45s.
 RUN install -d -o node -g node -m 0700 /var/lib/sealed-mpp-payer
 WORKDIR /app
 USER node

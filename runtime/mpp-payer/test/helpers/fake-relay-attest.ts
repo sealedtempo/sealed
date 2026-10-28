@@ -55,7 +55,8 @@ type VerifierState = {
   status?: number
   /** Check names to leave out of a passing report (a verifierd ignoring an option). */
   omit?: string[]
-  mode?: string
+  /** null: the report carries no mode at all. */
+  mode?: string | null
   stackHash?: string
   down?: boolean
 }
@@ -78,7 +79,7 @@ export function fakeVerifierd(initial: VerifierState = { ok: true }) {
     return Response.json({
       ok: state.ok,
       simulated: state.simulated ?? false,
-      mode: state.mode ?? 'live_submitted',
+      ...(state.mode === null ? {} : { mode: state.mode ?? 'live_submitted' }),
       stackHash: state.stackHash ?? sha256Hex(body.attest?.appCompose ?? ''),
       deploymentId: '0x' + '77'.repeat(32),
       verifiedAt: 1,

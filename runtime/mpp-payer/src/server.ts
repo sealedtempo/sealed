@@ -1,4 +1,5 @@
 import { type Context, Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { GateState } from './attestation-gate.js'
 import { CompletionAccumulator, sseFrame } from './openai.js'
 import { type RelayResult, RelaySessionFailedError } from './relay-client.js'
@@ -6,6 +7,9 @@ import { RelayChannelError } from './relay-transport.js'
 import { sseData } from './sse.js'
 import { BudgetUnavailableError } from './shared-budget.js'
 import { PaymentPolicyError, SpendLimitError } from './spend-guard.js'
+
+/** The relay refuses bodies above 4 MiB (runtime/relay DEFAULT_MAX_BODY_BYTES); the payer stops reading there too. */
+export const MAX_BODY_BYTES = 4 * 1024 * 1024
 
 export type PayerDeps = {
   gate: { ensureFresh(): Promise<GateState>; isOpen(): boolean }
@@ -120,6 +124,11 @@ export function createPayerApp(deps: PayerDeps): Hono {
       return error(502, 'relay_unreachable', 'relay model list unavailable')
     }
   })
+
+  app.post(
+    '/v1/chat/completions',
+    bodyLimit({ maxSize: MAX_BODY_BYTES, onError: () => error(413, 'request_too_large', `request body exceeds ${MAX_BODY_BYTES} bytes`) }),
+  )
 
   app.post('/v1/chat/completions', async (c) => {
     const gate = await deps.gate.ensureFresh()

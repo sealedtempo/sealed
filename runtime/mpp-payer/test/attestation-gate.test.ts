@@ -144,6 +144,8 @@ describe('relay attestation gate', () => {
     expect((await lax.gate.check()).detail).toMatch(/lacks required checks: expected_apps/)
     const otherMode = gateWith(undefined, fakeVerifierd({ ok: true, mode: 'evidence' }))
     expect((await otherMode.gate.check()).detail).toMatch(/mode evidence/)
+    const noMode = gateWith(undefined, fakeVerifierd({ ok: true, mode: null }))
+    expect((await noMode.gate.check()).detail).toMatch(/mode \(none\)/)
     const otherStack = gateWith(undefined, fakeVerifierd({ ok: true, stackHash: '0x' + '12'.repeat(32) }))
     expect((await otherStack.gate.check()).detail).toMatch(/different app-compose/)
   })

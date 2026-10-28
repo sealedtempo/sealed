@@ -122,6 +122,8 @@ describe('payer OpenAI passthrough', () => {
     expect((await blocked.app.request('/v1/models')).status).toBe(403)
     const { app } = setup(async () => ({ kind: 'session', events: sessionEvents([]) }))
     expect((await app.request('/v1/chat/completions', { method: 'POST', body: '[1]' })).status).toBe(400)
+    const huge = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(4 * 1024 * 1024 + 1) })
+    expect(huge.status).toBe(413)
     expect((await (await app.request('/v1/models')).json()).data[0].id).toBe('tinfoil/gpt-oss-120b')
   })
 

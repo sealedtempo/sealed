@@ -348,8 +348,9 @@ export class RelayAttestationGate {
     }
     const missing = REQUIRED_CHECKS.filter((name) => !report.checks.some((c) => c.name === name && c.ok))
     if (missing.length > 0) throw new AttestationError(`sealed-verifierd report lacks required checks: ${missing.join(', ')}`)
-    if (report.mode !== undefined && report.mode !== 'live_submitted')
-      throw new AttestationError(`sealed-verifierd verified in mode ${report.mode}, not the submitted attestation`)
+    // Required, like the checks: a report without a mode is not a verdict on the submitted attestation (review I1).
+    if (report.mode !== 'live_submitted')
+      throw new AttestationError(`sealed-verifierd verified in mode ${report.mode ?? '(none)'}, not the submitted attestation`)
     const stackHash = `0x${createHash('sha256').update(attest.appCompose, 'utf8').digest('hex')}`
     if (report.stackHash !== stackHash) throw new AttestationError('sealed-verifierd verified a different app-compose than the one received')
     if (report.simulated && !this.deps.allowSimulated) throw new AttestationError('relay presented a simulated quote')
