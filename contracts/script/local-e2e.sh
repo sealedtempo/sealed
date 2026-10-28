@@ -9,13 +9,13 @@
 #   script/local-e2e.sh            # from the contracts directory, or: make local-e2e
 #
 # Uses only anvil's well-known default dev keys. Nothing here touches a public network.
-# Environment: E2E_PORT (default 8546), E2E_HARDFORK (default T4: Tempo mainnet gas schedule), E2E_KEEP=1 to
-# leave anvil running afterwards.
+# Environment: E2E_PORT (default 8546), E2E_HARDFORK (default T12, mainnet's hardfork; T13 from 2026-11-03),
+# E2E_KEEP=1 to leave anvil running afterwards.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 PORT="${E2E_PORT:-8546}"
-HARDFORK="${E2E_HARDFORK:-T4}"
+HARDFORK="${E2E_HARDFORK:-T12}"
 RPC="http://127.0.0.1:${PORT}"
 WORK=".e2e"
 mkdir -p "$WORK" deployments
@@ -69,8 +69,8 @@ now() { cast block latest --rpc-url "$RPC" -f timestamp; }
 
 step "start anvil --network tempo --hardfork $HARDFORK on :$PORT"
 if cast chain-id --rpc-url "$RPC" >/dev/null 2>&1; then fail "port $PORT is already in use"; fi
-# Block gas limit 500M as on mainnet (anvil's default is 30M). Foundry 1.7.1's T4 rules charge about 2x mainnet
-# (T12) gas for CREATE, so DeploymentRegistry needs ~27M here and forge's 1.3x estimate margin exceeds 30M.
+# Block gas limit 500M as on mainnet (anvil's default is 30M). DeploymentRegistry's CREATE takes ~12M gas and forge
+# adds a 1.3x estimate margin.
 anvil --network tempo --hardfork "$HARDFORK" --port "$PORT" --gas-limit 500000000 > "$WORK/anvil.log" 2>&1 &
 ANVIL_PID=$!
 cleanup() { if [ "${E2E_KEEP:-0}" != "1" ]; then kill "$ANVIL_PID" 2>/dev/null || true; fi; }
@@ -115,14 +115,14 @@ expect_eq "$(call $PLATFORM 'imageByMeasurements(bytes32)(bytes32)' $MH)" "$IMAG
 send_fails $K_OWNER $PLATFORM "addImage(bytes32,string,string,bytes,bytes,bytes,bytes,bool,string)" \
   $(cast keccak other-image-id) sealed-os 1.0.0-again $MRTD $R0 $R1 $R2 false ""
 
-step "register apps (owner, cast) and the example catalog (script/RegisterCatalog.s.sol)"
+step "register apps (owner, cast) and the example catalog fixture (script/RegisterCatalog.s.sol)"
 APP_ID=$(cast keccak llm-gateway)
 send $K_OWNER $APPS "registerApp(bytes32,string,string,string,address,uint16,string)" \
   $APP_ID llm-gateway "LLM Gateway" MIT $MAINTAINER 2000 "https://example.invalid/llm-gateway"
 APP2_ID=$(cast keccak crm)
 send $K_OWNER $APPS "registerApp(bytes32,string,string,string,address,uint16,string)" \
   $APP2_ID crm "CRM" AGPL-3.0-only $MAINTAINER 5000 "https://example.invalid/crm"
-OWNER_PRIVATE_KEY=$K_OWNER CATALOG_FILE=catalog/catalog.example.json DEPLOYMENTS_FILE=$DEPLOYMENTS_FILE \
+OWNER_PRIVATE_KEY=$K_OWNER CATALOG_FILE=test/fixtures/catalog.example.json DEPLOYMENTS_FILE=$DEPLOYMENTS_FILE \
 MAINTAINER_DEFAULT_ADDRESS=$MAINTAINER \
   forge script script/RegisterCatalog.s.sol:RegisterCatalog --rpc-url "$RPC" --broadcast --slow "${FEE[@]}" \
   > "$WORK/catalog.log" 2>&1 || { cat "$WORK/catalog.log"; fail "catalog script"; }

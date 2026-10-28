@@ -1,0 +1,72 @@
+{
+  "_comment": "Tempo mainnet catalog: input of script/RegisterCatalog.s.sol for the six seed apps (spec 6.8: registerApp from OWNER, run locally, never from CI). slug, name and licenseSpdx are permanent once registered (AppRegistry has no setter for them); maintainer, maintainerShareBps and metadataURI can be changed later by OWNER. Values come from each app's manifest.yaml (id, name, upstream.license_spdx, maintainer_share_bps); the payout address ${MAINTAINER_DEFAULT_ADDRESS} is written out. appId must equal keccak256(slug): the script checks it and reverts on a mismatch. Keys starting with '_' are ignored by the script. images is empty until the production sealed-os build prints measured values. Check with make catalog-check, rehearse with make rehearse-catalog.",
+  "_network": {
+    "chainId": 4217,
+    "AppRegistry": "0x88C91CAcB74cCeC3b8A1823977EEC42aE3b93b43",
+    "PlatformRegistry": "0x18AB956ea44757587896dfD25632FB3e89F7002d",
+    "owner": "0x17273df738510FD3d3Fe6Ff7D3De2E0122c832cB"
+  },
+  "images": [],
+  "apps": [
+    {
+      "appId": "0x75628f63cb267b5e13ef7a1e5091b3377e14d68e3d4e2d8a0cbfbe92de419ef9",
+      "slug": "llm-gateway",
+      "name": "LLM gateway",
+      "licenseSpdx": "MIT",
+      "maintainer": "0x500A40bAB57E5F58f9c50D33fF70C6EaaAB11Eb2",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealedtempo/sealed/blob/main/catalog/apps/llm-gateway/manifest.yaml",
+      "_manifest": "blob 4f9d99c178a31affca960d136ac26dcaa8a32a9b; upstream BerriAI/litellm v1.106.5"
+    },
+    {
+      "appId": "0x4c443b1c62aa68ec944e2c348f2d021d4b97deb87702667ee55c7994695a83b2",
+      "slug": "scraper",
+      "name": "Scraper",
+      "licenseSpdx": "Apache-2.0",
+      "maintainer": "0x500A40bAB57E5F58f9c50D33fF70C6EaaAB11Eb2",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealedtempo/sealed/blob/main/catalog/apps/scraper/manifest.yaml",
+      "_manifest": "blob ea9a49b2eedb01e6a9451bafbb6e07f5789a34d7; first party (Crawlee) 0.1.0"
+    },
+    {
+      "appId": "0xe795669e1e9e28f145a611abeaaf093aa6c031668dcb6578ba9565100f019937",
+      "slug": "crm",
+      "name": "CRM (EspoCRM)",
+      "licenseSpdx": "AGPL-3.0-or-later",
+      "maintainer": "0x500A40bAB57E5F58f9c50D33fF70C6EaaAB11Eb2",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealedtempo/sealed/blob/main/catalog/apps/crm/manifest.yaml",
+      "_manifest": "blob 4686916d766e5d68b9a1c6839269bdb6eebfa932; upstream espocrm/espocrm 10.0.11 (D-049a)"
+    },
+    {
+      "appId": "0x0648433b9ffc49cb79d9860809f354316c6704b3a3ff4c6b4e29e86af8cb1a4f",
+      "slug": "coding-agent",
+      "name": "Coding agent",
+      "licenseSpdx": "MIT",
+      "maintainer": "0x500A40bAB57E5F58f9c50D33fF70C6EaaAB11Eb2",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealedtempo/sealed/blob/main/catalog/apps/coding-agent/manifest.yaml",
+      "_manifest": "blob 8e7cdd9805afdcce11e6eb82e2a84ec8861b3d49; upstream OpenHands/software-agent-sdk v1.58.2"
+    },
+    {
+      "appId": "0x56ecc4899c55aef451119fac38afce9646b3363871fbe0bb0a025324e26d0356",
+      "slug": "internal-tools",
+      "name": "Internal tools (ToolJet)",
+      "licenseSpdx": "AGPL-3.0-only",
+      "maintainer": "0x500A40bAB57E5F58f9c50D33fF70C6EaaAB11Eb2",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealedtempo/sealed/blob/main/catalog/apps/internal-tools/manifest.yaml",
+      "_manifest": "blob e48c4c268c44842e09361050f37068a9cb39564e; upstream ToolJet/ToolJet v3.20.251-lts (D-018a)"
+    },
+    {
+      "appId": "0xb78d59fa59e4d3378524bbcc70330a24c6e26c2c0ca38a28ddd60ed9362c1154",
+      "slug": "inference-relay",
+      "name": "Inference relay",
+      "licenseSpdx": "Apache-2.0",
+      "maintainer": "0x500A40bAB57E5F58f9c50D33fF70C6EaaAB11Eb2",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealedtempo/sealed/blob/main/catalog/apps/inference-relay/manifest.yaml",
+      "_manifest": "blob 639753e4cc38a6ad05d9f472453815ffa9fb6d46; first party (mppx relay) 0.1.0"
+    }
+  ]
+}

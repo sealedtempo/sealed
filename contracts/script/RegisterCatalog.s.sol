@@ -13,15 +13,18 @@ import {IPlatformRegistry} from "../src/interfaces/IPlatformRegistry.sol";
 ///         entries.
 /// @dev Environment:
 ///      OWNER_PRIVATE_KEY           required.
-///      CATALOG_FILE                default catalog/catalog.example.json.
+///      CATALOG_FILE                default catalog/catalog.mainnet.json (forge reads only under ./catalog and
+///                                  ./test/fixtures).
 ///      DEPLOYMENTS_FILE            default deployments/<network>.json (addresses are read from it).
 ///      MAINTAINER_DEFAULT_ADDRESS  used for apps whose "maintainer" is missing or zero.
 ///
-///      Catalog format (see catalog/catalog.example.json):
+///      Catalog format (see catalog/catalog.mainnet.json; test/fixtures/catalog.example.json has an image):
 ///      { "images": [ { "name", "version", "mrtd", "rtmr0", "rtmr1", "rtmr2", "isDebug", "sourceURI",
 ///                      "imageId" (optional; default keccak256(abi.encode(name, version, measurementsHash))) } ],
 ///        "apps":   [ { "slug", "name", "licenseSpdx", "maintainer" (optional), "maintainerShareBps",
-///                      "metadataURI" } ] }
+///                      "metadataURI", "appId" (optional; must equal keccak256(slug)) } ] }
+///      Keys starting with "_" are comments, except "_pending": an app that carries it is not ready, and the
+///      whole file is refused before anything is sent (slug, name and licenseSpdx are permanent onchain).
 contract RegisterCatalog is Script {
     struct ImageEntry {
         bytes32 imageId;
@@ -45,10 +48,14 @@ contract RegisterCatalog is Script {
     }
 
     error NoMaintainer(string slug);
+    /// @notice The entry's "appId" is not keccak256(slug).
+    error AppIdMismatch(string slug, bytes32 appId, bytes32 expected);
+    /// @notice The entry carries "_pending": a value is still a placeholder.
+    error PendingEntry(string slug);
 
     function run() external {
         uint256 ownerKey = vm.envUint("OWNER_PRIVATE_KEY");
-        string memory catalog = vm.readFile(vm.envOr("CATALOG_FILE", string("catalog/catalog.example.json")));
+        string memory catalog = vm.readFile(vm.envOr("CATALOG_FILE", string("catalog/catalog.mainnet.json")));
         string memory deployments = vm.readFile(vm.envOr("DEPLOYMENTS_FILE", _defaultDeploymentsFile()));
         AppRegistry apps = AppRegistry(vm.parseJsonAddress(deployments, ".contracts.AppRegistry.address"));
         PlatformRegistry platform =
@@ -126,6 +133,12 @@ contract RegisterCatalog is Script {
             string memory p = string.concat(".apps[", vm.toString(i), "]");
             AppEntry memory a = list[i];
             a.slug = vm.parseJsonString(catalog, string.concat(p, ".slug"));
+            if (vm.keyExistsJson(catalog, string.concat(p, "._pending"))) revert PendingEntry(a.slug);
+            if (vm.keyExistsJson(catalog, string.concat(p, ".appId"))) {
+                bytes32 given = vm.parseJsonBytes32(catalog, string.concat(p, ".appId"));
+                bytes32 expected = keccak256(bytes(a.slug));
+                if (given != expected) revert AppIdMismatch(a.slug, given, expected);
+            }
             a.name = vm.parseJsonString(catalog, string.concat(p, ".name"));
             a.licenseSpdx = vm.parseJsonString(catalog, string.concat(p, ".licenseSpdx"));
             a.maintainerShareBps = uint16(vm.parseJsonUint(catalog, string.concat(p, ".maintainerShareBps")));

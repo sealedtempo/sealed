@@ -15,10 +15,13 @@ override TEMPO_RPC_URL := $(RPC)
 TEMPO_VERIFIER_URL ?= https://contracts.tempo.xyz
 FEE_TOKEN_ADDRESS ?= 0x20c0000000000000000000000000000000000000
 MAINNET_DEPLOYMENTS := deployments/tempo-mainnet.json
+CATALOG_FILE ?= catalog/catalog.mainnet.json
 CONTRACTS := PlatformRegistry AppRegistry OracleSignatureVerifier DeploymentRegistry FeeSplitter
+# Toolchain pin. Older releases run Tempo T4 rules: forks read token policy ids as 0 and CREATE gas is ~2.3x mainnet.
+FOUNDRY_VERSION := 1.8.6
 
-.PHONY: help deps build test test-ci test-fork local-e2e deploy-mainnet record-mainnet verify-mainnet fee-token-pref \
-	estimate-mainnet abi coverage gas-report fmt fmt-check clean
+.PHONY: help foundry-check deps build test test-ci test-fork local-e2e catalog-check rehearse-catalog deploy-mainnet \
+	record-mainnet verify-mainnet fee-token-pref estimate-mainnet abi coverage gas-report fmt fmt-check clean
 
 help:
 	@echo "deps            install pinned Soldeer dependencies (soldeer.lock)"
@@ -27,12 +30,18 @@ help:
 	@echo "test-ci         same with the ci profile (fuzz 1000 runs, invariant depth 100)"
 	@echo "test-fork       fork tests against Tempo mainnet (TEMPO_RPC_URL or $(TEMPO_PUBLIC_RPC_URL))"
 	@echo "local-e2e       full flow on a local anvil --network tempo node"
+	@echo "catalog-check   preflight of $(CATALOG_FILE) against ../catalog/apps manifests (read only)"
+	@echo "rehearse-catalog  RegisterCatalog.s.sol with $(CATALOG_FILE) on a local node, mainnet command shape, gas"
 	@echo "deploy-mainnet  dry run of script/Deploy.s.sol against mainnet; BROADCAST=1 sends it"
 	@echo "verify-mainnet  verify every contract of $(MAINNET_DEPLOYMENTS) at $(TEMPO_VERIFIER_URL)"
 	@echo "estimate-mainnet  eth_estimateGas of each contract creation on mainnet (read only)"
 	@echo "abi             regenerate abi/*.json"
 	@echo "coverage        coverage summary + lcov.info"
-	@echo "gas-report      gas report (Tempo T4 gas schedule)"
+	@echo "gas-report      gas report (Tempo T12 gas schedule; deployment cost reads 0, use estimate-mainnet)"
+	@echo "foundry-check   fail unless forge is Foundry $(FOUNDRY_VERSION)"
+
+foundry-check:
+	@forge --version | head -1 | grep -q "Version: $(FOUNDRY_VERSION)$$" || { echo "need Foundry $(FOUNDRY_VERSION), found: $$(forge --version | head -1) (foundryup -i v$(FOUNDRY_VERSION))"; exit 1; }
 
 deps:
 	forge soldeer install
@@ -46,16 +55,26 @@ test:
 test-ci:
 	FOUNDRY_PROFILE=ci forge test --no-match-path 'test/fork/*'
 
-test-fork:
+test-fork: foundry-check
 	forge test --match-path 'test/fork/*' -vv
 
-local-e2e:
+local-e2e: foundry-check
 	script/local-e2e.sh
 
+# The mainnet catalog (spec 6.8: registered by OWNER from a local machine, never from CI). CATALOG_STRICT=1 makes
+# catalog-check fail when the manifests are not checked out next to contracts/.
+catalog-check:
+	script/check-catalog.sh $(CATALOG_FILE)
+
+rehearse-catalog: foundry-check
+	CATALOG_FILE=$(CATALOG_FILE) script/rehearse-catalog.sh
+
 # Dry run by default: simulates against mainnet and writes deployments/tempo-mainnet.dry-run.json. Nothing is sent.
-# BROADCAST=1 sends the transactions. --skip-simulation makes forge take each gas limit from the node's
-# eth_estimateGas (Foundry 1.7.1 simulates with Tempo T4 rules, which do not match mainnet T12).
-deploy-mainnet:
+# Its CREATE gas is within 3% of mainnet; the three wiring calls show ~22k gas because they are estimated before the
+# contracts exist (mainnet: 0.28M to 0.53M), so use estimate-mainnet for costs.
+# BROADCAST=1 sends standard EIP-1559 transactions (deploy profile, D-038). --skip-simulation --slow makes forge take
+# each gas limit from the node's eth_estimateGas just before sending, after the previous transaction is mined.
+deploy-mainnet: foundry-check
 	@test -n "$$OWNER_PRIVATE_KEY" || { echo "OWNER_PRIVATE_KEY is not set (see $(SEALED_ENV))"; exit 1; }
 	@test "$$(cast chain-id --rpc-url $(RPC))" = "4217" || { echo "RPC is not Tempo mainnet (4217)"; exit 1; }
 ifeq ($(BROADCAST),1)
@@ -73,7 +92,8 @@ record-mainnet:
 	script/record-deployment.sh $(MAINNET_DEPLOYMENTS) broadcast/Deploy.s.sol/4217/run-latest.json
 
 # Sourcify-compatible verification. Pass the host only: forge appends /v2/verify/<chainId>/<address>.
-# Foundry 1.7.1 cannot build a Tempo 0x76 transaction for contract creation (--tempo.fee-token makes CREATE fail with
+# Contract creations are not sent as Tempo 0x76 transactions: with gas left to the node, forge and cast (1.7.1 and
+# 1.8.6) send an eth_estimateGas request with an empty `calls` list, which mainnet rejects (1.7.1 then failed with
 # "missing keys: gas"). Instead each sending account sets FeeManager.setUserToken(FEE_TOKEN) once with a plain call,
 # and later type-2 transactions pay fees in that token. KEY_VAR names the .env variable holding the key.
 fee-token-pref:
@@ -94,7 +114,7 @@ verify-mainnet:
 
 # FeeSplitter's constructor reads appRegistry() from the DeploymentRegistry argument, so its estimate overrides the
 # placeholder registry address with a stub whose every call returns the placeholder AppRegistry address.
-estimate-mainnet: build
+estimate-mainnet: foundry-check build
 	@set -e; o=0x1111111111111111111111111111111111111111; r2=0x2222222222222222222222222222222222222222; \
 	r3=0x3333333333333333333333333333333333333333; from=$${ESTIMATE_FROM:-0x9a044ae05e5e6290dcf56afd69548565e957a626}; \
 	gp=$$(cast gas-price --rpc-url $(RPC)); total=0; \
