@@ -1,0 +1,52 @@
+{
+  "_comment": "EXAMPLE catalog. Measurements are placeholders (sha384 of a label), not a real image. Replace with the values printed by the image build before registering on mainnet. Apps without a maintainer use MAINTAINER_DEFAULT_ADDRESS.",
+  "images": [
+    {
+      "name": "sealed-os",
+      "version": "0.0.0-example",
+      "mrtd": "0x3981fb5fb37d73ec66f5c2462b685a3354c45819eee90f1696d3e6f0f2560fc7c0c9e03d46fa98be9501f400a62618f0",
+      "rtmr0": "0x5ef4873c819ee2ac387c41b036588eb8e877b413cfd49677a3fa7d017586a65da4fa2c708205a607291cbac461615fa5",
+      "rtmr1": "0x3bfe3670f5877ddf7697d62d663134779752eeea9d94c2d5e47aa6408ad9c0460f36c48d4a1a2d0e6801b242367d75d3",
+      "rtmr2": "0x67dea61da0c84f9784474aad2d6d224df02aaddf9c137b5de2f1d7947432543496d0cf2561d4e9a7cb10463c13dd2172",
+      "isDebug": false,
+      "sourceURI": "https://github.com/sealed-dev/sealed/tree/main/runtime"
+    }
+  ],
+  "apps": [
+    {
+      "slug": "llm-gateway",
+      "name": "LLM Gateway",
+      "licenseSpdx": "MIT",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/llm-gateway"
+    },
+    {
+      "slug": "scraper",
+      "name": "Scraper",
+      "licenseSpdx": "Apache-2.0",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/scraper"
+    },
+    {
+      "slug": "crm",
+      "name": "CRM (Twenty)",
+      "licenseSpdx": "AGPL-3.0-only",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/crm"
+    },
+    {
+      "slug": "coding-agent",
+      "name": "Coding Agent (OpenHands)",
+      "licenseSpdx": "MIT",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/coding-agent"
+    },
+    {
+      "slug": "internal-tools",
+      "name": "Internal Tools",
+      "licenseSpdx": "Apache-2.0",
+      "maintainerShareBps": 2000,
+      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/internal-tools"
+    }
+  ]
+}
