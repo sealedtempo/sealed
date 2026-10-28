@@ -1,0 +1,199 @@
+# inference-relay compose fragment (INTERFACES section 14). Deployed once, by the operator,
+# in a platform confidential VM; OWNER approves the stack like any customer would.
+# The composer adds networks, fixed IPs, DNS, proxy env, telemetry_off_env, envexec,
+# secret mounts, restart and logging. Only inference-relay-front is routed (route "relay").
+# Every value here is measured (stackHash). No $ interpolation: the host environment is not
+# measured, so the composer rejects it; literal values only.
+#
+#   payer (customer VM) --MPP--> inference-relay-front --> inference-relay-litellm
+#       --> inference-relay-{tinfoil,phala,nearai} (verify, then TLS-pinned forward)
+#       --> inference-relay-privatemode (Edgeless proxy: attests and encrypts itself)
+services:
+  inference-relay-front:
+    image: "{{image:relay}}"
+    entrypoint: ["node", "/app/dist/main.js"]
+    x-sealed-secrets:
+      - MPP_SECRET_KEY
+      - LITELLM_MASTER_KEY
+      - DATABASE_PASSWORD
+      - RELAY_SETTLER_KEY
+      - PRIVATEMODE_API_KEY
+    environment:
+      PORT: "8080"
+      MPP_REALM: sealed-inference-relay
+      # The operator treasury (lowercase), the payee every payer reads from this measured value.
+      # Zero-address placeholder until the release PR pins it: the relay refuses to start with it
+      # and `pnpm --filter @sealed/relay release-check` blocks the release.
+      TREASURY_ADDRESS: "0x0000000000000000000000000000000000000000"
+      TEMPO_RPC_URL: https://rpc.tempo.xyz
+      TEMPO_CHAIN_ID: "4217"
+      FEE_TOKEN_ADDRESS: "0x20c0000000000000000000000000000000000000"
+      # config/defaults.yaml relay_markup_bps (catalog test keeps them equal).
+      RELAY_MARKUP_BPS: "500"
+      LITELLM_URL: http://inference-relay-litellm:4000/v1
+      DATABASE_HOST: inference-relay-db
+      DATABASE_USER: relay
+      DATABASE_NAME: relay
+      SEALED_SECRETS_DIR: /run/sealed/secrets/inference-relay
+      SEALED_USAGE_URL: http://sealed-agent:7070/v1/usage-events
+      SESSION_BATCH_TOKENS: "32"
+      SESSION_SUGGESTED_DEPOSIT: "0.5"
+      SETTLE_EVERY_AMOUNT: "1"
+      SETTLE_INTERVAL_MS: "300000"
+      SUPERVISE_INTERVAL_SECONDS: "60"
+      RELAY_MAX_BODY_BYTES: "4194304"
+      RELAY_UNPAID_PER_MINUTE: "120"
+      TRUSTED_PROXY_IPS: 172.30.0.4
+      PRIVATEMODE_WORKSPACE: /privatemode-workspace
+      PRIVATEMODE_PROBE_SECONDS: "120"
+    volumes:
+      - inference-relay-privatemode-ws:/privatemode-workspace:ro
+    depends_on:
+      inference-relay-db:
+        condition: service_healthy
+      inference-relay-litellm:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    read_only: true
+    mem_limit: 512m
+    stop_grace_period: 30s
+
+  inference-relay-litellm:
+    image: "{{image:litellm-relay}}"
+    entrypoint: ["docker/prod_entrypoint.sh"]
+    command: ["--port", "4000", "--config", "/etc/litellm/config.yaml", "--num_workers", "2"]
+    x-sealed-secrets:
+      - LITELLM_MASTER_KEY
+      - TINFOIL_API_KEY
+      - PHALA_API_KEY
+      - NEARAI_API_KEY
+      - PRIVATEMODE_API_KEY
+    environment:
+      STORE_MODEL_IN_DB: "False"
+      LITELLM_LOG: ERROR
+      LITELLM_MODE: PRODUCTION
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -I
+        - -c
+        - "import sys, urllib.request as u; o = u.build_opener(u.ProxyHandler({})); sys.exit(0 if o.open('http://127.0.0.1:4000/health/liveliness', timeout=3).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+    mem_limit: 2g
+    stop_grace_period: 30s
+
+  inference-relay-db:
+    image: "{{image:postgres}}"
+    entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
+    command: ["postgres", "-c", "max_connections=50"]
+    x-sealed-secrets:
+      - DATABASE_PASSWORD
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_DB: relay
+      POSTGRES_PASSWORD_FILE: /run/sealed/secrets/inference-relay/DATABASE_PASSWORD
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=trust"
+    volumes:
+      - inference-relay-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "relay", "-d", "relay", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    shm_size: 128m
+    mem_limit: 1g
+    stop_grace_period: 60s
+
+  inference-relay-tinfoil:
+    image: "{{image:relay}}"
+    entrypoint: ["node", "/app/dist/sidecar-main.js", "tinfoil"]
+    x-sealed-secrets:
+      - TINFOIL_API_KEY
+    environment:
+      PORT: "8100"
+      REVERIFY_SECONDS: "600"
+      SEALED_SECRETS_DIR: /run/sealed/secrets/inference-relay
+      TINFOIL_ENCLAVE_URL: https://inference.tinfoil.sh
+      TINFOIL_CONFIG_REPO: tinfoilsh/confidential-model-router
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8100/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+    read_only: true
+    mem_limit: 256m
+
+  inference-relay-phala:
+    image: "{{image:relay}}"
+    entrypoint: ["node", "/app/dist/sidecar-main.js", "phala"]
+    x-sealed-secrets:
+      - PHALA_API_KEY
+    environment:
+      PORT: "8100"
+      REVERIFY_SECONDS: "600"
+      SEALED_SECRETS_DIR: /run/sealed/secrets/inference-relay
+      PHALA_BASE_URL: https://inference.phala.com/v1
+      # Reviewed compose hashes of Phala's serving stack (comma-separated). Empty: nothing was
+      # reviewed, so the sidecar refuses to verify and phala/* stays off.
+      PHALA_ACCEPTED_COMPOSE_HASHES: ""
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8100/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+    read_only: true
+    mem_limit: 256m
+
+  inference-relay-nearai:
+    image: "{{image:relay}}"
+    entrypoint: ["node", "/app/dist/sidecar-main.js", "nearai"]
+    x-sealed-secrets:
+      - NEARAI_API_KEY
+    environment:
+      PORT: "8100"
+      REVERIFY_SECONDS: "600"
+      SEALED_SECRETS_DIR: /run/sealed/secrets/inference-relay
+      NEARAI_BASE_URL: https://cloud-api.near.ai
+      # Reviewed sha256(app_compose) of the NEAR AI gateway and keccak256(mrtd||rtmr0||rtmr1||rtmr2)
+      # of its dstack OS image. Empty: nearai/* stays off until both are reviewed and pinned.
+      NEARAI_ACCEPTED_COMPOSE_HASHES: ""
+      NEARAI_ACCEPTED_OS_MEASUREMENTS: ""
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8100/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+    read_only: true
+    mem_limit: 256m
+
+  # Edgeless Privatemode proxy (MIT, privatemode-proxy/ of edgelesssys/privatemode-public).
+  # It verifies the Privatemode deployment against its manifest, obtains the prompt key only
+  # after attestation and encrypts requests end to end; while it holds no such key it answers
+  # 500. LiteLLM and the front's probe pass PRIVATEMODE_API_KEY per request, so the proxy itself
+  # holds no secret. Its workspace (the manifest log) is shared read-only with the front, which
+  # records the manifest hash as evidence.
+  inference-relay-privatemode:
+    image: "{{image:privatemode-proxy}}"
+    entrypoint: ["/bin/privatemode-proxy"]
+    command: ["--port=8080", "--listen-address=0.0.0.0", "--workspace=/workspace", "--disable-prompt-cache=true", "--log-format=json"]
+    volumes:
+      - inference-relay-privatemode-ws:/workspace
+    read_only: true
+    mem_limit: 256m
+
+volumes:
+  inference-relay-pgdata: {}
+  inference-relay-privatemode-ws: {}

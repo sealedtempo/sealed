@@ -1,0 +1,79 @@
+{
+  "currency": "0x20c0000000000000000000000000000000000000",
+  "decimals": 6,
+  "default_max_tokens": 1024,
+  "default_models": ["phala/openai/gpt-oss-120b", "privatemode/gpt-oss-120b", "tinfoil/gpt-oss-120b", "nearai/deepseek/deepseek-v3.2"],
+  "notes": "Provider list prices in pathUSD base units per 1M tokens (1000000 = 1 USD). The relay charges list x (1 + relay_markup_bps/10000). checked: 2026-10-28. confirmed=false entries block the release (pnpm --filter @sealed/relay release-check) until the operator confirms them.",
+  "models": [
+    {
+      "id": "tinfoil/gpt-oss-120b",
+      "provider": "tinfoil",
+      "upstream_model": "gpt-oss-120b",
+      "input_per_1m": 240000,
+      "output_per_1m": 780000,
+      "max_output_tokens": 4096,
+      "source": "unconfirmed: Tinfoil publishes no per-model price page; highest list price seen for this model at another provider",
+      "confirmed": false
+    },
+    {
+      "id": "tinfoil/glm-5-3",
+      "provider": "tinfoil",
+      "upstream_model": "glm-5-3",
+      "input_per_1m": 1800000,
+      "output_per_1m": 5750000,
+      "max_output_tokens": 4096,
+      "source": "unconfirmed: Tinfoil publishes no per-model price page; highest list price seen for GLM-5.3 at another provider",
+      "confirmed": false
+    },
+    {
+      "id": "phala/openai/gpt-oss-120b",
+      "provider": "phala",
+      "upstream_model": "openai/gpt-oss-120b",
+      "input_per_1m": 150000,
+      "output_per_1m": 600000,
+      "max_output_tokens": 4096,
+      "source": "https://inference.phala.com/v1/models",
+      "confirmed": true
+    },
+    {
+      "id": "phala/z-ai/glm-5.3",
+      "provider": "phala",
+      "upstream_model": "z-ai/glm-5.3",
+      "input_per_1m": 1400000,
+      "output_per_1m": 4400000,
+      "max_output_tokens": 4096,
+      "source": "https://inference.phala.com/v1/models",
+      "confirmed": true
+    },
+    {
+      "id": "nearai/z-ai/glm-5.3",
+      "provider": "nearai",
+      "upstream_model": "z-ai/glm-5.3",
+      "input_per_1m": 1800000,
+      "output_per_1m": 5750000,
+      "max_output_tokens": 4096,
+      "source": "https://cloud-api.near.ai/v1/models",
+      "confirmed": true
+    },
+    {
+      "id": "nearai/deepseek/deepseek-v3.2",
+      "provider": "nearai",
+      "upstream_model": "deepseek/deepseek-v3.2",
+      "input_per_1m": 1100000,
+      "output_per_1m": 1100000,
+      "max_output_tokens": 4096,
+      "source": "https://cloud-api.near.ai/v1/models",
+      "confirmed": true
+    },
+    {
+      "id": "privatemode/gpt-oss-120b",
+      "provider": "privatemode",
+      "upstream_model": "gpt-oss-120b",
+      "input_per_1m": 240000,
+      "output_per_1m": 780000,
+      "max_output_tokens": 4096,
+      "source": "https://www.privatemode.ai/pricing lists EUR 0.20 / 0.65; converted at 1.20 USD per EUR (operator confirms the rate)",
+      "confirmed": false
+    }
+  ]
+}

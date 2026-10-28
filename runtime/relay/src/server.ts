@@ -1,0 +1,255 @@
+import { randomUUID } from 'node:crypto'
+import { type Context, Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
+import { ChatRequestError, sanitizeChatRequest, upstreamBody as buildUpstreamBody } from './chat-request.js'
+import { SessionMeter } from './metering.js'
+import type { Payments } from './payments.js'
+import {
+  DEFAULT_MODEL_ALIAS,
+  type ModelPrice,
+  type PriceTable,
+  costInBaseUnits,
+  findModel,
+  formatUnits,
+  relayPricePer1M,
+} from './prices.js'
+import type { ProviderGate } from './providers/gate.js'
+import type { RateLimiter } from './rate-limit.js'
+import { estimatePromptTokens } from './tokens.js'
+import { type ChatChunk, type Upstream, sseData } from './upstream.js'
+import { type UsageEvent, stripUsageChunks, tapUsage } from './usage.js'
+
+/** Large enough for the biggest priced context (128k tokens of text plus tools) with JSON overhead. */
+export const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
+
+export type RelayDeps = {
+  prices: PriceTable
+  gate: Pick<ProviderGate, 'allows' | 'status' | 'all'> & Partial<Pick<ProviderGate, 'refresh'>>
+  upstream: Upstream
+  payments: Payments
+  batchTokens: number
+  /** Content-free request log: model, provider, intent, token counts and amounts only. */
+  log?: (event: Record<string, unknown>) => void
+  /** Token metering callback to the relay deployment's sealed-agent. */
+  onUsage?: (event: UsageEvent) => void
+  /** Request bodies above this are refused before they are read in full. */
+  maxBodyBytes?: number
+  /** Limits requests that carry no payment credential, per client. */
+  unpaidLimiter?: Pick<RateLimiter, 'take'>
+  clientKey?: (c: Context) => string
+}
+
+function hasPaymentCredential(request: Request): boolean {
+  return /^Payment\s+/i.test(request.headers.get('authorization') ?? '')
+}
+
+type ChatBody = Record<string, unknown> & { model?: unknown; max_tokens?: unknown; max_completion_tokens?: unknown; stream?: unknown }
+
+function errorResponse(status: number, type: string, message: string, extra: Record<string, unknown> = {}): Response {
+  return Response.json({ error: { type, message, ...extra } }, { status })
+}
+
+/** max_tokens bounded by the model's limit; the relay always sets it so a request's cost is bounded. */
+export function boundedMaxTokens(body: ChatBody, model: ModelPrice): number {
+  const requested = body.max_completion_tokens ?? body.max_tokens
+  if (typeof requested === 'number' && Number.isSafeInteger(requested) && requested > 0)
+    return Math.min(requested, model.maxOutputTokens)
+  return model.maxOutputTokens
+}
+
+/** Per-request (charge intent) price: estimated prompt tokens plus the full max_tokens budget. */
+export function perRequestPrice(prices: PriceTable, model: ModelPrice, body: ChatBody): { amount: bigint; promptTokens: number; maxTokens: number } {
+  const promptTokens = estimatePromptTokens(body)
+  const maxTokens = boundedMaxTokens(body, model)
+  return { amount: costInBaseUnits(model, prices.markupBps, BigInt(promptTokens), BigInt(maxTokens)), promptTokens, maxTokens }
+}
+
+export function modelsDocument(prices: PriceTable, gate: RelayDeps['gate']) {
+  const defaultModel = findModel(prices, DEFAULT_MODEL_ALIAS, (m) => gate.allows(m.provider))
+  return {
+    object: 'list',
+    default_model: defaultModel?.id,
+    data: prices.models.map((m) => {
+      const status = gate.status(m.provider)
+      return {
+        id: m.id,
+        object: 'model',
+        owned_by: m.provider,
+        sealed: {
+          provider: m.provider,
+          available: status.enabled && status.verified,
+          attested: status.verified,
+          max_output_tokens: m.maxOutputTokens,
+          price: {
+            currency: prices.currency,
+            decimals: prices.decimals,
+            unit: 'base units per 1M tokens',
+            markup_bps: prices.markupBps,
+            input_per_1m: relayPricePer1M(m.inputPer1M, prices.markupBps),
+            output_per_1m: relayPricePer1M(m.outputPer1M, prices.markupBps),
+            list_input_per_1m: m.inputPer1M.toString(),
+            list_output_per_1m: m.outputPer1M.toString(),
+          },
+        },
+      }
+    }),
+  }
+}
+
+export function createRelayApp(deps: RelayDeps): Hono {
+  const app = new Hono()
+  const log = deps.log ?? (() => {})
+  const onUsage = deps.onUsage ?? (() => {})
+
+  app.get('/healthz', (c) => c.json({ ok: true }))
+  app.get('/v1/models', (c) => c.json(modelsDocument(deps.prices, deps.gate)))
+  app.get('/v1/attest-status', (c) =>
+    c.json({
+      providers: Object.fromEntries(deps.gate.all().map((s) => [s.provider, s])),
+      sessions: deps.payments.sessionsEnabled,
+    }),
+  )
+
+  const management = async (request: Request): Promise<Response> => {
+    if (!deps.payments.sessionsEnabled) return errorResponse(400, 'invalid_request', 'request body required')
+    const pay = await deps.payments.handle(request, {})
+    if (pay.status === 402) return pay.challenge
+    return pay.withReceipt(async function* () {})
+  }
+
+  // Hono routes HEAD through GET handlers; HEAD is the mppx session bootstrap probe.
+  app.get('/v1/chat/completions', (c) =>
+    c.req.raw.method === 'HEAD' ? management(c.req.raw) : errorResponse(405, 'method_not_allowed', 'use POST'),
+  )
+
+  const maxBodyBytes = deps.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
+  app.post(
+    '/v1/chat/completions',
+    bodyLimit({
+      maxSize: maxBodyBytes,
+      onError: () => errorResponse(413, 'request_too_large', `request body exceeds ${maxBodyBytes} bytes`),
+    }),
+    async (c, next) => {
+      if (!deps.unpaidLimiter || hasPaymentCredential(c.req.raw)) return next()
+      if (deps.unpaidLimiter.take(deps.clientKey?.(c) ?? 'unknown')) return next()
+      return new Response(JSON.stringify({ error: { type: 'rate_limited', message: 'too many unpaid requests; retry later' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '10' },
+      })
+    },
+  )
+
+  app.post('/v1/chat/completions', async (c) => {
+    const request = c.req.raw
+    const text = await request.clone().text()
+    if (!text.trim()) return management(request)
+    let body: ChatBody
+    try {
+      body = JSON.parse(text) as ChatBody
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('not an object')
+    } catch {
+      return errorResponse(400, 'invalid_request', 'body must be a JSON object')
+    }
+    let sanitized: ReturnType<typeof sanitizeChatRequest>
+    try {
+      sanitized = sanitizeChatRequest(body)
+    } catch (error) {
+      if (error instanceof ChatRequestError) return errorResponse(400, error.type, error.message)
+      throw error
+    }
+    const model =
+      typeof body.model === 'string' ? findModel(deps.prices, body.model, (m) => deps.gate.allows(m.provider)) : undefined
+    if (!model) return errorResponse(404, 'model_not_found', `unknown model ${String(body.model)}`)
+    const refuse = () => {
+      const status = deps.gate.status(model.provider)
+      const type = status.enabled ? 'attestation_failed' : 'provider_unavailable'
+      return errorResponse(503, type, `provider ${model.provider} is not usable: ${status.detail}`, { provider: model.provider })
+    }
+    if (!deps.gate.allows(model.provider)) return refuse()
+    // A paid retry settles now: re-read the provider's attestation status first, so the window
+    // in which a charge is taken for a provider that just failed is as small as possible.
+    if (hasPaymentCredential(request) && deps.gate.refresh) {
+      await deps.gate.refresh(model.provider)
+      if (!deps.gate.allows(model.provider)) return refuse()
+    }
+
+    const quote = perRequestPrice(deps.prices, model, body)
+    const pay = await deps.payments.handle(request, {
+      chargeAmount: quote.amount,
+      description: `${model.id}, up to ${quote.maxTokens} output tokens`,
+    })
+    if (pay.status === 402) return pay.challenge
+
+    const requestId = randomUUID()
+    const upstreamBody = buildUpstreamBody(sanitized, model, quote.maxTokens, body)
+
+    if (pay.intent === 'charge') {
+      // Per-request charges are final: the transfer settled before the upstream call (no refunds).
+      const upstream = await deps.upstream.chatCompletions(upstreamBody, request.signal).catch(() => undefined)
+      log({ requestId, model: model.id, provider: model.provider, intent: 'charge', charged: quote.amount.toString(), upstreamStatus: upstream?.status ?? 0 })
+      if (!upstream) return pay.withReceipt(errorResponse(502, 'upstream_unreachable', 'relay upstream unavailable'))
+      const headers = new Headers({ 'content-type': upstream.headers.get('content-type') ?? 'application/json' })
+      const tapped = tapUsage(new Response(upstream.body, { status: upstream.status, headers }), (usage) => {
+        if (upstream.ok)
+          onUsage({ model: model.id, promptTokens: usage?.prompt_tokens ?? quote.promptTokens, completionTokens: usage?.completion_tokens ?? 0 })
+      })
+      return pay.withReceipt(sanitized.stream && !sanitized.wantsUsage ? stripUsageChunks(tapped) : tapped)
+    }
+
+    const channelId = pay.channelId
+    const { batchTokens, upstream, payments, prices } = deps
+    return pay.withReceipt(async function* (stream: { charge(amount?: bigint): Promise<void>; signal: AbortSignal }) {
+      const meter = new SessionMeter(model, prices.markupBps, { charge: (amount) => stream.charge(amount) }, {
+        batchTokens,
+        requestId,
+        credit: channelId ? (amount, key) => payments.credit(channelId, amount, key) : undefined,
+      })
+      await meter.reservePrompt(quote.promptTokens)
+      let upstreamStatus = 0
+      try {
+        const response = await upstream.chatCompletions(
+          { ...upstreamBody, stream: true, stream_options: { include_usage: true } },
+          stream.signal,
+        )
+        upstreamStatus = response.status
+        if (!response.ok) {
+          meter.voidAll()
+          await response.body?.cancel().catch(() => {})
+          yield JSON.stringify({ error: { type: 'upstream_error', status: response.status } })
+          return
+        }
+        for await (const data of sseData(response)) {
+          if (data === '[DONE]') break
+          let chunk: ChatChunk
+          try {
+            chunk = JSON.parse(data) as ChatChunk
+          } catch {
+            continue
+          }
+          if (chunk.usage) await meter.reconcile(chunk.usage)
+          await meter.beforeDeliver(chunk)
+          yield data
+        }
+        yield '[DONE]'
+      } finally {
+        await meter.settleUnused().catch(() => {})
+        const r = meter.result()
+        onUsage({ model: model.id, promptTokens: upstreamStatus === 200 ? r.promptTokens : 0, completionTokens: r.completionTokens })
+        log({
+          requestId,
+          model: model.id,
+          provider: model.provider,
+          intent: 'session',
+          upstreamStatus,
+          promptTokens: r.promptTokens,
+          completionTokens: r.completionTokens,
+          charged: r.chargedBaseUnits.toString(),
+          credited: r.creditedBaseUnits.toString(),
+          chargedDisplay: formatUnits(r.chargedBaseUnits, prices.decimals),
+        })
+      }
+    })
+  })
+
+  return app
+}
