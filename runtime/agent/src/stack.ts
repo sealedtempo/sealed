@@ -35,6 +35,20 @@ const stackRouteSchema = z
     auth: z.enum(["gate", "bearer-passthrough", "public"]),
   })
   .loose();
+/**
+ * A service and its fixed addresses. Composer 1.1 gives one `ip` on the shared apps network; with
+ * per-app networks (brief item 4) a service owns an address on every network it joins, listed in
+ * `ips`. `ips` is normalized to every address, `ip` to the first one.
+ */
+const stackServiceSchema = z
+  .object({ name: z.string(), ip: ipv4.optional(), ips: z.array(ipv4).optional(), primary: z.boolean() })
+  .loose()
+  .refine((s) => s.ip !== undefined || (s.ips?.length ?? 0) > 0, "a service needs ip or ips")
+  .transform((s) => {
+    const ips = [...new Set([...(s.ip ? [s.ip] : []), ...(s.ips ?? [])])];
+    return { ...s, ip: ips[0] as string, ips };
+  });
+
 /** The manifest's bootstrap job. donePath is the done file on the data disk, or "" when the job keeps it elsewhere. */
 const stackBootstrapSchema = z.object({ service: z.string().min(1), doneFile: z.string(), donePath: z.string() }).loose();
 
@@ -45,7 +59,7 @@ const stackAppSchema = z
     releaseId: hex32,
     version: z.string(),
     primaryService: z.string(),
-    services: z.array(z.object({ name: z.string(), ip: ipv4, primary: z.boolean() })).min(1),
+    services: z.array(stackServiceSchema).min(1),
     secrets: z.array(z.object({ name: z.string(), optional: z.boolean() })),
     metering: z.object({ unit: z.enum(["tokens", "pages", "app_hour"]), source: z.enum(["callback", "heartbeat"]) }),
     healthcheck: z.object({ service: z.string(), port: z.number().int().min(0).max(65535), path: z.string() }),

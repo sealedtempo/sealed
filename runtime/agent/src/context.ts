@@ -35,7 +35,7 @@ export interface AppMeta {
   metering: { unit: "tokens" | "pages" | "app_hour"; source: "callback" | "heartbeat" };
   /** http://<service ip>:<port><path>; undefined when the manifest names no reachable port. */
   healthcheck?: string;
-  /** Fixed apps-network IPs of the app's services: the only callers allowed to post its usage. */
+  /** Every fixed IP of the app's services (on each network they join): the only callers allowed to post its usage. */
   serviceIps: string[];
 }
 
@@ -111,7 +111,7 @@ export function buildContext(input: {
     if (s.releaseId !== releaseId || s.appId !== appId) throw new Error(`sealed-stack ids for ${a.id} differ from the config`);
     const healthcheck = healthcheckUrl(s);
     if (s.metering.source === "heartbeat" && !healthcheck) throw new Error(`${a.id} meters by heartbeat but has no healthcheck port`);
-    return { id: a.id, appId, releaseId, metering: s.metering, healthcheck, serviceIps: s.services.map((x) => x.ip) };
+    return { id: a.id, appId, releaseId, metering: s.metering, healthcheck, serviceIps: [...new Set(s.services.flatMap((x) => x.ips))] };
   });
   const caddyIp = stack.sidecars[CADDY_SERVICE];
   if (!caddyIp) throw new Error("sealed-stack has no caddy sidecar");

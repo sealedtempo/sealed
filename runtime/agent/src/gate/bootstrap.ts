@@ -12,8 +12,8 @@ import { COMPOSE_DATA_ROOT, type StackInfo } from "../stack.js";
 interface Watch {
   /** Local path of the done file, or undefined when the job reports itself. */
   path?: string;
-  /** The bootstrap service's fixed IP (the only caller allowed to report). */
-  ip?: string;
+  /** The bootstrap service's fixed IPs (the only callers allowed to report). */
+  ips: string[];
   done: boolean;
   checkedAt?: number;
   warned?: boolean;
@@ -50,16 +50,16 @@ export class BootstrapTracker {
     for (const app of stack.apps) {
       const b = app.bootstrap;
       if (!b) continue;
-      const ip = app.services.find((s) => s.name === b.service)?.ip;
+      const ips = app.services.find((s) => s.name === b.service)?.ips ?? [];
       if (b.donePath === "") {
-        this.watches.set(app.id, { ip, done: o.reported?.includes(app.id) ?? false });
+        this.watches.set(app.id, { ips, done: o.reported?.includes(app.id) ?? false });
         continue;
       }
       const rel = relative(normalize(root), normalize(b.donePath));
       if (!rel.startsWith(`${app.id}/`) || rel.split("/").includes("..")) {
         throw new Error(`sealed-stack: ${app.id} bootstrap done file ${b.donePath} is not under ${root}/${app.id}`);
       }
-      this.watches.set(app.id, { path: join(dataMount, rel), ip, done: false });
+      this.watches.set(app.id, { path: join(dataMount, rel), ips, done: false });
     }
   }
 
@@ -97,7 +97,7 @@ export class BootstrapTracker {
     const w = this.watches.get(app);
     if (!w) throw new BootstrapError(400, `${app} has no bootstrap job`);
     if (w.path) throw new BootstrapError(409, `${app} finishes its bootstrap with a done file on the data disk`);
-    if (!w.ip || peer !== w.ip) throw new BootstrapError(403, `only ${app}'s bootstrap service may report it done`);
+    if (!w.ips.includes(peer)) throw new BootstrapError(403, `only ${app}'s bootstrap service may report it done`);
     if (w.done) return;
     w.done = true;
     this.o.onReported?.(app);
