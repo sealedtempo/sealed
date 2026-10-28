@@ -1,0 +1,45 @@
+internal-tools app: license notice
+
+ToolJet Community Edition v3.20.251-lts
+  Image:   built from images/tooljet-ce/Dockerfile on top of
+           docker.io/tooljet/tooljet-ce:v3.20.251-lts
+           sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47
+  License: GNU Affero General Public License v3.0 (AGPL-3.0-only).
+           Text, verbatim from the tag: LICENSES/tooljet-v3.20.251-lts-LICENSE
+  Source:  https://github.com/ToolJet/ToolJet/tree/v3.20.251-lts
+           (tag v3.20.251-lts, commit 979e6915975748e922731bd9012f3e5f8b4b1efb)
+  Changes: the Sealed image only removes files and replaces the entrypoint script. The changes are
+           the Dockerfile and sealed-entrypoint.sh in catalog/apps/internal-tools/images/tooljet-ce
+           of this repository (Apache-2.0). No ToolJet source file is modified, so the
+           corresponding source of ToolJet is the upstream tag above (AGPL section 13).
+           Removed: redis-server and redis-tools 8.10.3 from packages.redis.io with the Redis 8
+           modules under /usr/lib/redis/modules (RSALv2/SSPLv1/AGPLv3; Redis is replaced by
+           Valkey, decision D-020) and Oracle Instant Client 11.2 and 21.10 (Oracle license, not
+           allowed by rule 9). The image is flattened, so the removed files are in no layer.
+
+  Enterprise code: ToolJet's enterprise edition lives in the private git submodules server/ee and
+  frontend/ee (ToolJet/ee-server, ToolJet/ee-frontend). They are not in the public repository and
+  not in the CE image; the CE server modules for enterprise features are stubs. The manifest lists
+  the ee paths under license_exclusions so CI fails if they ever appear in the image.
+
+PostgREST v12.2.12
+  Image:   docker.io/postgrest/postgrest:v12.2.12
+           sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
+  License: MIT. Text: LICENSES/postgrest-v12.2.12-LICENSE
+  Source:  https://github.com/PostgREST/postgrest/tree/v12.2.12
+
+PostgreSQL 16.15
+  Image:   docker.io/library/postgres:16.15
+           sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+  License: PostgreSQL License. Text: LICENSES/postgresql-16.15-COPYRIGHT
+  Source:  https://github.com/postgres/postgres/tree/REL_16_15
+
+Valkey 9.0.7 (used instead of Redis, decision D-020)
+  Image:   docker.io/valkey/valkey:9.0.7
+           sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d
+  License: BSD-3-Clause. Text: LICENSES/valkey-9.0.7-COPYING
+  Source:  https://github.com/valkey-io/valkey/tree/9.0.7
+
+The base operating system packages inside these images are distribution components under their
+own licenses (decision D-021). The release SBOMs (sbom/*.spdx.json) list every package, including
+the npm dependencies of ToolJet's server, frontend and data source plugins.

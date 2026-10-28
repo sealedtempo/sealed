@@ -1,0 +1,10 @@
+version: 1
+default_allow: []
+customer_additions_allowed: true
+notes: >-
+  ToolJet needs no outbound host to run. Telemetry is off by env, and plugin marketplace and
+  license trial requests go to a loopback sink. The first-admin setup posts the admin's name and
+  email to hub.tooljet.io/subscribe with no off switch; that request fails closed here and shows
+  as one blocked count. Customers add the hosts of the databases and APIs their apps query, for
+  example api.example.com:443 or db.example.com:5432 (for TCP data sources the client must be
+  able to tunnel through the egress proxy).
