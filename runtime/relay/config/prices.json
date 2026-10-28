@@ -1,9 +1,14 @@
 {
-  "currency": "0x20c0000000000000000000000000000000000000",
+  "currency": "0x20c000000000000000000000b9537d11c60e8b50",
   "decimals": 6,
   "default_max_tokens": 1024,
-  "default_models": ["phala/openai/gpt-oss-120b", "privatemode/gpt-oss-120b", "tinfoil/gpt-oss-120b", "nearai/deepseek/deepseek-v3.2"],
-  "notes": "Provider list prices in pathUSD base units per 1M tokens (1000000 = 1 USD). The relay charges list x (1 + relay_markup_bps/10000). checked: 2026-10-28. confirmed=false entries block the release (pnpm --filter @sealed/relay release-check) until the operator confirms them.",
+  "default_models": [
+    "phala/openai/gpt-oss-120b",
+    "privatemode/gpt-oss-120b",
+    "tinfoil/gpt-oss-120b",
+    "nearai/deepseek/deepseek-v3.2"
+  ],
+  "notes": "Provider list prices in FEE_TOKEN base units per 1M tokens (USDC.e on mainnet, D-035; 6 decimals, 1000000 = 1 USD). The relay charges list x (1 + relay_markup_bps/10000), rounded up to whole base units. Each entry names its source and the date it was read (checked). confirmed=true only when read from the provider's own public price list; confirmed=false entries block the release (pnpm --filter @sealed/relay release-check).",
   "models": [
     {
       "id": "tinfoil/gpt-oss-120b",
@@ -13,6 +18,7 @@
       "output_per_1m": 780000,
       "max_output_tokens": 4096,
       "source": "unconfirmed: Tinfoil publishes no per-model price page; highest list price seen for this model at another provider",
+      "checked": "2026-10-28",
       "confirmed": false
     },
     {
@@ -23,6 +29,7 @@
       "output_per_1m": 5750000,
       "max_output_tokens": 4096,
       "source": "unconfirmed: Tinfoil publishes no per-model price page; highest list price seen for GLM-5.3 at another provider",
+      "checked": "2026-10-28",
       "confirmed": false
     },
     {
@@ -33,6 +40,7 @@
       "output_per_1m": 600000,
       "max_output_tokens": 4096,
       "source": "https://inference.phala.com/v1/models",
+      "checked": "2026-10-28",
       "confirmed": true
     },
     {
@@ -43,6 +51,7 @@
       "output_per_1m": 4400000,
       "max_output_tokens": 4096,
       "source": "https://inference.phala.com/v1/models",
+      "checked": "2026-10-28",
       "confirmed": true
     },
     {
@@ -53,6 +62,7 @@
       "output_per_1m": 5750000,
       "max_output_tokens": 4096,
       "source": "https://cloud-api.near.ai/v1/models",
+      "checked": "2026-10-28",
       "confirmed": true
     },
     {
@@ -63,6 +73,7 @@
       "output_per_1m": 1100000,
       "max_output_tokens": 4096,
       "source": "https://cloud-api.near.ai/v1/models",
+      "checked": "2026-10-28",
       "confirmed": true
     },
     {
@@ -73,6 +84,7 @@
       "output_per_1m": 780000,
       "max_output_tokens": 4096,
       "source": "https://www.privatemode.ai/pricing lists EUR 0.20 / 0.65; converted at 1.20 USD per EUR (operator confirms the rate)",
+      "checked": "2026-10-28",
       "confirmed": false
     }
   ]

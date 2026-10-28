@@ -65,9 +65,9 @@ describe('relay pricing', () => {
     ).toThrow(/provider/)
   })
 
-  it('loads the shipped price table', () => {
+  it('loads the shipped price table, denominated in FEE_TOKEN (USDC.e, D-035)', () => {
     const table = loadPriceTable(join(import.meta.dirname, '../config/prices.json'), 500)
-    expect(table.currency).toBe('0x20c0000000000000000000000000000000000000')
+    expect(table.currency).toBe('0x20c000000000000000000000b9537d11c60e8b50')
     expect(table.models.length).toBeGreaterThan(0)
     const providers = new Set(table.models.map((m) => m.provider))
     expect([...providers].sort()).toEqual(['nearai', 'phala', 'privatemode', 'tinfoil'])

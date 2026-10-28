@@ -188,16 +188,18 @@ describe('relay attestation gate', () => {
 })
 
 describe('payee from the real composer output', () => {
-  // test/fixtures/relay-app-compose.json: `sealed-compose compose --print app-compose` (ws/composer
-  // 75f1c57) over this branch's catalog/apps/inference-relay, an OWNER config with only that app.
+  // test/fixtures/relay-app-compose.json: `sealed-compose compose --print app-compose` (composer
+  // 1.1.1, ws/int-payments) over catalog/apps/inference-relay with the on_attest_host line removed
+  // (the composer that knows it is ws/int-composer's; the front's environment does not depend on
+  // it), an OWNER config with only that app, mainnet contracts and USDC.e as feeToken.
   const composed = readFileSync(join(import.meta.dirname, 'fixtures/relay-app-compose.json'), 'utf8')
 
-  it('refuses the zero-address placeholder the unreleased fragment carries', () => {
-    expect(() => payeeFromAppCompose(composed)).toThrow(/zero address/)
+  it('reads the deployed treasury, the literal TREASURY_ADDRESS of inference-relay-front', () => {
+    expect(payeeFromAppCompose(composed)).toBe('0x755a1e289503c7109d01a74ed253ba0f724ca3eb')
   })
 
-  it('reads TREASURY_ADDRESS of inference-relay-front once the release pins it', () => {
-    const pinned = composed.replaceAll('0x0000000000000000000000000000000000000000', TREASURY)
-    expect(payeeFromAppCompose(pinned)).toBe(TREASURY)
+  it('refuses a zero-address payee', () => {
+    const zero = composed.replaceAll('0x755a1e289503c7109d01a74ed253ba0f724ca3eb', '0x0000000000000000000000000000000000000000')
+    expect(() => payeeFromAppCompose(zero)).toThrow(/zero address/)
   })
 })

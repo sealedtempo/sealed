@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PROVIDERS, type ProviderId } from './prices.js'
 
+/** pathUSD, the token local Tempo nodes fund. Mainnet's FEE_TOKEN is USDC.e (D-035). */
 export const PATHUSD = '0x20c0000000000000000000000000000000000000' as const
 export const DEFAULT_SECRETS_DIR = '/run/sealed/secrets/inference-relay'
 
@@ -62,6 +63,7 @@ export type RelayConfig = {
   settlerKey?: `0x${string}`
   rpcUrl: string
   chainId: number
+  /** FEE_TOKEN_ADDRESS: the measured literal in the fragment, equal to config/defaults.yaml chain.fee_token. */
   currency: `0x${string}`
   markupBps: number
   pricesPath: string
@@ -116,7 +118,7 @@ export function loadRelayConfig(env: NodeJS.ProcessEnv = process.env): RelayConf
     settlerKey: settler as `0x${string}` | undefined,
     rpcUrl: env.TEMPO_RPC_URL ?? 'https://rpc.tempo.xyz',
     chainId: intEnv(env, 'TEMPO_CHAIN_ID', 4217),
-    currency: address(env.FEE_TOKEN_ADDRESS ?? PATHUSD, 'FEE_TOKEN_ADDRESS'),
+    currency: address(requireEnv(env, 'FEE_TOKEN_ADDRESS'), 'FEE_TOKEN_ADDRESS'),
     markupBps: intEnv(env, 'RELAY_MARKUP_BPS', 500),
     pricesPath: env.RELAY_PRICES_PATH ?? join(here, '..', 'config', 'prices.json'),
     litellmUrl: env.LITELLM_URL ?? 'http://inference-relay-litellm:4000/v1',

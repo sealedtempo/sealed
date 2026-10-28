@@ -58,7 +58,7 @@ describe('relay configuration', () => {
   writeFileSync(join(secrets, 'DATABASE_PASSWORD'), 'p@ss/word')
   writeFileSync(join(secrets, 'NEARAI_API_KEY'), 'near-key')
   writeFileSync(join(secrets, 'TINFOIL_API_KEY'), '')
-  const env = { SEALED_SECRETS_DIR: secrets, MPP_REALM: 'relay.example', TREASURY_ADDRESS: '0x' + 'Aa'.repeat(20) }
+  const env = { SEALED_SECRETS_DIR: secrets, MPP_REALM: 'relay.example', TREASURY_ADDRESS: '0x' + 'Aa'.repeat(20), FEE_TOKEN_ADDRESS: '0x20C000000000000000000000b9537d11c60E8b50' }
 
   it('reads secrets from tmpfs files and enables only providers with keys', () => {
     const config = loadRelayConfig(env)
@@ -66,6 +66,7 @@ describe('relay configuration', () => {
     expect(config.recipient).toBe('0x' + 'aa'.repeat(20))
     expect(config.markupBps).toBe(500)
     expect(config.chainId).toBe(4217)
+    expect(config.currency).toBe('0x20c000000000000000000000b9537d11c60e8b50')
     expect(config.databaseUrl).toBe('postgresql://relay:p%40ss%2Fword@inference-relay-db:5432/relay')
     const enabled = config.providers.filter((p) => p.enabled).map((p) => p.provider)
     expect(enabled).toEqual(['nearai'])
@@ -78,6 +79,8 @@ describe('relay configuration', () => {
     expect(() => loadRelayConfig({ ...env, TREASURY_ADDRESS: '0x1234' })).toThrow(/address/)
     expect(() => loadRelayConfig({ ...env, TREASURY_ADDRESS: '0x' + '0'.repeat(40) })).toThrow(/zero-address placeholder/)
     expect(() => loadRelayConfig({ ...env, RELAY_SETTLER_KEY: '0xabc' })).toThrow(/32-byte/)
+    // No implicit pathUSD: the currency is the fragment's FEE_TOKEN_ADDRESS.
+    expect(() => loadRelayConfig({ ...env, FEE_TOKEN_ADDRESS: '' })).toThrow(/FEE_TOKEN_ADDRESS/)
     expect(() => databaseUrl({ SEALED_SECRETS_DIR: '/nonexistent' })).toThrow(/DATABASE/)
   })
 

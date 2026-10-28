@@ -17,7 +17,7 @@ describe.skipIf(!postgresAvailable() || !existsSync(built))('relay process smoke
     writeFileSync(join(secrets, 'TINFOIL_API_KEY'), 'tk')
     const port = 18000 + Math.floor(Math.random() * 1000)
     const proc = spawn('node', [built], {
-      env: { ...process.env, SEALED_SECRETS_DIR: secrets, DATABASE_URL: cluster.url, MPP_REALM: 'relay.test', TREASURY_ADDRESS: '0x' + 'ab'.repeat(20), PORT: String(port), TINFOIL_STATUS_URL: 'http://127.0.0.1:1/v1/status' },
+      env: { ...process.env, SEALED_SECRETS_DIR: secrets, DATABASE_URL: cluster.url, MPP_REALM: 'relay.test', TREASURY_ADDRESS: '0x' + 'ab'.repeat(20), FEE_TOKEN_ADDRESS: '0x20c000000000000000000000b9537d11c60e8b50', PORT: String(port), TINFOIL_STATUS_URL: 'http://127.0.0.1:1/v1/status' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let output = ''

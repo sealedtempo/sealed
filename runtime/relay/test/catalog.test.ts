@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import YAML from 'yaml'
@@ -19,6 +20,17 @@ const fragmentText = read('compose.fragment.yaml')
 const fragment = YAML.parse(fragmentText)
 const egress = YAML.parse(read('egress.yaml'))
 const litellm = YAML.parse(read('images/litellm-relay/config.yaml'))
+const defaults = YAML.parse(readFileSync(join(repo, 'config/defaults.yaml'), 'utf8'))
+const deployments = JSON.parse(readFileSync(join(repo, 'contracts/deployments/tempo-mainnet.json'), 'utf8'))
+const schema = JSON.parse(readFileSync(join(repo, 'catalog/schema/manifest.schema.json'), 'utf8'))
+
+/**
+ * Brief item 12 adds `on_attest_host` to manifest routes; the composer side (schema, lint,
+ * Caddyfile) is ws/int-composer's. Until the tree's schema knows the field, the schema test adds
+ * it to a copy and the lint test lints a copy of this app without it, so everything else is still
+ * checked by the real schema and the real composer. Once the composer lands both run unchanged.
+ */
+const composerKnowsAttestHost = 'on_attest_host' in (schema.properties.routes.items.properties ?? {})
 
 const ALLOWED_SERVICE_KEYS = new Set([
   'image', 'command', 'entrypoint', 'environment', 'healthcheck', 'depends_on', 'volumes', 'tmpfs', 'user',
@@ -27,15 +39,21 @@ const ALLOWED_SERVICE_KEYS = new Set([
 
 describe('catalog/apps/inference-relay', () => {
   it('manifest validates against catalog/schema/manifest.schema.json', () => {
-    const schema = JSON.parse(readFileSync(join(repo, 'catalog/schema/manifest.schema.json'), 'utf8'))
+    const tree = structuredClone(schema)
+    if (!composerKnowsAttestHost) tree.properties.routes.items.properties.on_attest_host = { type: 'boolean' }
     const ajv = new Ajv2020({ allErrors: true, strict: true })
     addFormats(ajv)
-    const validate = ajv.compile(schema)
+    const validate = ajv.compile(tree)
     const ok = validate(manifest)
     expect(validate.errors ?? []).toEqual([])
     expect(ok).toBe(true)
     expect(manifest).toMatchObject({ id: 'inference-relay', category: 'ai', metering: { unit: 'tokens', source: 'callback' } })
-    expect(manifest.routes).toEqual([expect.objectContaining({ name: 'relay', service: 'inference-relay-front' })])
+  })
+
+  it('serves the relay route on the attest host: /v1/ next to /attest, one origin and certificate (D-045)', () => {
+    expect(manifest.routes).toEqual([
+      { name: 'relay', service: 'inference-relay-front', internal_port: 8080, path_or_host: '/v1', auth: 'public', on_attest_host: true },
+    ])
   })
 
   it('fragment follows the composer rules (INTERFACES section 14)', () => {
@@ -67,10 +85,17 @@ describe('catalog/apps/inference-relay', () => {
     for (const line of lines) expect(line.replaceAll('$$', ''), line).not.toContain('$')
   })
 
-  it('pins the payee as a literal and the markup to config/defaults.yaml', () => {
+  it('pins the payee to the deployed treasury, the currency to FEE_TOKEN and the markup to config/defaults.yaml', () => {
     const env = fragment.services['inference-relay-front'].environment
-    expect(env.TREASURY_ADDRESS).toMatch(/^0x[0-9a-f]{40}$/)
-    const defaults = YAML.parse(readFileSync(join(repo, 'config/defaults.yaml'), 'utf8'))
+    // A literal (measured, read by every payer), lowercase, equal to the treasury FeeSplitter was deployed with.
+    expect(env.TREASURY_ADDRESS).toBe('0x755a1e289503c7109d01a74ed253ba0f724ca3eb')
+    expect(env.TREASURY_ADDRESS).toBe(deployments.config.treasury.toLowerCase())
+    // FEE_TOKEN from config: USDC.e on mainnet (D-035); the price table is denominated in it too.
+    expect(env.FEE_TOKEN_ADDRESS).toBe(defaults.chain.fee_token)
+    expect(env.FEE_TOKEN_ADDRESS).toBe('0x20c000000000000000000000b9537d11c60e8b50')
+    expect(env.FEE_TOKEN_ADDRESS).toBe(deployments.config.feeToken.toLowerCase())
+    expect(loadPriceTable(join(repo, 'runtime/relay/config/prices.json'), 500).currency).toBe(env.FEE_TOKEN_ADDRESS)
+    expect(Number(env.TEMPO_CHAIN_ID)).toBe(defaults.chain.chain_id)
     expect(Number(env.RELAY_MARKUP_BPS)).toBe(defaults.relay_markup_bps)
   })
 
@@ -94,13 +119,26 @@ describe('catalog/apps/inference-relay', () => {
   const composerCli = join(repo, 'runtime/composer/cmd/sealed-compose')
   const haveGo = spawnSync('go', ['version']).status === 0
   it.skipIf(!existsSync(composerCli) || !haveGo)('passes the composer catalog lint except for release-time digests and SBOMs', () => {
-    const run = spawnSync('go', ['run', './runtime/composer/cmd/sealed-compose', 'lint', '--app-dir', 'catalog/apps/inference-relay'], {
-      cwd: repo,
-      encoding: 'utf8',
-    })
-    const errors = `${run.stdout}\n${run.stderr}`.split('\n').filter((l) => l.startsWith('error:'))
-    expect(errors.filter((l) => !l.includes('[unbuilt-image]'))).toEqual([])
-  })
+    let appDir = join(repo, 'catalog/apps/inference-relay')
+    let scratch: string | undefined
+    if (!composerKnowsAttestHost) {
+      scratch = mkdtempSync(join(tmpdir(), 'relay-lint-'))
+      appDir = join(scratch, 'inference-relay')
+      cpSync(join(repo, 'catalog/apps/inference-relay'), appDir, { recursive: true })
+      const text = readFileSync(join(appDir, 'manifest.yaml'), 'utf8')
+      const without = text.replace(/^ {4}on_attest_host: true\n/m, '')
+      expect(without).not.toBe(text)
+      writeFileSync(join(appDir, 'manifest.yaml'), without)
+    }
+    try {
+      const run = spawnSync('go', ['run', './runtime/composer/cmd/sealed-compose', 'lint', '--app-dir', appDir], { cwd: repo, encoding: 'utf8' })
+      const errors = `${run.stdout}\n${run.stderr}`.split('\n').filter((l) => l.startsWith('error:'))
+      expect(errors.filter((l) => !l.includes('[unbuilt-image]'))).toEqual([])
+      expect(run.error).toBeUndefined()
+    } finally {
+      if (scratch) rmSync(scratch, { recursive: true, force: true })
+    }
+  }, 120_000)
 
   it('LiteLLM routes every priced model to its attested upstream with the right key', () => {
     const prices = loadPriceTable(join(repo, 'runtime/relay/config/prices.json'), 500)

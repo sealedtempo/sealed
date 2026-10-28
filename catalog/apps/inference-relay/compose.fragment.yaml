@@ -22,12 +22,14 @@ services:
       PORT: "8080"
       MPP_REALM: sealed-inference-relay
       # The operator treasury (lowercase), the payee every payer reads from this measured value.
-      # Zero-address placeholder until the release PR pins it: the relay refuses to start with it
-      # and `pnpm --filter @sealed/relay release-check` blocks the release.
-      TREASURY_ADDRESS: "0x0000000000000000000000000000000000000000"
+      # Equal to config.treasury of contracts/deployments/tempo-mainnet.json (catalog test and
+      # `pnpm --filter @sealed/relay release-check` keep them equal).
+      TREASURY_ADDRESS: "0x755a1e289503c7109d01a74ed253ba0f724ca3eb"
       TEMPO_RPC_URL: https://rpc.tempo.xyz
       TEMPO_CHAIN_ID: "4217"
-      FEE_TOKEN_ADDRESS: "0x20c0000000000000000000000000000000000000"
+      # FEE_TOKEN: config/defaults.yaml chain.fee_token, USDC.e on mainnet (D-035). Offers, the
+      # price table and the settler's network fees all use it.
+      FEE_TOKEN_ADDRESS: "0x20c000000000000000000000b9537d11c60e8b50"
       # config/defaults.yaml relay_markup_bps (catalog test keeps them equal).
       RELAY_MARKUP_BPS: "500"
       LITELLM_URL: http://inference-relay-litellm:4000/v1

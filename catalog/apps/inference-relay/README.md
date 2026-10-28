@@ -3,7 +3,7 @@
 Paid, attested inference for Sealed deployments, operated by the platform in its own
 confidential VM. A customer's `llm-gateway` routes `relay/<model>` to `sealed-mpp-payer` in the
 customer VM, which verifies this relay's live attestation and pays it per token over the
-Machine Payments Protocol (MPP) in pathUSD on Tempo.
+Machine Payments Protocol (MPP) in FEE_TOKEN on Tempo (USDC.e on mainnet, D-035).
 
 The relay is deployed like any other stack: released through this catalog as appId
 `inference-relay`, approved onchain by OWNER as the customer, with its own key broker in the
@@ -13,7 +13,7 @@ platform project and an onchain deployment record.
 
 | service | job |
 |---|---|
-| `inference-relay-front` | mppx server (Hono, Tempo method, payee `TREASURY_ADDRESS`, pathUSD). Prices, payment, provider gate, forwarding to LiteLLM, token usage to sealed-agent |
+| `inference-relay-front` | mppx server (Hono, Tempo method, payee `TREASURY_ADDRESS`, currency `FEE_TOKEN_ADDRESS`). Prices, payment, provider gate, forwarding to LiteLLM, token usage to sealed-agent |
 | `inference-relay-db` | Postgres 16.15: the MPP session store (vouchers survive restarts) and nothing else |
 | `inference-relay-litellm` | LiteLLM 1.106.5 MIT core, no database, holds the provider keys |
 | `inference-relay-tinfoil` | verifies Tinfoil with `@tinfoilsh/verifier`, forwards over TLS pinned to the attested key |
@@ -50,12 +50,12 @@ Code identity:
   `mock_response`, `api_base` or `api_key` are dropped, `n` must be 1, and content parts other
   than text are refused. Bodies are limited to 4 MiB and unpaid requests to 120 per minute per
   client. Unpaid requests get `402` with two MPP offers:
-  - `session` (`unitType: usd_micro`, one pathUSD base unit): a TIP-1034 channel; the response is
+  - `session` (`unitType: usd_micro`, one FEE_TOKEN base unit): a TIP-1034 channel; the response is
     SSE and the relay charges per token, in batches of `SESSION_BATCH_TOKENS`, ahead of delivery,
     then reconciles with the provider's reported usage and credits back any overcharge.
-  - `charge`: one pathUSD transfer priced from estimated prompt tokens plus `max_tokens`
+  - `charge`: one FEE_TOKEN transfer priced from estimated prompt tokens plus `max_tokens`
     (the relay always sets `max_tokens`, bounded by the model's limit).
-- `GET /v1/models`: models with relay prices (`input_per_1m`, `output_per_1m` in pathUSD base
+- `GET /v1/models`: models with relay prices (`input_per_1m`, `output_per_1m` in FEE_TOKEN base
   units per 1M tokens, list price x (1 + `relay_markup_bps`/10000)) and whether each is attested.
   `default` resolves to the first preferred model whose provider is attested.
 - `GET /v1/attest-status`: per-provider status and content-free evidence (measurements,
@@ -63,8 +63,12 @@ Code identity:
 
 ## Money
 
-Charges are paid to `TREASURY_ADDRESS`. Session settle and close transactions are sent by
-`RELAY_SETTLER_KEY` as the channel operator (it needs pathUSD for fees only). A supervisor runs
+Charges are paid to `TREASURY_ADDRESS`, the operator treasury
+`0x755a1e289503c7109d01a74ed253ba0f724ca3eb` (the one FeeSplitter was deployed with,
+`contracts/deployments/tempo-mainnet.json`). The currency is `FEE_TOKEN_ADDRESS`, equal to
+`chain.fee_token` in `config/defaults.yaml`: USDC.e on mainnet (D-035). Session settle and close
+transactions are sent by `RELAY_SETTLER_KEY` as the channel operator (it needs FEE_TOKEN for
+network fees only). A supervisor runs
 mppx's `superviseCloses` every minute over the open channels listed in Postgres, so spend is
 captured before a payer's close request can be withdrawn after the 900 second grace period.
 
@@ -72,22 +76,25 @@ A per-request charge is final: the transfer settles before the upstream call, so
 failure after that is not refunded. Payers use sessions first, which charge only for delivered
 tokens.
 
-Prices live in `runtime/relay/config/prices.json`, baked into the measured image. Tinfoil does
-not publish per-model prices on a fetchable page and Privatemode prices in EUR; those entries are
-`"confirmed": false`. `TREASURY_ADDRESS` in the fragment is a literal (measured, read by every
-payer) and holds the zero-address placeholder until the release PR pins the operator treasury.
-`pnpm --filter @sealed/relay release-check` fails while either is open; the composer's catalog
-lint blocks the unbuilt image digests.
+Prices live in `runtime/relay/config/prices.json`, baked into the measured image, as provider
+list prices in FEE_TOKEN base units per 1M tokens. Every entry names its source and the date it
+was read. Tinfoil does not publish per-model prices on a fetchable page and Privatemode prices in
+EUR; those entries are `"confirmed": false`.
+`TREASURY_ADDRESS` in the fragment is a literal (measured, read by every payer).
+`pnpm --filter @sealed/relay release-check` fails while a price is unconfirmed or unsourced, the
+treasury differs from the deployed one, or the fee token differs from `config/defaults.yaml`; the
+composer's catalog lint blocks the unbuilt image digests.
 
 ## Payer trust
 
 `sealed-mpp-payer` verifies this relay's live attestation through `sealed-verifierd` and then
 sends prompts and payments only over TLS connections that present the key the attestation bound
 (`tlsPubKeyHash`, the key of the attest host's certificate). So the chat endpoint must be served
-on the attested origin: `endpoints.relay` and `endpoints.relayAttest` share one host, and the
-payer refuses a config where they do not. With Caddy issuing one certificate per host, the relay
-deployment's attest site must also route `/v1/*` to `inference-relay-front`; the composer does
-not render that yet (an app route served on the attest host is a pending interface change). The attested stack must be exactly this app,
+on the attested origin (D-045). The `relay` route therefore sets `on_attest_host: true` with the
+path prefix `/v1`: Caddy serves `/v1/*` of `inference-relay-front` on the deployment's attest
+host, the same origin and certificate as `/attest`. `endpoints.relay` in a customer config is that
+origin with no path, and `endpoints.relayAttest` is `<origin>/attest`; the payer refuses a config
+where they differ. The attested stack must be exactly this app,
 owned by OWNER, and the payee is `TREASURY_ADDRESS` of `inference-relay-front` in the attested
 compose.
 

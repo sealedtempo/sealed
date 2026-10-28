@@ -4,7 +4,7 @@ name: Inference relay
 category: ai
 description: >-
   Paid, attested inference for Sealed deployments. An mppx server takes Machine Payments Protocol
-  payments in pathUSD on Tempo (per-token sessions over SSE, per-request charges as the fallback)
+  payments in FEE_TOKEN (USDC.e) on Tempo (per-token sessions over SSE, per-request charges as the fallback)
   and forwards to a LiteLLM instance that reaches Tinfoil, Phala, NEAR AI and Privatemode only
   through attestation-verified, key-pinned channels. Operated by the platform; OWNER approves its stack.
 upstream:
@@ -49,11 +49,14 @@ resources:
   memory_gb: 6
   disk_gb: 20
 routes:
+  # Served on the deployment's attest host (same origin and certificate as /attest, D-045), so
+  # payers pin one attested TLS key for both. endpoints.relay is that origin.
   - name: relay
     service: inference-relay-front
     internal_port: 8080
-    path_or_host: relay
+    path_or_host: /v1
     auth: public
+    on_attest_host: true
 healthcheck:
   service: inference-relay-front
   http: /healthz
@@ -75,8 +78,8 @@ secrets:
   - name: RELAY_SETTLER_KEY
     description: >-
       Hot key that sends session settle and close transactions as the channel operator. Payments
-      go to TREASURY_ADDRESS; this key only needs pathUSD for network fees. Without it the relay
-      offers per-request charges only.
+      go to TREASURY_ADDRESS; this key only needs FEE_TOKEN (USDC.e) for network fees. Without it
+      the relay offers per-request charges only.
     generate: hex32
     optional: true
   - name: TINFOIL_API_KEY
@@ -120,11 +123,11 @@ license_exclusions:
   - "BerriAI/litellm:enterprise/"
 notes: >-
   Models are <provider>/<model> (GET /v1/models lists them with relay prices: provider list price x
-  (1 + relay_markup_bps/10000), in pathUSD base units per 1M tokens) plus "default". A provider is
+  (1 + relay_markup_bps/10000), in FEE_TOKEN base units per 1M tokens) plus "default". A provider is
   enabled only when its API key secret exists, and the front refuses to forward (503, before any
   payment) unless that provider's latest attestation verified. GET /v1/attest-status shows the
   evidence. Phala and NEAR AI stay off until their reviewed compose (and, for NEAR AI, OS image)
   hashes are pinned in the fragment. Session vouchers live in the relay's own Postgres.
-  TREASURY_ADDRESS in the fragment is a literal; the zero-address placeholder blocks the release
-  until a PR pins the operator treasury. Payers pin the relay's attested TLS key, so the relay's
-  chat route must be served on its attested origin (README.md, "Payer trust").
+  TREASURY_ADDRESS in the fragment is the literal operator treasury (contracts/deployments
+  tempo-mainnet.json). Payers pin the relay's attested TLS key, so the relay route is served on
+  the attest host (on_attest_host, README.md "Payer trust").
