@@ -1,8 +1,11 @@
 # gcp/ golden capture: dstack 0.6.1 on Google Cloud C3 TDX
 
 Real TDX quotes, event logs and guest-agent `/Info` output from a hello-world stack, captured on 2026-10-28 for
-the Sealed runtime spike (build spec 5.1, phase 3). `TestRealGCPGolden` (`../../golden_gcp_test.go`) verifies
-`quote.dat` offline against the recorded Intel collateral in `pcs/`, then checks `eventlog.json` against it.
+the Sealed runtime spike (build spec 5.1, phase 3). `TestRealGCPGolden` (`../../golden_gcp_test.go`) verifies all
+four GetQuote captures offline against the recorded Intel collateral in `pcs/`, with the `tcb_policy` of
+`config/defaults.yaml`, and checks each event log against its quote. `TestRealGCPGoldenRejects` runs the failure
+paths on the same quote. The TypeScript tests (`packages/core/test/dstack.test.ts`, `runtime/agent/test/dstack.test.ts`)
+read the same files and assert the same quoteHash and eventLogHash.
 
 **The OS image is upstream dstack 0.6.1** (`mkosi-os-v0.6.1` prod UKI, `os_image_hash`
 `ec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6`), not a Sealed production image. Per D-016 it was
@@ -28,13 +31,13 @@ ZFS has a different UKI, so it has a different RTMR1/RTMR2 and measurementsHash.
 | file | what it is |
 |---|---|
 | `app-compose.json` | the exact bytes put on the DSTACKSHR disk. CJSON per INTERFACES 6, no trailing newline. `sha256` = stackHash = compose-hash event = `e21d29755b5a37c7dea8fd81d302ac0d8219e693c4b08e332db3f05add852e28` |
-| `quote.dat` | boot 1, first quote. The raw dstack quote with its trailing zero padding cut off: 4935 bytes = 48 header + 584 TD body + 4 length + 4299 signature data. This is what sealed-agent must send (`attest.TrimQuote`); `ParseQuote` refuses the padded form |
-| `quote-raw.hex` | the same quote exactly as `POST /GetQuote` returned it: 8000 bytes, the last 3065 all zero. `quoteHash` (INTERFACES 2) must be defined over the trimmed bytes |
+| `quote.dat` | boot 1, first quote. The raw dstack quote with its trailing zero padding cut off: 4935 bytes = 48 header + 584 TD body + 4 length + 4299 signature data. This is what sealed-agent sends (`DstackClient.getQuote` trims with `trimQuote` from @sealed/core, the rule of `attest.TrimQuote`); `ParseQuote` refuses the padded form |
+| `quote-raw.hex` | the same quote exactly as `POST /GetQuote` returned it: 8000 bytes, the last 3065 all zero. `quoteHash` (INTERFACES 2) is over the trimmed bytes |
 | `eventlog.json` | the `event_log` string of that GetQuote response, unchanged: 45 entries, 16/7/12 firmware CCEL entries for RTMR0/1/2 (digests only) and the 10 RTMR3 runtime events |
 | `report_data.txt`, `nonce.txt` | `report_data = sha256("sealed/spike/v1" || nonce[32]) || 32 zero bytes` (the INTERFACES 3 shape with a spike-only tag) |
 | `info.json` | `GET /Info` from boot 1, unchanged. `tcb_info` is a JSON string with mrtd, rtmr0-3, event_log and app_compose. `app_cert` is the public certificate the guest agent made at boot |
-| `expected.json` | the values `TestRealGCPGolden` asserts. `attestedAt` is the collateral recording time (18:06:45Z, 9 minutes after the capture at 17:57:45Z), because the collateral cache only serves entries fetched no more than a minute after "now" |
-| `pcs/` | Intel PCS collateral for `quote.dat` (TCB info, QE identity, PCK CRL, root CA CRL), recorded with `go run ./verifier/internal/tools/pcsrecord -out verifier/attest/testdata/gcp/pcs verifier/attest/testdata/gcp/quote.dat` |
+| `expected.json` | the values `TestRealGCPGolden` asserts: the four captures with their capture times (UTC), the signed and GetQuote lengths, the TCB result, quoteHash and eventLogHash of `quote.dat` / `eventlog.json`, measurementsHash, RTMR3, compose hash, app-id, instance-id, TD_ATTRIBUTES and XFAM. The test verifies at the collateral recording time from `pcs/recorded.json` (18:06:45Z, 4 to 9 minutes after the captures), because the collateral cache only serves entries fetched no more than a minute after "now" |
+| `pcs/` | Intel PCS collateral for `quote.dat` (TCB info, QE identity, PCK CRL, root CA CRL; the boot 2 quotes need the same four URLs), recorded with `go run ./verifier/internal/tools/pcsrecord -out verifier/attest/testdata/gcp/pcs verifier/attest/testdata/gcp/quote.dat` |
 | `captures/` | every raw response: `boot{1,2}-getquote{1,2}.json` (full GetQuote JSON: quote, event_log, report_data, vm_config), `boot{1,2}-info.json`, and the nonce and report_data of each quote |
 | `tools/` | the scripts used: `server.py` (the in-CVM proxy, embedded verbatim in app-compose.json), `make_shared.py` (writes app-compose.json and the other shared-disk files), `capture.py` (nonces, report_data, the HTTP calls), `check_capture.py` (offline Python checks of one capture), `predict_rtmr12.py` (computes RTMR1 and RTMR2 from `disk.raw` alone and compares them with a capture) |
 
