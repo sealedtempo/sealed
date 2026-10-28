@@ -166,6 +166,23 @@ describe("check-image-paths", () => {
     assert.deepEqual(findExcluded(["srv/app/server/ee/x", "app/server/ee/x"], ["/app/server/ee/"]), ["app/server/ee/x"]);
   });
 
+  // The manifest's "/app/**/ee/" (a composer lint path glob, license audit F6 and F7) under the same rules.
+  test('"/app/**/ee/" matches an ee directory at any depth under app/, outside node_modules', () => {
+    const listing = [
+      "app/server/dist/src/modules/ee/license.js", "app/frontend/build/ee/", "app/ee/x.js", "app/plugins/ee/x.js",
+      "ee/x.js", "srv/app/server/ee/x.js", "app/server/eeprom.txt", "app/frontend/build/assets/free/x.svg", "app/tree/ee.js",
+      "app/server/node_modules/cldr-data/main/ee/numbers.json", "app/ee/node_modules/x/ee/y.js", "usr/share/locale/ee/LC_MESSAGES/x.mo",
+    ];
+    assert.deepEqual(findExcluded(listing, ["/app/**/ee/"]), [
+      "app/server/dist/src/modules/ee/license.js", "app/frontend/build/ee", "app/ee/x.js", "app/plugins/ee/x.js",
+      "app/ee/node_modules/x/ee/y.js",
+    ]);
+    // "*" stays within one segment.
+    assert.deepEqual(findExcluded(["ms-playwright/chromium-1208/chrome", "ms-playwright/firefox-1538/firefox"], ["/ms-playwright/chromium-*/"]), [
+      "ms-playwright/chromium-1208/chrome",
+    ]);
+  });
+
   test("the CLI reads a listing on stdin and exits 1 on a hit", () => {
     const tool = join(appDir, "tools/check-image-paths.mjs");
     const bad = spawnSync(process.execPath, [tool], { input: "usr/bin/redis-server\n", encoding: "utf8" });

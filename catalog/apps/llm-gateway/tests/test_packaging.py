@@ -319,7 +319,7 @@ class ComposerTest(unittest.TestCase):
         caught_packages, clean_packages = ["litellm-enterprise", "litellm_enterprise"], ["litellm", "prisma", "ollama"]
         findings = self.composer.lint_with_sbom(APP_DIR, "litellm", caught_packages + clean_packages,
                                                 caught_files + clean_files)
-        hits = sealed_compose.excluded_hits(findings)
+        hits = sealed_compose.excluded_hits(findings, caught_files + clean_files)
         for path in caught_files:
             self.assertIn(path, hits)
         for name in caught_packages:

@@ -244,13 +244,22 @@ def unexpected(findings: list[dict[str, Any]], errors: tuple[str, ...] = ("unbui
             for f in findings if f["code"] not in allowed.get(f["severity"], set())]
 
 
-def excluded_hits(findings: list[dict[str, Any]]) -> dict[str, set[str]]:
-    """excluded-path findings of `lint --json`: SBOM entry (package@version or file path) -> patterns."""
+def excluded_hits(findings: list[dict[str, Any]], files: list[str] | tuple[str, ...] = ()) -> dict[str, set[str]]:
+    """excluded-path findings of `lint --json`: SBOM entry (package@version or file path) -> patterns.
+
+    The lint (license audit F6 globs) reports a package by name@version, a matched file by its path, and
+    the files under a matched directory once, by the directory ("/<dir>/", every pattern that matched
+    it in the message). Each of `files` under a reported directory gets that directory's patterns."""
     hits: dict[str, set[str]] = {}
     for f in findings:
         if f["code"] == "excluded-path":
-            m = re.search(r'excluded path "([^"]*)"', f["message"])
-            hits.setdefault(f.get("field", ""), set()).add(m.group(1) if m else "")
+            m = re.search(r'excluded paths? ((?:"[^"]*"(?:, )?)+)', f["message"])
+            patterns = set(re.findall(r'"([^"]*)"', m.group(1))) if m else {""}
+            hits.setdefault(f.get("field", ""), set()).update(patterns)
+    for path in files:
+        for field, patterns in list(hits.items()):
+            if field.endswith("/") and path.startswith(field):
+                hits.setdefault(path, set()).update(patterns)
     return hits
 
 

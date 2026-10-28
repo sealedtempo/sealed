@@ -10,7 +10,7 @@
 # image (docker/ce-production.Dockerfile at the tag) copies only build output (server/dist,
 # frontend/build, plugins/dist and node_modules), so no ee directory reaches it; the build fails
 # if any file or directory named ee exists under /app outside node_modules, where "ee" is the
-# Ewe locale code of third-party data (license audit F7, manifest license_exclusions "/ee/").
+# Ewe locale code of third-party data (license audit F7, manifest license_exclusions "/app/**/ee/").
 # Built by the runtime image workflow (linux/amd64); its digest is then pinned in manifest.yaml.
 
 FROM docker.io/tooljet/tooljet-ce@sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47 AS upstream

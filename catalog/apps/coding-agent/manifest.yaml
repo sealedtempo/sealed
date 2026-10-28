@@ -63,9 +63,10 @@ telemetry_off_env:
   ANONYMIZED_TELEMETRY: "false"
   LITELLM_LOCAL_MODEL_COST_MAP: "True"
 license_exclusions:
-  # Literal patterns only (license audit F6): the lint matches an SBOM file path that contains the
-  # pattern and a package whose name is the pattern; ** and * are not expanded. Entries with
-  # "repo:path" document upstream directories that never reach an image.
+  # Path globs (license audit F6, runtime/composer/lint): "*" within a segment, "**" any number of
+  # segments, a leading "/" anchors at the image root, a trailing "/" matches a directory and
+  # everything under it; a pattern without "/" also matches a package of that name.
+  # Entries with "repo:path" document upstream directories that never reach an image.
   - "OpenHands/legacy:enterprise/"
   - "/acp-node/"
   - "@anthropic-ai/claude-agent-sdk"

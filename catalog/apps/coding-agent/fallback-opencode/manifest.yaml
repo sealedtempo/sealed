@@ -70,7 +70,7 @@ telemetry_off_env:
   OPENCODE_DISABLE_CLAUDE_CODE: "1"
   DO_NOT_TRACK: "1"
 license_exclusions:
-  # Literal patterns only (license audit F6), as in the OpenHands manifest.
+  # Path globs (license audit F6), as in the OpenHands manifest.
   - "anomalyco/opencode:packages/enterprise/"
   - "@anthropic-ai/claude-agent-sdk"
   - "litellm_enterprise"

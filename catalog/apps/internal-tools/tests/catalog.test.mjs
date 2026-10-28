@@ -64,11 +64,12 @@ describe("manifest", () => {
 
   test("excludes enterprise directories, Oracle Instant Client, Redis binaries and Redis modules", () => {
     const ex = app.manifest.license_exclusions;
-    for (const path of ["/ee/", "/app/server/ee/", "/app/frontend/ee/", "/opt/oracle/", "/usr/bin/redis-server", "/usr/lib/redis/", "/etc/redis/"]) {
+    for (const path of ["/app/**/ee/", "/app/server/ee/", "/app/frontend/ee/", "/opt/oracle/", "/usr/bin/redis-server", "/usr/lib/redis/", "/etc/redis/"]) {
       assert.ok(ex.includes(path), path);
     }
-    // License audit F7: "/ee/" as a path segment, never a bare "ee/" (which would match tree/ or free/).
-    assert.ok(!ex.includes("ee/"));
+    // License audit F7: an ee directory under /app, never a bare "ee/" (the lint's default already covers
+    // the rest of the image, and a manifest pattern would also hit OS packages' Ewe locale data).
+    assert.ok(!ex.includes("ee/") && !ex.includes("/ee/"));
   });
 
   test("generates the admin password with the password generator, within ToolJet's limits", () => {
@@ -300,7 +301,7 @@ describe("the real composer (runtime/composer)", { skip: composer.skip }, () => 
     const hits = excludedPathHits(composer, appDir, "tooljet", { packages: cleanPackages, files: [...caughtFiles, ...cleanFiles] });
     for (const path of caughtFiles) assert.ok(hits.has(path), path);
     for (const entry of [...cleanFiles, ...cleanPackages.map((n) => `${n}@1.0.0`)]) assert.ok(!hits.has(entry), entry);
-    assert.ok(hits.get("/app/server/dist/src/modules/ee/stub.js").has("/ee/"));
+    assert.ok(hits.get("/app/server/dist/src/modules/ee/stub.js").has("/app/**/ee/"));
     const used = new Set([...hits.values()].flatMap((set) => [...set]));
     for (const pattern of app.manifest.license_exclusions) assert.ok(used.has(pattern), `${pattern} matches nothing`);
   });

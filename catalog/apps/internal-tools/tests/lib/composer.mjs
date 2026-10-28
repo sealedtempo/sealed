@@ -139,15 +139,34 @@ export function excludedPathHits(composer, appDir, image, { packages = [], files
     } catch {
       throw new Error(`sealed-compose lint failed: ${res.stderr}`);
     }
-    const hits = new Map();
-    for (const f of findings.filter((x) => x.code === "excluded-path")) {
-      const pattern = /excluded path "([^"]*)"/.exec(f.message)?.[1] ?? "";
-      hits.set(f.field ?? "", (hits.get(f.field ?? "") ?? new Set()).add(pattern));
-    }
-    return hits;
+    return excludedHits(findings, files);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+// excluded-path findings of `lint --json` as a Map from SBOM entry to the patterns it hit. The lint
+// (license audit F6 globs) reports a package by name@version, a matched file by its path, and the
+// files under a matched directory once, by the directory ("/<dir>/", every pattern that matched it in
+// the message); each of `files` under a reported directory gets that directory's patterns.
+export function excludedHits(findings, files = []) {
+  const hits = new Map();
+  for (const f of findings.filter((x) => x.code === "excluded-path")) {
+    const list = /excluded paths? ((?:"[^"]*"(?:, )?)+)/.exec(f.message)?.[1];
+    const patterns = list ? [...list.matchAll(/"([^"]*)"/g)].map((m) => m[1]) : [""];
+    const set = hits.get(f.field ?? "") ?? new Set();
+    for (const p of patterns) set.add(p);
+    hits.set(f.field ?? "", set);
+  }
+  for (const path of files) {
+    for (const [field, patterns] of [...hits]) {
+      if (!field.endsWith("/") || !path.startsWith(field)) continue;
+      const set = hits.get(path) ?? new Set();
+      for (const p of patterns) set.add(p);
+      hits.set(path, set);
+    }
+  }
+  return hits;
 }
 
 // Findings other than the allowed error and warning codes, as readable lines.

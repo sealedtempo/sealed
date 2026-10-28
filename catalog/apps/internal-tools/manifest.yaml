@@ -104,11 +104,13 @@ telemetry_off_env:
   APM_VENDOR: ""
   ENABLE_OTEL: "false"
 license_exclusions:
-  # Any ee directory, the open-core layout of ToolJet's private enterprise submodules (license
-  # audit F7). The composer lint looks for it anywhere in an SBOM file path,
-  # tools/check-image-paths.mjs at any depth outside node_modules/ and usr/share/locale/ (where ee
-  # is the Ewe locale code), and the image build fails on one under /app outside node_modules.
-  - /ee/
+  # Any ee directory under /app, the open-core layout of ToolJet's private enterprise submodules
+  # (license audit F7). Path globs (license audit F6): "**" is any number of segments. The composer
+  # lint matches it at any depth under /app (its default "ee/" pattern covers the rest of the image
+  # outside OS packages), tools/check-image-paths.mjs at any depth under /app outside node_modules/
+  # (where ee is the Ewe locale code of third-party data), and the image build fails on one under
+  # /app outside node_modules.
+  - /app/**/ee/
   - /app/server/ee/
   - /app/frontend/ee/
   - /app/server/dist/ee/

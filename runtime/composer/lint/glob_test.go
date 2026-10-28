@@ -144,12 +144,19 @@ var catalogPatternCases = map[string]struct{ pos, neg []string }{
 	"OpenHands/legacy:enterprise/":            {},
 	"anomalyco/opencode:packages/enterprise/": {},
 	"BerriAI/litellm:enterprise/":             {},
-	"/acp-node/**": {
+	"/acp-node/": {
 		[]string{"acp-node/node_modules/@zed-industries/claude-code-acp/package.json"},
-		[]string{"app/acp-node/index.js", "acp-node-extra/index.js"}},
-	"**/@anthropic-ai/claude-agent-sdk*/**": {
-		[]string{"acp-node/node_modules/@anthropic-ai/claude-agent-sdk/cli.js", "usr/lib/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"},
+		[]string{"app/acp-node/index.js", "acp-node-extra/index.js", "opt/acp-nodes.txt"}},
+	"@anthropic-ai/claude-agent-sdk": {
+		[]string{"acp-node/node_modules/@anthropic-ai/claude-agent-sdk/cli.js", "usr/lib/node_modules/@anthropic-ai/claude-agent-sdk/cli.js"},
 		[]string{"app/node_modules/@anthropic-ai/sdk/index.js"}},
+	"litellm_enterprise": {
+		[]string{"app/.venv/lib/python3.13/site-packages/litellm_enterprise/__init__.py"},
+		[]string{"app/.venv/lib/python3.13/site-packages/litellm/proxy/enterprise_billing/__init__.py", "app/.venv/lib/python3.13/site-packages/litellm/__init__.py"}},
+	"/app/enterprise/": {
+		[]string{"app/enterprise/enterprise_hooks/banned_keywords.py"},
+		[]string{"app/litellm/proxy/enterprise_billing/README.md", "opt/app/enterprise/x.py", "app/enterprise"}},
+	// inference-relay (LiteLLM) keeps the glob forms of the same exclusions.
 	"**/litellm_enterprise/**": {
 		[]string{"app/.venv/lib/python3.13/site-packages/litellm_enterprise/__init__.py"},
 		[]string{"app/.venv/lib/python3.13/site-packages/litellm/proxy/enterprise_billing/__init__.py"}},
@@ -159,34 +166,37 @@ var catalogPatternCases = map[string]struct{ pos, neg []string }{
 	"**/litellm_enterprise-*.dist-info/**": {
 		[]string{"app/.venv/lib/python3.13/site-packages/litellm_enterprise-0.1.20.dist-info/METADATA"},
 		[]string{"app/.venv/lib/python3.13/site-packages/litellm-1.106.5.dist-info/METADATA"}},
-	"/usr/lib/ollama/cuda_v12/**":     {[]string{"usr/lib/ollama/cuda_v12/libggml-cuda.so"}, []string{"usr/lib/ollama/libggml-cpu-haswell.so"}},
-	"/usr/lib/ollama/cuda_v13/**":     {[]string{"usr/lib/ollama/cuda_v13/libggml-cuda.so"}, []string{"usr/lib/ollama/cuda_v12/libggml-cuda.so"}},
-	"/usr/lib/ollama/mlx_cuda_v13/**": {[]string{"usr/lib/ollama/mlx_cuda_v13/libmlx.so"}, []string{"usr/lib/ollama/cuda_v13/libggml-cuda.so"}},
-	"/usr/lib/ollama/vulkan/**":       {[]string{"usr/lib/ollama/vulkan/libggml-vulkan.so"}, []string{"usr/lib/ollama/libggml-base.so"}},
-	"/app/server/ee/":                 {[]string{"app/server/ee/licensing/license.service.js"}, []string{"app/server/ee.config.js", "app/server/src/modules/free/index.js"}},
-	"/app/frontend/ee/":               {[]string{"app/frontend/ee/components/Billing.jsx"}, []string{"app/frontend/build/main.js"}},
-	"/app/server/dist/ee/":            {[]string{"app/server/dist/ee/licensing/license.service.js"}, []string{"app/server/dist/main.js"}},
-	"/app/frontend/build/ee/":         {[]string{"app/frontend/build/ee/billing.js"}, []string{"app/frontend/build/main.js"}},
-	"/opt/oracle/":                    {[]string{"opt/oracle/instantclient_21_10/libclntsh.so.21.1"}, []string{"opt/oraclex/lib.so"}},
-	"/usr/bin/redis-server":           {[]string{"usr/bin/redis-server"}, []string{"usr/bin/valkey-server", "usr/local/bin/redis-server"}},
-	"/usr/bin/redis-check-aof":        {[]string{"usr/bin/redis-check-aof"}, []string{"usr/bin/valkey-check-aof"}},
-	"/usr/bin/redis-check-rdb":        {[]string{"usr/bin/redis-check-rdb"}, []string{"usr/bin/valkey-check-rdb"}},
-	"/usr/bin/redis-benchmark":        {[]string{"usr/bin/redis-benchmark"}, []string{"usr/bin/valkey-benchmark"}},
-	"/usr/bin/redis-cli":              {[]string{"usr/bin/redis-cli"}, []string{"usr/bin/valkey-cli"}},
-	"/usr/lib/redis/":                 {[]string{"usr/lib/redis/modules/redisearch.so"}, []string{"usr/lib/valkey/modules/x.so"}},
-	"/etc/redis/":                     {[]string{"etc/redis/redis.conf"}, []string{"etc/valkey/valkey.conf"}},
+	"/usr/lib/ollama/cuda_v12/":     {[]string{"usr/lib/ollama/cuda_v12/libggml-cuda.so"}, []string{"usr/lib/ollama/libggml-cpu-haswell.so"}},
+	"/usr/lib/ollama/cuda_v13/":     {[]string{"usr/lib/ollama/cuda_v13/libggml-cuda.so"}, []string{"usr/lib/ollama/cuda_v12/libggml-cuda.so"}},
+	"/usr/lib/ollama/mlx_cuda_v13/": {[]string{"usr/lib/ollama/mlx_cuda_v13/libmlx.so"}, []string{"usr/lib/ollama/cuda_v13/libggml-cuda.so"}},
+	"/usr/lib/ollama/vulkan/":       {[]string{"usr/lib/ollama/vulkan/libggml-vulkan.so"}, []string{"usr/lib/ollama/libggml-base.so"}},
+	"/app/**/ee/": {
+		[]string{"app/server/ee/licensing/license.service.js", "app/server/dist/src/modules/ee/stub.js", "app/frontend/build/ee/billing.js"},
+		[]string{"app/server/ee.config.js", "app/server/src/modules/free/index.js", "app/server/eeprom.txt", "usr/share/locale/ee/LC_MESSAGES/iso_639.mo"}},
+	"/app/server/ee/":          {[]string{"app/server/ee/licensing/license.service.js"}, []string{"app/server/ee.config.js", "app/server/src/modules/free/index.js"}},
+	"/app/frontend/ee/":        {[]string{"app/frontend/ee/components/Billing.jsx"}, []string{"app/frontend/build/main.js"}},
+	"/app/server/dist/ee/":     {[]string{"app/server/dist/ee/licensing/license.service.js"}, []string{"app/server/dist/main.js"}},
+	"/app/frontend/build/ee/":  {[]string{"app/frontend/build/ee/billing.js"}, []string{"app/frontend/build/main.js"}},
+	"/opt/oracle/":             {[]string{"opt/oracle/instantclient_21_10/libclntsh.so.21.1"}, []string{"opt/oraclex/lib.so"}},
+	"/usr/bin/redis-server":    {[]string{"usr/bin/redis-server"}, []string{"usr/bin/valkey-server", "usr/local/bin/redis-server"}},
+	"/usr/bin/redis-check-aof": {[]string{"usr/bin/redis-check-aof"}, []string{"usr/bin/valkey-check-aof"}},
+	"/usr/bin/redis-check-rdb": {[]string{"usr/bin/redis-check-rdb"}, []string{"usr/bin/valkey-check-rdb"}},
+	"/usr/bin/redis-benchmark": {[]string{"usr/bin/redis-benchmark"}, []string{"usr/bin/valkey-benchmark"}},
+	"/usr/bin/redis-cli":       {[]string{"usr/bin/redis-cli"}, []string{"usr/bin/valkey-cli"}},
+	"/usr/lib/redis/":          {[]string{"usr/lib/redis/modules/redisearch.so"}, []string{"usr/lib/valkey/modules/x.so"}},
+	"/etc/redis/":              {[]string{"etc/redis/redis.conf"}, []string{"etc/valkey/valkey.conf"}},
 	"ms-playwright/chromium-*": {
 		[]string{"ms-playwright/chromium-1187/chrome-linux/chrome", "root/.cache/ms-playwright/chromium-1187/INSTALLATION_COMPLETE"},
 		[]string{"ms-playwright/firefox-1490/firefox/firefox"}},
 	"ms-playwright/chromium_headless_shell-*": {
 		[]string{"ms-playwright/chromium_headless_shell-1187/chrome-linux/headless_shell"},
 		[]string{"ms-playwright/firefox-1490/firefox/firefox", "ms-playwright/chromium-1187/chrome-linux/chrome"}},
-	"**/node_modules/@playwright/browser-chromium": {
+	"@playwright/browser-chromium": {
 		[]string{"app/node_modules/@playwright/browser-chromium/package.json"},
-		[]string{"app/node_modules/@playwright/browser-firefox/package.json"}},
-	"**/node_modules/idcac-playwright": {
+		[]string{"app/node_modules/@playwright/browser-firefox/package.json", "app/node_modules/@playwright/test/package.json"}},
+	"idcac-playwright": {
 		[]string{"app/node_modules/idcac-playwright/package.json"},
-		[]string{"app/node_modules/playwright/package.json"}},
+		[]string{"app/node_modules/playwright/package.json", "app/node_modules/idcac-playwright-extra/index.js"}},
 }
 
 // catalogApps reads the manifests in catalog/apps of this checkout.

@@ -470,7 +470,7 @@ class ComposerChecks:
         image = self.app["manifest"]["images"][0]["name"]
         findings = self.composer.lint_with_sbom(self.DIR, image, caught_packages + clean_packages,
                                                 caught_files + clean_files)
-        hits = sealed_compose.excluded_hits(findings)
+        hits = sealed_compose.excluded_hits(findings, caught_files + clean_files)
         for path in caught_files:
             self.assertIn(path, hits)
         for name in caught_packages:

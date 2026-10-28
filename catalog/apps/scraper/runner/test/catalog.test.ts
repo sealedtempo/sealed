@@ -138,10 +138,21 @@ describe.skipIf(skip)('the real composer (runtime/composer)', () => {
         packages: [...caughtPackages, ...cleanPackages].map((name) => ({ name, versionInfo: '1.0.0', licenseConcluded: 'Apache-2.0' })),
         files: [...caughtFiles, ...cleanFiles].map((fileName) => ({ fileName })),
       }));
+      // The lint (license audit F6 globs) reports a package by name@version, a matched file by its path,
+      // and the files under a matched directory once, by the directory ("/<dir>/", every pattern that
+      // matched it in the message); each file under a reported directory gets that directory's patterns.
       const hits = new Map<string, Set<string>>();
+      const add = (key: string, patterns: Iterable<string>) => {
+        const set = hits.get(key) ?? new Set<string>();
+        for (const p of patterns) set.add(p);
+        hits.set(key, set);
+      };
       for (const f of lint(c, dir).filter((x) => x.code === 'excluded-path')) {
-        const pattern = /excluded path "([^"]*)"/.exec(f.message)?.[1] ?? '';
-        hits.set(f.field ?? '', (hits.get(f.field ?? '') ?? new Set()).add(pattern));
+        const list = /excluded paths? ((?:"[^"]*"(?:, )?)+)/.exec(f.message)?.[1];
+        add(f.field ?? '', list ? [...list.matchAll(/"([^"]*)"/g)].map((m) => m[1] as string) : ['']);
+      }
+      for (const path of [...caughtFiles, ...cleanFiles]) {
+        for (const [field, patterns] of [...hits]) if (field.endsWith('/') && path.startsWith(field)) add(path, patterns);
       }
       for (const entry of [...caughtFiles, ...caughtPackages.map((n) => `${n}@1.0.0`)]) expect(hits.has(entry), entry).toBe(true);
       for (const entry of [...cleanFiles, ...cleanPackages.map((n) => `${n}@1.0.0`)]) expect(hits.has(entry), entry).toBe(false);

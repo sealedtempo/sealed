@@ -7,7 +7,9 @@
 // An exclusion of a single directory name, such as "/ee/" (the open-core layout: server/ee,
 // frontend/ee and their build output), matches a directory of that name at any depth, except
 // below node_modules/ and usr/share/locale/, where "ee" is the Ewe language code of third-party
-// locale data and never ToolJet's enterprise code.
+// locale data and never ToolJet's enterprise code. A "**" segment matches any number of segments
+// and "*" anything within one segment, as in the composer lint's path globs (license audit F6), so
+// "/app/**/ee/" is an ee directory at any depth under app/, with the same exemptions.
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -21,14 +23,32 @@ export function normalize(path) {
 
 const SEGMENT_EXEMPT = [/(^|\/)node_modules\//, /^usr\/share\/locale\//];
 
+// A glob ("**" any segments, "*" within a segment) as a regular expression over a path prefix; the
+// shortest prefix is matched, so an exemption below it cannot hide a match above it.
+function globRegExp(glob) {
+  const parts = glob.split("/").map((seg) => {
+    if (seg === "**") return "(?:[^/]+/)*?";
+    return `${seg.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}/`;
+  });
+  return new RegExp(`^${parts.join("")}`);
+}
+
 export function findExcluded(listing, exclusions) {
   const rules = exclusions.map((e) => {
     const p = normalize(e);
+    if (p.includes("*")) return { glob: globRegExp(p.replace(/\/$/, "")) };
     if (!p.endsWith("/")) return { file: p };
     const dir = p.slice(0, -1);
     return dir.includes("/") ? { dir } : { segment: dir };
   });
   const matches = (r, path) => {
+    if (r.glob) {
+      // Only where the matched directory itself sits outside the exempt trees, as for a single segment.
+      const m = r.glob.exec(`${path}/`);
+      if (!m) return false;
+      const matched = m[0].slice(0, -1);
+      return !SEGMENT_EXEMPT.some((re) => re.test(matched.slice(0, matched.lastIndexOf("/") + 1)));
+    }
     if (r.file) return path === r.file;
     if (r.dir) return path === r.dir || path.startsWith(`${r.dir}/`);
     if (!`/${path}/`.includes(`/${r.segment}/`)) return false;

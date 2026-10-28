@@ -70,9 +70,10 @@ crane export --platform linux/amd64 ghcr.io/sealedtempo/tooljet@<digest> - | tar
 ```
 
 which fails if any path from `license_exclusions` (the `ee` directories, `/opt/oracle/`, the Redis
-binaries, `/usr/lib/redis/` and `/etc/redis/`) is present. `/ee/` matches an `ee` directory at any
-depth, except below `node_modules/` and `usr/share/locale/`, where `ee` is the Ewe locale code of
-third-party data (license audit F7). The Dockerfile's own `find` fails the build on the same Redis
+binaries, `/usr/lib/redis/` and `/etc/redis/`) is present. `/app/**/ee/` matches an `ee` directory at
+any depth under `/app`, except below `node_modules/`, where `ee` is the Ewe locale code of third-party
+data (license audit F7). Exclusions are the composer lint's path globs (license audit F6: `**` any
+number of segments, `*` within one segment), which the tool reads the same way. The Dockerfile's own `find` fails the build on the same Redis
 and Oracle files, on any `.so` with `redis` in its path, and on any file or directory named `ee`
 under `/app` outside `node_modules`.
 
