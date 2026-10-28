@@ -1,37 +1,93 @@
 package keybroker
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
-	"net"
 	"net/http"
-	"strings"
+	"strconv"
+	"time"
 )
 
-// DefaultMaxBodyBytes bounds a POST /v1/release body. app-compose.json of a five-app stack is about 100 KiB; the
-// hex-encoded quote is under 20 KiB.
-const DefaultMaxBodyBytes = 16 << 20
+// DefaultMaxBodyBytes bounds a POST /v1/release body (D-066). app-compose.json of a five-app stack is about 100 KiB
+// (twice that once escaped inside the JSON body), the hex quote under 20 KiB, a Sealed event log a few KiB to tens of
+// KiB, a config at most 128 KiB.
+const DefaultMaxBodyBytes = 2 << 20
+
+// Server limits (D-066).
+const (
+	// DefaultMaxInFlight bounds the releases that run their checks at the same time.
+	DefaultMaxInFlight = 8
+	// DefaultMaxParsing bounds the bodies parsed at the same time; parsing is the only work before the nonce check.
+	DefaultMaxParsing = 4
+	// DefaultBodyReadTimeout bounds reading one body; a slow sender holds only its own connection, never a slot.
+	DefaultBodyReadTimeout = 10 * time.Second
+	// DefaultClientRate and DefaultClientBurst bound release requests per client address; nonce requests get four
+	// times as much. A booting agent needs one nonce and one release per attempt and retries after a second or more.
+	DefaultClientRate  = 2.0
+	DefaultClientBurst = 20
+	// maxClients bounds the limiter's table.
+	maxClients = 16384
+)
 
 // ServerOptions configure the HTTP API.
 type ServerOptions struct {
-	// MaxInFlight bounds concurrent releases; more answer 429 with Retry-After. 0 means 8.
+	// MaxInFlight bounds concurrent releases; more answer 429 with Retry-After. 0 means DefaultMaxInFlight.
 	MaxInFlight int
+	// MaxParsing bounds concurrent body parsing; 0 means DefaultMaxParsing.
+	MaxParsing int
 	// MaxBodyBytes bounds a release body; 0 means DefaultMaxBodyBytes.
 	MaxBodyBytes int64
+	// BodyReadTimeout bounds reading a release body; 0 means DefaultBodyReadTimeout.
+	BodyReadTimeout time.Duration
+	// ClientRate is release requests per second per client address (nonce requests: four times this); 0 means
+	// DefaultClientRate, a negative value turns the per-client limit off.
+	ClientRate float64
+	// ClientBurst is the bucket size per client address; 0 means DefaultClientBurst.
+	ClientBurst int
 }
 
 // Handler serves GET /v1/nonce, POST /v1/release and GET /healthz (INTERFACES.md section 9).
+//
+// A release runs in this order, so unauthenticated work stays bounded (D-066): the per-client limit; the body read
+// with its own deadline and size limit, before any slot; parsing, the nonce check and request validation under the
+// parse limit; only then a release slot for the attestation and approval checks. Denials are logged in the
+// background (junk truncated); an allowed release waits for its log entry after giving its slot back.
 func (b *Broker) Handler(o ServerOptions) http.Handler {
 	if o.MaxInFlight <= 0 {
-		o.MaxInFlight = 8
+		o.MaxInFlight = DefaultMaxInFlight
+	}
+	if o.MaxParsing <= 0 {
+		o.MaxParsing = DefaultMaxParsing
 	}
 	if o.MaxBodyBytes <= 0 {
 		o.MaxBodyBytes = DefaultMaxBodyBytes
 	}
+	if o.BodyReadTimeout <= 0 {
+		o.BodyReadTimeout = DefaultBodyReadTimeout
+	}
+	if o.ClientRate == 0 {
+		o.ClientRate = DefaultClientRate
+	}
+	if o.ClientBurst <= 0 {
+		o.ClientBurst = DefaultClientBurst
+	}
+	releaseLimit := newClientLimiter(o.ClientRate, o.ClientBurst, maxClients, nil)
+	nonceLimit := newClientLimiter(4*o.ClientRate, 4*o.ClientBurst, maxClients, nil)
 	slots := make(chan struct{}, o.MaxInFlight)
+	parsing := make(chan struct{}, o.MaxParsing)
+
+	tooMany := func(w http.ResponseWriter, detail string) {
+		w.Header().Set("Retry-After", "2")
+		writeJSON(w, http.StatusTooManyRequests, &Denial{Decision: DecisionError, Reason: ReasonRateLimited, Detail: detail})
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/nonce", func(w http.ResponseWriter, r *http.Request) {
+		if !nonceLimit.allow(limitKey(clientAddr(r))) {
+			tooMany(w, "too many nonce requests from this address")
+			return
+		}
 		resp, err := b.IssueNonce()
 		if err != nil {
 			b.deps.OpLog.Error("issue nonce", "err", err)
@@ -41,15 +97,13 @@ func (b *Broker) Handler(o ServerOptions) http.Handler {
 		writeJSON(w, http.StatusOK, resp)
 	})
 	mux.HandleFunc("POST /v1/release", func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case slots <- struct{}{}:
-			defer func() { <-slots }()
-		default:
-			w.Header().Set("Retry-After", "2")
-			writeJSON(w, http.StatusTooManyRequests, &Denial{Decision: DecisionError, Reason: ReasonUnavailable, Detail: "too many releases in flight"})
+		remote := clientAddr(r)
+		if !releaseLimit.allow(limitKey(remote)) {
+			tooMany(w, "too many release requests from this address")
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, o.MaxBodyBytes))
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(o.BodyReadTimeout))
+		body, err := readBody(w, r, o.MaxBodyBytes)
 		if err != nil {
 			var tooBig *http.MaxBytesError
 			if errors.As(err, &tooBig) {
@@ -59,8 +113,37 @@ func (b *Broker) Handler(o ServerOptions) http.Handler {
 			writeJSON(w, http.StatusBadRequest, &Denial{Decision: DecisionDenied, Reason: ReasonBadRequest, Detail: "could not read body"})
 			return
 		}
-		out := b.Release(r.Context(), body, remoteAddr(r))
+
+		wait := time.NewTimer(5 * time.Second)
+		select {
+		case parsing <- struct{}{}:
+			wait.Stop()
+		case <-wait.C:
+			tooMany(w, "too many requests being parsed")
+			return
+		case <-r.Context().Done():
+			wait.Stop()
+			return
+		}
+		s, st := b.admit(body, remote)
+		<-parsing
+		body = nil
+
+		var resp *ReleaseResponse
+		if st == nil {
+			select {
+			case slots <- struct{}{}:
+				resp, st = s.check(r.Context())
+				<-slots
+			default:
+				st = s.shed("too many releases in flight")
+			}
+		}
+		out := b.finish(r.Context(), s, resp, st)
 		w.Header().Set("X-Request-Id", out.Decision.RequestID)
+		if out.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(out.RetryAfter))
+		}
 		writeJSON(w, out.Status, out.Body)
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -69,24 +152,26 @@ func (b *Broker) Handler(o ServerOptions) http.Handler {
 	return mux
 }
 
+// readBody reads at most max bytes, sized up front from Content-Length when it is within the limit.
+func readBody(w http.ResponseWriter, r *http.Request, max int64) ([]byte, error) {
+	if r.ContentLength > max {
+		return nil, &http.MaxBytesError{Limit: max}
+	}
+	var buf bytes.Buffer
+	if r.ContentLength > 0 {
+		buf.Grow(int(r.ContentLength) + 1)
+	}
+	_, err := buf.ReadFrom(http.MaxBytesReader(w, r.Body, max))
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// remoteAddr is the caller as seen by Cloud Run's front end (the first X-Forwarded-For hop), for the decision log
-// only. It never drives a decision.
-func remoteAddr(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first, _, _ := strings.Cut(xff, ",")
-		return strings.TrimSpace(first)
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

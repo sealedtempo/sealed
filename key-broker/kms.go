@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
-// Domain tags of the two derived keys (INTERFACES.md section 9, D-011).
+// Domain tags of the two derived keys (INTERFACES.md section 9, D-011 as amended by D-058). The v1 tags hashed the
+// deploymentId, so any upgrade stranded the data disk; v2 hashes (customer, salt) instead.
 const (
-	DiskKeyTag    = "sealed/disk/v1"
-	SignerSeedTag = "sealed/signer/v1"
+	DiskKeyTag    = "sealed/disk/v2"
+	SignerSeedTag = "sealed/signer/v2"
 )
 
 // MACSigner computes HMAC-SHA256 with the customer's key. In production it is the bootstrap's Cloud KMS MAC key
@@ -24,22 +27,35 @@ type MACSigner interface {
 	MAC(ctx context.Context, data []byte) ([]byte, error)
 }
 
-// DerivedKeys are the per-deployment keys a release carries. They depend only on the MAC key and the deploymentId, so
-// a rebooted deployment gets the same disk key and enclave signer (A11).
+// DerivedKeys are the keys a release carries. They depend only on the MAC key, the customer and the config salt
+// (D-058), so a rebooted deployment (A11) and an upgraded stack with the same salt (new releases, a new composer
+// version) get the same disk key and enclave signer. A customer who wants a fresh disk uses a new salt.
 type DerivedKeys struct {
 	DiskKey    [32]byte
 	SignerSeed [32]byte
 }
 
-// DeriveKeys computes diskKey = HMAC("sealed/disk/v1" || deploymentId) and
-// signerSeed = HMAC("sealed/signer/v1" || deploymentId).
-func DeriveKeys(ctx context.Context, m MACSigner, deploymentID [32]byte) (DerivedKeys, error) {
+// KeyMessage is the MAC input of one derived key: tag || customer (20 bytes) || salt (32 bytes). The tags are
+// distinct and the other two fields have fixed lengths, so no two inputs collide.
+func KeyMessage(tag string, customer common.Address, salt [32]byte) []byte {
+	msg := make([]byte, 0, len(tag)+common.AddressLength+32)
+	msg = append(msg, tag...)
+	msg = append(msg, customer[:]...)
+	return append(msg, salt[:]...)
+}
+
+// DeriveKeys computes diskKey = HMAC("sealed/disk/v2" || customer || salt) and
+// signerSeed = HMAC("sealed/signer/v2" || customer || salt) (D-058).
+func DeriveKeys(ctx context.Context, m MACSigner, customer common.Address, salt [32]byte) (DerivedKeys, error) {
 	var out DerivedKeys
+	if customer == (common.Address{}) {
+		return DerivedKeys{}, errors.New("derive keys: no customer")
+	}
 	for _, k := range []struct {
 		tag string
 		dst *[32]byte
 	}{{DiskKeyTag, &out.DiskKey}, {SignerSeedTag, &out.SignerSeed}} {
-		msg := append([]byte(k.tag), deploymentID[:]...)
+		msg := KeyMessage(k.tag, customer, salt)
 		mac, err := m.MAC(ctx, msg)
 		if err != nil {
 			return DerivedKeys{}, fmt.Errorf("%s: %w", k.tag, err)

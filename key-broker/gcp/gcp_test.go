@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	keybroker "github.com/sealed-dev/sealed/key-broker"
 	"github.com/sealed-dev/sealed/key-broker/gcp"
 	"github.com/sealed-dev/sealed/key-broker/internal/gcpfake"
@@ -99,7 +101,8 @@ func TestKMSMAC(t *testing.T) {
 		t.Fatal(err)
 	}
 	k.Endpoint = f.URL
-	data := append([]byte("sealed/disk/v1"), bytes.Repeat([]byte{7}, 32)...)
+	cust := common.HexToAddress("0x00000000000000000000000000000000000000c1")
+	data := keybroker.KeyMessage(keybroker.DiskKeyTag, cust, [32]byte{7})
 	mac, err := k.MAC(context.Background(), data)
 	if err != nil {
 		t.Fatal(err)
@@ -110,12 +113,12 @@ func TestKMSMAC(t *testing.T) {
 		t.Fatal("mac differs from HMAC-SHA256")
 	}
 	// The broker's key derivation over KMS.
-	keys, err := keybroker.DeriveKeys(context.Background(), k, [32]byte{7})
+	keys, err := keybroker.DeriveKeys(context.Background(), k, cust, [32]byte{7})
 	if err != nil {
 		t.Fatal(err)
 	}
 	local, _ := keybroker.NewLocalHMAC(f.MACKey)
-	want, _ := keybroker.DeriveKeys(context.Background(), local, [32]byte{7})
+	want, _ := keybroker.DeriveKeys(context.Background(), local, cust, [32]byte{7})
 	if keys != want {
 		t.Fatal("KMS and local derivations differ")
 	}
@@ -176,5 +179,18 @@ func TestLoggingSink(t *testing.T) {
 	}
 	if got := gcp.CloudRunResource("p1-abcde", "r", func(string) string { return "" }); got.Type != "global" {
 		t.Fatalf("resource off Cloud Run %+v", got)
+	}
+}
+
+// TestMetadataRegion reads the Cloud Run region for the log resource (the bootstrap does not set SEALED_GCP_REGION).
+func TestMetadataRegion(t *testing.T) {
+	f, _ := setup(t)
+	r, err := gcp.MetadataRegion(context.Background(), f.Host(), nil)
+	if err != nil || r != "us-east5" {
+		t.Fatalf("region %q %v", r, err)
+	}
+	f.Region = "garbage"
+	if _, err := gcp.MetadataRegion(context.Background(), f.Host(), nil); err == nil {
+		t.Fatal("malformed region accepted")
 	}
 }

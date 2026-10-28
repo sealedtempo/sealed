@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -24,8 +23,18 @@ type Config struct {
 	ChainID uint64
 	// Contracts are the registries the broker reads; config.contracts must name the same ones.
 	Contracts chain.Addresses
+	// FeeSplitter and FeeToken are the contracts the enclave signer and the access key pay; config.contracts.feeSplitter
+	// and config.feeToken must name them.
+	FeeSplitter common.Address
+	FeeToken    common.Address
+	// AllowedImages, when not empty, is the customer's own allowlist of imageIds on top of
+	// PlatformRegistry.isApprovedImage, so the platform alone cannot make an image count as production.
+	AllowedImages [][32]byte
+	// MaxHeadAge bounds how far the pinned head block's timestamp may be from the broker's clock (D-060); 0 means
+	// DefaultMaxHeadAge, at most MaxMaxHeadAge.
+	MaxHeadAge time.Duration
 	// AllowSimulated accepts dev simulator quotes. Only a dev build (tag sealeddev) with SEALED_DEV_SIM=1 sets it;
-	// the production image cannot (key-broker/cmd/key-broker).
+	// the production image cannot (key-broker/cmd/key-broker). It is refused on Tempo mainnet.
 	AllowSimulated bool
 	// ReleaseTimeout bounds one release; 0 means 90 s (the agent waits 120 s).
 	ReleaseTimeout time.Duration
@@ -48,13 +57,19 @@ type Deps struct {
 	Now func() time.Time
 }
 
+// Chain freshness bounds (D-060).
+const (
+	DefaultMaxHeadAge = 60 * time.Second
+	MaxMaxHeadAge     = 300 * time.Second
+	// MainnetChainID is Tempo mainnet. Simulated quotes are never accepted on it.
+	MainnetChainID = 4217
+)
+
 // Broker runs the release pipeline. It is safe for concurrent use.
 type Broker struct {
 	cfg  Config
 	deps Deps
-
-	chainMu sync.Mutex
-	chainOK bool
+	logs *logQueue
 }
 
 // New validates the configuration and backends.
@@ -68,6 +83,19 @@ func New(cfg Config, deps Deps) (*Broker, error) {
 	if err := cfg.Contracts.Validate(); err != nil {
 		return nil, fmt.Errorf("keybroker: %w", err)
 	}
+	if cfg.FeeSplitter == (common.Address{}) || cfg.FeeToken == (common.Address{}) {
+		return nil, errors.New("keybroker: fee splitter and fee token addresses are not set")
+	}
+	if cfg.AllowSimulated && cfg.ChainID == MainnetChainID {
+		return nil, errors.New("keybroker: simulated quotes are never accepted on Tempo mainnet (chain 4217)")
+	}
+	switch {
+	case cfg.MaxHeadAge == 0:
+		cfg.MaxHeadAge = DefaultMaxHeadAge
+	case cfg.MaxHeadAge < time.Second || cfg.MaxHeadAge > MaxMaxHeadAge:
+		return nil, fmt.Errorf("keybroker: max head age %s must be between 1s and %s", cfg.MaxHeadAge, MaxMaxHeadAge)
+	}
+	cfg.AllowedImages = append([][32]byte(nil), cfg.AllowedImages...)
 	for name, v := range map[string]any{"Nonces": deps.Nonces, "Quotes": deps.Quotes, "Chain": deps.Chain, "Bundles": deps.Bundles,
 		"Secrets": deps.Secrets, "MAC": deps.MAC, "Log": deps.Log} {
 		if isNil(v) {
@@ -86,8 +114,14 @@ func New(cfg Config, deps Deps) (*Broker, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	return &Broker{cfg: cfg, deps: deps}, nil
+	return &Broker{cfg: cfg, deps: deps, logs: newLogQueue(deps.Log, deps.OpLog, cfg.LogTimeout)}, nil
 }
+
+// Flush waits until every decision queued for the log was written (tests, shutdown).
+func (b *Broker) Flush(ctx context.Context) error { return b.logs.flush(ctx) }
+
+// Close stops the background decision log after writing what is queued.
+func (b *Broker) Close(ctx context.Context) error { return b.logs.close(ctx) }
 
 func isNil(v any) bool {
 	switch t := v.(type) {
@@ -109,24 +143,6 @@ func (b *Broker) IssueNonce() (NonceResponse, error) {
 		return NonceResponse{}, err
 	}
 	return NonceResponse{Nonce: hex0x(n[:]), ExpiresAt: exp.Unix()}, nil
-}
-
-// CheckChain confirms the RPC serves the configured chain. The answer is cached once it succeeds.
-func (b *Broker) CheckChain(ctx context.Context) error {
-	b.chainMu.Lock()
-	defer b.chainMu.Unlock()
-	if b.chainOK {
-		return nil
-	}
-	id, err := b.deps.Chain.ChainID(ctx)
-	if err != nil {
-		return fmt.Errorf("eth_chainId: %w", err)
-	}
-	if id != b.cfg.ChainID {
-		return fmt.Errorf("the Tempo RPC serves chain %d, this key broker is configured for chain %d", id, b.cfg.ChainID)
-	}
-	b.chainOK = true
-	return nil
 }
 
 func newRequestID() string {

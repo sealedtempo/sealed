@@ -45,12 +45,15 @@ var memContracts = chain.Addresses{
 	DeploymentRegistry: common.HexToAddress("0x00000000000000000000000000000000000000e3"),
 }
 
-// NewMemRegistrar returns an in-memory chain 4217.
-func NewMemRegistrar() *MemRegistrar { return &MemRegistrar{C: NewMemChain(4217)} }
+// MemChainID is the in-memory chain's id: a local chain, since simulated quotes are refused on mainnet (4217).
+const MemChainID = 31337
+
+// NewMemRegistrar returns an in-memory chain MemChainID.
+func NewMemRegistrar() *MemRegistrar { return &MemRegistrar{C: NewMemChain(MemChainID)} }
 
 func (m *MemRegistrar) Name() string               { return "memory" }
 func (m *MemRegistrar) Chain() keybroker.Chain     { return m.C }
-func (m *MemRegistrar) ChainID() uint64            { return 4217 }
+func (m *MemRegistrar) ChainID() uint64            { return MemChainID }
 func (m *MemRegistrar) Contracts() chain.Addresses { return memContracts }
 
 func (m *MemRegistrar) AddImage(t testing.TB, name, version string, mrtd attest.Measurement, debug bool) [32]byte {
@@ -87,6 +90,7 @@ func (m *MemRegistrar) RevokeStack(t testing.TB, customer common.Address, stackH
 type AnvilRegistrar struct {
 	R      *anvil.Registries
 	client *chain.Client
+	heads  *keybroker.RPCHeads
 	apps   map[string]bool
 }
 
@@ -101,11 +105,15 @@ func NewAnvilRegistrar(t testing.TB) *AnvilRegistrar {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &AnvilRegistrar{R: r, client: c, apps: map[string]bool{}}
+	heads, err := keybroker.DialRPCHeads(ctx, node.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &AnvilRegistrar{R: r, client: c, heads: heads, apps: map[string]bool{}}
 }
 
 func (a *AnvilRegistrar) Name() string           { return "anvil" }
-func (a *AnvilRegistrar) Chain() keybroker.Chain { return keybroker.NewClientChain(a.client) }
+func (a *AnvilRegistrar) Chain() keybroker.Chain { return keybroker.NewClientChain(a.client, a.heads) }
 func (a *AnvilRegistrar) ChainID() uint64        { return a.R.Node.ChainID.Uint64() }
 func (a *AnvilRegistrar) Contracts() chain.Addresses {
 	return chain.Addresses{PlatformRegistry: a.R.PlatformRegistry, AppRegistry: a.R.AppRegistry, DeploymentRegistry: a.R.DeploymentRegistry}

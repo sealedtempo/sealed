@@ -42,6 +42,11 @@ const (
 	ReasonSecretMissing = "secret_missing"
 	ReasonSecretInvalid = "secret_invalid"
 	ReasonLogFailed     = "decision_log_unavailable"
+	// ReasonChainStale answers 503 (D-060): the Tempo RPC serves another chain, or its head block is older (or
+	// newer) than Config.MaxHeadAge against the broker's clock, so its reads could predate a revocation.
+	ReasonChainStale = "chain_stale"
+	// ReasonRateLimited answers 429: too many requests from one client, or too many releases in flight.
+	ReasonRateLimited = "rate_limited"
 )
 
 // Decision values.
@@ -69,6 +74,9 @@ const (
 	CheckSeal             = "seal"
 )
 
+// CheckSlot fails when every release slot is busy (429 rate_limited); the request's nonce is spent.
+const CheckSlot = "slot"
+
 // Check is one step of a release decision.
 type Check struct {
 	Name   string         `json:"name"`
@@ -94,6 +102,8 @@ type Hashes struct {
 	Customer         string   `json:"customer,omitempty"`
 	ReleaseIDs       []string `json:"releaseIds,omitempty"`
 	BlockNumber      uint64   `json:"blockNumber,omitempty"`
+	// BlockTime is the pinned block's timestamp (unix seconds).
+	BlockTime int64 `json:"blockTime,omitempty"`
 }
 
 // Decision is one structured decision log entry.
@@ -111,6 +121,26 @@ type Decision struct {
 	// Released lists "<owner>/<NAME>" of every released secret (names only), plus diskKey and signerSeed.
 	Released   []string `json:"released,omitempty"`
 	DurationMS int64    `json:"durationMs"`
+	// Truncated marks a request that failed before its nonce was accepted or its body parsed (junk, D-066): the
+	// entry keeps only names, reasons and clipped details.
+	Truncated bool `json:"truncated,omitempty"`
+	// Suppressed counts the decisions that were not written because the asynchronous log queue was full since the
+	// previous entry that was written.
+	Suppressed uint64 `json:"suppressed,omitempty"`
+}
+
+// maxJunkDetail bounds every detail of a truncated entry.
+const maxJunkDetail = 200
+
+// truncate reduces a junk decision to names, reasons and clipped details.
+func (d *Decision) truncate() {
+	d.Truncated = true
+	d.Detail = clipTo(d.Detail, maxJunkDetail)
+	for i := range d.Checks {
+		d.Checks[i].Detail = clipTo(d.Checks[i].Detail, maxJunkDetail)
+		d.Checks[i].Data = nil
+	}
+	d.Hashes = Hashes{Nonce: d.Hashes.Nonce}
 }
 
 // Severity maps a decision to a Cloud Logging severity.
