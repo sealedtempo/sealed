@@ -1,0 +1,4 @@
+version: 1
+default_allow: ["api.example.com:443"]
+customer_additions_allowed: true
+notes: "api.example.com serves the notes sync API; customers may add mail hosts"

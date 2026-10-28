@@ -1,0 +1,4 @@
+version: 1
+default_allow: []
+customer_additions_allowed: false
+notes: "All model traffic goes through sealed-mpp-payer or stays in the VM"

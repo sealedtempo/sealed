@@ -1,0 +1,31 @@
+{
+  "schema": "sealed-config/v1",
+  "chainId": 4217,
+  "customer": "0x00000000000000000000000000000000000000c1",
+  "salt": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "imageId": "0x1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d",
+  "composerVersion": "1.0.0",
+  "apps": [
+    { "id": "llm-gateway", "releaseId": "0x0000000000000000000000000000000000000000000000000000000000000000" },
+    { "id": "notes", "releaseId": "0x0000000000000000000000000000000000000000000000000000000000000000" }
+  ],
+  "hostnames": { "scheme": "sslip", "ip": "34.1.2.3" },
+  "egressAdditions": { "notes": ["smtp.example.com:587"] },
+  "allowedVpcRanges": [],
+  "endpoints": {
+    "keyBroker": "https://sealed-key-broker-xyz.a.run.app",
+    "platformApi": "https://api.sealed.example",
+    "tempoRpc": "https://rpc.tempo.xyz",
+    "relay": "https://relay.sealed.example",
+    "relayAttest": "https://attest.relay.sealed.example/attest"
+  },
+  "contracts": {
+    "platformRegistry": "0x00000000000000000000000000000000000000e1",
+    "appRegistry": "0x00000000000000000000000000000000000000e2",
+    "deploymentRegistry": "0x00000000000000000000000000000000000000e3",
+    "feeSplitter": "0x00000000000000000000000000000000000000e4"
+  },
+  "feeToken": "0x20c0000000000000000000000000000000000000",
+  "settlement": { "mode": "access-key", "intervalMinutes": 60, "gracePeriodMinutes": 1440, "spendLimitPerDay": "2000000" },
+  "relayOwner": "0x00000000000000000000000000000000000000b1"
+}

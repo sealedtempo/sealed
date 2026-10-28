@@ -1,0 +1,46 @@
+# Fixture app for composer tests. Not the real llm-gateway package.
+schema: sealed-manifest/v1
+id: llm-gateway
+name: Fixture gateway
+category: ai
+description: Fake gateway that exercises bearer passthrough, path routes and the payer sidecars.
+upstream:
+  repo: https://github.com/example/gateway
+  version: 2.3.4
+  license_spdx: Apache-2.0 OR MIT
+  source_url: https://github.com/example/gateway/tree/v2.3.4
+maintainer:
+  name: Sealed fixtures
+  payout_address: ${MAINTAINER_DEFAULT_ADDRESS}
+maintainer_share_bps: 1000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: llm-gateway-proxy
+images:
+  - name: gateway
+    source: build:images/gateway
+    digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+    license_spdx: MIT
+resources: {cpu: 2, memory_gb: 4, disk_gb: 10}
+routes:
+  - name: gateway
+    service: llm-gateway-proxy
+    internal_port: 4000
+    path_or_host: gateway
+    auth: bearer-passthrough
+  - name: gateway
+    service: llm-gateway-proxy
+    internal_port: 4001
+    path_or_host: /admin
+    auth: gate
+healthcheck:
+  service: llm-gateway-proxy
+  http: /health/liveliness
+metering: {unit: tokens, source: callback}
+secrets:
+  - name: MASTER_KEY
+    description: Gateway admin key
+    generate: sk-hex32
+telemetry_off_env:
+  GATEWAY_TELEMETRY: "False"
+license_exclusions: ["enterprise/"]
