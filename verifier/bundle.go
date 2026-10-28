@@ -79,7 +79,11 @@ type Config struct {
 		PlatformRegistry   string `json:"platformRegistry"`
 		AppRegistry        string `json:"appRegistry"`
 		DeploymentRegistry string `json:"deploymentRegistry"`
+		FeeSplitter        string `json:"feeSplitter"`
 	} `json:"contracts"`
+	Endpoints struct {
+		TempoRPC string `json:"tempoRpc"`
+	} `json:"endpoints"`
 }
 
 // ConfigApp is one entry of config.apps.

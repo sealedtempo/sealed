@@ -103,6 +103,15 @@ func (s *session) checkChain(claimedChainID uint64, claimed *BundleContracts) {
 		compare("config platformRegistry", s.cfg.Contracts.PlatformRegistry, want.PlatformRegistry)
 		compare("config appRegistry", s.cfg.Contracts.AppRegistry, want.AppRegistry)
 		compare("config deploymentRegistry", s.cfg.Contracts.DeploymentRegistry, want.DeploymentRegistry)
+		if want.FeeSplitter != (common.Address{}) {
+			// Only when the verifier knows the FeeSplitter (deployments file, embedded mainnet default): the stack
+			// must settle fees with the FeeSplitter wired to these registries.
+			if s.cfg.Contracts.FeeSplitter == "" {
+				problems = append(problems, "config.contracts.feeSplitter missing, verifier uses "+want.FeeSplitter.Hex())
+			} else {
+				compare("config feeSplitter", s.cfg.Contracts.FeeSplitter, want.FeeSplitter)
+			}
+		}
 	}
 	data["deploymentRegistry"] = want.DeploymentRegistry.Hex()
 	if len(problems) > 0 {

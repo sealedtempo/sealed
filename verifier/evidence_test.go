@@ -279,6 +279,17 @@ func TestTamperMatrix(t *testing.T) {
 			fail:   []string{verify.CheckChain},
 		},
 		{
+			name:   "config names another FeeSplitter than the verifier's",
+			mutate: func(t *testing.T, e *env) { e.m.Addrs.FeeSplitter = stranger },
+			fail:   []string{verify.CheckChain},
+		},
+		{
+			name: "config names the verifier's FeeSplitter",
+			mutate: func(t *testing.T, e *env) {
+				e.m.Addrs.FeeSplitter = common.HexToAddress("0x0000000000000000000000000000000000000fee")
+			},
+		},
+		{
 			name:   "deploymentId not derived from the stack",
 			mutate: func(t *testing.T, e *env) { e.b.DeploymentID = otherHash(e.b.DeploymentID) },
 			fail:   []string{verify.CheckDeploymentID, verify.CheckOnchainRecord},
