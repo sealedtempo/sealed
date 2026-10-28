@@ -1,5 +1,6 @@
 // Boot step 4 and re-attestation (spec 5.6): an evidence bundle (sealed-evidence/v1) whose quote
-// binds stackHash, configHash, enclaveSigner and a fresh nonce2, sent to the platform oracle.
+// binds stackHash, configHash, enclaveSigner, a fresh nonce2 and attestedAt (D-047), sent to the
+// platform oracle.
 import {
   type Address,
   bytesToHex,
@@ -31,7 +32,9 @@ export async function buildEvidence(
   runtime: "dstack" | "fallback" = "dstack",
 ): Promise<EvidenceBundle> {
   const nonce2 = randomBytes(32);
-  const quote = await dstack.getQuote(evidenceReportData(ctx.stackHash, ctx.configHash, enclaveSigner, nonce2));
+  // Taken before the quote and bound into its report_data, so the bundle cannot be re-dated later.
+  const attestedAt = clock.now();
+  const quote = await dstack.getQuote(evidenceReportData(ctx.stackHash, ctx.configHash, enclaveSigner, nonce2, attestedAt));
   const c = ctx.config.contracts;
   return {
     schema: "sealed-evidence/v1",
@@ -51,7 +54,7 @@ export async function buildEvidence(
     stackHash: ctx.stackHash,
     enclaveSigner: enclaveSigner.toLowerCase(),
     nonce2: bytesToHex(nonce2),
-    attestedAt: clock.now(),
+    attestedAt,
     quote: bytesToHex(quote.quote),
     quoteHash: quoteHash(quote.quote),
     eventLog: quote.eventLog,

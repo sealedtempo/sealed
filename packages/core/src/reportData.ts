@@ -24,9 +24,29 @@ export function kbReleaseReportData(nonce: Bytes, ephemeralPub: Bytes): Uint8Arr
   return build(KB_RELEASE_TAG, [b(nonce, 32), b(ephemeralPub, 32)]);
 }
 
-/** sha256("sealed/evidence/v1" || stackHash[32] || configHash[32] || enclaveSigner[20] || nonce2[32]) || 0^32 */
-export function evidenceReportData(stackHash: Bytes, configHash: Bytes, enclaveSigner: Bytes, nonce2: Bytes): Uint8Array {
-  return build(EVIDENCE_TAG, [b(stackHash, 32), b(configHash, 32), b(enclaveSigner, 20), b(nonce2, 32)]);
+/** uint64 big-endian (INTERFACES: integers in byte strings are big-endian). */
+export function uint64be(value: number | bigint): Uint8Array {
+  if (typeof value === "number" && !Number.isSafeInteger(value)) throw new Error("uint64: not a safe integer");
+  const v = BigInt(value);
+  if (v < 0n || v >= 1n << 64n) throw new Error("uint64: out of range");
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, v, false);
+  return out;
+}
+
+/**
+ * sha256("sealed/evidence/v1" || stackHash[32] || configHash[32] || enclaveSigner[20] || nonce2[32] ||
+ * uint64be(attestedAt)) || 0^32. D-047: the quote binds the bundle's attestedAt, so the oracle's
+ * freshness window holds for the quote itself and not only for a field next to it.
+ */
+export function evidenceReportData(
+  stackHash: Bytes,
+  configHash: Bytes,
+  enclaveSigner: Bytes,
+  nonce2: Bytes,
+  attestedAt: number | bigint,
+): Uint8Array {
+  return build(EVIDENCE_TAG, [b(stackHash, 32), b(configHash, 32), b(enclaveSigner, 20), b(nonce2, 32), uint64be(attestedAt)]);
 }
 
 /** sha256("sealed/attest/v1" || nonce[32] || tlsPubKeyHash[32] || enclaveSigner[20]) || 0^32 */

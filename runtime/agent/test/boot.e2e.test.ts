@@ -137,7 +137,7 @@ describe("sealed-agent boot flow", () => {
     expect((await stat(join(settings.dataMount, "crm", "files"))).isDirectory()).toBe(true);
   });
 
-  it("submitted an evidence bundle (after one retry) whose quote binds stack, config, signer and nonce2", async () => {
+  it("submitted an evidence bundle (after one retry) whose quote binds stack, config, signer, nonce2 and attestedAt", async () => {
     await agent.evidence;
     expect(platform.evidence.length).toBe(1);
     const b = evidenceBundleSchema.parse(platform.evidence[0]);
@@ -152,8 +152,11 @@ describe("sealed-agent boot flow", () => {
     expect(b.eventLogHash).toBe(eventLogHash(b.eventLog));
     expect(b.attestedAt).toBe(now);
     const q = decodeSimQuote(hexToBytes(b.quote));
-    const rd = evidenceReportData(b.stackHash as Hex, b.configHash as Hex, b.enclaveSigner as Hex, b.nonce2 as Hex);
+    const rd = evidenceReportData(b.stackHash as Hex, b.configHash as Hex, b.enclaveSigner as Hex, b.nonce2 as Hex, b.attestedAt);
     expect(q.reportData).toBe(bytesToHex(rd).slice(2));
+    // D-047: the same quote with another attestedAt does not verify.
+    const redated = evidenceReportData(b.stackHash as Hex, b.configHash as Hex, b.enclaveSigner as Hex, b.nonce2 as Hex, b.attestedAt + 60);
+    expect(q.reportData).not.toBe(bytesToHex(redated).slice(2));
   });
 
   it("serves /attest bound to the nonce, the TLS key and the enclave signer", async () => {
