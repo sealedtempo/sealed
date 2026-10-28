@@ -17,7 +17,10 @@ contract MockVerifier is IAttestationVerifier {
 }
 
 /// @notice Stand-in for a future ZK_DCAP_V1 verifier (method 2). Accepts evidence = abi.encode(digest, proofTag)
-///         when proofTag matches the configured tag, mimicking a proof that commits to the digest.
+///         when proofTag matches the configured tag. It only exercises the plumbing (setVerifier, method ids,
+///         mixing methods): a real TDX quote cannot commit to recordDigest, which itself contains sha256(quote).
+///         A real method-2 verifier recomputes the digest from the record and checks a report_data v2 binding
+///         (contract-review.md, crypto-SEAL-03).
 contract MockZkDcapVerifier is IAttestationVerifier {
     bytes32 public immutable PROOF_TAG;
 
