@@ -126,12 +126,34 @@ attest hosts) need `SEALED_DEV_SIM=1` and reports then say simulated.
 arguments; `--check` rebuilds a published release with the SBOMs and scans of the published bundle (CI generates
 them) and must match the onchain bundleHash byte for byte, or lists the files that differ.
 
+## Release archives and licenses
+
+```sh
+go run ./cli/release --version 0.1.0 --out dist        # darwin, linux (amd64, arm64) and windows/amd64, plus SHA256SUMS
+go run ./cli/release --version 0.1.0 --licenses-only dist/licenses   # only the license tree, for this host
+```
+
+The binary statically links go-ethereum (LGPL-3.0-or-later) and about 27 other modules (BSD, MIT, Apache-2.0,
+ISC) and the Go standard library, so every release archive (`sealed_<version>_<os>_<arch>.tar.gz`, `.zip` for
+Windows) carries, next to the binary, the repository `LICENSE` (Apache-2.0), this README and `licenses/`: the
+license, notice, patents and authors files of every linked module (from the module root and from the linked
+packages' own directories, so `go-ethereum/metrics/LICENSE` is there too), go-ethereum's `COPYING.LESSER`
+(LGPL-3.0) and `COPYING` (GPL-3.0), the Go distribution's `LICENSE` and `PATENTS`, and `licenses/README`. That
+README is the LGPL section 4 notice: which library, which license, where the texts are, and the corresponding
+source (`https://github.com/sealedtempo/sealed/tree/cli-v<version>`, whose `go.mod` and `go.sum` pin the library,
+with the `go mod edit -replace` step to relink against a modified copy). The module set is taken from
+`go list -deps` for each target, exactly as the build links it. The tool refuses a linked module without any
+license text, or one under the GPL or AGPL without the LGPL, and `--version` must equal the CLI's version. Builds
+use `CGO_ENABLED=0 -trimpath -buildvcs=false` and an empty build id, and archives are reproducible (sorted
+entries, owner 0, `SOURCE_DATE_EPOCH` or 1980-01-01 as the time). `sealed version` points at `licenses/`.
+
 ## Tests
 
 ```sh
 go test ./cli/...
 SEALED_REQUIRE_ANVIL=1 SEALED_CONTRACTS_DIR=$PWD/contracts go test ./cli/internal/app -run Anvil   # local Tempo node
 SEALED_REQUIRE_TERRAFORM=1 go test ./cli/internal/bootstrap                                          # terraform validate
+SEALED_REQUIRE_KEY_BROKER=1 go test -run TestKeyBrokerEnvContract ./cli/internal/bootstrap           # the broker's parser on the bootstrap env
 go generate ./cli/internal/embedded    # after config/defaults.yaml, the deployments, ABIs or the module change
 ```
 
