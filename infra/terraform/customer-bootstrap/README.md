@@ -40,27 +40,31 @@ addresses, `release_asset_base`, and optional `subnet_cidr`, `kms_protection_lev
 ### Key broker environment (the contract)
 
 `modules/key-broker-env` (locals only, no providers) turns the inputs into exactly the variables
-`key-broker/cmd/key-broker` reads, and the Cloud Run service carries that map unchanged:
+`key-broker/cmd/key-broker` reads (its README's configuration table), and `key_broker.tf` sets that map on the
+Cloud Run service, one literal `env` block per name:
 
 | variable | value | broker setting |
 |---|---|---|
-| `SEALED_CUSTOMER` | `customer_address`, lowercase | `--customer` (required) |
-| `SEALED_TEMPO_RPC` | `tempo_rpc_url` | `--tempo-rpc` |
-| `SEALED_CHAIN_ID` | `chain_id` | `--chain-id` |
+| `SEALED_CUSTOMER_ADDRESS` | `customer_address`, lowercase | `--customer` (required) |
+| `TEMPO_RPC_URL` | `tempo_rpc_url` | `--tempo-rpc` |
+| `TEMPO_CHAIN_ID` | `chain_id` | `--chain-id` |
 | `SEALED_PLATFORM_REGISTRY`, `SEALED_APP_REGISTRY`, `SEALED_DEPLOYMENT_REGISTRY` | the registry addresses, lowercase | `--platform-registry`, `--app-registry`, `--deployment-registry` |
 | `SEALED_RELEASE_ASSET_BASE` | `release_asset_base` | `--release-asset-base` |
 | `SEALED_GCP_PROJECT` | `project_id` | `--project` (required) |
-| `SEALED_GCP_REGION` | `region` | `--region` (decision log resource) |
-| `SEALED_KMS_KEY` | `projects/<p>/locations/<region>/keyRings/sealed/cryptoKeys/sealed-kb-hmac` | `--kms-key` (required) |
-| `SEALED_KMS_KEY_VERSION` | `1` (pinned) | `--kms-key-version` |
+| `SEALED_GCP_PROJECT_NUMBER` | the project number | recorded |
+| `SEALED_SECRET_PREFIX` | `sealed-` | must equal the prefix of the broker's IAM condition |
+| `SEALED_KMS_KEY_VERSION` | `projects/<p>/locations/<region>/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1` | the HMAC key version (required, pinned to 1) |
 | `GOMEMLIMIT` | `768MiB` | Go runtime, not broker configuration |
 
-Cloud Run sets `PORT` to the container port, 8080. The broker's flag defaults are the mainnet values, so a variable
-it did not read would silently replace the customer's choice. `cli/internal/bootstrap` `TestKeyBrokerEnvContract`
-renders this module with Terraform, runs the broker's own `loadConfig` on the result (this checkout's `key-broker/`,
-or the git ref `SEALED_KEY_BROKER_REF`, default `ws/key-broker`) and fails if the broker does not read a variable or
-if any customer choice does not reach its effective config. `tests/plan.tftest.hcl` checks that the Cloud Run env
-equals the module's map. Add a variable in both places, never only in `key_broker.tf`.
+Cloud Run sets `PORT` to the container port, 8080, and the broker takes its log resource region from the metadata
+server. The broker's flag defaults are the mainnet values, so a variable it did not read would silently replace
+the customer's choice, and it refuses any other `SEALED_*` or `TEMPO_*` variable. `cli/internal/bootstrap`
+`TestKeyBrokerEnvContract` renders the module with Terraform and runs the broker's own `loadConfig` on the result
+(this checkout's `key-broker/`, else the git ref `SEALED_KEY_BROKER_REF`, else `ws/integration` or
+`ws/key-broker`): the broker must accept the environment, every variable but the recorded project number must
+change its outcome when dropped or garbled, and every customer choice must reach its effective config.
+`tests/plan.tftest.hcl` checks that the Cloud Run env equals the module's map, and the broker's own test parses
+the `env` blocks of `key_broker.tf`. Add a variable in the module, in `key_broker.tf` and in the broker together.
 
 `sealed bootstrap` passes `--tempo-rpc`, or else the RPC the command itself was given (`--rpc` or `TEMPO_RPC_URL`),
 or else the public RPC, and prints the RPC and chain the broker will use before it runs Terraform. The

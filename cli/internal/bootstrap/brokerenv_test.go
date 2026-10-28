@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -21,13 +24,13 @@ import (
 // The key broker's environment contract (review-ws-key-broker F5): the Cloud Run env the bootstrap renders must be
 // exactly what cmd/key-broker reads. tests/plan.tftest.hcl proves the Cloud Run service carries the env of
 // modules/key-broker-env unchanged; this test renders that module with Terraform and hands the result to the
-// broker's own config parser (loadConfig in key-broker/cmd/key-broker), then checks that the broker asked for every
-// variable the bootstrap sets and that each customer choice (RPC, chain, registries, project, region, key, asset
-// base) arrives in the effective config instead of a built-in default.
+// broker's own config parser (loadConfig in key-broker/cmd/key-broker). It fails when the broker refuses the env,
+// when it ignores a variable (dropping or garbling the variable changes nothing), or when a customer choice (RPC,
+// chain, registries, asset base, project, key) does not reach its effective config.
 //
 // The broker source is this checkout's key-broker/ when present (after the integration merge), otherwise the git
-// ref SEALED_KEY_BROKER_REF (default ws/key-broker) of this repository. It needs terraform, git and go;
-// SEALED_REQUIRE_KEY_BROKER=1 turns a skip into a failure.
+// ref SEALED_KEY_BROKER_REF, otherwise ws/integration or ws/key-broker, the first that has the broker. It needs
+// terraform, git and go; SEALED_REQUIRE_KEY_BROKER=1 turns a skip into a failure.
 
 // contractInputs are deliberately not the broker's defaults, so a variable the broker ignored would show up as a
 // default value in its config.
@@ -40,9 +43,13 @@ var contractInputs = map[string]any{
 	"deployment_registry": "0x00000000000000000000000000000000000000A3",
 	"release_asset_base":  "https://assets.customer.example/releases",
 	"project_id":          "acme-prod-4417",
-	"region":              "europe-west4",
-	"kms_crypto_key":      "projects/acme-prod-4417/locations/europe-west4/keyRings/sealed/cryptoKeys/sealed-kb-hmac",
+	"project_number":      "123456789012",
+	"kms_crypto_key":      "projects/acme-prod-4417/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac",
 }
+
+// informational variables carry no customer choice (the project number follows from the project id), so a broker
+// may only record them; every other variable must change the broker's outcome when it is dropped or garbled.
+var informational = map[string]bool{"SEALED_GCP_PROJECT_NUMBER": true}
 
 type renderedEnv struct {
 	Env           map[string]string `json:"env"`
@@ -116,15 +123,20 @@ func renderBrokerEnv(t *testing.T, inputs map[string]any) *renderedEnv {
 	return r
 }
 
-// brokerTree returns a module root that holds key-broker/cmd/key-broker: this checkout, or the broker ref
-// extracted with git archive.
+func hasBroker(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "key-broker", "cmd", "key-broker", "main.go"))
+	return err == nil
+}
+
+// brokerTree returns a module root that holds key-broker/cmd/key-broker: this checkout, or a broker ref extracted
+// with git archive.
 func brokerTree(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "key-broker", "cmd", "key-broker", "main.go")); err == nil {
+	if hasBroker(root) {
 		return root
 	}
 	skip := func(format string, a ...any) {
@@ -135,12 +147,20 @@ func brokerTree(t *testing.T) string {
 		t.Skipf(format, a...)
 	}
 	needTool(t, "git")
-	ref := os.Getenv("SEALED_KEY_BROKER_REF")
-	if ref == "" {
-		ref = "ws/key-broker"
+	refs := []string{"ws/integration", "ws/key-broker"}
+	if r := os.Getenv("SEALED_KEY_BROKER_REF"); r != "" {
+		refs = []string{r}
 	}
-	if out, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output(); err != nil || len(out) == 0 {
-		skip("no key-broker/ in this checkout and git ref %s not found (set SEALED_KEY_BROKER_REF)", ref)
+	ref := ""
+	for _, r := range refs {
+		out, err := exec.Command("git", "-C", root, "ls-tree", "--name-only", r, "key-broker/cmd/key-broker/main.go").Output()
+		if err == nil && strings.TrimSpace(string(out)) != "" {
+			ref = r
+			break
+		}
+	}
+	if ref == "" {
+		skip("no key-broker/ in this checkout, and none of the git refs %v has it (set SEALED_KEY_BROKER_REF)", refs)
 	}
 	archive, err := exec.Command("git", "-C", root, "archive", "--format=tar", ref).Output()
 	if err != nil {
@@ -173,15 +193,58 @@ func brokerTree(t *testing.T) string {
 			os.WriteFile(p, b, 0o644)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dst, "key-broker", "cmd", "key-broker", "main.go")); err != nil {
-		skip("git ref %s has no key-broker/cmd/key-broker", ref)
-	}
+	t.Logf("key broker from git ref %s", ref)
 	return dst
 }
 
+// loadConfigTakesMap reports whether the broker's loadConfig takes the environment as a map (or as a getenv
+// function), read from the package's source.
+func loadConfigTakesMap(t *testing.T, pkg string) bool {
+	t.Helper()
+	files, _ := filepath.Glob(filepath.Join(pkg, "*.go"))
+	fset := token.NewFileSet()
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := parser.ParseFile(fset, f, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range file.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil || fd.Name.Name != "loadConfig" {
+				continue
+			}
+			var types []ast.Expr
+			for _, p := range fd.Type.Params.List {
+				for range max(1, len(p.Names)) {
+					types = append(types, p.Type)
+				}
+			}
+			if len(types) != 3 {
+				t.Fatalf("loadConfig has %d parameters; update the contract probe", len(types))
+			}
+			switch types[1].(type) {
+			case *ast.MapType:
+				return true
+			case *ast.FuncType:
+				return false
+			}
+			t.Fatalf("loadConfig's environment parameter is neither a map nor a function; update the contract probe")
+		}
+	}
+	t.Fatalf("no loadConfig in %s; update the contract probe", pkg)
+	return false
+}
+
 // probeTest runs in package main of key-broker/cmd/key-broker (added with go test -overlay, never written into
-// the tree). It calls the broker's own loadConfig with exactly the given environment and records which variables
-// the parser asked for.
+// the tree). It calls the broker's own loadConfig once per environment and records the error or the effective
+// config.
 const probeTest = `package main
 
 import (
@@ -196,17 +259,18 @@ func TestZZSealedBootstrapEnvContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var env map[string]string
-	if err := json.Unmarshal(raw, &env); err != nil {
+	var envs []map[string]string
+	if err := json.Unmarshal(raw, &envs); err != nil {
 		t.Fatal(err)
 	}
-	asked := map[string]bool{}
-	c, err := loadConfig(nil, func(k string) string { asked[k] = true; return env[k] }, io.Discard)
-	res := map[string]any{"asked": asked}
-	if err != nil {
-		res["error"] = err.Error()
-	} else {
-		res["config"] = c
+	var res []map[string]any
+	for _, env := range envs {
+		c, err := loadConfig(nil, ENVARG, io.Discard)
+		if err != nil {
+			res = append(res, map[string]any{"error": err.Error()})
+		} else {
+			res = append(res, map[string]any{"config": c})
+		}
 	}
 	out, err := json.Marshal(res)
 	if err != nil {
@@ -218,26 +282,26 @@ func TestZZSealedBootstrapEnvContract(t *testing.T) {
 }
 `
 
-type brokerView struct {
+type outcome struct {
 	Error  string          `json:"error"`
-	Asked  map[string]bool `json:"asked"`
-	Config *struct {
-		Listen   string
-		Customer string
-		ChainID  uint64
-		RPCURL   string
-		Addrs    struct {
-			PlatformRegistry, AppRegistry, DeploymentRegistry string
-		}
-		ReleaseBase string
-		Project     string
-		Region      string
-		KMSKey      string
-	} `json:"config"`
+	Config json.RawMessage `json:"config"`
 }
 
-// runBrokerParser hands env to the broker's loadConfig.
-func runBrokerParser(t *testing.T, tree string, env map[string]string) *brokerView {
+type brokerConfig struct {
+	Listen   string
+	Customer string
+	ChainID  uint64
+	RPCURL   string
+	Addrs    struct {
+		PlatformRegistry, AppRegistry, DeploymentRegistry string
+	}
+	ReleaseBase string
+	Project     string
+	KMSKey      string
+}
+
+// runBrokerParser hands each env to the broker's loadConfig.
+func runBrokerParser(t *testing.T, tree string, envs []map[string]string) []outcome {
 	t.Helper()
 	needTool(t, "go")
 	// The go command matches overlay paths against the resolved package directory (macOS temp dirs sit
@@ -246,17 +310,21 @@ func runBrokerParser(t *testing.T, tree string, env map[string]string) *brokerVi
 	if err != nil {
 		t.Fatal(err)
 	}
+	pkg := filepath.Join(tree, "key-broker", "cmd", "key-broker")
+	arg := "func(k string) string { return env[k] }"
+	if loadConfigTakesMap(t, pkg) {
+		arg = "env"
+	}
 	work := t.TempDir()
 	in, out := filepath.Join(work, "env.json"), filepath.Join(work, "config.json")
-	raw, _ := json.Marshal(env)
+	raw, _ := json.Marshal(envs)
 	os.WriteFile(in, raw, 0o600)
 	probe := filepath.Join(work, "probe_test.go")
-	os.WriteFile(probe, []byte(probeTest), 0o644)
-	pkg := filepath.Join(tree, "key-broker", "cmd", "key-broker")
+	os.WriteFile(probe, []byte(strings.Replace(probeTest, "ENVARG", arg, 1)), 0o644)
 	overlay, _ := json.Marshal(map[string]any{"Replace": map[string]string{filepath.Join(pkg, "zz_sealed_bootstrap_env_contract_test.go"): probe}})
 	ov := filepath.Join(work, "overlay.json")
 	os.WriteFile(ov, overlay, 0o600)
-	c := exec.Command("go", "test", "-v", "-count=1", "-vet=off", "-overlay", ov, "-run", "^TestZZSealedBootstrapEnvContract$", "./key-broker/cmd/key-broker")
+	c := exec.Command("go", "test", "-count=1", "-vet=off", "-overlay", ov, "-run", "^TestZZSealedBootstrapEnvContract$", "./key-broker/cmd/key-broker")
 	c.Dir = tree
 	c.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "SEALED_CONTRACT_IN="+in, "SEALED_CONTRACT_OUT="+out)
 	logs, err := c.CombinedOutput()
@@ -267,11 +335,74 @@ func runBrokerParser(t *testing.T, tree string, env map[string]string) *brokerVi
 	if err != nil {
 		t.Fatalf("%v\n%s", err, logs)
 	}
-	v := &brokerView{}
-	if err := json.Unmarshal(b, v); err != nil {
+	var res []outcome
+	if err := json.Unmarshal(b, &res); err != nil || len(res) != len(envs) {
 		t.Fatalf("%v: %s", err, b)
 	}
-	return v
+	return res
+}
+
+func cloneEnv(m map[string]string) map[string]string {
+	c := make(map[string]string, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
+// contractProblems runs the broker's parser on env (as Cloud Run passes it: the rendered variables, the runtime
+// variables and PORT) and on each variable dropped and garbled, and lists every way the contract is broken.
+func contractProblems(t *testing.T, tree string, r *renderedEnv, env map[string]string) []string {
+	t.Helper()
+	full := cloneEnv(env)
+	for k, v := range r.RuntimeEnv {
+		full[k] = v
+	}
+	full["PORT"] = fmt.Sprint(r.ContainerPort) // set by Cloud Run from container_port
+	names := make([]string, 0, len(env))
+	for k := range env {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	envs := []map[string]string{full}
+	for _, k := range names {
+		dropped, garbled := cloneEnv(full), cloneEnv(full)
+		delete(dropped, k)
+		garbled[k] = "sealed-contract-garbled"
+		envs = append(envs, dropped, garbled)
+	}
+	res := runBrokerParser(t, tree, envs)
+	if res[0].Error != "" {
+		return []string{"the broker refuses the bootstrap's environment: " + res[0].Error}
+	}
+	var problems []string
+	for i, k := range names {
+		same := func(o outcome) bool { return o.Error == "" && bytes.Equal(o.Config, res[0].Config) }
+		if same(res[1+2*i]) && same(res[2+2*i]) && !informational[k] {
+			problems = append(problems, fmt.Sprintf("the bootstrap sets %s, which the broker never reads (dropping or garbling it changes nothing)", k))
+		}
+	}
+	var c brokerConfig
+	if err := json.Unmarshal(res[0].Config, &c); err != nil {
+		t.Fatal(err)
+	}
+	eq := func(what, got, want string) {
+		if !strings.EqualFold(got, want) {
+			problems = append(problems, fmt.Sprintf("%s: the broker uses %q, the bootstrap chose %q", what, got, want))
+		}
+	}
+	eq("customer", c.Customer, contractInputs["customer_address"].(string))
+	eq("tempo rpc", c.RPCURL, contractInputs["tempo_rpc_url"].(string))
+	eq("chain id", fmt.Sprint(c.ChainID), fmt.Sprint(contractInputs["chain_id"]))
+	eq("PlatformRegistry", c.Addrs.PlatformRegistry, contractInputs["platform_registry"].(string))
+	eq("AppRegistry", c.Addrs.AppRegistry, contractInputs["app_registry"].(string))
+	eq("DeploymentRegistry", c.Addrs.DeploymentRegistry, contractInputs["deployment_registry"].(string))
+	eq("release asset base", c.ReleaseBase, contractInputs["release_asset_base"].(string))
+	eq("project", c.Project, contractInputs["project_id"].(string))
+	eq("KMS key version", c.KMSKey, contractInputs["kms_crypto_key"].(string)+"/cryptoKeyVersions/1")
+	eq("KMS key version output", c.KMSKey, r.KMSKeyVersion)
+	eq("listen address", c.Listen, fmt.Sprintf(":%d", r.ContainerPort))
+	return problems
 }
 
 func TestKeyBrokerEnvContract(t *testing.T) {
@@ -280,79 +411,51 @@ func TestKeyBrokerEnvContract(t *testing.T) {
 	}
 	r := renderBrokerEnv(t, contractInputs)
 	tree := brokerTree(t)
-
-	env := map[string]string{"PORT": fmt.Sprint(r.ContainerPort)} // set by Cloud Run from container_port
-	for k, v := range r.Env {
-		env[k] = v
+	if p := contractProblems(t, tree, r, r.Env); len(p) > 0 {
+		t.Fatalf("the bootstrap's key broker environment breaks the contract:\n  %s\nenv: %v", strings.Join(p, "\n  "), r.Env)
 	}
-	v := runBrokerParser(t, tree, env)
-	if v.Error != "" {
-		t.Fatalf("the broker refuses the bootstrap's environment: %s\nenv: %v", v.Error, r.Env)
-	}
-
-	// Every variable the bootstrap sets is one the broker reads: none is silently ignored.
-	for k := range r.Env {
-		if !v.Asked[k] {
-			t.Errorf("the bootstrap sets %s, which the broker never reads (its default would be used instead)", k)
-		}
-	}
-	// The Go runtime variables are not broker configuration and must not collide with it.
+	// The Go runtime variables are not broker configuration.
 	for k := range r.RuntimeEnv {
-		if v.Asked[k] || strings.HasPrefix(k, "SEALED_") || strings.HasPrefix(k, "TEMPO_") {
-			t.Errorf("runtime variable %s is broker configuration", k)
+		if strings.HasPrefix(k, "SEALED_") || strings.HasPrefix(k, "TEMPO_") {
+			t.Errorf("runtime variable %s looks like broker configuration", k)
 		}
 	}
-	// The broker's required settings are all set by the bootstrap.
-	for _, k := range []string{"SEALED_CUSTOMER", "SEALED_TEMPO_RPC", "SEALED_CHAIN_ID", "SEALED_GCP_PROJECT", "SEALED_KMS_KEY"} {
-		if _, ok := r.Env[k]; !ok {
-			t.Errorf("the bootstrap does not set %s", k)
-		}
-	}
-
-	// Each customer choice arrives in the effective config.
-	c := v.Config
-	eq := func(what, got, want string) {
-		t.Helper()
-		if !strings.EqualFold(got, want) {
-			t.Errorf("%s: broker uses %q, the bootstrap chose %q", what, got, want)
-		}
-	}
-	eq("customer", c.Customer, contractInputs["customer_address"].(string))
-	eq("tempo rpc", c.RPCURL, contractInputs["tempo_rpc_url"].(string))
-	if c.ChainID != uint64(contractInputs["chain_id"].(int)) {
-		t.Errorf("chain id: broker uses %d", c.ChainID)
-	}
-	eq("PlatformRegistry", c.Addrs.PlatformRegistry, contractInputs["platform_registry"].(string))
-	eq("AppRegistry", c.Addrs.AppRegistry, contractInputs["app_registry"].(string))
-	eq("DeploymentRegistry", c.Addrs.DeploymentRegistry, contractInputs["deployment_registry"].(string))
-	eq("release asset base", c.ReleaseBase, contractInputs["release_asset_base"].(string))
-	eq("project", c.Project, contractInputs["project_id"].(string))
-	eq("region", c.Region, contractInputs["region"].(string))
-	eq("KMS key version", c.KMSKey, r.KMSKeyVersion)
-	eq("KMS key version", c.KMSKey, contractInputs["kms_crypto_key"].(string)+"/cryptoKeyVersions/1")
-	eq("listen address", c.Listen, fmt.Sprintf(":%d", r.ContainerPort))
 }
 
-// TestKeyBrokerEnvContractCatchesOldNames proves the check above is not vacuous: the variable names the bootstrap
-// used before review F5 are not read by the broker, and without SEALED_CUSTOMER it refuses to start.
-func TestKeyBrokerEnvContractCatchesOldNames(t *testing.T) {
+// TestKeyBrokerEnvContractCatchesMistakes proves the check is not vacuous: a variable the broker does not know, an
+// RPC under a name the broker does not read, and a missing customer each break the contract.
+func TestKeyBrokerEnvContractCatchesMistakes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short")
 	}
+	r := renderBrokerEnv(t, contractInputs)
 	tree := brokerTree(t)
-	v := runBrokerParser(t, tree, map[string]string{
-		"SEALED_CUSTOMER_ADDRESS": "0x00000000000000000000000000000000000000c1",
-		"TEMPO_RPC_URL":           "https://tempo.customer-node.example/rpc",
-		"TEMPO_CHAIN_ID":          "4217",
-		"SEALED_GCP_PROJECT":      "acme-prod-4417",
-		"SEALED_KMS_KEY_VERSION":  "projects/acme-prod-4417/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1",
-	})
-	for _, k := range []string{"SEALED_CUSTOMER_ADDRESS", "TEMPO_RPC_URL", "TEMPO_CHAIN_ID"} {
-		if v.Asked[k] {
-			t.Errorf("the broker reads %s; update the contract", k)
-		}
-	}
-	if v.Error == "" || !strings.Contains(v.Error, "SEALED_CUSTOMER") {
-		t.Fatalf("the broker started without SEALED_CUSTOMER: %+v", v)
+	for name, mutate := range map[string]func(map[string]string){
+		"unknown variable": func(e map[string]string) { e["SEALED_UNUSED_SETTING"] = "1" },
+		"renamed rpc": func(e map[string]string) {
+			for k, v := range e {
+				if v == contractInputs["tempo_rpc_url"] {
+					delete(e, k)
+				}
+			}
+			e["SEALED_CUSTOMER_RPC"] = contractInputs["tempo_rpc_url"].(string)
+		},
+		"no customer": func(e map[string]string) {
+			for k, v := range e {
+				if strings.EqualFold(v, contractInputs["customer_address"].(string)) {
+					delete(e, k)
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := cloneEnv(r.Env)
+			mutate(env)
+			if p := contractProblems(t, tree, r, env); len(p) == 0 {
+				t.Fatal("the mistake was not detected")
+			} else {
+				t.Logf("detected: %s", strings.Join(p, "; "))
+			}
+		})
 	}
 }

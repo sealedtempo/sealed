@@ -3,11 +3,13 @@
 #
 # This module has no providers and no resources. It turns the bootstrap's
 # inputs into exactly the environment variables key-broker/cmd/key-broker
-# reads, so the root module and the contract test in cli/internal/bootstrap
-# render the same map. Every name here must be one the broker reads: a name it
-# ignores would silently replace the customer's choice (their RPC, their chain,
-# their key) with the broker's built-in default. The contract test runs the
-# broker's own config parser on this map and fails on any such mismatch.
+# reads (its README's configuration table), so the root module and the
+# contract test in cli/internal/bootstrap render the same map. A variable the
+# broker ignored would silently replace the customer's choice (their RPC, their
+# chain, their key) with the broker's mainnet default, so the contract test
+# runs the broker's own config parser on this map and fails on any variable it
+# does not read and on any choice that does not reach its effective config.
+# key_broker.tf lists the names literally (the broker's own test parses it).
 
 terraform {
   required_version = ">= 1.7.0"
@@ -53,9 +55,9 @@ variable "project_id" {
   description = "Customer project id (Secret Manager and Cloud Logging)."
 }
 
-variable "region" {
+variable "project_number" {
   type        = string
-  description = "Cloud Run region (the decision log's resource labels)."
+  description = "Customer project number (recorded by the broker)."
 }
 
 variable "kms_crypto_key" {
@@ -72,19 +74,21 @@ locals {
   kms_key_version = 1
 
   # Name for name, what cmd/key-broker reads (flag defaults are the mainnet
-  # values, so every customer choice must arrive here or it is lost).
+  # values, so every customer choice must arrive here or it is lost). The
+  # broker refuses any other SEALED_* or TEMPO_* variable. It takes the region
+  # of its decision log resource from the metadata server.
   env = {
-    SEALED_CUSTOMER            = lower(var.customer_address)
-    SEALED_TEMPO_RPC           = var.tempo_rpc_url
-    SEALED_CHAIN_ID            = tostring(var.chain_id)
+    SEALED_CUSTOMER_ADDRESS    = lower(var.customer_address)
+    TEMPO_RPC_URL              = var.tempo_rpc_url
+    TEMPO_CHAIN_ID             = tostring(var.chain_id)
     SEALED_PLATFORM_REGISTRY   = lower(var.platform_registry)
     SEALED_APP_REGISTRY        = lower(var.app_registry)
     SEALED_DEPLOYMENT_REGISTRY = lower(var.deployment_registry)
     SEALED_RELEASE_ASSET_BASE  = var.release_asset_base
     SEALED_GCP_PROJECT         = var.project_id
-    SEALED_GCP_REGION          = var.region
-    SEALED_KMS_KEY             = var.kms_crypto_key
-    SEALED_KMS_KEY_VERSION     = tostring(local.kms_key_version)
+    SEALED_GCP_PROJECT_NUMBER  = var.project_number
+    SEALED_SECRET_PREFIX       = "sealed-"
+    SEALED_KMS_KEY_VERSION     = "${var.kms_crypto_key}/cryptoKeyVersions/${local.kms_key_version}"
   }
 
   # Go runtime settings, not broker configuration: a soft heap limit below the

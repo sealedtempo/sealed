@@ -78,7 +78,7 @@ module "key_broker_env" {
   deployment_registry = var.deployment_registry
   release_asset_base  = var.release_asset_base
   project_id          = var.project_id
-  region              = var.region
+  project_number      = data.google_project.this.number
   kms_crypto_key      = google_kms_crypto_key.hmac.id
 }
 
@@ -122,8 +122,58 @@ resource "google_cloud_run_v2_service" "key_broker" {
         }
       }
 
+      # Exactly the variables key-broker/cmd/key-broker reads, with the values
+      # of modules/key-broker-env. tests/plan.tftest.hcl checks that these
+      # blocks equal the module's map, cli/internal/bootstrap runs the broker's
+      # parser on that map, and the broker's own test parses this list.
+      env {
+        name  = "SEALED_CUSTOMER_ADDRESS"
+        value = module.key_broker_env.env["SEALED_CUSTOMER_ADDRESS"]
+      }
+      env {
+        name  = "TEMPO_RPC_URL"
+        value = module.key_broker_env.env["TEMPO_RPC_URL"]
+      }
+      env {
+        name  = "TEMPO_CHAIN_ID"
+        value = module.key_broker_env.env["TEMPO_CHAIN_ID"]
+      }
+      env {
+        name  = "SEALED_PLATFORM_REGISTRY"
+        value = module.key_broker_env.env["SEALED_PLATFORM_REGISTRY"]
+      }
+      env {
+        name  = "SEALED_APP_REGISTRY"
+        value = module.key_broker_env.env["SEALED_APP_REGISTRY"]
+      }
+      env {
+        name  = "SEALED_DEPLOYMENT_REGISTRY"
+        value = module.key_broker_env.env["SEALED_DEPLOYMENT_REGISTRY"]
+      }
+      env {
+        name  = "SEALED_RELEASE_ASSET_BASE"
+        value = module.key_broker_env.env["SEALED_RELEASE_ASSET_BASE"]
+      }
+      env {
+        name  = "SEALED_GCP_PROJECT"
+        value = module.key_broker_env.env["SEALED_GCP_PROJECT"]
+      }
+      env {
+        name  = "SEALED_GCP_PROJECT_NUMBER"
+        value = module.key_broker_env.env["SEALED_GCP_PROJECT_NUMBER"]
+      }
+      env {
+        name  = "SEALED_SECRET_PREFIX"
+        value = module.key_broker_env.env["SEALED_SECRET_PREFIX"]
+      }
+      env {
+        name  = "SEALED_KMS_KEY_VERSION"
+        value = module.key_broker_env.env["SEALED_KMS_KEY_VERSION"]
+      }
+
+      # Go runtime settings, not broker configuration.
       dynamic "env" {
-        for_each = merge(module.key_broker_env.env, module.key_broker_env.runtime_env)
+        for_each = module.key_broker_env.runtime_env
         content {
           name  = env.key
           value = env.value

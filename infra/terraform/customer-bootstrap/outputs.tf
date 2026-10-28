@@ -46,8 +46,8 @@ output "key_broker_url" {
 }
 
 output "tempo_rpc_url" {
-  description = "The Tempo RPC the key broker reads approvals and revocations from (SEALED_TEMPO_RPC)."
-  value       = module.key_broker_env.env["SEALED_TEMPO_RPC"]
+  description = "The Tempo RPC the key broker reads approvals and revocations from (TEMPO_RPC_URL)."
+  value       = module.key_broker_env.env["TEMPO_RPC_URL"]
 }
 
 output "chain_id" {

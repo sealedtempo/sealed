@@ -138,17 +138,17 @@ run "key_broker" {
   assert {
     condition = (
       { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value } == {
-        SEALED_CUSTOMER            = "0x00000000000000000000000000000000000000c1"
-        SEALED_TEMPO_RPC           = "https://rpc.tempo.xyz"
-        SEALED_CHAIN_ID            = "4217"
+        SEALED_CUSTOMER_ADDRESS    = "0x00000000000000000000000000000000000000c1"
+        TEMPO_RPC_URL              = "https://rpc.tempo.xyz"
+        TEMPO_CHAIN_ID             = "4217"
         SEALED_PLATFORM_REGISTRY   = "0x18ab956ea44757587896dfd25632fb3e89f7002d"
         SEALED_APP_REGISTRY        = "0x88c91cacb74ccec3b8a1823977eec42ae3b93b43"
         SEALED_DEPLOYMENT_REGISTRY = "0x254efb9d1809a95ec6d233cc57b3a10849bd2c8e"
         SEALED_RELEASE_ASSET_BASE  = "https://github.com/sealedtempo/sealed/releases/download"
         SEALED_GCP_PROJECT         = "sealed-test-1234"
-        SEALED_GCP_REGION          = "us-central1"
-        SEALED_KMS_KEY             = "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac"
-        SEALED_KMS_KEY_VERSION     = "1"
+        SEALED_GCP_PROJECT_NUMBER  = "123456789012"
+        SEALED_SECRET_PREFIX       = "sealed-"
+        SEALED_KMS_KEY_VERSION     = "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1"
         GOMEMLIMIT                 = "768MiB"
       }
     )
@@ -161,7 +161,7 @@ run "key_broker" {
   }
 
   assert {
-    condition     = output.kms_key_version == "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1" && output.tempo_rpc_url == "https://rpc.tempo.xyz"
+    condition     = output.kms_key_version == "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1" && output.tempo_rpc_url == "https://rpc.tempo.xyz" && output.key_broker_env == module.key_broker_env.env
     error_message = "the outputs name the key version and the RPC the broker uses"
   }
 
@@ -235,18 +235,16 @@ run "customer_rpc_and_chain_reach_the_broker" {
   variables {
     tempo_rpc_url      = "https://tempo.customer-node.example/rpc"
     chain_id           = 42431
-    region             = "europe-west4"
     release_asset_base = "https://assets.customer.example/releases"
   }
 
   assert {
     condition = (
-      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_TEMPO_RPC"] == "https://tempo.customer-node.example/rpc" &&
-      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_CHAIN_ID"] == "42431" &&
-      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_GCP_REGION"] == "europe-west4" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["TEMPO_RPC_URL"] == "https://tempo.customer-node.example/rpc" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["TEMPO_CHAIN_ID"] == "42431" &&
       { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_RELEASE_ASSET_BASE"] == "https://assets.customer.example/releases"
     )
-    error_message = "the customer's RPC, chain, region and asset base are never replaced by defaults"
+    error_message = "the customer's RPC, chain and asset base are never replaced by defaults"
   }
 }
 
