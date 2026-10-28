@@ -3,7 +3,8 @@
 // laptop has no equivalent for is replaced, and nothing here is part of the agent image:
 //   - the block-device tools behind LuksDisk (FakeLuksRunner: the LUKS2 format, open and mount steps still run),
 //   - Caddy's admin socket (switches are recorded in a file),
-//   - Caddy's served TLS key for /attest (a fixed key),
+//   - Caddy itself for /attest: with DEVNET_TLS_TARGET the agent reads the served key from the devnet's TLS front
+//     (src/attestFront.ts) exactly as it reads Caddy's, by a TLS handshake; otherwise a fixed key,
 //   - egress stats and container health probes (no containers run),
 //   - the caller address of local API calls: apps post usage from their fixed 172.30.x.y addresses, which this
 //     host takes from the x-devnet-peer header,
@@ -23,7 +24,8 @@ import { LuksDisk } from "@sealed/agent/dist/src/disk.js";
 import { createLogger, errorFields } from "@sealed/agent/dist/src/log.js";
 import { settingsFromEnv } from "@sealed/agent/dist/src/settings.js";
 import { normalizePeer } from "@sealed/agent/dist/src/stack.js";
-import { fixedTlsKey } from "@sealed/agent/dist/src/tls.js";
+import { readFileSync } from "node:fs";
+import { fixedTlsKey, ServedCertSource, type TlsKeySource } from "@sealed/agent/dist/src/tls.js";
 import { FakeLuksRunner } from "./fakeLuks.ts";
 
 export const PEER_HEADER = "x-devnet-peer";
@@ -64,13 +66,20 @@ async function main(): Promise<void> {
   const out = need("DEVNET_OUT");
   mkdirSync(out, { recursive: true });
   const mountInfoPath = need("DEVNET_MOUNTINFO");
+  let tls: TlsKeySource = fixedTlsKey(`0x${"77".repeat(32)}`);
+  const front = process.env.DEVNET_TLS_TARGET;
+  if (front) {
+    const [host, port] = front.split(":");
+    const attestHost = (JSON.parse(readFileSync(settings.stackPath ?? "", "utf8")) as { attestHost: string }).attestHost;
+    tls = new ServedCertSource({ host: host as string, port: Number(port) }, attestHost);
+  }
   const runner = new FakeLuksRunner({ statePath: need("DEVNET_LUKS_STATE"), device: settings.dataDevice, mountInfoPath, deviceId: DEVICE_ID });
   const agent = new Agent({
     settings,
     log,
     disk: new LuksDisk({ device: settings.dataDevice, name: settings.luksName, mountPoint: settings.dataMount, runner, mountInfoPath, deviceId: async () => DEVICE_ID, log }),
     caddy: { apply: async (variant) => appendFileSync(join(out, "caddy.log"), `${Math.floor(Date.now() / 1000)} ${variant}\n`) },
-    tls: fixedTlsKey(`0x${"77".repeat(32)}`),
+    tls,
     egressStats: async () => undefined,
     probe: async () => false,
     chown: async (path, uid, gid) => appendFileSync(join(out, "chown.log"), `${uid}:${gid} ${path}\n`),

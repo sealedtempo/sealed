@@ -31,11 +31,12 @@ binaries (`PG_BIN`, default `/opt/homebrew/opt/postgresql@17/bin`), and the priv
 | platform api | `services/api` `dist/main.js serve` as oracle and indexer, a throwaway PostgreSQL 17 cluster, ORACLE and OPS from anvil dev keys; its Google and Rekor endpoints point at a closed local port |
 | dstack simulator | `runtime/agent` `dist/sim.js` serving the exact app-compose.json |
 | sealed-agent | `src/agentHost.ts`: the real `Agent` class booted like `runtime/agent/src/main.ts` |
+| attest host | `src/attestFront.ts`: HTTPS with a self-signed certificate for the stack's attest hostname, proxying `/attest` to the agent as Caddy does |
 
 The agent host replaces only what a laptop has no equivalent for: the block-device tools behind `LuksDisk`
 (`src/fakeLuks.ts`: the LUKS2 format, open, mkfs and mount steps run against a fake that keeps the header and
-filesystem state across reboots and refuses another diskKey), Caddy's admin socket (switches are recorded), the
-served TLS key, egress stats and container health probes, chown of volume directories, the caller address of
+filesystem state across reboots and refuses another diskKey), Caddy's admin socket (switches are recorded), Caddy's
+TLS listener (the attest front above), egress stats and container health probes, chown of volume directories, the caller address of
 local API calls (taken from an `x-devnet-peer` header, standing in for the apps' fixed 172.30.x.y addresses), and
 name resolution: the composer refuses loopback endpoints, so configs name `*.devnet.test` hosts (RFC 6761) and the
 agent host resolves them to 127.0.0.1, as sealed-egress's DNS would inside a VM.
@@ -57,8 +58,10 @@ agent host resolves them to 127.0.0.1, as sealed-egress's DNS would inside a VM.
    record, the api's evidence row, indexer row and a signed health report are checked.
 7. `sealed verify --deployment <id> --evidence <file>` in an empty directory with an empty environment (only
    the evidence file, the RPC and the local chain's public description: deployments file and a defaults file
-   naming chain 31337 and the asset base): every check passes, simulated flagged. Also `POST /v1/verify` and the
-   `dep_` alias through `--api`.
+   naming chain 31337 and the asset base): every check passes, simulated flagged. Also `POST /v1/verify`, the
+   `dep_` alias through `--api`, and `--live` against a local TLS front for the attest host (a self-signed
+   certificate; the agent reads its key by a TLS handshake as it reads Caddy's): the quote binds that key, and a
+   front with another certificate fails `tls_binding`.
 8. Access-key mode: the customer authorizes the enclave signer on the AccountKeychain precompile; usage events
    from the apps' own addresses (wrong address and wrong unit refused); the agent settles every few seconds
    (`test_overrides.settlement_interval_seconds`), the api stores the signed report, FeesPaid legs, usagePaid,

@@ -21,6 +21,7 @@ import { Abis, Account, Addresses, createClient } from "viem/tempo";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { tempoChain } from "@sealed/core";
 import { type AssetServer, sha256Hex, startAssetServer } from "./assets.ts";
+import { type AttestFront, selfSignedCert, startAttestFront } from "./attestFront.ts";
 import { ABIS, ADDR, Chain, CHAIN_ID, deployContracts, KEYS, REGISTRAR_ROLE, startAnvil, TOKENS } from "./chain.ts";
 import { check, checkEq, type StepLog } from "./log.ts";
 import { freePorts, http } from "./net.ts";
@@ -133,6 +134,13 @@ interface AgentRun {
   port: number;
   proc: Proc;
   composed: Composed;
+  env?: Record<string, string>;
+}
+
+interface VerifyReport {
+  ok: boolean;
+  simulated?: boolean;
+  checks: Array<{ name: string; ok: boolean; detail?: string }>;
 }
 
 interface Ready {
@@ -160,6 +168,7 @@ export class Devnet {
   images!: { prod: Hex; debug: Hex; prodMh: Hex; debugMh: Hex };
   defaultsPath!: string;
   private readonly simEndpoints = new Map<string, string>();
+  front?: AttestFront;
   private agentPort = 0;
   private brokerPort = 0;
   private apiPort = 0;
@@ -203,6 +212,7 @@ export class Devnet {
     await this.stepTamperNoQuote(a);
     await this.stepRevokeStack(agentA);
     await this.stepRevokeRelease(agentA);
+    await this.front?.close();
   }
 
   // --- 1. chain ------------------------------------------------------------------------------------------------
@@ -504,7 +514,7 @@ export class Devnet {
     return sim.endpoint;
   }
 
-  private launchAgent(c: Composed, name: string, dstack: string, paths: AgentPaths, port: number): AgentRun {
+  private launchAgent(c: Composed, name: string, dstack: string, paths: AgentPaths, port: number, env?: Record<string, string>): AgentRun {
     mkdirSync(join(paths.root, "etc"), { recursive: true });
     writeFileSync(paths.config, canonicalize(c.config as never));
     cpSync(join(c.dir, "stack.json"), paths.stack);
@@ -512,8 +522,8 @@ export class Devnet {
     cpSync(join(c.dir, "Caddyfile.payment-needed"), paths.caddyfilePaymentNeeded);
     rmSync(join(paths.out, "ready.json"), { force: true });
     rmSync(join(paths.out, "evidence.json"), { force: true });
-    const proc = startAgent(this.sup, { name, hostScript: join(this.o.repo, "scripts", "devnet", "src", "agentHost.ts"), paths, dstack, port, defaultsPath: this.defaultsPath });
-    const run = { name, paths, port, proc, composed: c };
+    const proc = startAgent(this.sup, { name, hostScript: join(this.o.repo, "scripts", "devnet", "src", "agentHost.ts"), paths, dstack, port, defaultsPath: this.defaultsPath, env });
+    const run = { name, paths, port, proc, composed: c, env };
     this.agents.push(run);
     return run;
   }
@@ -623,8 +633,12 @@ export class Devnet {
     this.log.step("Boot sealed-agent against them (fake LUKS runner, temp /run/sealed and /mnt/sealed-data)");
     const sim = await this.startSim(a, "dstack-sim-a");
     this.log.ok(`dstack simulator ${sim} serves app-compose.json of stack a byte for byte`);
+    const attestHost = a.stack.attestHost as string;
+    const cert = await selfSignedCert(this.sup, this.path("attest-front"), attestHost);
+    this.front = await startAttestFront({ port: this.port(), ...cert, agentPort: this.agentPort, caddyIp: (a.stack.sidecars as Record<string, string>).caddy as string, peerHeader: PEER_HEADER });
+    this.log.ok(`attest TLS front ${this.front.url} for ${attestHost} (self-signed, in place of Caddy's attest route)`);
     const decisionsBefore = this.broker.decisions().length;
-    const run = this.launchAgent(a, "agent-a", sim, agentPaths(this.path("agent-a")), this.agentPort);
+    const run = this.launchAgent(a, "agent-a", sim, agentPaths(this.path("agent-a")), this.agentPort, { DEVNET_TLS_TARGET: `127.0.0.1:${new URL(this.front.url).port}` });
     const ready = await this.waitReady(run);
     checkEq(ready.deploymentId, a.deploymentId, "agent deploymentId");
     checkEq(ready.stackHash, a.stackHash, "agent stackHash");
@@ -716,11 +730,16 @@ export class Devnet {
   // --- 7. verify -----------------------------------------------------------------------------------------------
 
   /** sealed verify in an empty directory with an empty environment: only the evidence file and the chain. */
-  private async sealedVerify(id: string, evidence: Record<string, unknown>, label: string, extra: string[] = []): Promise<{ code: number | null; report: { ok: boolean; evidence?: { ok: boolean; simulated?: boolean; checks: Array<{ name: string; ok: boolean; detail?: string }> } } }> {
+  private async sealedVerify(
+    id: string,
+    evidence: Record<string, unknown> | null,
+    label: string,
+    extra: string[] = [],
+  ): Promise<{ code: number | null; report: { ok: boolean; evidence?: VerifyReport; live?: VerifyReport } }> {
     const dir = this.path("verify", label);
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(join(dir, "home"), { recursive: true });
-    writeFileSync(join(dir, "evidence.json"), JSON.stringify(evidence));
+    if (evidence) writeFileSync(join(dir, "evidence.json"), JSON.stringify(evidence));
     // A local chain has no embedded defaults: its public description (chain id, release asset base, addresses).
     const defaults = parseYaml(readFileSync(join(this.o.repo, "config", "defaults.yaml"), "utf8")) as { chain: Record<string, unknown>; catalog: Record<string, unknown> };
     defaults.chain = { ...defaults.chain, name: "devnet", chain_id: CHAIN_ID, public_rpc_url: this.chain.node.rpcUrl, fee_token: TOKENS.pathUsd };
@@ -728,7 +747,7 @@ export class Devnet {
     writeFileSync(join(dir, "defaults.yaml"), stringifyYaml(defaults));
     cpSync(this.chain.c.file, join(dir, "deployments.json"));
     const r = await this.sup.run(`sealed-verify-${label}`, this.o.bins.sealed, [
-      "verify", "--deployment", id, "--evidence", "evidence.json", "--rpc", this.chain.node.rpcUrl, "--deployments", "deployments.json", "--defaults", "defaults.yaml",
+      "verify", "--deployment", id, ...(evidence ? ["--evidence", "evidence.json"] : []), "--rpc", this.chain.node.rpcUrl, "--deployments", "deployments.json", "--defaults", "defaults.yaml",
       "--dev-allow-simulated", "--dev-allow-http-assets", "--json", "--report", "report.json", "--bundle-cache", "cache/bundles", "--collateral-cache", "cache/pcs", ...extra,
     ], { cwd: dir, cleanEnv: true, env: { PATH: "/usr/bin:/bin", HOME: join(dir, "home"), SEALED_DEV_SIM: "1" } });
     const report = existsSync(join(dir, "report.json")) ? readJson<{ ok: boolean }>(join(dir, "report.json")) : { ok: false };
@@ -760,6 +779,28 @@ export class Devnet {
     const viaAlias = await this.sealedVerify(alias, evidence, "a-alias", ["--api", this.apiUrl]);
     checkEq(viaAlias.code, 0, "sealed verify with the alias");
     this.log.ok(`sealed verify --deployment ${alias} --api resolves the alias through the api, then checks everything against the chain`);
+
+    // A5 --live: a fresh nonce over TLS to the attest host; the quote must bind that connection's key.
+    const front = this.front as AttestFront;
+    const live = await this.sealedVerify(a.deploymentId, null, "a-live", ["--live", front.url, "--dev-insecure-live-tls", "--dev-live-allow-private"]);
+    checkEq(live.code, 0, "sealed verify --live exit code");
+    const lchecks = live.report.live?.checks ?? [];
+    check(live.report.live?.ok === true && lchecks.length > 0 && lchecks.every((c) => c.ok), `every live check passed: ${JSON.stringify(lchecks.filter((c) => !c.ok))}`);
+    check(lchecks.some((c) => c.name.includes("tls")), "the live report checks the TLS key binding");
+    this.log.ok(`sealed verify --live ${front.url} passed ${lchecks.length} checks (${lchecks.map((c) => c.name).join(", ")})`);
+
+    // A man in the middle with its own certificate for the attest host: the quote binds the real front's key.
+    const mitmCert = await selfSignedCert(this.sup, this.path("attest-mitm"), a.stack.attestHost as string);
+    const mitm = await startAttestFront({ port: this.port(), ...mitmCert, agentPort: front.target.port, caddyIp: (a.stack.sidecars as Record<string, string>).caddy as string, peerHeader: PEER_HEADER });
+    try {
+      const bad = await this.sealedVerify(a.deploymentId, null, "a-live-mitm", ["--live", mitm.url, "--dev-insecure-live-tls", "--dev-live-allow-private"]);
+      checkEq(bad.code, 1, "sealed verify --live through another certificate");
+      const failed = (bad.report.live?.checks ?? []).filter((c) => !c.ok).map((c) => c.name);
+      check(failed.includes("tls_binding"), `the TLS key binding fails (${failed.join(", ")})`);
+      this.log.ok(`through a front with another certificate for the same host, --live fails: ${failed.join(", ")}`);
+    } finally {
+      await mitm.close();
+    }
   }
 
   // --- 8. usage and fees ---------------------------------------------------------------------------------------
@@ -1012,7 +1053,7 @@ export class Devnet {
     this.clearTmpfs(run.paths);
     const sim = this.simEndpoints.get(run.composed.name);
     if (!sim) throw new Error(`no simulator for stack ${run.composed.name}`);
-    Object.assign(run, this.launchAgent(run.composed, run.name, sim, run.paths, run.port));
+    Object.assign(run, this.launchAgent(run.composed, run.name, sim, run.paths, run.port, run.env));
   }
 
   private async stepReboot(run: AgentRun): Promise<void> {
@@ -1048,9 +1089,9 @@ export class Devnet {
   // --- 10. tamper matrix ---------------------------------------------------------------------------------------
 
   /** Boots an agent that must be denied: waits for the broker's denial and checks nothing was released. */
-  private async deniedBoot(c: Composed, name: string, dstack: string, reason: string, paths = agentPaths(this.path(name)), port = this.port()): Promise<AgentRun> {
+  private async deniedBoot(c: Composed, name: string, dstack: string, reason: string, paths = agentPaths(this.path(name)), port = this.port(), env?: Record<string, string>): Promise<AgentRun> {
     const since = this.broker.decisions().length;
-    const run = this.launchAgent(c, name, dstack, paths, port);
+    const run = this.launchAgent(c, name, dstack, paths, port, env);
     const denial = await waitFor(
       `${name}: key broker denial`,
       () => this.decisionsFor(c, since).find((d) => d.decision === "denied"),
@@ -1133,7 +1174,7 @@ export class Devnet {
     await waitFor("the api indexer sees the revoked approval", async () => (await this.pg.psql(`SELECT revoked FROM stack_approvals WHERE stack_hash = '${a.stackHash}'`)) === "t" || undefined, { timeoutMs: 20_000 });
     await run.proc.stop();
     this.clearTmpfs(run.paths);
-    const denied = await this.deniedBoot(a, run.name, this.simEndpoints.get(a.name) as string, "stack_not_approved", run.paths, run.port);
+    const denied = await this.deniedBoot(a, run.name, this.simEndpoints.get(a.name) as string, "stack_not_approved", run.paths, run.port, run.env);
     this.log.ok("after revokeStack the reboot is denied with stack_not_approved: no secrets, no ready flag");
     const v = await this.sealedVerify(a.deploymentId, readJson(this.path("evidence-a.json")), "revoked-stack");
     checkEq(v.code, 1, "sealed verify fails while the approval is revoked");
@@ -1142,7 +1183,7 @@ export class Devnet {
     await this.approve(a);
     this.log.ok("the customer re-approves the same stack (same releases and image), which clears the revocation");
     this.clearTmpfs(run.paths);
-    const again = this.launchAgent(a, run.name, this.simEndpoints.get(a.name) as string, run.paths, run.port);
+    const again = this.launchAgent(a, run.name, this.simEndpoints.get(a.name) as string, run.paths, run.port, run.env);
     Object.assign(run, again);
     await this.waitReady(run);
     const ev = await this.waitEvidence(run);
@@ -1168,7 +1209,7 @@ export class Devnet {
     this.log.ok(`owner revoked llm-gateway ${rel.version} (${rel.releaseId}); the approval cannot be restored; the api's catalog shows the revocation`);
     await run.proc.stop();
     this.clearTmpfs(run.paths);
-    const denied = await this.deniedBoot(a, run.name, this.simEndpoints.get(a.name) as string, "stack_not_approved", run.paths, run.port);
+    const denied = await this.deniedBoot(a, run.name, this.simEndpoints.get(a.name) as string, "stack_not_approved", run.paths, run.port, run.env);
     this.log.ok("the next boot is denied: no secrets, no ready flag");
     const v = await this.sealedVerify(a.deploymentId, readJson(this.path("evidence-a.json")), "revoked-release");
     checkEq(v.code, 1, "sealed verify exit code after the revocation");

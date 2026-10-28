@@ -231,7 +231,7 @@ export function agentPaths(root: string): AgentPaths {
   };
 }
 
-export function startAgent(sup: Supervisor, o: { name: string; hostScript: string; paths: AgentPaths; dstack: string; port: number; defaultsPath: string }): Proc {
+export function startAgent(sup: Supervisor, o: { name: string; hostScript: string; paths: AgentPaths; dstack: string; port: number; defaultsPath: string; env?: Record<string, string> }): Proc {
   const p = o.paths;
   for (const d of [join(p.root, "etc"), p.secrets, p.ready, p.data, join(p.root, "dev"), p.out]) mkdirSync(d, { recursive: true });
   writeFileSync(p.device, ""); // the data disk the host attaches (its content is the fake runner's state file)
@@ -257,6 +257,7 @@ export function startAgent(sup: Supervisor, o: { name: string; hostScript: strin
       DEVNET_LUKS_STATE: p.luksState,
       DEVNET_MOUNTINFO: p.mountinfo,
       DEVNET_OUT: p.out,
+      ...o.env,
     },
   });
 }
