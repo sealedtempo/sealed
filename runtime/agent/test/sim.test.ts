@@ -13,7 +13,7 @@ import { makeAppCompose, makeConfig } from "./helpers/fixtures.js";
 describe("dstack simulator", () => {
   let dir: string;
   let composePath: string;
-  const compose = makeAppCompose(makeConfig(), "/mnt/sealed-data");
+  const compose = makeAppCompose(makeConfig());
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), "sealed-sim-"));
     composePath = join(dir, "app-compose.json");
@@ -71,7 +71,10 @@ describe("dstack simulator", () => {
     }
   });
 
-  it.skipIf(!existsSync(join(import.meta.dirname, "../dist/sim.js")))("runs as a CLI (node dist/sim.js)", async () => {
+  // Needs `pnpm -r build`. Skipped without dist, except in CI mode (SEALED_REQUIRE_CHAIN_TESTS=1), where it fails.
+  const built = existsSync(join(import.meta.dirname, "../dist/sim.js"));
+  it.skipIf(!built && process.env.SEALED_REQUIRE_CHAIN_TESTS !== "1")("runs as a CLI (node dist/sim.js)", async () => {
+    expect(built, "dist/sim.js is missing: run pnpm -r build before the tests").toBe(true);
     const sock = join(dir, "cli.sock");
     const child = spawn(process.execPath, [join(import.meta.dirname, "../dist/sim.js"), "--app-compose", composePath, "--socket", sock], { stdio: ["ignore", "pipe", "pipe"] });
     try {

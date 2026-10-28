@@ -1,19 +1,34 @@
-// A fake Caddy admin API on a unix socket: GET /config/ and POST /load.
+// A fake Caddy admin API on a unix socket: POST /load with a Caddyfile (Content-Type text/caddyfile).
+// Like Caddy, a load whose content equals the running config is accepted without a reload.
 import { serve, type TestServer } from "./http.js";
 
 export interface FakeCaddy extends TestServer {
-  config: unknown;
+  /** The Caddyfile currently running. */
+  current: string;
+  /** Loads that changed the running config. */
+  reloads: number;
+  /** Every /load request, including no-op ones. */
   loads: number;
+  contentTypes: string[];
+  failNext: number;
 }
 
-export async function startFakeCaddy(socket: string, initial: unknown): Promise<FakeCaddy> {
-  const rec = { config: structuredClone(initial), loads: 0 };
+export async function startFakeCaddy(socket: string, initial: string): Promise<FakeCaddy> {
+  const rec = { current: initial, reloads: 0, loads: 0, contentTypes: [] as string[], failNext: 0 };
   const server = await serve(
     (req, body) => {
-      if (req.method === "GET" && req.url === "/config/") return { status: 200, body: rec.config };
       if (req.method === "POST" && req.url === "/load") {
-        rec.config = JSON.parse(body);
         rec.loads++;
+        rec.contentTypes.push(String(req.headers["content-type"]));
+        if (rec.failNext > 0) {
+          rec.failNext--;
+          return { status: 500, body: { error: "adapt failed" } };
+        }
+        if (req.headers["content-type"] !== "text/caddyfile") return { status: 400, body: { error: "unsupported content type" } };
+        if (body !== rec.current) {
+          rec.current = body;
+          rec.reloads++;
+        }
         return { status: 200 };
       }
       return { status: 404, body: { error: "not found" } };
@@ -21,27 +36,4 @@ export async function startFakeCaddy(socket: string, initial: unknown): Promise<
     { socket },
   );
   return Object.assign(rec, server);
-}
-
-/** A Caddyfile-adapter-shaped config with app routes and the public attest route. */
-export function sampleCaddyConfig(ipDashes: string) {
-  const host = (r: string) => `${r}.${ipDashes}.sslip.io`;
-  const proxy = (upstream: string) => ({ handler: "subroute", routes: [{ handle: [{ handler: "reverse_proxy", upstreams: [{ dial: upstream }] }] }] });
-  return {
-    admin: { listen: "unix//run/caddy-admin/admin.sock" },
-    apps: {
-      http: {
-        servers: {
-          srv0: {
-            listen: [":443"],
-            routes: [
-              { match: [{ host: [host("crm")] }], handle: [proxy("crm-server:3000")], terminal: true },
-              { match: [{ host: [host("gateway")] }], handle: [proxy("llm-gateway:4000")], terminal: true },
-              { match: [{ host: [host("attest")] }], handle: [proxy("sealed-agent:7070")], terminal: true },
-            ],
-          },
-        },
-      },
-    },
-  };
 }

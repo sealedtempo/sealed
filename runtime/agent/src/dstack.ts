@@ -1,5 +1,5 @@
-// Client for the dstack guest agent (v0 API) on /var/run/dstack.sock, or the simulator given by
-// DSTACK_SIMULATOR_ENDPOINT (unix socket path or http URL).
+// Client for the dstack guest agent (v0 API) on /var/run/dstack.sock (DSTACK_SOCKET), or the dev
+// simulator (DSTACK_SIMULATOR_ENDPOINT, a unix socket path or http URL, honored only with SEALED_DEV_SIM=1).
 import { bytesToBareHex, type DstackEvent, equalBytes, hexToBytes } from "@sealed/core";
 import { type Endpoint, localJson, parseEndpoint } from "./http.js";
 
@@ -25,12 +25,8 @@ interface GetQuoteResponse {
   vm_config: string;
 }
 
-export function dstackEndpoint(env: NodeJS.ProcessEnv = process.env): Endpoint {
-  return parseEndpoint(env.DSTACK_SIMULATOR_ENDPOINT || DEFAULT_DSTACK_SOCKET);
-}
-
 export class DstackClient implements QuoteProvider {
-  constructor(private readonly endpoint: Endpoint = dstackEndpoint()) {}
+  constructor(private readonly endpoint: Endpoint = parseEndpoint(DEFAULT_DSTACK_SOCKET)) {}
 
   async getQuote(reportData: Uint8Array): Promise<Quote> {
     if (reportData.length !== 64) throw new Error("report_data must be exactly 64 bytes");

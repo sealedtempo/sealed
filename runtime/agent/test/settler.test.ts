@@ -4,15 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deriveEnclavePrivateKey, feeScheduleFromDefaults, parseDefaults, usageDomain } from "@sealed/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isPaymentNeededConfig, PaymentGate, SocketCaddyAdmin } from "../src/caddy.js";
+import { DirectCaddySwitch } from "../src/caddy.js";
 import type { PlatformClient } from "../src/evidence.js";
 import { parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
 import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
 import { Settler } from "../src/payments/settler.js";
 import type { PaymentStatus } from "../src/state.js";
-import { type FakeCaddy, sampleCaddyConfig, startFakeCaddy } from "./helpers/fakeCaddy.js";
+import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
 import { FakePayer } from "./helpers/fakePayer.js";
+import { CADDYFILE, CADDYFILE_PAYMENT_NEEDED } from "./helpers/fixtures.js";
 
 const defaults = parseDefaults(readFileSync(join(import.meta.dirname, "../../../config/defaults.yaml"), "utf8"), { testOverrides: true });
 const GRACE = defaults.grace_period_minutes * 60;
@@ -25,14 +26,16 @@ describe("settlement, grace period and the payment-needed switch", () => {
   let status: PaymentStatus;
   let settler: Settler;
   let usage: unknown[];
-  let saved: unknown;
   let platformDown = false;
+  let capSeen: bigint[];
+  const paymentNeededShown = () => caddy.current === CADDYFILE_PAYMENT_NEEDED;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "settler-"));
-    caddy = await startFakeCaddy(join(dir, "admin.sock"), sampleCaddyConfig("34-1-2-3"));
+    caddy = await startFakeCaddy(join(dir, "admin.sock"), CADDYFILE);
     payer = new FakePayer();
     usage = [];
+    capSeen = [];
     ledger = new Ledger(emptyLedgerState(1000), {
       deploymentId: `0x${"de".repeat(32)}`,
       apps: ["crm", "llm-gateway"],
@@ -50,13 +53,8 @@ describe("settlement, grace period and the payment-needed switch", () => {
       },
       postHealth: async () => undefined,
     };
-    const gate = new PaymentGate(new SocketCaddyAdmin(parseEndpoint(join(dir, "admin.sock"))), ["crm.34-1-2-3.sslip.io", "gateway.34-1-2-3.sslip.io"], {
-      getOriginal: () => saved,
-      setOriginal: async (c) => {
-        saved = c;
-      },
-    });
-    settler = new Settler({ ledger, payer, platform, gate, status, graceSec: GRACE, save: async () => {}, log: silentLogger });
+    const gate = new DirectCaddySwitch(parseEndpoint(join(dir, "admin.sock")), { normal: CADDYFILE, paymentNeeded: CADDYFILE_PAYMENT_NEEDED });
+    settler = new Settler({ ledger, payer, platform, gate, status, graceSec: GRACE, save: async () => {}, log: silentLogger, onPerPaymentCap: (c) => capSeen.push(c) });
   });
   afterEach(async () => {
     await caddy.close();
@@ -71,9 +69,10 @@ describe("settlement, grace period and the payment-needed switch", () => {
     const r = await settler.tick(2000);
     expect(r.outcome).toBe("nothing_due");
     expect(r.reportCut).toBe(false);
+    expect(status.failingSince).toBeNull();
   });
 
-  it("pays every unpaid report of an app in one batch", async () => {
+  it("pays every unpaid report of an app in one batch and hands the onchain cap to the ledger", async () => {
     payer.cap = 100_000n;
     await ledger.record("llm-gateway", "tokens", 1_200_000n, 1001); // 240_000 -> 100k + 100k + 40k
     const r = await settler.tick(2000);
@@ -83,6 +82,9 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect(new Set(payer.paid[0]?.map((l) => l.usageHash)).size).toBe(3);
     expect(usage.length).toBe(3);
     expect(ledger.unpaid()).toEqual([]);
+    expect(capSeen).toEqual([100_000n]);
+    // The network fee was estimated for exactly the batch that was sent.
+    expect(payer.estimates.at(-1)).toEqual(payer.paid[0]);
   });
 
   it("defers what exceeds the FeeSplitter daily cap without counting it as a failure", async () => {
@@ -98,45 +100,190 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect((await settler.tick(7000)).apps[0]).toMatchObject({ result: "paid", amount: 25_000n });
   });
 
-  it("switches app routes to the payment-needed page after the grace period and restores them after payment", async () => {
+  it("switches to the measured payment-needed Caddyfile after the grace period and back after payment", async () => {
     await ledger.record("crm", "app_hour", 3600n, 1001);
     payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
     const t0 = 10_000;
     const r1 = await settler.tick(t0);
     expect(r1.apps).toEqual([{ app: "crm", result: "failed", reason: "spend_limit" }]);
     expect(status.failingSince).toBe(t0);
-    expect(isPaymentNeededConfig(caddy.config)).toBe(false);
+    expect(paymentNeededShown()).toBe(false);
     await settler.tick(t0 + GRACE - 1);
-    expect(isPaymentNeededConfig(caddy.config)).toBe(false);
+    expect(paymentNeededShown()).toBe(false);
     payer.budgetResult = { spendable: 1_000_000_000n };
     payer.failNext = 1;
     const r3 = await settler.tick(t0 + GRACE);
     expect(r3.apps[0]).toMatchObject({ result: "failed", reason: "tx_failed" });
     expect(r3.paymentNeeded).toBe(true);
-    expect(isPaymentNeededConfig(caddy.config)).toBe(true);
-    // Caddy restarted from its Caddyfile while still unpaid: the switch is re-applied.
-    caddy.config = sampleCaddyConfig("34-1-2-3");
+    expect(paymentNeededShown()).toBe(true);
+    expect(caddy.contentTypes.every((t) => t === "text/caddyfile")).toBe(true);
+    // Caddy restarted from its normal Caddyfile while still unpaid: the switch is re-applied.
+    caddy.current = CADDYFILE;
     payer.failNext = 1;
     await settler.tick(t0 + GRACE + 60);
-    expect(isPaymentNeededConfig(caddy.config)).toBe(true);
+    expect(paymentNeededShown()).toBe(true);
     const r5 = await settler.tick(t0 + GRACE + 120);
     expect(r5.apps[0]).toMatchObject({ result: "paid" });
     expect(r5.paymentNeeded).toBe(false);
     expect(status.failingSince).toBeNull();
-    expect(caddy.config).toEqual(sampleCaddyConfig("34-1-2-3"));
+    expect(caddy.current).toBe(CADDYFILE);
   });
 
-  it("does not pay before the deployment is registered, and skips reports already paid onchain", async () => {
+  it("keeps trying the switch when Caddy's admin API fails", async () => {
     await ledger.record("crm", "app_hour", 3600n, 1001);
-    payer.active = false;
-    expect((await settler.tick(2000)).outcome).toBe("deployment_not_active");
-    expect(status.failingSince).toBeNull();
-    payer.active = true;
+    payer.budgetResult = { spendable: 0n, problem: "insufficient_balance" };
+    await settler.tick(10_000);
+    caddy.failNext = 1;
+    expect((await settler.tick(10_000 + GRACE)).paymentNeeded).toBe(true);
+    expect(paymentNeededShown()).toBe(false);
+    await settler.tick(10_000 + GRACE + 60);
+    expect(paymentNeededShown()).toBe(true);
+  });
+
+  // Review finding: an RPC error used to read as "deployment not active", which reset the failure clock.
+  it("an RPC outage (a blocked firewall) counts as a failure and reaches the payment-needed page", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    payer.rpcDown = true;
+    const t0 = 10_000;
+    for (let h = 0; h < 48; h++) {
+      await ledger.record("crm", "app_hour", 3600n, t0 + h * 3600);
+      const r = await settler.tick(t0 + h * 3600);
+      expect(r.apps).toEqual([{ app: "*", result: "failed", reason: "rpc_error" }]);
+    }
+    expect(status.failingSince).toBe(t0);
+    expect(status.paymentNeeded).toBe(true);
+    expect(paymentNeededShown()).toBe(true);
+    expect(status.lastOutcome).toBe("rpc_error");
+    payer.rpcDown = false;
+    const r = await settler.tick(t0 + 48 * 3600);
+    expect(r.outcome).toBe("settled");
+    expect(r.paymentNeeded).toBe(false);
+    expect(caddy.current).toBe(CADDYFILE);
+  });
+
+  it("an RPC error while paying (after the status read) is a failure too", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    payer.paidAmount = async () => {
+      throw new Error("fetch failed");
+    };
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([{ app: "*", result: "failed", reason: "rpc_error" }]);
+    expect(status.failingSince).toBe(2000);
+  });
+
+  it("a deployment that never gets registered goes to payment-needed one grace period after its oldest unpaid report", async () => {
+    payer.deployment = "none";
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    const r1 = await settler.tick(2000);
+    expect(r1.outcome).toBe("deployment_not_registered");
+    expect(status.failingSince).toBe(2000);
+    expect(r1.paymentNeeded).toBe(false);
+    await ledger.record("crm", "app_hour", 60n, 2001);
+    expect((await settler.tick(2000 + GRACE - 1)).paymentNeeded).toBe(false);
+    const r3 = await settler.tick(2000 + GRACE);
+    expect(r3.paymentNeeded).toBe(true);
+    expect(paymentNeededShown()).toBe(true);
+    // Registered at last: the backlog is paid and the routes come back.
+    payer.deployment = "active";
+    const r4 = await settler.tick(2000 + GRACE + 60);
+    expect(r4.outcome).toBe("settled");
+    expect(r4.paymentNeeded).toBe(false);
+    expect(ledger.unpaid()).toEqual([]);
+  });
+
+  it("a Closed deployment switches to payment-needed at once and stays there", async () => {
+    payer.deployment = "closed";
+    const r1 = await settler.tick(2000);
+    expect(r1.outcome).toBe("deployment_closed");
+    expect(r1.paymentNeeded).toBe(true);
+    expect(paymentNeededShown()).toBe(true);
+    await ledger.record("crm", "app_hour", 3600n, 2001);
+    const r2 = await settler.tick(3000);
+    expect(r2.outcome).toBe("deployment_closed");
+    expect(payer.paid).toEqual([]);
+    expect(r2.paymentNeeded).toBe(true);
+  });
+
+  it("skips reports already paid onchain without a transaction", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.closePeriod(1500);
     const [entry] = ledger.unpaid();
     payer.payDirectly(entry!.usageHash, entry!.appId, entry!.fee);
     const r = await settler.tick(3000);
     expect(r.apps).toEqual([]);
     expect(ledger.unpaid()).toEqual([]);
+  });
+
+  it("an app the registry does not list for the deployment is a failure, not a silent deferral", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    payer.inDeployment = false;
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "not_in_deployment" }]);
+    expect(status.failingSince).toBe(2000);
+  });
+
+  // Review finding: one leg above the onchain cap (lowered by the owner, or cut before the cap was read)
+  // used to be batched and revert every tick.
+  it("legs above the onchain per-payment cap are skipped and flagged; the rest of the app still pays", async () => {
+    await ledger.record("llm-gateway", "tokens", 5_000_000n, 1001); // 1_000_000
+    await ledger.closePeriod(1500);
+    await ledger.record("llm-gateway", "tokens", 1_000_000n, 1501); // 200_000
+    payer.cap = 500_000n;
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([
+      { app: "llm-gateway", result: "deferred", reason: "over_payment_cap" },
+      expect.objectContaining({ app: "llm-gateway", result: "paid", amount: 200_000n, reports: 1 }),
+    ]);
+    expect(status.overCap).toBe(1);
+    expect(status.failingSince).toBeNull();
+    expect(payer.estimates.flat().every((l) => l.amount <= 500_000n)).toBe(true);
+    payer.cap = 5_000_000n;
+    const r2 = await settler.tick(3000);
+    expect(r2.apps).toEqual([expect.objectContaining({ result: "paid", amount: 1_000_000n })]);
+    expect(status.overCap).toBe(0);
+  });
+
+  it("a backlog above the daily cap pays the oldest legs that fit, estimated for exactly that subset", async () => {
+    payer.cap = 100_000n;
+    await ledger.record("llm-gateway", "tokens", 2_000_000n, 1001); // 400_000 -> 4 x 100k
+    payer.daily = 250_000n;
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([expect.objectContaining({ result: "paid", amount: 200_000n, reports: 2 })]);
+    expect(payer.estimates).toEqual([payer.paid[0]]);
+    expect(ledger.unpaid().length).toBe(2);
+  });
+
+  it("shrinks a batch whose estimate reverts and pays the part that goes through", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.closePeriod(1500);
+    await ledger.record("crm", "app_hour", 3600n, 1501);
+    await ledger.closePeriod(1600);
+    const reserve = payer.feeReserve.bind(payer);
+    payer.feeReserve = async (lines) => {
+      if (lines.length > 1) throw new Error("execution reverted");
+      return reserve(lines);
+    };
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([expect.objectContaining({ result: "paid", reports: 1 })]);
+    expect(ledger.unpaid().length).toBe(1);
+  });
+
+  it("a single leg whose estimate reverts is a failure", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    payer.feeReserve = async () => {
+      throw new Error("execution reverted: EnforcedPause");
+    };
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "estimate_reverted" }]);
+  });
+
+  it("the network fee must fit the budget on top of the fees", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001); // 50_000
+    payer.budgetResult = { spendable: 50_500n };
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "insufficient_balance" }]);
+    payer.budgetResult = { spendable: 51_000n };
+    expect((await settler.tick(2100)).apps[0]).toMatchObject({ result: "paid", amount: 50_000n });
   });
 
   // Verification finding on the contract review (logic-F1 b / funds-F-02): FeeSplitter cannot see the
@@ -154,6 +301,21 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect(payer.paid).toEqual([[{ appId: entry!.appId, usageHash: entry!.usageHash, amount: fee - 1n, paid: 1n }]]);
     expect(await payer.paidAmount(entry!.usageHash, entry!.appId)).toBe(fee);
     expect(ledger.unpaid()).toEqual([]);
+  });
+
+  it("a leg the customer opened in another token cannot be topped up: a failure, the app's other legs still pay", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.closePeriod(1500);
+    await ledger.record("crm", "app_hour", 3600n, 1501);
+    const [first] = ledger.unpaid();
+    payer.payDirectly(first!.usageHash, first!.appId, 1n, "0x20c0000000000000000000000000000000000001");
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([
+      { app: "crm", result: "failed", reason: "leg_token_mismatch" },
+      expect.objectContaining({ app: "crm", result: "paid", amount: 50_000n, reports: 1 }),
+    ]);
+    expect(r.outcome).toBe("partial");
+    expect(status.failingSince).toBe(2000);
   });
 
   it("a leg paid at or above its fee onchain is settled without paying again", async () => {
@@ -188,7 +350,7 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect(ledger.unpaid().length).toBe(2);
     const r3 = await settler.tick(t0 + GRACE);
     expect(r3.paymentNeeded).toBe(true);
-    expect(isPaymentNeededConfig(caddy.config)).toBe(true);
+    expect(paymentNeededShown()).toBe(true);
     // Funds back: the agent pulls each leg's shortfall and the routes come back.
     payer.budgetResult = { spendable: 1_000_000_000n };
     const r4 = await settler.tick(t0 + GRACE + 60);
@@ -197,7 +359,7 @@ describe("settlement, grace period and the payment-needed switch", () => {
     for (const l of legs) expect(await payer.paidAmount(l.usageHash, l.appId)).toBe(l.fee);
     expect(r4.paymentNeeded).toBe(false);
     expect(status.failingSince).toBeNull();
-    expect(caddy.config).toEqual(sampleCaddyConfig("34-1-2-3"));
+    expect(caddy.current).toBe(CADDYFILE);
   });
 
   it("budgets and the daily cap count only the shortfall of a short leg", async () => {
@@ -206,7 +368,7 @@ describe("settlement, grace period and the payment-needed switch", () => {
     const [entry] = ledger.unpaid();
     payer.payDirectly(entry!.usageHash, entry!.appId, 40_000n);
     payer.daily = 10_000n;
-    payer.budgetResult = { spendable: 10_000n };
+    payer.budgetResult = { spendable: 10_000n + payer.reserve };
     const r = await settler.tick(2000);
     expect(r.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 10_000n })]);
     expect(payer.daily).toBe(0n);
@@ -217,16 +379,12 @@ describe("settlement, grace period and the payment-needed switch", () => {
     await ledger.closePeriod(1500);
     const [entry] = ledger.unpaid();
     payer.payDirectly(entry!.usageHash, entry!.appId, 1n);
-    // The customer completes the leg between the agent's read and its transaction: topUpFees reverts
-    // NothingToTopUp instead of paying twice.
-    const read = payer.paidAmount.bind(payer);
-    let raced = false;
-    payer.paidAmount = async (h, a) => {
-      const v = await read(h, a);
-      if (!raced) {
-        raced = true;
-        payer.payDirectly(h, a, entry!.fee - 1n);
-      }
+    // The customer completes the leg between the agent's estimate and its transaction: topUpFees
+    // reverts NothingToTopUp instead of paying twice.
+    const reserve = payer.feeReserve.bind(payer);
+    payer.feeReserve = async (lines) => {
+      const v = await reserve(lines);
+      payer.payDirectly(entry!.usageHash, entry!.appId, entry!.fee - 1n);
       return v;
     };
     const r1 = await settler.tick(2000);

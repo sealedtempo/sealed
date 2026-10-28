@@ -29,19 +29,31 @@ export interface Budget {
   spendable: bigint;
   /** Content-free reason when nothing can be spent. */
   problem?: "access_key_missing" | "access_key_revoked" | "access_key_expired" | "spend_limit" | "insufficient_balance";
+  /** Which limit `spendable` comes from: the access key's remaining spending limit or the token balance. */
+  binding?: "spend_limit" | "balance";
 }
+
+/** DeploymentRegistry status: None (not registered yet), Active, Closed (terminal). */
+export type DeploymentStatus = "none" | "active" | "closed";
+
+/** At most this many legs per transaction, so the gas floor below stays far under the 30M per-tx cap. */
+export const MAX_LINES_PER_TX = 10;
 
 export interface FeePayer {
   readonly mode: SettlementMode;
   /** Address whose tokens pay (customer in access-key mode). */
   readonly payer: Address;
-  deploymentActive(): Promise<boolean>;
+  /** The token every payment uses (config feeToken), lowercase. */
+  readonly feeToken: Address;
+  deploymentStatus(): Promise<DeploymentStatus>;
   appInDeployment(appId: Hex): Promise<boolean>;
   perPaymentCap(): Promise<bigint>;
   dailyRemaining(): Promise<bigint>;
   /** usagePaid(deploymentId, usageHash, appId): the amount paid onchain for this leg, 0 when unpaid. */
   paidAmount(usageHash: Hex, appId: Hex): Promise<bigint>;
-  /** Estimated network fee in token base units for a batch of `lines`. */
+  /** usageToken(deploymentId, usageHash, appId): the token a leg was opened in (topUpFees must match it). */
+  legToken(usageHash: Hex, appId: Hex): Promise<Address>;
+  /** Estimated network fee in token base units for exactly this batch; rejects when the node's estimate reverts. */
   feeReserve(lines: PaymentLine[]): Promise<bigint>;
   budget(reserve: bigint): Promise<Budget>;
   pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint }>;
@@ -68,9 +80,19 @@ export interface TempoFeePayerOptions {
   receiptTimeoutMs?: number;
 }
 
+/**
+ * Gas floor per batch: unvalidated against a real Tempo node (anvil 1.7.1 returns a constant estimate
+ * for 0x76 batches). Each new storage slot costs 250k gas on Tempo (tempo-chain notes): a leg can
+ * create usagePaid, usageToken, the day's dailyPaid and two credit slots; approve can create the
+ * allowance slot and a fresh account pays 271k for its first transaction.
+ */
+export const BASE_GAS_FLOOR = 600_000n;
+export const PER_LINE_GAS_FLOOR = 1_300_000n;
+
 export class TempoFeePayer implements FeePayer {
   readonly mode: SettlementMode;
   readonly payer: Address;
+  readonly feeToken: Address;
   private readonly client;
   private readonly account;
 
@@ -84,6 +106,7 @@ export class TempoFeePayer implements FeePayer {
     this.account =
       o.mode === "access-key" ? Account.fromSecp256k1(o.enclaveKey, { access: o.customer }) : Account.fromSecp256k1(o.enclaveKey);
     this.payer = (o.mode === "access-key" ? o.customer : this.account.address).toLowerCase() as Address;
+    this.feeToken = o.feeToken.toLowerCase() as Address;
   }
 
   /** The access key id (enclave signer address); equals `payer` in enclave-account mode. */
@@ -92,14 +115,17 @@ export class TempoFeePayer implements FeePayer {
     return (a.accessKeyAddress ?? a.address).toLowerCase() as Address;
   }
 
-  async deploymentActive(): Promise<boolean> {
+  async deploymentStatus(): Promise<DeploymentStatus> {
     const [status] = await this.client.readContract({
       address: this.o.deploymentRegistry,
       abi: deploymentRegistryAbi,
       functionName: "deploymentParties",
       args: [this.o.deploymentId],
     });
-    return status === 1;
+    if (status === 0) return "none";
+    if (status === 1) return "active";
+    if (status === 2) return "closed";
+    throw new Error(`unknown deployment status ${status}`);
   }
 
   async appInDeployment(appId: Hex): Promise<boolean> {
@@ -144,6 +170,16 @@ export class TempoFeePayer implements FeePayer {
     });
   }
 
+  async legToken(usageHash: Hex, appId: Hex): Promise<Address> {
+    const t = await this.client.readContract({
+      address: this.o.feeSplitter,
+      abi: feeSplitterAbi,
+      functionName: "usageToken",
+      args: [this.o.deploymentId, usageHash, appId],
+    });
+    return t.toLowerCase() as Address;
+  }
+
   private calls(lines: PaymentLine[]) {
     const total = lines.reduce((s, l) => s + l.amount, 0n);
     const approve = (amount: bigint) => Actions.token.approve.call({ token: this.o.feeToken, spender: this.o.feeSplitter, amount });
@@ -174,9 +210,10 @@ export class TempoFeePayer implements FeePayer {
   private async gasFor(lines: PaymentLine[]): Promise<bigint> {
     const estimate = await this.client.estimateGas({ account: this.account, calls: this.calls(lines), feeToken: this.o.feeToken } as never);
     const pct = BigInt(this.o.gasHeadroomPct ?? 50);
-    const gas = estimate + (estimate * pct) / 100n + 50_000n;
-    const min = this.o.minGas ?? 0n;
-    return gas > min ? gas : min;
+    let gas = estimate + (estimate * pct) / 100n + 50_000n;
+    const floor = BASE_GAS_FLOOR + PER_LINE_GAS_FLOOR * BigInt(lines.length);
+    for (const min of [floor, this.o.minGas ?? 0n]) if (gas < min) gas = min;
+    return gas;
   }
 
   async feeReserve(lines: PaymentLine[]): Promise<bigint> {
@@ -188,6 +225,7 @@ export class TempoFeePayer implements FeePayer {
   async budget(reserve: bigint): Promise<Budget> {
     const balance = await this.client.readContract({ address: this.o.feeToken, abi: tip20Abi, functionName: "balanceOf", args: [this.payer] });
     let spendable = balance - reserve;
+    let binding: Budget["binding"] = "balance";
     if (this.mode === "access-key") {
       const meta = await this.client.accessKey.getMetadata({ account: this.o.customer, accessKey: this.keyId });
       if (meta.address.toLowerCase() !== this.keyId) return { spendable: 0n, problem: meta.isRevoked ? "access_key_revoked" : "access_key_missing" };
@@ -198,17 +236,19 @@ export class TempoFeePayer implements FeePayer {
         // Self-paid fees count against the limit too (tempo-viem notes, section 0).
         const byLimit = remaining - reserve;
         if (byLimit < spendable) {
-          if (byLimit <= 0n) return { spendable: 0n, problem: "spend_limit" };
+          if (byLimit <= 0n) return { spendable: 0n, problem: "spend_limit", binding: "spend_limit" };
           spendable = byLimit;
+          binding = "spend_limit";
         }
       }
     }
-    if (spendable <= 0n) return { spendable: 0n, problem: "insufficient_balance" };
-    return { spendable };
+    if (spendable <= 0n) return { spendable: 0n, problem: "insufficient_balance", binding };
+    return { spendable, binding };
   }
 
   async pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint }> {
     if (lines.length === 0) throw new Error("nothing to pay");
+    if (lines.length > MAX_LINES_PER_TX) throw new Error(`at most ${MAX_LINES_PER_TX} legs per transaction`);
     const gas = await this.gasFor(lines);
     const hash = await this.client.sendTransaction({ account: this.account, calls: this.calls(lines), feeToken: this.o.feeToken, gas } as never);
     const receipt = await this.client.waitForTransactionReceipt({ hash, timeout: this.o.receiptTimeoutMs ?? 120_000 });

@@ -2,7 +2,6 @@
 // Tempo node with the Sealed contracts: the oracle registers the record built from the agent's
 // evidence bundle, the customer authorizes the enclave signer as an access key, and the agent's
 // own settlement loop pays FeeSplitter.
-import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,10 +20,10 @@ import {
 import {
   addImage,
   approveStack,
+  chainTestsEnabled,
   DEV_KEYS,
   deploySealedContracts,
   devAddress,
-  findContractsDir,
   LOCAL_TOKENS,
   type LocalTempo,
   publishRelease,
@@ -43,18 +42,11 @@ import { localRequest, parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
 import { fixedTlsKey } from "../src/tls.js";
 import { type FakeBroker, startFakeBroker } from "./helpers/fakeBroker.js";
-import { sampleCaddyConfig, startFakeCaddy, type FakeCaddy } from "./helpers/fakeCaddy.js";
+import { startFakeCaddy, type FakeCaddy } from "./helpers/fakeCaddy.js";
 import { type FakePlatform, startFakePlatform } from "./helpers/fakePlatform.js";
-import { makeAppCompose, makeConfig } from "./helpers/fixtures.js";
+import { CADDYFILE, fromPeer, IPS, makeAppCompose, makeConfig, testPeerOf, testSettings } from "./helpers/fixtures.js";
 
-const enabled = (() => {
-  try {
-    execFileSync("anvil", ["--version"], { stdio: "ignore" });
-    return !!findContractsDir();
-  } catch {
-    return false;
-  }
-})();
+const enabled = chainTestsEnabled();
 
 describe.skipIf(!enabled)("sealed-agent end to end on a local Tempo node", () => {
   let node: LocalTempo;
@@ -91,7 +83,7 @@ describe.skipIf(!enabled)("sealed-agent end to end on a local Tempo node", () =>
 
     broker = await startFakeBroker({ customer, secrets: { crm: { APP_SECRET: "x" } } });
     platform = await startFakePlatform();
-    caddy = await startFakeCaddy(join(dir, "caddy.sock"), sampleCaddyConfig("34-1-2-3"));
+    caddy = await startFakeCaddy(join(dir, "caddy-admin.sock"), CADDYFILE);
     const config = makeConfig({
       chainId: node.chainId,
       customer,
@@ -105,30 +97,12 @@ describe.skipIf(!enabled)("sealed-agent end to end on a local Tempo node", () =>
       feeToken: LOCAL_TOKENS.pathUsd,
       settlement: { mode: "access-key", intervalMinutes: 5, gracePeriodMinutes: 5, spendLimitPerDay: "2000000" },
     });
-    const appCompose = makeAppCompose(config, join(dir, "data"));
+    const appCompose = makeAppCompose(config);
     await writeFile(join(dir, "config.json"), JSON.stringify(config));
     sim = await startSimulator({ appCompose, socket: join(dir, "dstack.sock") });
     agent = new Agent({
-      settings: {
-        configPath: join(dir, "config.json"),
-        appsMetaPath: join(dir, "missing-agent-apps.json"),
-        testOverrides: true,
-        listenHost: "127.0.0.1",
-        listenPort: 0,
-        secretsDir: join(dir, "secrets"),
-        readyFile: join(dir, "ready"),
-        dataMount: join(dir, "data"),
-        dataDevice: "/dev/null",
-        luksName: "sealed-data",
-        diskMode: "dir",
-        caddyAdminSocket: join(dir, "caddy.sock"),
-        caddyDataDir: join(dir, "caddy-data"),
-        egressStatsUrl: "http://127.0.0.1:9/v1/stats",
-        reattestHours: 24,
-        healthIntervalSec: 60,
-        pollIntervalSec: 30,
-        devSim: true,
-      },
+      settings: testSettings(dir, { testOverrides: true, dstackEndpoint: sim.endpoint }),
+      peerOf: testPeerOf,
       clock,
       log: silentLogger,
       dstack: new DstackClient(parseEndpoint(sim.endpoint)),
@@ -201,7 +175,7 @@ describe.skipIf(!enabled)("sealed-agent end to end on a local Tempo node", () =>
     expect((await wallet.waitForTransactionReceipt({ hash, timeout: 10_000 })).status).toBe("success");
 
     const ep = parseEndpoint(`http://127.0.0.1:${agent.port}`);
-    expect((await localRequest(ep, "/v1/usage-events", { body: { app: "llm-gateway", unit: "tokens", quantity: 2_500_000 } })).status).toBe(202);
+    expect((await localRequest(ep, "/v1/usage-events", { body: { app: "llm-gateway", unit: "tokens", quantity: 2_500_000 }, headers: fromPeer(IPS.llm) })).status).toBe(202);
     const result = await agent.settle();
     expect(result.outcome).toBe("settled");
     const paid = result.apps[0] as Extract<(typeof result.apps)[number], { result: "paid" }>;

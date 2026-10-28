@@ -57,3 +57,26 @@ export class RateLimiter {
     return true;
   }
 }
+
+/** One token bucket per client address, bounded in memory (least recently used clients are dropped). */
+export class ClientRateLimiter {
+  private readonly buckets = new Map<string, RateLimiter>();
+  constructor(
+    private readonly perSecond: number,
+    private readonly burst: number,
+    private readonly maxClients = 4096,
+  ) {}
+  take(client: string): boolean {
+    let b = this.buckets.get(client);
+    if (b) this.buckets.delete(client);
+    else {
+      b = new RateLimiter(this.perSecond, this.burst);
+      if (this.buckets.size >= this.maxClients) {
+        const oldest = this.buckets.keys().next().value;
+        if (oldest !== undefined) this.buckets.delete(oldest);
+      }
+    }
+    this.buckets.set(client, b);
+    return b.take();
+  }
+}

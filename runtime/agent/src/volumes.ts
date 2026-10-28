@@ -1,7 +1,8 @@
 // Per-app volume directories on the data disk. The composer turns each named volume into a bind
-// mount of <dataMount>/<appId>/<volume>; the directories must exist before apps start.
+// mount of /mnt/sealed-data/<appId>/<volume> (host path); the agent sees that tree at its data mount
+// and creates the directories, owned by the service's user, before apps start.
 import { chown, mkdir } from "node:fs/promises";
-import { isAbsolute, normalize, relative } from "node:path";
+import { isAbsolute, join, normalize, relative } from "node:path";
 import { parseCJSON } from "@sealed/core";
 
 export interface VolumeDir {
@@ -21,8 +22,11 @@ function parseUser(user: string | undefined): { uid?: number; gid?: number } {
   return { uid: Number(m[1]), gid: m[2] !== undefined ? Number(m[2]) : Number(m[1]) };
 }
 
-/** Bind-mount sources under dataMount, from the app-compose's docker_compose_file. */
-export function volumeDirsFromAppCompose(appCompose: string, dataMount: string): VolumeDir[] {
+/**
+ * Bind-mount sources under `composeRoot` (the host data root named in the compose), from the
+ * app-compose's docker_compose_file, as paths under `mountAt` (where the agent sees that root).
+ */
+export function volumeDirsFromAppCompose(appCompose: string, composeRoot: string, mountAt = composeRoot): VolumeDir[] {
   const outer = JSON.parse(appCompose) as { docker_compose_file?: unknown };
   if (typeof outer.docker_compose_file !== "string") return [];
   let compose: { services?: Record<string, ComposeService> };
@@ -31,7 +35,7 @@ export function volumeDirsFromAppCompose(appCompose: string, dataMount: string):
   } catch {
     return [];
   }
-  const root = normalize(dataMount);
+  const root = normalize(composeRoot);
   const dirs = new Map<string, VolumeDir>();
   for (const svc of Object.values(compose.services ?? {})) {
     const owner = parseUser(svc.user);
@@ -40,8 +44,9 @@ export function volumeDirsFromAppCompose(appCompose: string, dataMount: string):
       if (!source || !isAbsolute(source)) continue;
       const rel = relative(root, normalize(source));
       if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) continue;
-      const prev = dirs.get(source);
-      dirs.set(source, { path: normalize(source), ...(prev?.uid !== undefined ? prev : owner) });
+      const path = join(mountAt, rel);
+      const prev = dirs.get(path);
+      dirs.set(path, { path, ...(prev?.uid !== undefined ? { uid: prev.uid, gid: prev.gid } : owner) });
     }
   }
   return [...dirs.values()].sort((a, b) => a.path.localeCompare(b.path));

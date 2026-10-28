@@ -1,20 +1,41 @@
 // sealed-agent local API on :7070 (INTERFACES 11). Reachable on the apps network only; Caddy
-// exposes /attest publicly.
+// exposes /attest publicly. Callers are identified by their fixed apps-network IP (the composer pins
+// every service's address), which the handlers check for usage events and spend counters.
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { type UsageEvent, usageEventSchema } from "@sealed/core";
-import { AttestError, RateLimiter } from "./attest.js";
+import { AttestError, ClientRateLimiter, RateLimiter } from "./attest.js";
 import { errorFields, type Logger } from "./log.js";
+import { normalizePeer } from "./stack.js";
 
 export interface ApiHandlers {
   isReady(): boolean;
   readyInfo(): Record<string, unknown>;
-  recordUsage(ev: UsageEvent): Promise<"accepted" | "duplicate">;
-  recordSpend(body: Record<string, unknown>): void;
+  recordUsage(ev: UsageEvent, peer: string): Promise<"accepted" | "duplicate">;
+  recordSpend(body: unknown, peer: string): void;
   attest(nonce: string): Promise<unknown>;
 }
 
-export class UsageRejected extends Error {}
+/** A request the caller may not make (403) or whose content is refused (422 / 429 / 400). */
+export class UsageRejected extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 403 | 422 | 429 = 422,
+  ) {
+    super(message);
+  }
+}
+
+export interface ApiServerOptions {
+  /** Global /attest budget: quotes are expensive. */
+  attestLimiter?: RateLimiter;
+  /** Per-client /attest budget, keyed by the client address. */
+  attestClientLimiter?: ClientRateLimiter;
+  /** Caddy's address: only its X-Forwarded-For names the internet client. */
+  trustedProxy?: () => string | undefined;
+  /** The caller's address (tests substitute it; production uses the socket peer). */
+  peerOf?: (req: http.IncomingMessage) => string;
+}
 
 const MAX_BODY = 64 * 1024;
 
@@ -43,7 +64,19 @@ function send(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-export function createApiServer(h: ApiHandlers, log: Logger, attestLimiter = new RateLimiter(5, 20)): http.Server {
+/** The client an /attest request is for: Caddy's X-Forwarded-For entry when Caddy relays it, else the peer. */
+export function attestClient(req: http.IncomingMessage, peer: string, trustedProxy: string | undefined): string {
+  const xff = req.headers["x-forwarded-for"];
+  if (trustedProxy && peer === trustedProxy && typeof xff === "string" && xff.trim() !== "") {
+    return normalizePeer(xff.split(",").at(-1)?.trim());
+  }
+  return peer;
+}
+
+export function createApiServer(h: ApiHandlers, log: Logger, opts: ApiServerOptions = {}): http.Server {
+  const attestLimiter = opts.attestLimiter ?? new RateLimiter(10, 40);
+  const clientLimiter = opts.attestClientLimiter ?? new ClientRateLimiter(1, 5);
+  const peerOf = opts.peerOf ?? ((req: http.IncomingMessage) => normalizePeer(req.socket.remoteAddress));
   return http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://agent");
     const route = `${req.method} ${url.pathname}`;
@@ -57,18 +90,18 @@ export function createApiServer(h: ApiHandlers, log: Logger, attestLimiter = new
           if (!h.isReady()) return send(res, 503, { error: "not ready" });
           const parsed = usageEventSchema.safeParse(await readJson(req));
           if (!parsed.success) return send(res, 400, { error: parsed.error.issues[0]?.message ?? "invalid event" });
-          const result = await h.recordUsage(parsed.data);
+          const result = await h.recordUsage(parsed.data, peerOf(req));
           return send(res, 202, { status: result });
         }
         case "POST /v1/spend": {
-          const body = await readJson(req);
-          if (!body || typeof body !== "object" || Array.isArray(body)) return send(res, 400, { error: "expected an object" });
-          h.recordSpend(body as Record<string, unknown>);
+          if (!h.isReady()) return send(res, 503, { error: "not ready" });
+          h.recordSpend(await readJson(req), peerOf(req));
           return send(res, 204, "");
         }
         case "GET /attest": {
           if (!h.isReady()) return send(res, 503, { error: "not ready" });
-          if (!attestLimiter.take()) return send(res, 429, { error: "rate limited" });
+          const client = attestClient(req, peerOf(req), opts.trustedProxy?.());
+          if (!clientLimiter.take(client) || !attestLimiter.take()) return send(res, 429, { error: "rate limited" });
           return send(res, 200, await h.attest(url.searchParams.get("nonce") ?? ""));
         }
         default:
@@ -76,7 +109,7 @@ export function createApiServer(h: ApiHandlers, log: Logger, attestLimiter = new
       }
     } catch (err) {
       if (err instanceof AttestError) return send(res, err.status, { error: err.message });
-      if (err instanceof UsageRejected) return send(res, 422, { error: err.message });
+      if (err instanceof UsageRejected) return send(res, err.status, { error: err.message });
       const status = (err as { status?: number }).status;
       if (status) return send(res, status, { error: (err as Error).message });
       log.error("api error", { route, ...errorFields(err) });

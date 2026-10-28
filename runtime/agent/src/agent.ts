@@ -1,23 +1,13 @@
 // sealed-agent: the boot sequence of spec 5.6 and the long-running loops (metering, settlement,
 // health reports, re-attestation). Dependencies are injectable so the whole flow runs against
 // the dstack simulator, a fake key broker and a fake platform in tests.
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import type http from "node:http";
 import { join } from "node:path";
-import {
-  type Address,
-  type Defaults,
-  type EvidenceBundle,
-  type Hex,
-  loadDefaults,
-  routeHostname,
-  settlementDefaults,
-  type UsageEvent,
-  usageDomain,
-} from "@sealed/core";
-import { type CaddyAdmin, PaymentGate, SocketCaddyAdmin } from "./caddy.js";
+import { type Address, type Defaults, type EvidenceBundle, type Hex, loadDefaults, settlementDefaults, type UsageEvent, usageDomain } from "@sealed/core";
+import { type CaddySwitch, DirectCaddySwitch, HelperCaddySwitch } from "./caddy.js";
 import { type Clock, systemClock } from "./clock.js";
-import { buildContext, type DeploymentContext, readAppsMeta, readPublicConfig } from "./context.js";
+import { buildContext, checkMountedCopy, type DeploymentContext, readPublicConfig } from "./context.js";
 import { DirDisk, type DataDisk, LuksDisk } from "./disk.js";
 import { DstackClient, type QuoteProvider } from "./dstack.js";
 import { attestAndSubmit, type EvidenceResult, HttpPlatformClient, type PlatformClient, buildEvidence } from "./evidence.js";
@@ -26,17 +16,20 @@ import { parseEndpoint } from "./http.js";
 import { HttpKeyBroker, type KeyBroker, type ReleasedKeys, releaseKeys } from "./keyRelease.js";
 import { createLogger, errorFields, type Logger } from "./log.js";
 import { AppHealthPoller, type Probe } from "./metering/appHealth.js";
-import { Ledger } from "./metering/ledger.js";
+import { Ledger, TooManyReportsError } from "./metering/ledger.js";
+import { UsageLimiter, UsageLimitError } from "./metering/limits.js";
 import { type FeePayer, TempoFeePayer } from "./payments/feePayer.js";
 import { type SettlementResult, Settler } from "./payments/settler.js";
 import { liveAttestation } from "./attest.js";
 import { dropPrivileges, parseRunAs } from "./privileges.js";
 import { every } from "./scheduler.js";
-import { writePayerSecrets, writeReadyFlag, writeSecrets } from "./secrets.js";
+import { type SecretsLayout, writePayerSecrets, writeReadyFlag, writeSecrets } from "./secrets.js";
 import { type ApiHandlers, createApiServer, listen, UsageRejected } from "./server.js";
 import type { AgentSettings } from "./settings.js";
+import { parseSpendReport, type SpendCounters } from "./spend.js";
+import { COMPOSE_CONFIGS, COMPOSE_DATA_ROOT, measuredConfigs, requireMeasured } from "./stack.js";
 import { StateStore } from "./state.js";
-import { CaddyCertSource, type TlsKeySource } from "./tls.js";
+import { ServedCertSource, type TlsKeySource } from "./tls.js";
 import { createVolumeDirs, volumeDirsFromAppCompose } from "./volumes.js";
 
 export interface AgentDeps {
@@ -47,15 +40,24 @@ export interface AgentDeps {
   broker?: KeyBroker;
   platform?: PlatformClient;
   disk?: DataDisk;
-  caddy?: CaddyAdmin;
+  caddy?: CaddySwitch;
   tls?: TlsKeySource;
   payer?: (keys: ReleasedKeys, ctx: DeploymentContext) => FeePayer;
   egressStats?: EgressStatsSource;
   probe?: Probe;
   defaults?: Defaults;
+  /** statfs f_type override for the tmpfs checks (tests). */
+  fsType?: (path: string) => Promise<number>;
+  /** Caller address of a local API request (tests; production uses the socket peer). */
+  peerOf?: (req: http.IncomingMessage) => string;
   /** Delay between denied release attempts (tests use a short one). */
   releaseDeniedDelayMs?: number;
+  /** Called when something the agent cannot recover from in-process fails (main exits so Docker restarts it). */
+  onFatal?: (err: Error) => void;
 }
+
+/** Caddy's HTTPS port on its apps-network IP, where the agent reads the served certificate. */
+const CADDY_TLS_PORT = 443;
 
 export class Agent {
   readonly clock: Clock;
@@ -64,7 +66,13 @@ export class Agent {
   private server?: http.Server;
   private ready = false;
   private loops: Promise<void>[] = [];
-  private spend: Record<string, string | number> = {};
+  private spend: SpendCounters = {};
+  private attesting?: Promise<EvidenceResult>;
+  private caddy?: CaddySwitch;
+  private tls?: TlsKeySource;
+  private readonly limiter = new UsageLimiter();
+  /** min(defaults cap, last onchain FeeSplitter perPaymentCap): reports are cut at it. */
+  private perPaymentCap = 0n;
 
   ctx?: DeploymentContext;
   keys?: ReleasedKeys;
@@ -92,17 +100,18 @@ export class Agent {
     const s = this.deps.settings;
     const { config, json } = await readPublicConfig(s.configPath);
     const defaults = this.deps.defaults ?? (await loadDefaults(s.defaultsPath, { testOverrides: s.testOverrides }));
-    const dstack = this.deps.dstack ?? new DstackClient();
+    const dstack = this.deps.dstack ?? new DstackClient(parseEndpoint(s.dstackEndpoint));
     this.dstack = dstack;
-    const appCompose = s.appComposePath
-      ? await (await import("node:fs/promises")).readFile(s.appComposePath, "utf8")
-      : await dstack.appCompose();
-    const ctx = buildContext({ config, configJson: json, appCompose, defaults, appsMeta: await readAppsMeta(s.appsMetaPath) });
+    const appCompose = s.appComposePath ? await readFile(s.appComposePath, "utf8") : await dstack.appCompose();
+    const ctx = buildContext({ config, configJson: json, appCompose, defaults });
+    await checkMountedCopy(s.stackPath, requireMeasured(measuredConfigs(appCompose), COMPOSE_CONFIGS.stack), "stack file");
+    await checkMountedCopy(s.caddyfilePath, ctx.caddyfiles.normal, "Caddyfile");
+    await checkMountedCopy(s.caddyfilePaymentNeededPath, ctx.caddyfiles.paymentNeeded, "payment-needed Caddyfile");
     this.ctx = ctx;
     const log = this.log.child({ deploymentId: ctx.deploymentId });
     log.info("booting", { stackHash: ctx.stackHash, configHash: ctx.configHash, apps: ctx.apps.map((a) => a.id), devSim: s.devSim });
 
-    this.server = createApiServer(this.handlers(), log);
+    this.server = createApiServer(this.handlers(), log, { trustedProxy: () => this.ctx?.caddyIp, peerOf: this.deps.peerOf });
     this.port = (await listen(this.server, s.listenHost, s.listenPort)).port;
 
     const broker = this.deps.broker ?? new HttpKeyBroker(config.endpoints.keyBroker);
@@ -119,32 +128,46 @@ export class Agent {
       (s.diskMode === "dir"
         ? new DirDisk(s.dataMount)
         : new LuksDisk({ device: s.dataDevice, name: s.luksName, mountPoint: s.dataMount, log }));
-    await disk.open(keys.diskKey);
-    keys.diskKey.fill(0);
-    await createVolumeDirs(volumeDirsFromAppCompose(appCompose, s.dataMount));
+    try {
+      await disk.open(keys.diskKey);
+    } finally {
+      keys.diskKey.fill(0);
+    }
+    await createVolumeDirs(volumeDirsFromAppCompose(appCompose, COMPOSE_DATA_ROOT, s.dataMount));
 
     const stateDir = s.stateDir ?? join(s.dataMount, ".sealed-agent");
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
     this.store = await StateStore.open(join(stateDir, "state.json"), this.clock.now());
 
-    const layout = { secretsDir: s.secretsDir, readyFile: s.readyFile };
-    await writeSecrets(layout, keys.secrets);
-    await writePayerSecrets(layout, keys.enclaveKey, config.settlement.spendLimitPerDay);
+    const layout: SecretsLayout = { secretsDir: s.secretsDir, readyDir: s.readyDir, requireTmpfs: s.requireTmpfs, fsType: this.deps.fsType };
+    await writeSecrets(layout, keys.secrets, new Set(["_gate", ...ctx.apps.map((a) => a.id)]));
+    if (ctx.payerIp) await writePayerSecrets(layout, keys.enclaveKey, config.settlement.spendLimitPerDay);
 
+    const runAs = parseRunAs(s.runAs);
+    const dropping = runAs !== undefined && process.getuid?.() === 0;
+    this.caddy =
+      this.deps.caddy ??
+      (dropping
+        ? new HelperCaddySwitch(s.caddyAdminSocket, ctx.caddyfiles, {
+            onLost: (err) => {
+              log.error("caddy helper lost; the payment-needed switch no longer works", errorFields(err));
+              this.deps.onFatal?.(err);
+            },
+          })
+        : new DirectCaddySwitch(parseEndpoint(s.caddyAdminSocket), ctx.caddyfiles));
     await writeReadyFlag(layout, this.clock.now());
-    await dropPrivileges(parseRunAs(s.runAs), [stateDir], log);
-    this.setupMetering(ctx, keys, defaults, log);
+    await dropPrivileges(runAs, [stateDir], log);
+    await this.setupMetering(ctx, keys, defaults, log);
     this.ready = true;
     log.info("secrets written, apps may start", { enclaveSigner: keys.enclaveSigner, secretApps: Object.keys(keys.secrets).length });
 
     this.evidence = this.attest(log);
   }
 
-  private setupMetering(ctx: DeploymentContext, keys: ReleasedKeys, defaults: Defaults, log: Logger): void {
+  private async setupMetering(ctx: DeploymentContext, keys: ReleasedKeys, defaults: Defaults, log: Logger): Promise<void> {
     const store = this.store as StateStore;
     const s = this.deps.settings;
-    const sd = settlementDefaults(defaults);
-    let cap = sd.perPaymentCap;
+    const defaultCap = settlementDefaults(defaults).perPaymentCap;
     const payer =
       this.deps.payer?.(keys, ctx) ??
       new TempoFeePayer({
@@ -161,12 +184,17 @@ export class Agent {
         minGas: ctx.config.chainId === 4217 ? 0n : 5_000_000n,
       });
     this.payer = payer;
-    void payer
-      .perPaymentCap()
-      .then((c) => {
-        if (c > 0n) cap = c;
-      })
-      .catch((err) => log.warn("could not read FeeSplitter caps, using defaults", errorFields(err)));
+    // Reports must never be cut above the onchain cap, or a leg could never be paid: read it before
+    // accepting usage, and refresh it at every settlement.
+    const setCap = (onchain: bigint | undefined) => {
+      this.perPaymentCap = onchain !== undefined && onchain > 0n && onchain < defaultCap ? onchain : defaultCap;
+    };
+    setCap(undefined);
+    try {
+      setCap(await withTimeout(payer.perPaymentCap(), 15_000));
+    } catch (err) {
+      log.warn("could not read the FeeSplitter per-payment cap, using the defaults until the next settlement", errorFields(err));
+    }
 
     let saveTimer: NodeJS.Timeout | undefined;
     const scheduleSave = () => {
@@ -182,29 +210,20 @@ export class Agent {
       schedule: ctx.schedule,
       domain: usageDomain(ctx.config.contracts.feeSplitter as Address, ctx.config.chainId),
       enclaveKey: keys.enclaveKey,
-      perPaymentCap: () => cap,
+      perPaymentCap: () => this.perPaymentCap,
       onChange: scheduleSave,
     });
     this.poller = new AppHealthPoller(ctx.apps, { ledger: this.ledger, log, intervalSec: s.pollIntervalSec, probe: this.deps.probe });
-
-    const attestHost = routeHostname(ctx.config, "attest");
-    const appHosts = APP_ROUTES.map((r) => routeHostname(ctx.config, r)).filter((h): h is string => !!h && h !== attestHost);
-    const gate = new PaymentGate(this.deps.caddy ?? new SocketCaddyAdmin(parseEndpoint(s.caddyAdminSocket)), [...new Set(appHosts)], {
-      getOriginal: () => store.state.caddyOriginal,
-      setOriginal: async (c) => {
-        store.state.caddyOriginal = c;
-        await store.save();
-      },
-    });
     this.settler = new Settler({
       ledger: this.ledger,
       payer,
       platform: this.platform(),
-      gate,
+      gate: this.caddy,
       status: store.state.payments,
       graceSec: ctx.config.settlement.gracePeriodMinutes * 60,
       save: () => store.save(),
       log: log.child({ part: "settlement" }),
+      onPerPaymentCap: setCap,
     });
   }
 
@@ -212,8 +231,12 @@ export class Agent {
     return this.deps.platform ?? new HttpPlatformClient((this.ctx as DeploymentContext).config.endpoints.platformApi);
   }
 
-  /** Builds evidence and submits it, retrying with backoff until accepted. */
+  /**
+   * Builds evidence and submits it, retrying with backoff until accepted. While one submission is
+   * still retrying, a second call joins it instead of starting another retry loop.
+   */
   attest(log: Logger = this.log): Promise<EvidenceResult> {
+    if (this.attesting) return this.attesting;
     const ctx = this.ctx as DeploymentContext;
     const signer = this.enclaveSigner as Address;
     const platform = this.platform();
@@ -225,7 +248,14 @@ export class Agent {
       postUsage: (b) => platform.postUsage(b),
       postHealth: (b) => platform.postHealth(b),
     };
-    const p = attestAndSubmit(ctx, this.dstack as QuoteProvider, recording, signer, { clock: this.clock, log, signal: this.abort.signal });
+    const p: Promise<EvidenceResult> = attestAndSubmit(ctx, this.dstack as QuoteProvider, recording, signer, {
+      clock: this.clock,
+      log,
+      signal: this.abort.signal,
+    }).finally(() => {
+      if (this.attesting === p) this.attesting = undefined;
+    });
+    this.attesting = p;
     p.catch((err) => {
       if (!this.abort.signal.aborted) log.error("evidence submission gave up", errorFields(err));
     });
@@ -272,7 +302,8 @@ export class Agent {
         lastOutcome: st.lastOutcome ?? null,
         metered: totals.metered.toString(),
         unpaid: totals.unpaid.toString(),
-        ...Object.fromEntries(Object.entries(this.spend).map(([k, v]) => [`mpp_${k}`, v])),
+        overCap: st.overCap ?? 0,
+        ...this.spend,
       },
     });
   }
@@ -282,38 +313,59 @@ export class Agent {
     return buildEvidence(this.ctx as DeploymentContext, this.dstack as QuoteProvider, this.enclaveSigner as Address, this.clock);
   }
 
+  /**
+   * POST /v1/usage-events. Fails closed: the caller must be one of the app's own services (fixed
+   * IPs from the stack), the app must meter this unit by callback, and the event must fit the limits.
+   */
+  private async recordUsage(ev: UsageEvent, peer: string): Promise<"accepted" | "duplicate"> {
+    const ledger = this.ledger as Ledger;
+    const app = this.ctx?.apps.find((a) => a.id === ev.app);
+    if (!app || !ledger.hasApp(ev.app)) throw new UsageRejected(`unknown app ${ev.app}`);
+    if (!app.serviceIps.includes(peer)) throw new UsageRejected(`usage for ${ev.app} must come from its own services`, 403);
+    if (app.metering.source !== "callback" || app.metering.unit !== ev.unit) {
+      throw new UsageRejected(`${ev.app} meters ${app.metering.unit} by ${app.metering.source}`);
+    }
+    const key = ev.id ?? (typeof ev.meta?.call_id === "string" ? ev.meta.call_id : undefined);
+    if (key && ledger.seen(`${ev.app}:${key}`)) return "duplicate";
+    const now = this.clock.now();
+    const quantity = BigInt(ev.quantity);
+    try {
+      this.limiter.admit(ev.app, ev.unit, quantity, now);
+    } catch (err) {
+      if (err instanceof UsageLimitError) throw new UsageRejected(err.message, err.status);
+      throw err;
+    }
+    try {
+      await ledger.record(ev.app, ev.unit, quantity, now);
+    } catch (err) {
+      this.limiter.release(ev.app, ev.unit, quantity, now);
+      if (err instanceof TooManyReportsError) throw new UsageRejected(err.message, 422);
+      throw err;
+    }
+    return "accepted";
+  }
+
+  /** POST /v1/spend: only from sealed-mpp-payer's fixed IP, only the known numeric counters. */
+  private recordSpend(body: unknown, peer: string): void {
+    const payerIp = this.ctx?.payerIp;
+    if (!payerIp || peer !== payerIp) throw new UsageRejected("spend counters are accepted from sealed-mpp-payer only", 403);
+    const counters = parseSpendReport(body);
+    if (!counters) throw new UsageRejected("invalid spend report", 400);
+    this.spend = counters;
+  }
+
   private handlers(): ApiHandlers {
     return {
       isReady: () => this.ready,
       readyInfo: () =>
         this.ready ? { deploymentId: this.ctx?.deploymentId, enclaveSigner: this.enclaveSigner, stackHash: this.ctx?.stackHash } : {},
-      recordUsage: async (ev: UsageEvent) => {
-        const ledger = this.ledger as Ledger;
-        if (!ledger.hasApp(ev.app)) throw new UsageRejected(`unknown app ${ev.app}`);
-        const meta = this.ctx?.apps.find((a) => a.id === ev.app)?.metering;
-        if (meta && (meta.unit !== ev.unit || meta.source !== "callback")) {
-          throw new UsageRejected(`${ev.app} meters ${meta.unit} by ${meta.source}`);
-        }
-        const key = ev.id ?? (typeof ev.meta?.call_id === "string" ? ev.meta.call_id : undefined);
-        if (key && ledger.seen(`${ev.app}:${key}`)) return "duplicate";
-        await ledger.record(ev.app, ev.unit, BigInt(ev.quantity), this.clock.now());
-        return "accepted";
+      recordUsage: (ev, peer) => this.recordUsage(ev, peer),
+      recordSpend: (body, peer) => this.recordSpend(body, peer),
+      attest: (nonce) => {
+        const ctx = this.ctx as DeploymentContext;
+        this.tls ??= this.deps.tls ?? new ServedCertSource({ host: ctx.caddyIp, port: CADDY_TLS_PORT }, ctx.stack.attestHost);
+        return liveAttestation(ctx, this.dstack as QuoteProvider, this.tls, this.enclaveSigner as Address, nonce);
       },
-      recordSpend: (body) => {
-        const out: Record<string, string | number> = {};
-        for (const [k, v] of Object.entries(body).slice(0, 10)) {
-          if (/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(k) && (typeof v === "number" || (typeof v === "string" && v.length <= 80))) out[k] = v;
-        }
-        this.spend = out;
-      },
-      attest: (nonce) =>
-        liveAttestation(
-          this.ctx as DeploymentContext,
-          this.dstack as QuoteProvider,
-          this.deps.tls ?? new CaddyCertSource(this.deps.settings.caddyDataDir, routeHostname((this.ctx as DeploymentContext).config, "attest")),
-          this.enclaveSigner as Address,
-          nonce,
-        ),
     };
   }
 
@@ -321,6 +373,7 @@ export class Agent {
     this.abort.abort(new Error("agent stopping"));
     await Promise.allSettled(this.loops);
     await this.store?.save().catch(() => undefined);
+    if (this.caddy instanceof HelperCaddySwitch) this.caddy.close();
     await new Promise<void>((ok) => {
       if (!this.server) return ok();
       this.server.close(() => ok());
@@ -329,7 +382,21 @@ export class Agent {
   }
 }
 
-/** Caddy app route names (manifest routes[].name); `attest` is never switched. */
-export const APP_ROUTES = ["gateway", "scraper", "crm", "code", "tools", "relay"] as const;
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((ok, fail) => {
+    const t = setTimeout(() => fail(new Error(`timed out after ${ms} ms`)), ms);
+    t.unref?.();
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        ok(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        fail(e);
+      },
+    );
+  });
+}
 
 export type { Hex };

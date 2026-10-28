@@ -12,7 +12,12 @@ export async function main(): Promise<void> {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
   try {
-    agent = new Agent({ settings: settingsFromEnv(), log });
+    agent = new Agent({
+      settings: settingsFromEnv(),
+      log,
+      // The privileged Caddy helper cannot be restarted after the privilege drop: exit so Docker restarts the agent.
+      onFatal: () => process.exit(1),
+    });
     await agent.boot();
     agent.start();
   } catch (err) {

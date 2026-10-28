@@ -1,58 +1,56 @@
-// tlsPubKeyHash = sha256(DER SubjectPublicKeyInfo of the certificate Caddy serves for the attest
-// host). Caddy's data volume is mounted read-only into the agent.
+// tlsPubKeyHash = sha256(DER SubjectPublicKeyInfo of the serving TLS cert) (INTERFACES 3). The agent
+// takes the certificate from a TLS handshake with Caddy on its fixed apps-network IP, using the attest
+// hostname as SNI: that is exactly what a verifier connecting to the attest host is served, and it
+// needs no access to Caddy's root-only certificate storage.
 import { X509Certificate } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import tls from "node:tls";
 import { bytesToHex, type Hex, sha256Hex } from "@sealed/core";
 
-export function spkiSha256(certPem: string | Buffer): Hex {
-  const cert = new X509Certificate(certPem);
-  const der = cert.publicKey.export({ type: "spki", format: "der" });
+export function spkiSha256(cert: string | Buffer): Hex {
+  const der = new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" });
   return sha256Hex(new Uint8Array(der));
 }
 
-/** Locates <dataDir>/caddy/certificates/<issuer>/<host>/<host>.crt (newest if several issuers). */
-export async function findCaddyCert(caddyDataDir: string, host: string): Promise<string | undefined> {
-  const base = join(caddyDataDir, "caddy", "certificates");
-  let issuers: string[];
-  try {
-    issuers = await readdir(base);
-  } catch {
-    return undefined;
-  }
-  let best: { path: string; mtime: number } | undefined;
-  for (const issuer of issuers) {
-    const path = join(base, issuer, host, `${host}.crt`);
-    try {
-      const s = await stat(path);
-      if (!best || s.mtimeMs > best.mtime) best = { path, mtime: s.mtimeMs };
-    } catch {
-      // not issued by this issuer
-    }
-  }
-  return best?.path;
-}
-
 export interface TlsKeySource {
-  /** undefined while the certificate has not been issued yet. */
+  /** undefined while no certificate is being served yet. */
   tlsPubKeyHash(): Promise<Hex | undefined>;
 }
 
-export class CaddyCertSource implements TlsKeySource {
-  private cache?: { path: string; mtime: number; hash: Hex };
+/** DER of the leaf certificate served at host:port for `servername`, or undefined if the handshake fails. */
+export function servedCertificate(target: { host: string; port: number }, servername: string, timeoutMs = 5000): Promise<Buffer | undefined> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v: Buffer | undefined) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(v);
+    };
+    // The chain is not validated here: the verifier compares the served key with the quote.
+    const socket = tls.connect({ host: target.host, port: target.port, servername, rejectUnauthorized: false, ALPNProtocols: ["http/1.1"] }, () => {
+      const raw = socket.getPeerCertificate(false)?.raw;
+      finish(raw && raw.length > 0 ? raw : undefined);
+    });
+    socket.setTimeout(timeoutMs, () => finish(undefined));
+    socket.on("error", () => finish(undefined));
+  });
+}
+
+export class ServedCertSource implements TlsKeySource {
+  private cache?: { at: number; hash: Hex };
   constructor(
-    private readonly caddyDataDir: string,
-    private readonly host: string | undefined,
+    private readonly target: { host: string; port: number },
+    private readonly servername: string,
+    private readonly ttlMs = 60_000,
+    private readonly now: () => number = Date.now,
   ) {}
 
   async tlsPubKeyHash(): Promise<Hex | undefined> {
-    if (!this.host) return undefined;
-    const path = await findCaddyCert(this.caddyDataDir, this.host);
-    if (!path) return undefined;
-    const { mtimeMs } = await stat(path);
-    if (this.cache && this.cache.path === path && this.cache.mtime === mtimeMs) return this.cache.hash;
-    const hash = spkiSha256(await readFile(path));
-    this.cache = { path, mtime: mtimeMs, hash };
+    if (this.cache && this.now() - this.cache.at < this.ttlMs) return this.cache.hash;
+    const der = await servedCertificate(this.target, this.servername);
+    if (!der) return undefined;
+    const hash = spkiSha256(der);
+    this.cache = { at: this.now(), hash };
     return hash;
   }
 }

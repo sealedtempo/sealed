@@ -2,8 +2,7 @@
 // contracts deployed: access-key authorization through the AccountKeychain precompile, one
 // approve + payFees batch per app, FeeSplitter caps, the grace period with the payment-needed
 // switch (fake Caddy admin) and recovery, a leg the customer paid short topped up to its fee,
-// and the enclave-account fallback.
-import { execFileSync } from "node:child_process";
+// deployment status and leg token reads, and the enclave-account fallback.
 import { mkdtemp, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,10 +29,11 @@ import {
 import {
   addImage,
   approveStack,
+  chainTestsEnabled,
+  closeDeployment,
   DEV_KEYS,
   deploySealedContracts,
   devAddress,
-  findContractsDir,
   fund,
   LOCAL_TOKENS,
   type LocalTempo,
@@ -48,7 +48,7 @@ import { http, parseEventLogs, toFunctionSelector } from "viem";
 import { Abis, Account, Addresses, createClient as createTempoClient } from "viem/tempo";
 import { tempoChain } from "@sealed/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { isPaymentNeededConfig, PaymentGate, SocketCaddyAdmin } from "../src/caddy.js";
+import { DirectCaddySwitch } from "../src/caddy.js";
 import type { PlatformClient } from "../src/evidence.js";
 import { parseEndpoint } from "../src/http.js";
 import { createLogger, silentLogger } from "../src/log.js";
@@ -56,17 +56,10 @@ import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
 import { TempoFeePayer } from "../src/payments/feePayer.js";
 import { Settler } from "../src/payments/settler.js";
 import type { PaymentStatus } from "../src/state.js";
-import { type FakeCaddy, sampleCaddyConfig, startFakeCaddy } from "./helpers/fakeCaddy.js";
+import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
+import { CADDYFILE, CADDYFILE_PAYMENT_NEEDED } from "./helpers/fixtures.js";
 
-const hasAnvil = (() => {
-  try {
-    execFileSync("anvil", ["--version"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-})();
-const enabled = hasAnvil && !!findContractsDir();
+const enabled = chainTestsEnabled();
 const defaults = parseDefaults(readFileSync(join(import.meta.dirname, "../../../config/defaults.yaml"), "utf8"), { testOverrides: true });
 const PATH_USD = LOCAL_TOKENS.pathUsd;
 const CUSTOMER = devAddress(DEV_KEYS.customer);
@@ -139,16 +132,20 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
       perPaymentCap: () => cap,
     });
     const status: PaymentStatus = { failingSince: null, paymentNeeded: false };
-    let saved: unknown;
-    const gate = new PaymentGate(new SocketCaddyAdmin(parseEndpoint(join(dir, "admin.sock"))), ["crm.34-1-2-3.sslip.io", "gateway.34-1-2-3.sslip.io"], {
-      getOriginal: () => saved,
-      setOriginal: async (c) => {
-        saved = c;
-      },
-    });
+    const gate = new DirectCaddySwitch(parseEndpoint(join(dir, "admin.sock")), { normal: CADDYFILE, paymentNeeded: CADDYFILE_PAYMENT_NEEDED });
     const usage: unknown[] = [];
     const platform: PlatformClient = { postEvidence: async () => ({ deploymentId }), postUsage: async (b) => void usage.push(b), postHealth: async () => undefined };
-    const settler = new Settler({ ledger, payer, platform, gate, status, graceSec: defaults.grace_period_minutes * 60, save: async () => {}, log: testLog });
+    const settler = new Settler({
+      ledger,
+      payer,
+      platform,
+      gate,
+      status,
+      graceSec: defaults.grace_period_minutes * 60,
+      save: async () => {},
+      log: testLog,
+      onPerPaymentCap: (c) => (cap = c),
+    });
     return { payer, ledger, status, settler, usage, setCap: (c: bigint) => (cap = c) };
   }
 
@@ -162,7 +159,7 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
 
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), "sealed-pay-"));
-    caddy = await startFakeCaddy(join(dir, "admin.sock"), sampleCaddyConfig("34-1-2-3"));
+    caddy = await startFakeCaddy(join(dir, "admin.sock"), CADDYFILE);
     node = await startLocalTempo();
     d = await deploySealedContracts(node, { perPaymentCap: PER_PAYMENT_CAP, perDeploymentDailyCap: DAILY_CAP });
     await addImage(node, d, { imageId: imgId, name: "sealed-sim", version: "1.0.0", ...m });
@@ -296,15 +293,15 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
       const t0 = 10_000;
       const grace = defaults.grace_period_minutes * 60;
       expect((await h.settler.tick(t0)).apps).toEqual([{ app: "crm", result: "failed", reason: "spend_limit" }]);
-      expect(isPaymentNeededConfig(caddy.config)).toBe(false);
+      expect(caddy.current).toBe(CADDYFILE);
       const r2 = await h.settler.tick(t0 + grace);
       expect(r2.paymentNeeded).toBe(true);
-      expect(isPaymentNeededConfig(caddy.config)).toBe(true);
+      expect(caddy.current).toBe(CADDYFILE_PAYMENT_NEEDED);
       await setLimit(KEY_LIMIT);
       const r3 = await h.settler.tick(t0 + grace + 60);
       expect(r3.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 50_000n })]);
       expect(r3.paymentNeeded).toBe(false);
-      expect(caddy.config).toEqual(sampleCaddyConfig("34-1-2-3"));
+      expect(caddy.current).toBe(CADDYFILE);
     });
 
     // Verification finding on the contract review (logic-F1 b / funds-F-02): the customer pays a leg
@@ -338,6 +335,32 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
       expect(allowance).toBe(0n);
       expect(h.ledger.unpaid()).toEqual([]);
       expect(h.status.failingSince).toBeNull();
+    });
+  });
+
+  describe("deployment status and leg reads", () => {
+    it("reads None for an unregistered deployment, Active once registered, Closed after closeDeployment; usageToken of a paid leg", async () => {
+      const seed = `0x${"c3".repeat(32)}` as Hex;
+      const salt = `0x${"03".repeat(32)}` as Hex;
+      const unregistered = computeDeploymentId(CUSTOMER, `0x${"99".repeat(32)}`, salt);
+      expect(await harness("access-key", seed, unregistered).payer.deploymentStatus()).toBe("none");
+      const deploymentId = await deployment(seed, salt);
+      const h = harness("enclave-account", seed, deploymentId);
+      expect(await h.payer.deploymentStatus()).toBe("active");
+      await fund(node, PATH_USD, enclaveSignerAddress(seed), 1_000_000n);
+      await h.ledger.record("crm", "app_hour", 3600n, 1001);
+      const r = await h.settler.tick(2000);
+      expect(r.apps[0]).toMatchObject({ result: "paid" });
+      const leg = h.ledger.state.reports[0]!;
+      expect(await h.payer.legToken(leg.usageHash, apps.crm)).toBe(PATH_USD.toLowerCase());
+      expect(await h.payer.paidAmount(leg.usageHash, apps.crm)).toBe(50_000n);
+      await closeDeployment(node, d, DEV_KEYS.customer, deploymentId);
+      expect(await h.payer.deploymentStatus()).toBe("closed");
+      const closed = await h.settler.tick(3000);
+      expect(closed.outcome).toBe("deployment_closed");
+      expect(closed.paymentNeeded).toBe(true);
+      expect(caddy.current).toBe(CADDYFILE_PAYMENT_NEEDED);
+      await new DirectCaddySwitch(parseEndpoint(join(dir, "admin.sock")), { normal: CADDYFILE, paymentNeeded: CADDYFILE_PAYMENT_NEEDED }).apply("normal");
     });
   });
 
