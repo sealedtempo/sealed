@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { RelayAttestationGate } from '../src/attestation-gate.js'
-import type { RelayResult } from '../src/relay-client.js'
+import { type RelayResult, RelaySessionFailedError } from '../src/relay-client.js'
 import { createPayerApp } from '../src/server.js'
 import { BudgetUnavailableError } from '../src/shared-budget.js'
 import { SpendLimitError } from '../src/spend-guard.js'
@@ -81,9 +81,9 @@ describe('payer OpenAI passthrough', () => {
   })
 
   it('passes per-request charge responses and relay refusals through', async () => {
-    const charged = setup(async () => ({ kind: 'response', intent: 'charge', response: Response.json({ id: 'x', choices: [] }) }))
+    const charged = setup(async () => ({ kind: 'response', intent: 'charge', paid: true, streamed: false, response: Response.json({ id: 'x', choices: [] }) }))
     expect((await charged.app.request('/v1/chat/completions', post(ask))).status).toBe(200)
-    const refused = setup(async () => ({ kind: 'response', intent: 'refused', response: Response.json({ error: { type: 'attestation_failed', provider: 'tinfoil' } }, { status: 503 }) }))
+    const refused = setup(async () => ({ kind: 'response', intent: 'refused', paid: false, streamed: false, response: Response.json({ error: { type: 'attestation_failed', provider: 'tinfoil' } }, { status: 503 }) }))
     const res = await refused.app.request('/v1/chat/completions', post(ask))
     expect(res.status).toBe(503)
     expect((await res.json()).error.provider).toBe('tinfoil')
@@ -123,5 +123,60 @@ describe('payer OpenAI passthrough', () => {
     const { app } = setup(async () => ({ kind: 'session', events: sessionEvents([]) }))
     expect((await app.request('/v1/chat/completions', { method: 'POST', body: '[1]' })).status).toBe(400)
     expect((await (await app.request('/v1/models')).json()).data[0].id).toBe('tinfoil/gpt-oss-120b')
+  })
+
+  describe('per-request charges (M3)', () => {
+    const sse = (chunks: unknown[]) =>
+      new Response(chunks.map((c) => `data: ${typeof c === 'string' ? c : JSON.stringify(c)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } })
+    const words = [
+      { id: 'c2', model: 'tinfoil/gpt-oss-120b', choices: [{ index: 0, delta: { content: 'Pa' } }] },
+      { id: 'c2', choices: [{ index: 0, delta: { content: 'id' }, finish_reason: 'stop' }] },
+      { id: 'c2', choices: [], usage: { prompt_tokens: 4, completion_tokens: 2 } },
+      '[DONE]',
+    ]
+
+    it('answers 424 (not retried by LiteLLM or the OpenAI SDKs) when the relay failed after taking a charge', async () => {
+      const { app } = setup(async () => ({
+        kind: 'response',
+        intent: 'charge',
+        paid: true,
+        streamed: false,
+        response: Response.json({ error: { type: 'upstream_error' } }, { status: 502, headers: { 'payment-receipt': 'r' } }),
+      }))
+      const res = await app.request('/v1/chat/completions', post(ask))
+      expect(res.status).toBe(424)
+      expect((await res.json()).error).toMatchObject({ type: 'relay_failed_after_payment', relay_status: 502 })
+    })
+
+    it('passes an uncharged relay failure through with its status (a retry costs nothing)', async () => {
+      const { app } = setup(async () => ({
+        kind: 'response',
+        intent: 'refused',
+        paid: false,
+        streamed: false,
+        response: Response.json({ error: { type: 'upstream_error', charged: false } }, { status: 503 }),
+      }))
+      const res = await app.request('/v1/chat/completions', post(ask))
+      expect(res.status).toBe(503)
+      expect((await res.json()).error.charged).toBe(false)
+    })
+
+    it('folds a streamed charge back into one chat.completion for a non-stream caller, and passes it through for a stream caller', async () => {
+      const charged = () => setup(async () => ({ kind: 'response', intent: 'charge', paid: true, streamed: true, response: sse(words) }))
+      const folded = await charged().app.request('/v1/chat/completions', post(ask))
+      expect(await folded.json()).toMatchObject({ object: 'chat.completion', choices: [{ message: { content: 'Paid' } }], usage: { prompt_tokens: 4 } })
+      const streamed = await charged().app.request('/v1/chat/completions', post({ ...ask, stream: true }))
+      expect(streamed.headers.get('content-type')).toBe('text/event-stream')
+      expect(await streamed.text()).toContain('data: [DONE]')
+      const broken = setup(async () => ({ kind: 'response', intent: 'charge', paid: true, streamed: true, response: sse([words[0], { error: { message: 'provider dropped' } }]) }))
+      expect((await broken.app.request('/v1/chat/completions', post(ask))).status).toBe(424)
+    })
+
+    it('answers 502 relay_session_failed when a session request failed after it was sent', async () => {
+      const { app } = setup(async () => Promise.reject(new RelaySessionFailedError('sent', { cause: new Error('reset') })))
+      const res = await app.request('/v1/chat/completions', post(ask))
+      expect(res.status).toBe(502)
+      expect((await res.json()).error.type).toBe('relay_session_failed')
+    })
   })
 })

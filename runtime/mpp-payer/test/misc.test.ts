@@ -133,6 +133,22 @@ describe('payer configuration', () => {
     expect(c).toMatchObject({ agentUrl: 'http://sealed-agent:7071', verifierdUrl: 'http://sealed-verifierd:8089', spendStateFile: '/tmp/x.json' })
   })
 
+  it('keeps the payer state (debits, channel journal, session channel) in one directory and rotates channels below maxDeposit', () => {
+    const c = loadPayerConfig(env)
+    expect(c).toMatchObject({
+      spendStateFile: '/var/lib/sealed-mpp-payer/spend-state.json',
+      channelJournalFile: '/var/lib/sealed-mpp-payer/channels.json',
+      sessionStoreFile: '/var/lib/sealed-mpp-payer/session-store.json',
+      maxCharge: 50_000n,
+      rotateHeadroom: 50_000n,
+      recoveryIntervalSeconds: 60,
+    })
+    expect(loadPayerConfig({ ...env, STATE_DIR: '/data/payer' }).channelJournalFile).toBe('/data/payer/channels.json')
+    // A small channel never rotates with more than a quarter of it left.
+    expect(loadPayerConfig({ ...env, MAX_DEPOSIT: '100000' }).rotateHeadroom).toBe(25_000n)
+    expect(() => loadPayerConfig({ ...env, ROTATE_HEADROOM: '500000' })).toThrow(/below MAX_DEPOSIT/)
+  })
+
   it('requires the relay to be served on its attested origin', () => {
     writeFileSync(join(dir, 'split.json'), JSON.stringify({ ...config, endpoints: { ...config.endpoints, relayAttest: 'https://attest.relay.example/attest' } }))
     expect(() => loadPayerConfig({ ...env, SEALED_CONFIG_PATH: join(dir, 'split.json') })).toThrow(/must share one origin/)

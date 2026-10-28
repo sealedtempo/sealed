@@ -6,8 +6,20 @@ export const PATHUSD = '0x20c0000000000000000000000000000000000000' as const
 export const ESCROW_PRECOMPILE = '0x4d50500000000000000000000000000000000000' as const
 export const DEFAULT_SECRETS_DIR = '/run/sealed/secrets/sealed-mpp-payer'
 export const DEFAULT_CONFIG_PATH = '/etc/sealed/config.json'
-/** In the payer image's writable layer, which survives container restarts. */
-export const DEFAULT_SPEND_STATE_FILE = '/var/lib/sealed-mpp-payer/spend-state.json'
+/**
+ * The payer's state directory: the day's debits, the channel journal and the stored session
+ * channel. In the image's writable layer it survives container restarts; a persistent mount
+ * here (composer interface change) also keeps it across image updates and VM replacement.
+ */
+export const DEFAULT_STATE_DIR = '/var/lib/sealed-mpp-payer'
+export const DEFAULT_SPEND_STATE_FILE = `${DEFAULT_STATE_DIR}/spend-state.json`
+/**
+ * The payer needs this long after SIGTERM: in-flight payments (mppx's server waits up to 30 s
+ * for a transaction) and the cooperative close of the session channel (the relay waits up to
+ * 30 s for its close transaction). The composer's stop_grace_period must be at least
+ * SHUTDOWN_SECONDS + 5 (D-067: at least 45 s).
+ */
+export const SHUTDOWN_SECONDS = 38
 
 export type SettlementMode = 'access-key' | 'enclave-account'
 
@@ -38,6 +50,13 @@ export type PayerConfig = {
   reportIntervalSeconds: number
   /** Where the day's debits are kept so a restart does not reset the budget. */
   spendStateFile: string
+  /** The channel journal (recovery of orphaned deposits). */
+  channelJournalFile: string
+  /** mppx's stored session channel (resumed after a restart). */
+  sessionStoreFile: string
+  /** Rotate a channel once less than this is left below maxDeposit, base units. */
+  rotateHeadroom: bigint
+  recoveryIntervalSeconds: number
 }
 
 type PublicConfig = {
@@ -128,6 +147,12 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
     throw new Error('RELAY_SPEND_SHARE_BPS was removed: the payer draws from sealed-agent\'s shared daily budget (D-048)')
   if (typeof pub.feeToken !== 'string') throw new Error('config feeToken missing: the payer pays the relay only in FEE_TOKEN')
   const { relayUrl, relayAttestUrl } = relayEndpoints(pub.endpoints?.relay, pub.endpoints?.relayAttest)
+  const stateDir = env.STATE_DIR ?? DEFAULT_STATE_DIR
+  const maxCharge = env.MAX_CHARGE ? baseUnits(env.MAX_CHARGE, 'MAX_CHARGE') : 50_000n
+  const maxDeposit = env.MAX_DEPOSIT ? baseUnits(env.MAX_DEPOSIT, 'MAX_DEPOSIT') : defaultDeposit
+  // A channel is rotated once less than one charge is left; never more than a quarter of it.
+  const rotateHeadroom = env.ROTATE_HEADROOM ? baseUnits(env.ROTATE_HEADROOM, 'ROTATE_HEADROOM') : maxCharge < maxDeposit / 4n ? maxCharge : maxDeposit / 4n
+  if (maxDeposit > 0n && rotateHeadroom >= maxDeposit) throw new Error('ROTATE_HEADROOM must be below MAX_DEPOSIT')
   return {
     port: intEnv(env, 'PORT', 8090),
     chainId,
@@ -137,8 +162,8 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
     enclaveKey: key as `0x${string}`,
     currency: address(pub.feeToken, 'feeToken'),
     spendLimitPerDay,
-    maxDeposit: env.MAX_DEPOSIT ? baseUnits(env.MAX_DEPOSIT, 'MAX_DEPOSIT') : defaultDeposit,
-    maxCharge: env.MAX_CHARGE ? baseUnits(env.MAX_CHARGE, 'MAX_CHARGE') : 50_000n,
+    maxDeposit,
+    maxCharge,
     relayUrl,
     relayAttestUrl,
     relayOwner: address(pub.relayOwner, 'relayOwner'),
@@ -152,6 +177,10 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
       .map((s) => s.trim())
       .filter(Boolean),
     reportIntervalSeconds: intEnv(env, 'SPEND_REPORT_INTERVAL_SECONDS', 60),
-    spendStateFile: env.SPEND_STATE_FILE ?? DEFAULT_SPEND_STATE_FILE,
+    spendStateFile: env.SPEND_STATE_FILE ?? join(stateDir, 'spend-state.json'),
+    channelJournalFile: join(stateDir, 'channels.json'),
+    sessionStoreFile: join(stateDir, 'session-store.json'),
+    rotateHeadroom,
+    recoveryIntervalSeconds: intEnv(env, 'RECOVERY_INTERVAL_SECONDS', 60),
   }
 }
