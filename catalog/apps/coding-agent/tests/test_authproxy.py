@@ -132,10 +132,45 @@ class AuthProxyTest(unittest.TestCase):
     def test_session_key_required(self):
         with FakeOpenCode("opencode", PASSWORD, self.tmp.name) as oc, Proxy(oc.httpd.server_port) as proxy:
             for headers in ({}, {"X-Session-API-Key": "wrong"}, {"X-Session-API-Key": SESSION[:-1]},
-                            {"Authorization": "Basic " + base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()}):
-                status, _, _ = proxy.request("POST", "/session?directory=/workspace", b"{}", headers)
+                            {"Authorization": "Basic " + base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()},
+                            {"Authorization": "Basic " + base64.b64encode(f"sealed:{SESSION}".encode()).decode()},
+                            {"Authorization": "Bearer " + SESSION[:-1]}, {"Authorization": SESSION},
+                            {"Cookie": "sealed_gate=" + SESSION}):
+                status, body, resp = proxy.request("POST", "/session?directory=/workspace", b"{}", headers)
                 self.assertEqual(status, 401, headers)
+                # Never a Basic challenge of its own: browsers must not mix it up with the gate's.
+                self.assertNotIn("WWW-Authenticate", resp)
             self.assertEqual(oc.calls, [])
+
+    def test_session_key_as_bearer_token(self):
+        with FakeOpenCode("opencode", PASSWORD, self.tmp.name) as oc, Proxy(oc.httpd.server_port) as proxy:
+            for auth in ("Bearer " + SESSION, "bearer  " + SESSION):
+                status, body, _ = proxy.request("POST", "/session?directory=/workspace", b"{}",
+                                                {"Authorization": auth, "Content-Type": "application/json"})
+                self.assertEqual(status, 200, (auth, body))
+            for _, _, _, headers in oc.calls:
+                self.assertEqual(headers["authorization"],
+                                 "Basic " + base64.b64encode(f"opencode:{PASSWORD}".encode()).decode())
+                self.assertNotIn(SESSION, json.dumps(headers))
+
+    def test_gate_cookie_never_reaches_opencode(self):
+        upstream = StreamingUpstream()
+        try:
+            with Proxy(upstream.httpd.server_port) as proxy:
+                sock = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+                sock.sendall(("POST /session HTTP/1.1\r\nHost: x\r\nX-Session-API-Key: " + SESSION +
+                              "\r\nCookie: theme=dark; sealed_gate=abc.def\r\nCookie: sealed_gate=x; lang=en"
+                              "\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").encode())
+                while sock.recv(4096):
+                    pass
+                sock.close()
+                self.assertEqual(upstream.seen[-1]["Cookie"], "theme=dark; lang=en")
+                status, _, _ = proxy.request("POST", "/session", b"{}", self.key(Cookie="sealed_gate=only"))
+                self.assertEqual(status, 200)
+                self.assertNotIn("Cookie", upstream.seen[-1])
+        finally:
+            upstream.close()
+        self.assertEqual(authproxy.without_gate_cookie(["a=1;sealed_gate=2 ;  b=3", "sealed_gate"]), "a=1; b=3")
 
     def test_forwards_with_opencode_auth_only(self):
         with FakeOpenCode("opencode", PASSWORD, self.tmp.name) as oc, Proxy(oc.httpd.server_port) as proxy:

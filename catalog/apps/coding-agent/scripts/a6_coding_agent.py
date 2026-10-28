@@ -5,6 +5,12 @@ Asks the coding agent to write calc.py and test_calc.py through the llm-gateway,
 finish, then checks independently that the file exists, that the test passes when we run it
 ourselves, and that tokens were used. Prints a JSON summary on success, exits non-zero otherwise.
 
+Gate: the code route sits behind Sealed's gate (Caddy forward_auth to sealed-agent). With
+--gate-password the helper sends Basic auth (user sealed) once, keeps the sealed_gate cookie the
+gate sets, and sends only the cookie afterwards, so the gate password crosses the wire once and the
+agent never sees it. While the app's bootstrap is not done the gate answers 503 starting; the
+helper waits up to --gate-wait seconds. A gate that sets no cookie gets Basic auth on every call.
+
 OpenHands (default):
   a6-coding-agent.sh --url https://code.<ip-with-dashes>.sslip.io \
       --session-key "$CODING_AGENT_API_KEY" --gate-password "$SEALED_GATE_PASSWORD"
@@ -45,6 +51,10 @@ TASK = (
 TERMINAL = ("finished", "error", "stuck")
 REDACTED = "**********"
 TEST_COMMAND = "python3 -m unittest -v test_calc"
+GATE_COOKIE = "sealed_gate"
+GATE_REALM = 'realm="sealed"'
+REDIRECTS = (301, 302, 303, 307, 308)
+PROBE = {"openhands": "/ready", "opencode": "/global/health"}
 
 
 class A6Error(Exception):
@@ -55,16 +65,126 @@ def log(message: str) -> None:
     print("a6: " + message, file=sys.stderr, flush=True)
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirects come back as responses, so a Set-Cookie on them is never lost."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def gate_refused(status: int, headers: Any) -> bool:
+    return status == 401 and GATE_REALM in (headers.get("WWW-Authenticate") or "")
+
+
+def origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.netloc
+
+
+class Gate:
+    """Client side of Sealed's gate: Basic auth once, then the sealed_gate cookie."""
+
+    def __init__(self, user: str, password: str, wait: float = 300.0, poll: float = 5.0,
+                 sleep: Any = time.sleep, clock: Any = time.monotonic) -> None:
+        self.basic = basic_auth(user, password)["Authorization"]
+        self.cookie: Optional[str] = None
+        self.basic_every_call = False
+        self.logins = 0
+        self.wait, self.poll, self.sleep, self.clock = wait, poll, sleep, clock
+
+    def headers(self) -> dict[str, str]:
+        if self.cookie:
+            return {"Cookie": f"{GATE_COOKIE}={self.cookie}"}
+        if self.basic_every_call:
+            return {"Authorization": self.basic}
+        return {}
+
+    def observe(self, headers: Any) -> None:
+        for value in headers.get_all("Set-Cookie") or []:
+            name, _, rest = value.partition("=")
+            if name.strip() == GATE_COOKIE:
+                token = rest.split(";", 1)[0].strip()
+                if token:
+                    self.cookie = token
+
+    def wait_started(self, attempt: Any, path: str, deadline: float) -> tuple[int, Any]:
+        while True:
+            status, headers = attempt()
+            if status == 503 and self.clock() < deadline:
+                log(f"waiting for the app to start (503 on {path})")
+                self.sleep(self.poll)
+                continue
+            return status, headers
+
+    def login(self, client: "Client", path: str) -> None:
+        """Probe without credentials; if the gate asks, send Basic auth once and keep the cookie.
+
+        The gate password is sent only to a route whose gate asks for it (401 with a Basic
+        challenge), never to an ungated URL such as the in-VM address of the service.
+        """
+        self.logins += 1
+        self.cookie = None
+        self.basic_every_call = False
+        deadline = self.clock() + self.wait
+
+        def bare() -> tuple[int, Any]:
+            status, headers, _ = client.send("GET", client.base + path, None, dict(client.headers))
+            return status, headers
+
+        def with_password() -> tuple[int, Any]:
+            url = client.base + path
+            status, headers, _ = client.send("GET", url, None, {**client.headers, "Authorization": self.basic})
+            self.observe(headers)
+            if status in REDIRECTS and self.cookie:
+                url = urllib.parse.urljoin(url, headers.get("Location") or path)
+                if origin(url) != origin(client.base):
+                    raise A6Error("the gate redirected to another origin: " + origin(url)[1])
+                status, headers, _ = client.send("GET", url, None, {**client.headers, **self.headers()})
+                self.observe(headers)
+            return status, headers
+
+        status, headers = self.wait_started(bare, path, deadline)
+        challenge = (headers.get("WWW-Authenticate") or "").lower()
+        if status == 503:
+            raise A6Error(f"the app did not start within {self.wait:g}s (HTTP 503 on {path})")
+        if status != 401 or not challenge.startswith("basic"):
+            log("gate: the route did not ask for the gate password, so it is not sent")
+            return
+        status, headers = self.wait_started(with_password, path, deadline)
+        if status == 401:
+            raise A6Error("the gate refused the gate password (HTTP 401); check --gate-password")
+        if status == 503:
+            raise A6Error(f"the app did not start within {self.wait:g}s (gate answered 503)")
+        if self.cookie:
+            log("gate: logged in once, using the sealed_gate cookie from now on")
+        else:
+            self.basic_every_call = True
+            log("gate: no sealed_gate cookie was set; sending Basic auth on every call")
+
+
 class Client:
     def __init__(self, base_url: str, headers: dict[str, str], timeout: float = 60.0,
-                 context: Optional[ssl.SSLContext] = None) -> None:
+                 context: Optional[ssl.SSLContext] = None, gate: Optional[Gate] = None) -> None:
         self.base = base_url.rstrip("/")
         self.headers = headers
         self.timeout = timeout
-        handlers: list[Any] = []
+        self.gate = gate
+        self.probe = "/"
+        handlers: list[Any] = [NoRedirect()]
         if context is not None:
             handlers.append(urllib.request.HTTPSHandler(context=context))
         self.opener = urllib.request.build_opener(*handlers)
+
+    def send(self, method: str, url: str, data: Optional[bytes], headers: dict[str, str],
+             timeout: Optional[float] = None) -> tuple[int, Any, bytes]:
+        request = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with self.opener.open(request, timeout=timeout or self.timeout) as response:
+                return response.status, response.headers, response.read()
+        except urllib.error.HTTPError as err:
+            return err.code, err.headers, err.read()
+        except (urllib.error.URLError, OSError) as err:
+            raise A6Error(f"{method} {urllib.parse.urlsplit(url).path}: {err}") from None
 
     def call(self, method: str, path: str, body: Any = None, query: Optional[dict[str, str]] = None,
              headers: Optional[dict[str, str]] = None, timeout: Optional[float] = None) -> tuple[int, Any]:
@@ -77,14 +197,22 @@ class Client:
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             hdrs["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, method=method, headers=hdrs)
-        try:
-            with self.opener.open(request, timeout=timeout or self.timeout) as response:
-                return response.status, _decode(response.read())
-        except urllib.error.HTTPError as err:
-            return err.code, _decode(err.read())
-        except (urllib.error.URLError, OSError) as err:
-            raise A6Error(f"{method} {path}: {err}") from None
+        for attempt in (1, 2):
+            sent = dict(hdrs, **(self.gate.headers() if self.gate else {}))
+            status, rheaders, raw = self.send(method, url, data, sent, timeout)
+            if self.gate is None:
+                if gate_refused(status, rheaders):
+                    raise A6Error(f"{method} {path}: the route is behind the Sealed gate; pass --gate-password")
+                break
+            self.gate.observe(rheaders)
+            # A refused cookie (expired, or sealed-agent restarted with a new key): log in again
+            # once. The gate stopped the request, so the app never saw it and a retry is safe.
+            if attempt == 1 and self.gate.cookie and gate_refused(status, rheaders):
+                log("gate: the sealed_gate cookie was refused, logging in again")
+                self.gate.login(self, self.probe)
+                continue
+            break
+        return status, _decode(raw)
 
     def ok(self, method: str, path: str, **kwargs: Any) -> Any:
         status, payload = self.call(method, path, **kwargs)
@@ -307,7 +435,10 @@ def parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     p.add_argument("--session-key", default=env.get("CODING_AGENT_API_KEY"),
                    help="X-Session-API-Key: OH_SESSION_API_KEYS_0 (OpenHands) or CODE_SESSION_API_KEY (OpenCode)")
     p.add_argument("--gate-user", default=env.get("SEALED_GATE_USER", "sealed"))
-    p.add_argument("--gate-password", default=env.get("SEALED_GATE_PASSWORD"), help="password gate (Caddy basic auth)")
+    p.add_argument("--gate-password", default=env.get("SEALED_GATE_PASSWORD"),
+                   help="gate password: sent once as Basic auth, then the sealed_gate cookie is used")
+    p.add_argument("--gate-wait", type=float, default=float(env.get("A6_GATE_WAIT_S", "300")),
+                   help="seconds to wait while the gate answers 503 (app bootstrap not done)")
     p.add_argument("--llm-key", default=env.get("CODING_AGENT_LLM_KEY"), help="LiteLLM virtual key override")
     p.add_argument("--model", default=env.get("A6_MODEL"), help="model override, e.g. litellm_proxy/local/qwen3-4b")
     p.add_argument("--gateway-url", default=env.get("A6_GATEWAY_URL", "http://llm-gateway:4000"),
@@ -336,13 +467,16 @@ def parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    headers: dict[str, str] = {}
-    if args.gate_password:
-        headers.update(basic_auth(args.gate_user, args.gate_password))
-    headers["X-Session-API-Key"] = args.session_key
+    headers = {"X-Session-API-Key": args.session_key}
     context = ssl.create_default_context(cafile=args.ca_file) if args.ca_file else None
-    client = Client(args.url, headers, context=context)
+    gate = None
+    if args.gate_password:
+        gate = Gate(args.gate_user, args.gate_password, wait=args.gate_wait, poll=min(args.poll, 5.0))
+    client = Client(args.url, headers, context=context, gate=gate)
+    client.probe = PROBE[args.target]
     try:
+        if gate is not None:
+            gate.login(client, client.probe)
         summary = (openhands if args.target == "openhands" else opencode)(client, args)
     except A6Error as err:
         log("FAIL: " + str(err))

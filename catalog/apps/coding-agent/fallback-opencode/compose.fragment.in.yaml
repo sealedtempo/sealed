@@ -1,22 +1,24 @@
 # coding-agent compose fragment, OpenCode fallback (not in the default release; see README.md).
 # Same primary service and route as the OpenHands fragment, so it swaps in without changing routes.
 #
-# coding-agent-server starts as root only to hand the workspace volume to uid 10001
-# (bootstrap/dropuid.py), then runs bootstrap/authproxy.py, which starts OpenCode on loopback
-# (127.0.0.1:4097, Basic auth with its own generated password) and serves the API on :4096 to
-# callers that send X-Session-API-Key. Caddy's password gate strips Authorization, which is why
-# OpenCode's own auth sits behind this proxy. OpenCode reads its gateway key from LLM_GATEWAY_KEY
-# ({env:LLM_GATEWAY_KEY}); this app holds no gateway master key.
+# coding-agent-server runs as uid 10001 from the start: sealed-agent creates the workspace
+# volume with its x-sealed-owner (integration brief item 11). bootstrap/prepdirs.py creates the
+# workspace directories and changes to /workspace/project, then bootstrap/authproxy.py starts
+# OpenCode on loopback (127.0.0.1:4097, Basic auth with its own generated password) and serves
+# the API on :4096 to callers that send the session key (X-Session-API-Key or Authorization:
+# Bearer). The proxy drops client Authorization headers and the gate's sealed_gate cookie, so
+# neither the gate password nor the gate cookie reaches the agent. OpenCode reads its gateway
+# key from LLM_GATEWAY_KEY ({env:LLM_GATEWAY_KEY}); this app holds no gateway master key.
 services:
   coding-agent-server:
     image: "{{image:opencode}}"
-    user: "0:0"
+    user: "10001:10001"
     entrypoint:
       - /usr/bin/python3
       - -I
       - -c
       - |
-        @@include bootstrap/dropuid.py@@
+        @@include bootstrap/prepdirs.py@@
     command:
       - /usr/bin/python3
       - -I
@@ -34,7 +36,8 @@ services:
       - "127.0.0.1"
       - "--port"
       - "4097"
-    working_dir: /workspace/project
+    # The volume root, which exists and belongs to 10001; prepdirs.py moves to SEALED_WORKDIR.
+    working_dir: /workspace
     x-sealed-secrets:
       - LLM_GATEWAY_KEY
       - CODE_SESSION_API_KEY
@@ -42,6 +45,7 @@ services:
     environment:
       SEALED_RUN_AS: "10001:10001"
       SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/.opencode
+      SEALED_WORKDIR: /workspace/project
       OPENCODE_SERVER_USERNAME: opencode
       OPENCODE_DISABLE_AUTOUPDATE: "1"
       OPENCODE_DISABLE_MODELS_FETCH: "1"
@@ -91,4 +95,5 @@ services:
     stop_grace_period: 30s
 
 volumes:
-  coding-agent-workspace: {}
+  coding-agent-workspace:
+    x-sealed-owner: "10001:10001"

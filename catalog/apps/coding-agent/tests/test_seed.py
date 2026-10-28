@@ -59,7 +59,6 @@ class SeedTest(unittest.TestCase):
             "SEALED_DONE_FILE": self.done,
             "SEALED_POLL_INTERVAL_S": "0.01",
             "SEALED_WAIT_TIMEOUT_S": "5",
-            "SEALED_BOOTSTRAP_IDLE": "0",
             "LLM_GATEWAY_KEY": APP_KEY,
             "OH_SESSION_API_KEYS_0": SESSION,
             # The bootstrap must ignore proxy env: these would break every call.
@@ -169,17 +168,17 @@ class SeedTest(unittest.TestCase):
 
     def test_unreachable_gateway_times_out_cleanly(self):
         env = {"SEALED_GATEWAY_URL": "http://127.0.0.1:9", "SEALED_WAIT_TIMEOUT_S": "0.1",
-               "SEALED_POLL_INTERVAL_S": "0.01", "SEALED_DONE_FILE": self.done, "SEALED_BOOTSTRAP_IDLE": "0",
+               "SEALED_POLL_INTERVAL_S": "0.01", "SEALED_DONE_FILE": self.done,
                "LLM_GATEWAY_KEY": APP_KEY, "OH_SESSION_API_KEYS_0": SESSION}
         code, err = self.run_main(env)
         self.assertEqual(code, 1)
         self.assertIn("timed out", err)
 
     def test_missing_secrets(self):
-        code, err = self.run_main({"SEALED_BOOTSTRAP_IDLE": "0"})
+        code, err = self.run_main({})
         self.assertEqual(code, 1)
         self.assertIn("LLM_GATEWAY_KEY", err)
-        code, err = self.run_main({"LLM_GATEWAY_KEY": APP_KEY, "SEALED_BOOTSTRAP_IDLE": "0"})
+        code, err = self.run_main({"LLM_GATEWAY_KEY": APP_KEY})
         self.assertEqual(code, 1)
         self.assertIn("OH_SESSION_API_KEYS_0", err)
         with open(SEED_PATH) as handle:
@@ -219,7 +218,7 @@ class GatewayProvisioningEndToEndTest(unittest.TestCase):
             agent_env = {
                 "SEALED_GATEWAY_URL": gw.url, "SEALED_AGENT_SERVER_URL": oh.url,
                 "SEALED_DONE_FILE": os.path.join(tmp, "done"), "SEALED_POLL_INTERVAL_S": "0.02",
-                "SEALED_WAIT_TIMEOUT_S": "10", "SEALED_BOOTSTRAP_IDLE": "0",
+                "SEALED_WAIT_TIMEOUT_S": "10",
                 "LLM_GATEWAY_KEY": APP_KEY, "OH_SESSION_API_KEYS_0": SESSION,
             }
             err = io.StringIO()

@@ -17,18 +17,22 @@ the default `coding-agent` release; the release CI only reads the files at
 
 ## How it is wired
 
-`coding-agent-server` starts as root, runs `bootstrap/dropuid.py` (workspace to uid 10001,
-no_new_privs, privilege drop), then `bootstrap/authproxy.py`, which runs OpenCode on
-127.0.0.1:4097 and serves the API on :4096 to callers with `X-Session-API-Key`
-(`CODE_SESSION_API_KEY`). The proxy authenticates to OpenCode with OpenCode's own generated
-password (`OPENCODE_SERVER_PASSWORD`). See `app-README.md` for the details.
+`coding-agent-server` runs as uid 10001 from the start (the workspace volume declares
+`x-sealed-owner: "10001:10001"`, and sealed-agent creates it with that owner). It runs
+`bootstrap/prepdirs.py` (workspace directories, no_new_privs, change to `/workspace/project`), then
+`bootstrap/authproxy.py`, which runs OpenCode on 127.0.0.1:4097 and serves the API on :4096 to callers
+with the session key `CODE_SESSION_API_KEY` (`X-Session-API-Key`, or `Authorization: Bearer`, which
+passes the gate untouched once the client uses the `sealed_gate` cookie). The proxy authenticates to
+OpenCode with OpenCode's own generated password (`OPENCODE_SERVER_PASSWORD`) and drops every client
+`Authorization` header and the `sealed_gate` cookie. See `app-README.md` for the details.
 
 Earlier drafts reused the password gate's password as OpenCode's password so one Basic header would
-pass both. That cannot work (Caddy strips `Authorization` on gated routes) and would have handed the
-gate password, which protects every app UI, to the agent's shell. It is gone.
+pass both. That would hand the gate password, which protects every app UI, to the agent's shell, and a
+browser keeps sending the gate's Basic credentials after it logged in, so the proxy must drop them
+rather than pass them on. It is gone.
 
-The gateway key is `LLM_GATEWAY_KEY`, provisioned by llm-gateway from its `APP_KEY_CODING_AGENT`
-secret. This variant has no bootstrap job and never holds the gateway master key.
+The gateway key `LLM_GATEWAY_KEY` refers to llm-gateway's `APP_KEY_CODING_AGENT` (`same_as`), from which
+llm-gateway provisions the key. This variant has no bootstrap job and never holds the gateway master key.
 
 ## Switch
 
@@ -45,4 +49,5 @@ the image, pin its digest in `manifest.yaml` (D-028), store the secrets, and ope
 OpenHands, revert that commit.
 
 A6 for this variant: `scripts/a6-coding-agent.sh --target opencode --url https://code.<ip>.sslip.io
---session-key "$CODE_SESSION_API_KEY" --gate-password "$GATE_PASSWORD"`.
+--session-key "$CODE_SESSION_API_KEY" --gate-password "$GATE_PASSWORD"` (gate login once, then the
+`sealed_gate` cookie).

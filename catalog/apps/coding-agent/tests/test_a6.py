@@ -18,7 +18,8 @@ from contextlib import redirect_stderr, redirect_stdout
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from fakes import FakeLiteLLM, FakeOpenCode, FakeOpenHands, write_broken_files  # noqa: E402
+from fake_gate import FakeGate  # noqa: E402
+from fakes import FakeLiteLLM, FakeOpenCode, FakeOpenHands, write_broken_files, write_good_files  # noqa: E402
 
 SCRIPTS = os.path.normpath(os.path.join(HERE, "..", "scripts"))
 
@@ -98,12 +99,91 @@ class A6Test(unittest.TestCase):
             self.assertEqual([t["name"] for t in body["agent"]["tools"]], ["terminal", "file_editor"])
             self.assertFalse(body["autotitle"])
             self.assertTrue(body["workspace"]["working_dir"].startswith("/workspace/project/a6-"))
-            gate = "Basic " + base64.b64encode(b"sealed:gatepw").decode()
-            self.assertTrue(all(c[3].get("authorization") == gate for c in oh.calls))
+            # No gate in front of this URL: the gate password is never sent to it.
+            self.assertFalse([c for c in oh.calls if "authorization" in c[3]])
+            self.assertIn("did not ask for the gate password", err)
             settings_call = [c for c in oh.calls if c[1] == "/api/settings"][0]
             self.assertEqual(settings_call[3]["x-expose-secrets"], "plaintext")
             self.assertIn("DELETE", [c[0] for c in oh.calls])
             self.assertNotIn(VKEY, err)
+
+    def gated_openhands_run(self, mode, *extra, gate_kwargs=None, oh=None):
+        oh = oh or seeded(FakeOpenHands(SESSION, self.tmp.name))
+        with oh, FakeGate(oh.url, "gatepw", mode=mode, **(gate_kwargs or {})) as gate:
+            args = ["--url", gate.url, "--session-key", SESSION, "--poll", "0.01", "--timeout", "10",
+                    "--gate-password", "gatepw", *extra]
+            code, out, err = self.run_a6(args)
+        return code, out, err, gate, oh
+
+    def assert_cookie_flow(self, gate, oh):
+        self.assertEqual(gate.basic_checks, 1)  # Basic auth went over the wire once
+        self.assertGreater(gate.cookie_passes, 5)
+        for _, path, _, headers in oh.calls:
+            self.assertNotIn("sealed:gatepw", base64.b64decode(
+                (headers.get("authorization") or "Basic ").split(" ", 1)[1] or b"").decode("utf-8", "replace"), path)
+            if path.startswith("/api/"):
+                self.assertEqual(headers["x-session-api-key"], SESSION, path)
+
+    def test_openhands_through_the_gate_with_the_cookie(self):
+        code, out, err, gate, oh = self.gated_openhands_run("proxy")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(json.loads(out)["ok"])
+        self.assert_cookie_flow(gate, oh)
+        self.assertIn("using the sealed_gate cookie", err)
+        self.assertNotIn("gatepw", err)
+
+    def test_openhands_through_a_gate_that_sets_the_cookie_on_a_redirect(self):
+        code, out, err, gate, oh = self.gated_openhands_run("redirect")
+        self.assertEqual(code, 0, err)
+        self.assert_cookie_flow(gate, oh)
+
+    def test_older_basic_auth_gate_gets_basic_on_every_call(self):
+        code, out, err, gate, oh = self.gated_openhands_run("basic")
+        self.assertEqual(code, 0, err)
+        self.assertIn("no sealed_gate cookie was set", err)
+        self.assertEqual(gate.basic_checks, len(oh.calls))  # every call reached the app with Basic auth
+        self.assertFalse([c for c in oh.calls if "authorization" in c[3]])
+
+    def test_waits_while_the_gate_answers_starting(self):
+        code, out, err, gate, oh = self.gated_openhands_run("proxy", gate_kwargs={"starting": 3})
+        self.assertEqual(code, 0, err)
+        self.assertIn("waiting for the app to start", err)
+        self.assertEqual(gate.starting, 0)
+
+    def test_gives_up_when_the_app_never_starts(self):
+        code, _, err, _, _ = self.gated_openhands_run("proxy", "--gate-wait", "0.05",
+                                                      gate_kwargs={"starting": 10_000})
+        self.assertEqual(code, 1)
+        self.assertIn("did not start", err)
+
+    def test_wrong_gate_password(self):
+        with seeded(FakeOpenHands(SESSION, self.tmp.name)) as oh, FakeGate(oh.url, "other") as gate:
+            code, _, err = self.run_a6(["--url", gate.url, "--session-key", SESSION, "--gate-password", "gatepw"])
+        self.assertEqual(code, 1)
+        self.assertIn("refused the gate password", err)
+        self.assertEqual(oh.calls, [])
+
+    def test_gated_route_without_the_gate_password(self):
+        with seeded(FakeOpenHands(SESSION, self.tmp.name)) as oh, FakeGate(oh.url, "gatepw") as gate:
+            code, _, err = self.run_a6(["--url", gate.url, "--session-key", SESSION, "--poll", "0.01"])
+        self.assertEqual(code, 1)
+        self.assertIn("pass --gate-password", err)
+
+    def test_logs_in_again_when_the_cookie_stops_working(self):
+        box = {}
+
+        def writes(directory):
+            write_good_files(directory)
+            box["gate"].rotate()  # sealed-agent restarted: the per-boot cookie key changed
+
+        oh = seeded(FakeOpenHands(SESSION, self.tmp.name, agent_writes=writes))
+        with oh, FakeGate(oh.url, "gatepw") as gate:
+            box["gate"] = gate
+            code, out, err = self.run_a6(["--url", gate.url, "--session-key", SESSION, "--poll", "0.01",
+                                          "--timeout", "10", "--gate-password", "gatepw"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("logging in again", err)
+        self.assertEqual(gate.basic_checks, 2)
 
     def test_model_override_drops_fallback(self):
         with seeded(FakeOpenHands(SESSION, self.tmp.name)) as oh:
@@ -171,6 +251,18 @@ class A6Test(unittest.TestCase):
             self.assertEqual(message[3]["authorization"],
                              "Basic " + base64.b64encode(f"opencode:{OC_PASSWORD}".encode()).decode())
             self.assertNotIn("x-session-api-key", message[3])
+
+    def test_opencode_through_the_gate_never_sees_the_gate_cookie(self):
+        with OpenCodeBehindProxy(self.tmp.name) as proxy, FakeGate(proxy.url, "gatepw") as gate:
+            args = ["--target", "opencode", "--url", gate.url, "--session-key", SESSION, "--timeout", "10",
+                    "--gate-password", "gatepw"]
+            code, out, err = self.run_a6(args)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(gate.basic_checks, 1)
+            opencode_basic = "Basic " + base64.b64encode(f"opencode:{OC_PASSWORD}".encode()).decode()
+            for _, path, _, headers in proxy.oc.calls:
+                self.assertNotIn("sealed_gate", headers.get("cookie", ""), path)
+                self.assertEqual(headers["authorization"], opencode_basic, path)
 
     def test_opencode_wrong_session_key(self):
         with OpenCodeBehindProxy(self.tmp.name) as proxy:

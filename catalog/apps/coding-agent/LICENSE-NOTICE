@@ -17,7 +17,8 @@ Apache-2.0 like the rest of this repository.
      - The enterprise/ directory of the archived OpenHands/legacy repository (PolyForm Free Trial
        License). Nothing is built from or vendored from OpenHands/legacy.
    Removed: nothing from the image; it is used unmodified by digest.
-   Bundled: CPython 3.13, Node 24 and npm, Debian trixie packages (OS system components, D-021),
+   Bundled: CPython 3.13, Node 24 and npm, Debian trixie packages (OS system components, D-021
+            and D-050),
             litellm 1.93.0 (MIT, without litellm-enterprise), browser-use (MIT, inactive with the
             browser disabled), lmnr (Apache-2.0, inactive unless configured). The release SBOM
             lists every package and license.
@@ -30,7 +31,6 @@ Apache-2.0 like the rest of this repository.
             @sha256:f4cfe16d91efbbfca01a51c44094fba4cf82e15c7fa17de5f11f9059699b1e6e
    Added:   Alpine packages bash (GPL-3.0-or-later), git (GPL-2.0-only), python3 (PSF-2.0) and their
             dependencies, installed with apk in our own layer; exact versions are recorded in
-            /usr/share/sealed/apk-versions.txt. D-021 covers OS packages "in base images" only, and
-            GPL-2.0-only is not on the rule 9 list, so these apk additions need a recorded decision
-            (or another way to give the agent git) before this variant can be released.
+            /usr/share/sealed/apk-versions.txt. D-050: OS packages added with apk or apt in our own
+            layers count as OS packages, so they are covered like the base image's packages.
    Not shipped: packages/enterprise of the OpenCode repository (not part of the CLI binary).

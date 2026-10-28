@@ -1,7 +1,10 @@
 """Sealed coding-agent bootstrap job (stdlib only; embedded verbatim in the compose fragment).
 
-Runs at every start of the job, so a changed key or a reset agent store is fixed by a restart.
-Its done file lives on the job's own volume, which the agent's container does not mount:
+Runs at every start of the stack (the composer gives the job restart: on-failure, so it is
+retried until it succeeds and then stays exited), so a changed key or a reset agent store is
+fixed by a restart. Its done file lives on the job's own volume, which the agent's container
+does not mount; manifest bootstrap.done_file names it, and sealed-agent keeps the code route
+closed (503 starting) until it exists:
 1. waits for llm-gateway (GET /health/readiness) and for the agent server (GET /ready);
 2. waits until the gateway accepts this app's virtual key LLM_GATEWAY_KEY (GET /v1/models).
    llm-gateway's keys job creates that key from its secret APP_KEY_CODING_AGENT, so a 401 is
@@ -10,12 +13,11 @@ Its done file lives on the job's own volume, which the agent's container does no
    customer already chose on this gateway is kept; otherwise the default (relay/default) is
    used. When the relay fails, the gateway answers relay/default from the local model
    (router_settings.fallbacks), so no client-side fallback is needed;
-4. writes the done file (no secrets in it) and idles.
+4. writes the done file (no secrets in it) and exits 0.
 Secret values are never printed.
 """
 import json
 import os
-import signal
 import sys
 import time
 import urllib.error
@@ -41,7 +43,6 @@ class Config:
         self.done_file = env.get("SEALED_DONE_FILE", "/var/lib/sealed-bootstrap/done")
         self.wait_timeout = float(env.get("SEALED_WAIT_TIMEOUT_S", "900"))
         self.poll_interval = float(env.get("SEALED_POLL_INTERVAL_S", "3"))
-        self.idle = env.get("SEALED_BOOTSTRAP_IDLE", "1") == "1"
         self.llm_key = (env.get("LLM_GATEWAY_KEY") or "").strip()
         self.session_key = (env.get("OH_SESSION_API_KEYS_0") or "").strip()
         if not self.llm_key:
@@ -184,12 +185,6 @@ def run(cfg, http, sleep=time.sleep, clock=time.monotonic):
     return summary
 
 
-def idle_forever():
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    while True:
-        signal.pause()
-
-
 def main(env=None):
     try:
         cfg = Config(dict(os.environ if env is None else env))
@@ -197,8 +192,6 @@ def main(env=None):
     except (BootstrapError, OSError) as err:
         log("error: " + str(err))
         return 1
-    if cfg.idle:
-        idle_forever()
     return 0
 
 

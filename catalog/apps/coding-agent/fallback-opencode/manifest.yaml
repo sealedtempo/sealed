@@ -47,11 +47,15 @@ metering:
 secrets:
   - name: LLM_GATEWAY_KEY
     description: >-
-      This app's llm-gateway virtual key (alias coding-agent, models relay/* and local/*). Must equal
-      llm-gateway's APP_KEY_CODING_AGENT, from which the gateway provisions the key. Never the master key.
+      This app's llm-gateway virtual key (alias coding-agent, models relay/* and local/*). It is
+      llm-gateway's APP_KEY_CODING_AGENT (same_as), from which the gateway provisions the key, so sealed
+      secrets sets it once for both apps. Never the master key.
     generate: none
+    same_as: llm-gateway/APP_KEY_CODING_AGENT
   - name: CODE_SESSION_API_KEY
-    description: API key for the code route (header X-Session-API-Key on every call except /global/health).
+    description: >-
+      API key for the code route, sent as X-Session-API-Key or Authorization: Bearer on every call except
+      /global/health.
     generate: hex32
   - name: OPENCODE_SERVER_PASSWORD
     description: >-
@@ -71,9 +75,11 @@ license_exclusions:
   - "**/litellm_enterprise/**"
 notes: >-
   OpenCode fallback for coding-agent (spec 6.5). OpenCode runs on loopback behind an in-container proxy
-  that requires X-Session-API-Key (CODE_SESSION_API_KEY) and adds OpenCode's own generated password, so
-  the password gate's password is never given to the agent. The gateway key comes from LLM_GATEWAY_KEY,
-  provisioned by llm-gateway; this app never holds the gateway master key. Default model
+  that requires the session key CODE_SESSION_API_KEY (X-Session-API-Key or Authorization: Bearer), adds
+  OpenCode's own generated password, and drops the gate's Basic credentials and sealed_gate cookie, so
+  neither reaches the agent. No service starts as root (the volume owner comes from x-sealed-owner). The
+  gateway key LLM_GATEWAY_KEY is llm-gateway's APP_KEY_CODING_AGENT (same_as), provisioned by
+  llm-gateway; this app never holds the gateway master key. Default model
   litellm/relay-default (gateway relay/default, which falls back to the local model in the gateway), small
   model litellm/local-qwen3-4b. Autoupdate, the models.dev fetch, LSP downloads and default plugins are
   off. Egress is closed by default.

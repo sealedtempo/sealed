@@ -52,9 +52,11 @@ secrets:
     generate: hex32
   - name: LLM_GATEWAY_KEY
     description: >-
-      This app's llm-gateway virtual key (alias coding-agent, models relay/* and local/*). Must equal
-      llm-gateway's APP_KEY_CODING_AGENT, from which the gateway provisions the key. Never the master key.
+      This app's llm-gateway virtual key (alias coding-agent, models relay/* and local/*). It is
+      llm-gateway's APP_KEY_CODING_AGENT (same_as), from which the gateway provisions the key, so sealed
+      secrets sets it once for both apps. Never the master key.
     generate: none
+    same_as: llm-gateway/APP_KEY_CODING_AGENT
 telemetry_off_env:
   OH_TELEMETRY_EXPORTER: none
   DO_NOT_TRACK: "1"
@@ -68,13 +70,15 @@ license_exclusions:
   - "anomalyco/opencode:packages/enterprise/"
 bootstrap:
   service: coding-agent-bootstrap
-  # On the bootstrap job's own volume, which the agent's container does not mount.
-  done_file: /var/lib/sealed-bootstrap/done
+  # <volume>/<path> under /mnt/sealed-data/coding-agent/: the bootstrap job's own volume, which the
+  # agent's container does not mount. sealed-agent keeps the code route closed until it exists.
+  done_file: coding-agent-bootstrap/done
 notes: >-
   Local runtime: commands run inside coding-agent-server as uid 10001 with no_new_privs, no Docker
-  socket. This app never holds the gateway master key: llm-gateway provisions the virtual key
-  LLM_GATEWAY_KEY (alias coding-agent, models relay/* and local/*, rate limited) from its secret
-  APP_KEY_CODING_AGENT. At every start the bootstrap job waits until the gateway accepts that key and
+  socket; no service starts as root (volume owners come from x-sealed-owner). This app never holds the
+  gateway master key: llm-gateway provisions the virtual key LLM_GATEWAY_KEY (alias coding-agent,
+  models relay/* and local/*, rate limited) from its secret APP_KEY_CODING_AGENT, which LLM_GATEWAY_KEY
+  refers to (same_as). At every start the bootstrap job waits until the gateway accepts that key and
   seeds PATCH /api/settings with base_url http://llm-gateway:4000 and model litellm_proxy/relay/default
   (a gateway model chosen earlier is kept); the gateway itself falls back from relay/default to the local
   model. Egress is closed by default; add git hosts (for example github.com:443) as customer egress
