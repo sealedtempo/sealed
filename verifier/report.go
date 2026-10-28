@@ -76,7 +76,9 @@ func (r *Report) pass(name, detail string, data map[string]any) { r.add(name, tr
 
 func (r *Report) fail(name, detail string, data map[string]any) { r.add(name, false, detail, data) }
 
-func (r *Report) failf(name, format string, args ...any) { r.fail(name, fmt.Sprintf(format, args...), nil) }
+func (r *Report) failf(name, format string, args ...any) {
+	r.fail(name, fmt.Sprintf(format, args...), nil)
+}
 
 // finish computes OK.
 func (r *Report) finish() *Report {

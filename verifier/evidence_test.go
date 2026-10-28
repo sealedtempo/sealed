@@ -33,7 +33,9 @@ var (
 
 type offline struct{}
 
-func (offline) Get(string) (map[string][]string, []byte, error) { return nil, nil, errors.New("offline") }
+func (offline) Get(string) (map[string][]string, []byte, error) {
+	return nil, nil, errors.New("offline")
+}
 
 func devVerifier(t *testing.T) *attest.Verifier {
 	t.Helper()
@@ -291,9 +293,11 @@ func TestTamperMatrix(t *testing.T) {
 			fail:   []string{verify.CheckConfigBinding},
 		},
 		{
-			name:   "simulated quote on a production verifier",
-			mutate: func(t *testing.T, e *env) { e.deps.Quotes, _ = attest.NewVerifier(attest.VerifierOptions{Getter: offline{}}) },
-			fail:   []string{verify.CheckQuote, verify.CheckTDAttributes, verify.CheckImageMeasurements, verify.CheckRTMR3, verify.CheckComposeHash, verify.CheckReportData},
+			name: "simulated quote on a production verifier",
+			mutate: func(t *testing.T, e *env) {
+				e.deps.Quotes, _ = attest.NewVerifier(attest.VerifierOptions{Getter: offline{}})
+			},
+			fail: []string{verify.CheckQuote, verify.CheckTDAttributes, verify.CheckImageMeasurements, verify.CheckRTMR3, verify.CheckComposeHash, verify.CheckReportData},
 		},
 		{
 			name:   "composer not wired",
