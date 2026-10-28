@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { QuoteVerifier, VerifiedTdQuote } from '../../src/providers/tdx.js'
-import { mrConfigIdForCompose, replayRtmr3 } from '../../src/providers/tdx.js'
+import { mrConfigIdForCompose, osMeasurementsHash, replayRtmr3 } from '../../src/providers/tdx.js'
 
 export const APP_COMPOSE = '{"docker_compose_file":"services: {}","manifest_version":2,"name":"gateway"}'
 export const COMPOSE_HASH = createHash('sha256').update(APP_COMPOSE).digest('hex')
@@ -27,6 +27,10 @@ export function fakeQuote(fields: { reportData: Uint8Array; rtmr3?: Uint8Array; 
   return Buffer.from(json).toString('hex')
 }
 
+/** OS measurements of the fake quotes: MRTD 0x11.., RTMR0 0x22.., RTMR1 0x33.., RTMR2 0x44... */
+const OS = { mrTd: new Uint8Array(48).fill(0x11), rtmr0: new Uint8Array(48).fill(0x22), rtmr1: new Uint8Array(48).fill(0x33), rtmr2: new Uint8Array(48).fill(0x44) }
+export const OS_MEASUREMENTS_HASH = osMeasurementsHash({ ...OS, tcbStatus: '', advisoryIds: [], reportData: new Uint8Array(), rtmr3: new Uint8Array(), mrConfigId: new Uint8Array() })
+
 export const fakeQuoteVerifier: QuoteVerifier = {
   async verify(quote: Uint8Array): Promise<VerifiedTdQuote> {
     const f = JSON.parse(Buffer.from(quote).toString('utf8'))
@@ -36,7 +40,7 @@ export const fakeQuoteVerifier: QuoteVerifier = {
       reportData: Uint8Array.from(Buffer.from(f.reportData, 'hex')),
       rtmr3: Uint8Array.from(Buffer.from(f.rtmr3, 'hex')),
       mrConfigId: Uint8Array.from(Buffer.from(f.mrConfigId, 'hex')),
-      mrTd: new Uint8Array(48),
+      ...OS,
     }
   },
 }

@@ -13,18 +13,29 @@ function list(value: string | undefined): string[] {
   return (value ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 }
 
-/** Builds the verifier for one provider, or undefined when its API key is not configured. */
+/**
+ * Builds the verifier for one provider, or undefined when its API key is not configured. Code
+ * identity comes from reviewed allowlists in the measured fragment, one per provider: Tinfoil
+ * pins its Sigstore release, Phala and NEAR AI pin compose hashes (and NEAR AI its OS image).
+ * ALLOW_UNPINNED_PROVIDER_CODE=1 accepts empty lists (development only; never set in the fragment).
+ */
 export function verifierFor(provider: ProviderId, env: NodeJS.ProcessEnv = process.env): ProviderVerifier | undefined {
   const apiKey = readSecret(PROVIDER_KEY_ENV[provider], env)
   if (!apiKey) return undefined
-  const accepted = list(env.ACCEPTED_COMPOSE_HASHES)
+  const allowUnpinned = env.ALLOW_UNPINNED_PROVIDER_CODE === '1'
   switch (provider) {
     case 'tinfoil':
       return tinfoilVerifier({ enclaveURL: env.TINFOIL_ENCLAVE_URL, configRepo: env.TINFOIL_CONFIG_REPO })
     case 'phala':
-      return phalaVerifier({ baseURL: env.PHALA_BASE_URL, acceptedComposeHashes: accepted })
+      return phalaVerifier({ baseURL: env.PHALA_BASE_URL, acceptedComposeHashes: list(env.PHALA_ACCEPTED_COMPOSE_HASHES), allowUnpinned })
     case 'nearai':
-      return nearAiVerifier({ baseURL: env.NEARAI_BASE_URL, apiKey, acceptedComposeHashes: accepted })
+      return nearAiVerifier({
+        baseURL: env.NEARAI_BASE_URL,
+        apiKey,
+        acceptedComposeHashes: list(env.NEARAI_ACCEPTED_COMPOSE_HASHES),
+        acceptedOsMeasurements: list(env.NEARAI_ACCEPTED_OS_MEASUREMENTS),
+        allowUnpinned,
+      })
     case 'privatemode':
       throw new Error('privatemode runs as its own attesting proxy container, not as a sidecar')
   }

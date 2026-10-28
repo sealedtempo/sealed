@@ -1,16 +1,21 @@
 import { proxyFor } from './pinned-fetch.js'
-import { INTEL_PCS_URL } from './tdx.js'
+import { INTEL_PCS_URL, assertPinned } from './tdx.js'
 import { AttestationFailure, type FetchLike, type ProviderVerifier, type VerifiedChannel, nowSeconds } from './types.js'
 
 /**
  * Phala Confidential AI through its official SDK `@phala/aci-verifier` (Apache-2.0).
  * `connectAci()` fetches a nonce-bound ACI report, verifies the TDX quote with dcap-qvl,
  * the keyset binding and expiry, the RTMR3 compose measurement, and returns a fetch whose
- * TLS is pinned to the attested SPKI set. We additionally require a VERIFIED verdict.
+ * TLS is pinned to the attested SPKI set. We additionally require a VERIFIED verdict and a
+ * compose hash on the reviewed allowlist: with an empty list the SDK only reports the
+ * measurement without claiming the release was reviewed, so the sidecar refuses it.
  */
 export type PhalaOptions = {
   baseURL?: string
+  /** Reviewed compose hashes of the Phala serving stack (PHALA_ACCEPTED_COMPOSE_HASHES). */
   acceptedComposeHashes?: readonly string[]
+  /** Development only: accept an unreviewed compose (empty allowlist). */
+  allowUnpinned?: boolean
   requireReceipt?: boolean
   pccsUrl?: string
   proxy?: string
@@ -75,6 +80,12 @@ export function phalaVerifier(options: PhalaOptions = {}): ProviderVerifier {
         await aci.close().catch(() => {})
         throw new AttestationFailure('aci', verdict.line)
       }
+      try {
+        assertPinned('compose', aci.identity.composeHash, options.acceptedComposeHashes ?? [], 'PHALA_ACCEPTED_COMPOSE_HASHES', options.allowUnpinned)
+      } catch (error) {
+        await aci.close().catch(() => {})
+        throw error
+      }
       return {
         baseURL: aci.baseURL.replace(/\/+$/, ''),
         fetch: aci.fetch,
@@ -85,6 +96,7 @@ export function phalaVerifier(options: PhalaOptions = {}): ProviderVerifier {
           workloadKeysetDigest: aci.identity.workloadKeysetDigest,
           tlsSpkiSha256: aci.identity.tlsSpkiPins.join(','),
           verdict: verdict.line,
+          pinned: options.acceptedComposeHashes?.length ? 'compose' : 'not pinned (development)',
         },
       }
     },

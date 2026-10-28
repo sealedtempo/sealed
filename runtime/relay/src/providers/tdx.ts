@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { keccak256 } from 'viem'
 import { AttestationFailure } from './types.js'
 
 /** Fields of a verified TDX quote that provider checks need. */
@@ -9,6 +10,9 @@ export type VerifiedTdQuote = {
   rtmr3: Uint8Array
   mrConfigId: Uint8Array
   mrTd: Uint8Array
+  rtmr0: Uint8Array
+  rtmr1: Uint8Array
+  rtmr2: Uint8Array
 }
 
 /** Verifies a raw TDX quote against Intel collateral. Implementations throw on an invalid signature chain. */
@@ -39,6 +43,9 @@ export function dcapQuoteVerifier(pccsUrl: string = INTEL_PCS_URL): QuoteVerifie
         rtmr3: td.rtMr3,
         mrConfigId: td.mrConfigId,
         mrTd: td.mrTd,
+        rtmr0: td.rtMr0,
+        rtmr1: td.rtMr1,
+        rtmr2: td.rtMr2,
       }
     },
   }
@@ -93,6 +100,33 @@ export function mrConfigIdForCompose(appCompose: string): Uint8Array {
 
 export function composeHash(appCompose: string): string {
   return createHash('sha256').update(appCompose, 'utf8').digest('hex')
+}
+
+/**
+ * keccak256(mrtd || rtmr0 || rtmr1 || rtmr2), INTERFACES section 2 measurementsHash: the OS image
+ * and VM configuration a quote was produced on (lowercase hex, no 0x).
+ */
+export function osMeasurementsHash(quote: VerifiedTdQuote): string {
+  const parts = [quote.mrTd, quote.rtmr0, quote.rtmr1, quote.rtmr2]
+  if (parts.some((p) => p?.length !== 48)) throw new AttestationFailure('os_image', 'quote lacks MRTD or RTMR0-2')
+  return keccak256(Buffer.concat(parts.map((p) => Buffer.from(p)))).slice(2)
+}
+
+const normalizeHash = (h: string) => h.toLowerCase().replace(/^0x/, '')
+
+/**
+ * A provider's code identity must be on a reviewed allowlist; an empty list means nothing was
+ * reviewed, which fails unless `allowUnpinned` (a development flag) is set. The observed value is
+ * in the message so an operator can review it and pin it.
+ */
+export function assertPinned(kind: 'compose' | 'os_image', observed: string, accepted: readonly string[], setting: string, allowUnpinned = false): void {
+  const list = accepted.map(normalizeHash)
+  if (list.length === 0) {
+    if (allowUnpinned) return
+    throw new AttestationFailure(kind, `${kind === 'compose' ? 'compose hash' : 'OS measurements hash'} ${observed} is not pinned: no reviewed ${setting} configured`)
+  }
+  if (!list.includes(normalizeHash(observed)))
+    throw new AttestationFailure(kind, `${kind === 'compose' ? 'compose hash' : 'OS measurements hash'} ${observed} is not in ${setting}`)
 }
 
 /** Checks RTMR3 replay and the compose measurement for a dstack workload. Returns sha256(app_compose). */

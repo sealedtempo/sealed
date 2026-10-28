@@ -77,11 +77,22 @@ describe('Phala ACI verifier module', () => {
   it('rejects unverified verdicts and connection errors', async () => {
     let closed = false
     const notVerified = phalaVerifier({
+      acceptedComposeHashes: ['cc'.repeat(32)],
       connect: async () => ({ baseURL: 'x', fetch: fetch, identity: identity(false), close: async () => void (closed = true) }),
     })
     await expect(notVerified.verify()).rejects.toThrow(/NOT VERIFIED/)
     expect(closed).toBe(true)
     const broken = phalaVerifier({ connect: async () => Promise.reject(new Error('attestation_verification')) })
     await expect(broken.verify()).rejects.toThrow(AttestationFailure)
+  })
+
+  it('refuses a compose hash nobody reviewed unless the development flag is set', async () => {
+    let closed = 0
+    const connect = async () => ({ baseURL: 'https://inference.phala.com/v1', fetch, identity: identity(true), close: async () => void closed++ })
+    await expect(phalaVerifier({ connect }).verify()).rejects.toThrow(`compose hash ${'cc'.repeat(32)} is not pinned: no reviewed PHALA_ACCEPTED_COMPOSE_HASHES`)
+    expect(closed).toBe(1)
+    await expect(phalaVerifier({ connect, acceptedComposeHashes: ['ab'.repeat(32)] }).verify()).rejects.toThrow(/not in PHALA_ACCEPTED_COMPOSE_HASHES/)
+    const dev = await phalaVerifier({ connect, allowUnpinned: true }).verify()
+    expect(dev.evidence.pinned).toBe('not pinned (development)')
   })
 })
