@@ -1,0 +1,166 @@
+{
+  "chainId": 4217,
+  "compiler": {
+    "evmVersion": "osaka",
+    "openzeppelin": "5.7.0",
+    "optimizer": true,
+    "optimizerRuns": 200,
+    "solc": "0.8.38",
+    "viaIR": false
+  },
+  "config": {
+    "feeToken": "0x20C000000000000000000000b9537d11c60E8b50",
+    "maxAttestationAge": 86400,
+    "ops": "0x690b69aEb657D498090352df89d71F2E21F9d0E1",
+    "oracleSigner": "0xf90f3c11694cB52769fe6064b853D66f1945b3Fb",
+    "owner": "0x17273df738510FD3d3Fe6Ff7D3De2E0122c832cB",
+    "perDeploymentDailyCap": "20000000",
+    "perPaymentCap": "5000000",
+    "treasury": "0x755A1E289503c7109D01a74eD253bA0F724Ca3eB",
+    "verifierMethod1": "0xf680E602758222d5aE1CcD797a03022bCE2dd353",
+    "verifierMethod2": "0x0000000000000000000000000000000000000000"
+  },
+  "contracts": {
+    "AppRegistry": {
+      "address": "0x88C91CAcB74cCeC3b8A1823977EEC42aE3b93b43",
+      "blockNumber": 46314880,
+      "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb",
+      "txHash": "0x0db65dce37b276e6980a670781d9f2976d65f03aa89d2dc955e06d0a7c79022f",
+      "gasUsed": 10300154
+    },
+    "DeploymentRegistry": {
+      "address": "0x254eFB9d1809A95Ec6d233cC57b3a10849bd2C8E",
+      "blockNumber": 46314885,
+      "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb00000000000000000000000018ab956ea44757587896dfd25632fb3e89f7002d00000000000000000000000088c91cacb74ccec3b8a1823977eec42ae3b93b43",
+      "txHash": "0xdf36bd2a090a150804343ac89309b35be841cb39c2024a865730841f5df3e2ac",
+      "gasUsed": 12069223
+    },
+    "FeeSplitter": {
+      "address": "0x3D288c0756c3F26Da0f41257D688bAB3dB3d94AD",
+      "blockNumber": 46314891,
+      "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb000000000000000000000000254efb9d1809a95ec6d233cc57b3a10849bd2c8e00000000000000000000000088c91cacb74ccec3b8a1823977eec42ae3b93b4300000000000000000000000020c000000000000000000000b9537d11c60e8b50000000000000000000000000755a1e289503c7109d01a74ed253ba0f724ca3eb00000000000000000000000000000000000000000000000000000000004c4b400000000000000000000000000000000000000000000000000000000001312d00",
+      "txHash": "0x6e8724ebe875cf299fd535ea3bdac61b99cc46bd19924681a50ff45c1aba3f5f",
+      "gasUsed": 9234891
+    },
+    "OracleSignatureVerifier": {
+      "address": "0xf680E602758222d5aE1CcD797a03022bCE2dd353",
+      "blockNumber": 46314882,
+      "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb",
+      "txHash": "0xde1c4846b358b65b83edeef7a49a1b6de3d3a410a955e74cbab8cd52bae033ea",
+      "gasUsed": 3091768
+    },
+    "PlatformRegistry": {
+      "address": "0x18AB956ea44757587896dfD25632FB3e89F7002d",
+      "blockNumber": 46314877,
+      "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb",
+      "txHash": "0x92146d357cfedea43a0454d9602b9b6e61aaad28f2eccb1e6ecbf6e35c81dfb7",
+      "gasUsed": 5681019
+    }
+  },
+  "deployer": "0x17273df738510FD3d3Fe6Ff7D3De2E0122c832cB",
+  "network": "tempo-mainnet",
+  "scriptTimestamp": 1793202622,
+  "startBlock": 46314861,
+  "version": "1.0.0",
+  "transactions": [
+    {
+      "txHash": "0x92146d357cfedea43a0454d9602b9b6e61aaad28f2eccb1e6ecbf6e35c81dfb7",
+      "blockNumber": 46314877,
+      "gasUsed": 5681019,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CREATE",
+      "contract": "PlatformRegistry",
+      "function": null,
+      "address": "0x18ab956ea44757587896dfd25632fb3e89f7002d",
+      "feeUsd": 0.003408611405681019
+    },
+    {
+      "txHash": "0x0db65dce37b276e6980a670781d9f2976d65f03aa89d2dc955e06d0a7c79022f",
+      "blockNumber": 46314880,
+      "gasUsed": 10300154,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CREATE",
+      "contract": "AppRegistry",
+      "function": null,
+      "address": "0x88c91cacb74ccec3b8a1823977eec42ae3b93b43",
+      "feeUsd": 0.006180092410300154
+    },
+    {
+      "txHash": "0xde1c4846b358b65b83edeef7a49a1b6de3d3a410a955e74cbab8cd52bae033ea",
+      "blockNumber": 46314882,
+      "gasUsed": 3091768,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CREATE",
+      "contract": "OracleSignatureVerifier",
+      "function": null,
+      "address": "0xf680e602758222d5ae1ccd797a03022bce2dd353",
+      "feeUsd": 0.001855060803091768
+    },
+    {
+      "txHash": "0xdf36bd2a090a150804343ac89309b35be841cb39c2024a865730841f5df3e2ac",
+      "blockNumber": 46314885,
+      "gasUsed": 12069223,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CREATE",
+      "contract": "DeploymentRegistry",
+      "function": null,
+      "address": "0x254efb9d1809a95ec6d233cc57b3a10849bd2c8e",
+      "feeUsd": 0.007241533812069223
+    },
+    {
+      "txHash": "0x6e8724ebe875cf299fd535ea3bdac61b99cc46bd19924681a50ff45c1aba3f5f",
+      "blockNumber": 46314891,
+      "gasUsed": 9234891,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CREATE",
+      "contract": "FeeSplitter",
+      "function": null,
+      "address": "0x3d288c0756c3f26da0f41257d688bab3db3d94ad",
+      "feeUsd": 0.005540934609234891
+    },
+    {
+      "txHash": "0x11412ed7236e023e43ba7eba3b4cacd41dbe083f4517a703f7396e95dd85b7df",
+      "blockNumber": 46314897,
+      "gasUsed": 280902,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CALL",
+      "contract": "AppRegistry",
+      "function": "grantRegistrar(address)",
+      "address": "0x88c91cacb74ccec3b8a1823977eec42ae3b93b43",
+      "feeUsd": 0.000168541200280902
+    },
+    {
+      "txHash": "0xc5829f24d93581188048e0e2abf0275b81129798c444274cbf6b92ef9041bcb0",
+      "blockNumber": 46314902,
+      "gasUsed": 532030,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CALL",
+      "contract": "OracleSignatureVerifier",
+      "function": "addSigner(address)",
+      "address": "0xf680e602758222d5ae1ccd797a03022bce2dd353",
+      "feeUsd": 0.00031921800053203
+    },
+    {
+      "txHash": "0xd0354502621e540b2ff1154f89fc7fb672046b93a4be15fb23955cbfa6236b76",
+      "blockNumber": 46314905,
+      "gasUsed": 283315,
+      "effectiveGasPrice": 600000001,
+      "status": "0x1",
+      "type": "CALL",
+      "contract": "DeploymentRegistry",
+      "function": "setVerifier(uint8,address)",
+      "address": "0x254efb9d1809a95ec6d233cc57b3a10849bd2c8e",
+      "feeUsd": 0.000169989000283315
+    }
+  ],
+  "deployBlock": 46314877,
+  "totalGasUsed": 41473302,
+  "totalFeeUsd": 0.0248839812414733
+}
