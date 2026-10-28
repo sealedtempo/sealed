@@ -382,7 +382,7 @@ export class Agent {
   private refreshSpendLimit(log: Logger = this.log): Promise<void> {
     const payer = this.payer;
     const budget = this.budget;
-    if (!payer?.spendLimit || !budget) return Promise.resolve();
+    if (!payer?.spendLimit || !budget?.followsOnchain) return Promise.resolve();
     if (this.limitRead) return this.limitRead;
     const mark = budget.beginOnchainRead();
     const read = withTimeout(payer.spendLimit(), 15_000)
@@ -540,9 +540,11 @@ export class Agent {
     const feeToken = (this.ctx as DeploymentContext).config.feeToken.toLowerCase();
     if (r.data.currency && r.data.currency.toLowerCase() !== feeToken) throw new UsageRejected("the reservation's currency is not the deployment's fee token", 422);
     const budget = this.budget as SpendBudget;
-    const age = budget.onchainAge(this.clock.now());
-    if (age === Number.POSITIVE_INFINITY) await this.refreshSpendLimit();
-    else if (age >= ONCHAIN_LIMIT_MAX_AGE_SEC) void this.refreshSpendLimit();
+    if (budget.followsOnchain) {
+      const age = budget.onchainAge(this.clock.now());
+      if (age === Number.POSITIVE_INFINITY) await this.refreshSpendLimit();
+      else if (age >= ONCHAIN_LIMIT_MAX_AGE_SEC) void this.refreshSpendLimit();
+    }
     const result = budget.reserve(r.data.amount, this.clock.now());
     if (result.ok) {
       try {

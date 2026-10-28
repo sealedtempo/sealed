@@ -192,7 +192,7 @@ export class SpendBudget {
   }
 
   /** What the shared limit still allows before reservations and reserved_for_fees. */
-  private headroom(now: number): bigint {
+  private headroom(): bigint {
     const oc = this.state.onchain;
     if (this.o.onchainLimit && oc?.remaining !== undefined) {
       return big(oc.remaining) - nonNeg(big(this.state.spent) - big(oc.spentAtRead));
@@ -205,7 +205,7 @@ export class SpendBudget {
   available(now: number): bigint {
     this.tick(now);
     const end = this.onchainPeriodEnd(now) ?? this.state.windowEnd;
-    return nonNeg(this.headroom(now) - this.outstanding() - this.o.feeReserve(end, now));
+    return nonNeg(this.headroom() - this.outstanding() - this.o.feeReserve(end, now));
   }
 
   reserve(amount: bigint, now: number): ReserveResult {
@@ -222,7 +222,9 @@ export class SpendBudget {
 
   /** Undoes a reservation that was never handed out (the state could not be saved). */
   cancel(reservationId: string): void {
-    if (delete this.state.reservations[reservationId]) this.changed();
+    if (!(reservationId in this.state.reservations)) return;
+    delete this.state.reservations[reservationId];
+    this.changed();
   }
 
   /** The payer settles a reservation with what it actually spent (0 when the debit failed). */
@@ -317,6 +319,11 @@ export class SpendBudget {
       s.aligned = true;
     }
     this.changed();
+  }
+
+  /** True in access-key mode: the onchain authorization sets the limit. */
+  get followsOnchain(): boolean {
+    return this.o.onchainLimit === true;
   }
 
   /** Seconds since the onchain limit was last read (Infinity before the first read). */

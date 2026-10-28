@@ -200,14 +200,21 @@ export class Settler {
       // Mined and reverted: the network fee left the limit. Maybe sent: count all it could take until its receipt shows.
       if (err instanceof PaymentError && err.outcome === "reverted") this.d.spend?.recordFees(err.networkFee ?? 0n, now, err.networkFee);
       if (err instanceof PaymentError && err.outcome === "unknown" && err.txHash) this.d.spend?.recordPendingFee(err.txHash, sum, sum + reserve, now);
+      if (err instanceof PaymentError && err.outcome !== "not_sent") await this.saveNow();
       throw err;
     }
     const { txHash, gasUsed, networkFee } = paid;
     for (const e of chosen) ledger.markPaid(e.usageHash, app, txHash, now);
     this.d.spend?.recordFees(sum + (networkFee ?? 0n), now, networkFee);
+    // On disk before the next app's transaction: a restart must not forget what this one took from the limit.
+    await this.saveNow();
     const topUps = chosen.filter((e) => e.paid > 0n).length;
     log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, topUps, txHash, gasUsed, mode: payer.mode });
     return { app, result: "paid", txHash, amount: sum, reports: chosen.length };
+  }
+
+  private async saveNow(): Promise<void> {
+    await this.d.save().catch((err) => this.d.log.error("state save failed", errorFields(err)));
   }
 
   /** Looks up the receipts of payments whose outcome was unknown and corrects what was counted for them. */
