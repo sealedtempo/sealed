@@ -31,7 +31,16 @@ type Client struct {
 	udp     *dns.Client
 	tcp     *dns.Client
 	next    atomic.Uint32
+	cache   *addrCache
 }
+
+// Proxy lookups are cached for at most cacheTTL (less if the records say
+// so), so the proxy keeps working for recently used names when a DNS flood
+// gets the VM rate-limited upstream. The DNS server path is never cached.
+const (
+	cacheTTL     = 30 * time.Second
+	cacheEntries = 1024
+)
 
 // New returns a Client for servers. timeout bounds each single exchange.
 func New(servers []netip.AddrPort, timeout time.Duration) *Client {
@@ -39,8 +48,9 @@ func New(servers []netip.AddrPort, timeout time.Duration) *Client {
 		timeout = 2 * time.Second
 	}
 	c := &Client{
-		udp: &dns.Client{Net: "udp", UDPSize: EDNSSize, Timeout: timeout},
-		tcp: &dns.Client{Net: "tcp", Timeout: timeout},
+		udp:   &dns.Client{Net: "udp", UDPSize: EDNSSize, Timeout: timeout},
+		tcp:   &dns.Client{Net: "tcp", Timeout: timeout},
+		cache: newAddrCache(cacheEntries, cacheTTL),
 	}
 	for _, s := range servers {
 		c.servers = append(c.servers, s.String())
@@ -164,6 +174,9 @@ func (c *Client) LookupIP(ctx context.Context, network, host string) ([]net.IP, 
 }
 
 func (c *Client) lookup(ctx context.Context, name string, qtype uint16) ([]netip.Addr, error) {
+	if addrs, ok := c.cache.get(name, qtype); ok {
+		return addrs, nil
+	}
 	q := new(dns.Msg)
 	q.SetQuestion(dns.Fqdn(name), qtype)
 	q.RecursionDesired = true
@@ -177,7 +190,82 @@ func (c *Client) lookup(ctx context.Context, name string, qtype uint16) ([]netip
 	default:
 		return nil, fmt.Errorf("upstream rcode %s", rcodeName(resp.Rcode))
 	}
-	return AddressesFor(resp, name, qtype), nil
+	addrs := AddressesFor(resp, name, qtype)
+	if len(addrs) > 0 {
+		c.cache.put(name, qtype, addrs, minTTL(resp.Answer))
+	}
+	return addrs, nil
+}
+
+func minTTL(rrs []dns.RR) time.Duration {
+	ttl := uint32(1<<32 - 1)
+	for _, rr := range rrs {
+		ttl = min(ttl, rr.Header().Ttl)
+	}
+	return time.Duration(ttl) * time.Second
+}
+
+type cacheKey struct {
+	name  string
+	qtype uint16
+}
+
+type cacheEntry struct {
+	addrs   []netip.Addr
+	expires time.Time
+}
+
+// addrCache is a small positive cache. When full it drops expired entries,
+// then an arbitrary one; it never holds an answer past its TTL.
+type addrCache struct {
+	mu     sync.Mutex
+	max    int
+	maxTTL time.Duration
+	now    func() time.Time
+	m      map[cacheKey]cacheEntry
+}
+
+func newAddrCache(max int, maxTTL time.Duration) *addrCache {
+	return &addrCache{max: max, maxTTL: maxTTL, now: time.Now, m: map[cacheKey]cacheEntry{}}
+}
+
+func (c *addrCache) get(name string, qtype uint16) ([]netip.Addr, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := cacheKey{name, qtype}
+	e, ok := c.m[k]
+	if !ok {
+		return nil, false
+	}
+	if !c.now().Before(e.expires) {
+		delete(c.m, k)
+		return nil, false
+	}
+	return append([]netip.Addr(nil), e.addrs...), true
+}
+
+func (c *addrCache) put(name string, qtype uint16, addrs []netip.Addr, ttl time.Duration) {
+	ttl = min(ttl, c.maxTTL)
+	if ttl < time.Second {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	if len(c.m) >= c.max {
+		for k, e := range c.m {
+			if !now.Before(e.expires) {
+				delete(c.m, k)
+			}
+		}
+		for k := range c.m {
+			if len(c.m) < c.max {
+				break
+			}
+			delete(c.m, k)
+		}
+	}
+	c.m[cacheKey{name, qtype}] = cacheEntry{addrs: append([]netip.Addr(nil), addrs...), expires: now.Add(ttl)}
 }
 
 // AddressesFor returns the A or AAAA addresses that answer qname, following

@@ -176,3 +176,69 @@ func TestLookupPort(t *testing.T) {
 		t.Error("Exchange without servers succeeded")
 	}
 }
+
+func TestLookupIPCachesWithinTTL(t *testing.T) {
+	up := dnstest.Start(t)
+	up.AddA("api.example.test", "203.0.113.10")
+	c := New([]netip.AddrPort{addr(t, up.Addr)}, time.Second)
+	now := time.Unix(1000, 0)
+	c.cache.now = func() time.Time { return now }
+	count := func() int {
+		n := 0
+		for _, q := range up.Queries() {
+			if q.Name == "api.example.test." && q.Type == dns.TypeA {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 3; i++ {
+		ips, err := c.LookupIP(context.Background(), "ip4", "api.example.test")
+		if err != nil || len(ips) != 1 || ips[0].String() != "203.0.113.10" {
+			t.Fatalf("LookupIP = %v, %v", ips, err)
+		}
+	}
+	if count() != 1 {
+		t.Fatalf("upstream queried %d times within the TTL", count())
+	}
+	// Even with every upstream failing, a cached name still resolves.
+	up.SetServfail(true)
+	if _, err := c.LookupIP(context.Background(), "ip4", "api.example.test"); err != nil {
+		t.Fatalf("cached lookup failed during an upstream outage: %v", err)
+	}
+	// Past the cap (30s, below the record's 60s TTL) the entry is gone.
+	now = now.Add(cacheTTL)
+	if _, err := c.LookupIP(context.Background(), "ip4", "api.example.test"); err == nil {
+		t.Fatal("stale cache entry served past its TTL")
+	}
+}
+
+func TestAddrCacheBounds(t *testing.T) {
+	c := newAddrCache(2, time.Minute)
+	now := time.Unix(1000, 0)
+	c.now = func() time.Time { return now }
+	a := []netip.Addr{netip.MustParseAddr("203.0.113.1")}
+	c.put("zero.test", dns.TypeA, a, 0)
+	if _, ok := c.get("zero.test", dns.TypeA); ok {
+		t.Error("TTL 0 answer cached")
+	}
+	c.put("a.test", dns.TypeA, a, time.Hour)
+	c.put("b.test", dns.TypeA, a, time.Second)
+	now = now.Add(2 * time.Second)
+	c.put("c.test", dns.TypeA, a, time.Hour) // b expired: it goes first
+	if _, ok := c.get("a.test", dns.TypeA); !ok {
+		t.Error("live entry evicted while an expired one was present")
+	}
+	c.put("d.test", dns.TypeA, a, time.Hour)
+	if len(c.m) > 2 {
+		t.Errorf("cache grew past its bound: %d", len(c.m))
+	}
+	if _, ok := c.get("d.test", dns.TypeA); !ok {
+		t.Error("newest entry missing")
+	}
+	got, _ := c.get("d.test", dns.TypeA)
+	got[0] = netip.MustParseAddr("127.0.0.1")
+	if again, _ := c.get("d.test", dns.TypeA); again[0] != a[0] {
+		t.Error("cache returned its internal slice")
+	}
+}
