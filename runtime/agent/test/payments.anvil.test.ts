@@ -1,4 +1,4 @@
-// Fee payments against a local Tempo node (anvil --network tempo, hardfork T4) with the Sealed
+// Fee payments against a local Tempo node (anvil --network tempo, hardfork T12) with the Sealed
 // contracts deployed: access-key authorization through the AccountKeychain precompile, one
 // approve + payFees batch per app, FeeSplitter caps, the grace period with the payment-needed
 // switch (fake Caddy admin) and recovery, a leg the customer paid short topped up to its fee,

@@ -12,6 +12,8 @@ export const PATH_USD: Address = "0x20c0000000000000000000000000000000000000";
 export const USDC_E: Address = "0x20c000000000000000000000b9537d11c60e8b50";
 export const ACCOUNT_KEYCHAIN: Address = "0xaaaaaaaa00000000000000000000000000000000";
 export const FEE_TOKEN_DECIMALS = 6;
+/** The Tempo hardfork local nodes run (anvil --network tempo --hardfork T12), mainnet's until T13 (D-053). */
+export const LOCAL_HARDFORK = "t12" satisfies Hardfork.Hardfork;
 
 export { tempo as tempoMainnet };
 
@@ -24,7 +26,10 @@ export interface TempoChainOptions {
    * mainnet uses USDC.e (D-035) and local nodes use pathUSD (what anvil --network tempo funds).
    */
   feeToken?: Address;
-  /** Tempo hardfork the node runs. Local anvil 1.7.1 supports up to t4. */
+  /**
+   * Tempo hardfork the node runs. Local nodes default to t12, mainnet's hardfork (D-053; Foundry 1.8.6 knows t0..t14).
+   * Change it to t13 together with contracts/foundry.toml once T13 activates (2026-11-03 15:00 UTC).
+   */
   hardfork?: Hardfork.Hardfork;
 }
 
@@ -48,7 +53,7 @@ export function tempoChain(opts: TempoChainOptions = {}): Chain {
     name: `Tempo local ${chainId}`,
     testnet: true,
     feeToken,
-    hardfork: opts.hardfork ?? "t4",
+    hardfork: opts.hardfork ?? LOCAL_HARDFORK,
     blockExplorers: undefined,
     rpcUrls: { default: { http: [opts.rpcUrl ?? "http://127.0.0.1:8545"] } },
   }) as unknown as Chain;
