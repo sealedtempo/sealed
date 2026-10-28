@@ -1,0 +1,41 @@
+# Test fixture for scripts/docker-checks. Not a catalog entry. Both services
+# run the stand-in image (busybox plus the probe tool), which serves HTTP.
+schema: sealed-manifest/v1
+id: bravo
+name: Docker checks bravo
+category: developer
+description: Stand-in app with a primary and a non-primary service, used by the Docker network checks.
+release_version: 0.0.1-dc.1
+upstream:
+  repo: https://github.com/sealedtempo/sealed
+  version: 0.0.1
+  license_spdx: MIT
+  source_url: https://github.com/sealedtempo/sealed/tree/main/scripts/docker-checks
+maintainer:
+  name: Sealed docker checks
+  payout_address: "0x00000000000000000000000000000000000000a1"
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: bravo-web
+images:
+  - name: standin
+    source: build:scripts/docker-checks/images/standin
+    digest: sha256:d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0
+    license_spdx: MIT
+resources: {cpu: 1, memory_gb: 1, disk_gb: 1}
+routes:
+  - name: code
+    service: bravo-web
+    internal_port: 8080
+    path_or_host: code
+    auth: gate
+healthcheck:
+  service: bravo-web
+  http: /healthz
+  start_period_s: 5
+metering: {unit: app_hour, source: heartbeat}
+secrets: []
+telemetry_off_env:
+  DO_NOT_TRACK: "1"
+license_exclusions: []

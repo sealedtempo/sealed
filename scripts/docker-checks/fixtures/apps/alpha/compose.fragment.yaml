@@ -1,0 +1,10 @@
+services:
+  alpha-web:
+    image: "{{image:standin}}"
+    entrypoint: ["/probe", "serve", ":8080"]
+    depends_on:
+      alpha-db:
+        condition: service_started
+  alpha-db:
+    image: "{{image:standin}}"
+    entrypoint: ["/probe", "serve", ":5432"]

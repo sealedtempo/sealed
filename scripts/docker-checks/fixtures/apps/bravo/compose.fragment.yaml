@@ -1,0 +1,10 @@
+services:
+  bravo-web:
+    image: "{{image:standin}}"
+    entrypoint: ["/probe", "serve", ":8080"]
+    depends_on:
+      bravo-db:
+        condition: service_started
+  bravo-db:
+    image: "{{image:standin}}"
+    entrypoint: ["/probe", "serve", ":5432"]
