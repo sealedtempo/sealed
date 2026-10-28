@@ -207,6 +207,7 @@ export class Devnet {
     await this.stepUsageAccessKey(agentA);
     await this.stepUsageEnclaveAccount();
     await this.stepReboot(agentA);
+    await this.stepContainerRestart(agentA);
     await this.stepTamperCompose(a);
     await this.stepTamperDebugImage();
     await this.stepTamperNoQuote(a);
@@ -1083,6 +1084,30 @@ export class Devnet {
     check(after.lastAttestedAt > before.lastAttestedAt, "lastAttestedAt advanced");
     checkEq(Number(after.status), 1, "still Active");
     this.log.ok(`heartbeat landed onchain (tx ${ev.result.txHash}): new quoteHash, lastAttestedAt ${before.lastAttestedAt} -> ${after.lastAttestedAt}`);
+    writeFileSync(this.path("evidence-a.json"), `${JSON.stringify(ev.bundle, null, 2)}\n`);
+  }
+
+  /** The agent container restarts inside one boot: tmpfs, dm mapping and mount stay. */
+  private async stepContainerRestart(run: AgentRun): Promise<void> {
+    this.log.step("Agent container restart inside one boot (tmpfs, dm mapping and mount kept)");
+    const ready0 = readJson<Ready>(join(run.paths.out, "ready.json"));
+    const before = await this.onchainRecord(run.composed.deploymentId);
+    await run.proc.stop();
+    const sim = this.simEndpoints.get(run.composed.name) as string;
+    const env = run.env;
+    Object.assign(run, this.launchAgent(run.composed, run.name, sim, run.paths, run.port, { ...env, DEVNET_SAME_BOOT: "1" }));
+    run.env = env;
+    const ready = await this.waitReady(run);
+    checkEq(ready.deploymentId, ready0.deploymentId, "same deploymentId");
+    checkEq(ready.enclaveSigner, ready0.enclaveSigner, "same enclave signer");
+    checkEq(ready.disk.join(","), ready0.disk.join(","), "no LUKS command changed the disk: the live dm table and the mount were checked and kept");
+    const sb = this.checkServiceBinds(run);
+    this.log.ok(`the agent found its own mapping (volume key and backing device checked) and mount; all ${sb.binds} secret binds hold the same values`);
+    const ev = await this.waitEvidence(run);
+    checkEq(ev.result.kind, "heartbeat", "evidence after the restart");
+    const after = await this.onchainRecord(run.composed.deploymentId);
+    check(after.lastAttestedAt > before.lastAttestedAt && after.quoteHash !== before.quoteHash, "a new heartbeat landed");
+    this.log.ok(`heartbeat landed (tx ${ev.result.txHash})`);
     writeFileSync(this.path("evidence-a.json"), `${JSON.stringify(ev.bundle, null, 2)}\n`);
   }
 

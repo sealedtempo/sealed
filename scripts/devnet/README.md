@@ -70,12 +70,14 @@ agent host resolves them to 127.0.0.1, as sealed-egress's DNS would inside a VM.
    agent switches Caddy to the payment-needed page.
 10. Reboot with the same data disk: same deploymentId and enclave signer, the volume is opened (not formatted),
     secrets again, a heartbeat lands onchain with a new quote.
-11. One changed byte in app-compose.json: denied `compose_mismatch`, no secrets, no ready flag, no record.
-12. The debug image: `approveStack` reverts; the debug TD is denied `image_debug`.
-13. A release request with no quote: 403 `quote_invalid`, and the nonce is burned.
-14. `revokeStack`: the next boot is denied `stack_not_approved` and verify fails; re-approval restores it.
-15. `revokeRelease`: approval cannot be restored, the next boot is denied, `sealed verify` and `POST /v1/verify`
-    fail.
+11. Agent container restart inside one boot: the dm mapping and mount are found and checked, not redone; a
+    heartbeat lands.
+12. One changed byte in app-compose.json: denied `compose_mismatch`, no secrets, no ready flag, no record.
+13. The debug image: `approveStack` reverts; the debug TD is denied `image_debug`.
+14. A release request with no quote: 403 `quote_invalid`, and the nonce is burned.
+15. `revokeStack`: the next boot is denied `stack_not_approved` and verify fails; re-approval restores it.
+16. `revokeRelease`: approval cannot be restored, the next boot is denied, `sealed verify` and `POST /v1/verify`
+    fail; the api's catalog shows the revocation.
 
 The run prints each step with elapsed times and a summary with the assertion count and total time. Every process
 logs to `tmp/devnet/runs/<run id>/logs/`; a failed run keeps that directory and prints the failing assertion with

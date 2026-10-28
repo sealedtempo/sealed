@@ -40,9 +40,15 @@ describe("FakeLuksRunner with the agent's LuksDisk", () => {
     expect(readFileSync(t.o.mountInfoPath, "utf8")).toContain(`${mountInfoEscape(t.mountPoint)} rw,nosuid,nodev`);
     expect(mountInfoEscape("/a b\\c")).toBe("/a\\040b\\134c");
 
-    // Agent restart in the same boot: the mapping and mount are found and checked, nothing runs again.
-    await new LuksDisk({ device: t.o.device, name: "sealed-data", mountPoint: t.mountPoint, runner: first.runner, mountInfoPath: t.o.mountInfoPath, deviceId: async () => t.o.deviceId, log: silentLogger }).open(key(1));
-    expect(first.runner.state.ops).toEqual(["luksFormat", "open", "mkfs.ext4", "mount"]);
+    // Agent restart in the same boot (a new process, kernel state kept): the mapping and mount are found and
+    // checked, nothing runs again.
+    const sameBoot = new FakeLuksRunner({ ...t.o, newBoot: false });
+    await new LuksDisk({ device: t.o.device, name: "sealed-data", mountPoint: t.mountPoint, runner: sameBoot, mountInfoPath: t.o.mountInfoPath, deviceId: async () => t.o.deviceId, log: silentLogger }).open(key(1));
+    expect(sameBoot.state.ops).toEqual(["luksFormat", "open", "mkfs.ext4", "mount"]);
+    // ... and with another key the live table's volume key does not match.
+    await expect(
+      new LuksDisk({ device: t.o.device, name: "sealed-data", mountPoint: t.mountPoint, runner: new FakeLuksRunner({ ...t.o, newBoot: false }), mountInfoPath: t.o.mountInfoPath, deviceId: async () => t.o.deviceId, log: silentLogger }).open(key(9)),
+    ).rejects.toThrow("not the one derived from diskKey");
 
     // Reboot: a new runner (no mappings, empty mountinfo), the same disk state.
     const second = t.boot();

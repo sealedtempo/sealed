@@ -6,7 +6,9 @@
 //
 // It enforces what the real tools enforce for the agent's flow: open needs the passphrase the volume was
 // formatted with (so a reboot only opens the disk if the broker released the same diskKey), the dm table shows the
-// formatted volume key, and mounting needs an open mapping with a filesystem.
+// formatted volume key, and mounting needs an open mapping with a filesystem. Mappings are kernel state: they live
+// in a file next to mountinfo, so a restart of the agent inside one boot (a container restart) finds them, and a new
+// boot (`newBoot`) starts with none.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -56,19 +58,35 @@ export interface FakeLuksOptions {
   mountInfoPath: string;
   /** major:minor reported for the device. */
   deviceId: string;
+  /** A new boot: no mappings and nothing mounted (default). False for an agent restart inside the same boot. */
+  newBoot?: boolean;
 }
 
 export class FakeLuksRunner implements CommandRunner {
-  /** Open mappings of this boot: name -> device. */
-  private readonly mappings = new Map<string, string>();
+  /** Open mappings of this boot: name -> device (persisted in the kernel state file). */
+  private readonly mappings: Map<string, string>;
 
   private readonly o: FakeLuksOptions;
 
   constructor(o: FakeLuksOptions) {
     this.o = o;
     mkdirSync(dirname(o.mountInfoPath), { recursive: true });
-    // A new boot: nothing is mapped or mounted yet.
-    writeFileSync(o.mountInfoPath, "");
+    if (o.newBoot ?? true) {
+      // A new boot: nothing is mapped or mounted yet.
+      writeFileSync(o.mountInfoPath, "");
+      writeFileSync(this.kernelPath, "{}");
+    } else if (!existsSync(o.mountInfoPath)) {
+      writeFileSync(o.mountInfoPath, "");
+    }
+    this.mappings = new Map(Object.entries(existsSync(this.kernelPath) ? (JSON.parse(readFileSync(this.kernelPath, "utf8")) as Record<string, string>) : {}));
+  }
+
+  private get kernelPath(): string {
+    return `${this.o.mountInfoPath}.dm.json`;
+  }
+
+  private saveMappings(): void {
+    writeFileSync(this.kernelPath, JSON.stringify(Object.fromEntries(this.mappings)));
   }
 
   get state(): DiskState {
@@ -131,11 +149,13 @@ export class FakeLuksRunner implements CommandRunner {
         }
         if (this.mappings.has(name)) return fail(5, `Device ${name} already exists.`);
         this.mappings.set(name, dev);
+        this.saveMappings();
         this.record(s, "open");
         return ok();
       }
       case "cryptsetup close":
         this.mappings.delete(last);
+        this.saveMappings();
         this.record(s, "close");
         return ok();
       case "mkfs.ext4 -q": {

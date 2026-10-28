@@ -73,7 +73,8 @@ async function main(): Promise<void> {
     const attestHost = (JSON.parse(readFileSync(settings.stackPath ?? "", "utf8")) as { attestHost: string }).attestHost;
     tls = new ServedCertSource({ host: host as string, port: Number(port) }, attestHost);
   }
-  const runner = new FakeLuksRunner({ statePath: need("DEVNET_LUKS_STATE"), device: settings.dataDevice, mountInfoPath, deviceId: DEVICE_ID });
+  // DEVNET_SAME_BOOT=1: an agent (container) restart inside one boot keeps the dm mapping and the mount.
+  const runner = new FakeLuksRunner({ statePath: need("DEVNET_LUKS_STATE"), device: settings.dataDevice, mountInfoPath, deviceId: DEVICE_ID, newBoot: process.env.DEVNET_SAME_BOOT !== "1" });
   const agent = new Agent({
     settings,
     log,
