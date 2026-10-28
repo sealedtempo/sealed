@@ -14,8 +14,16 @@ event) never bills the same call twice. Events the agent could not take are kept
 bounded in-memory queue and retried with backoff, so a restart of the agent does not
 lose them. Without an id, only failures that cannot have reached the agent are retried.
 
-Only counts, names and the call id leave this module. Prompts, outputs, headers and
-request bodies are never read or sent.
+Only counts, names and the call id leave this module. Prompts, outputs and headers are
+never read or sent.
+
+The same callback also keeps paid relay calls from being retried (D-067), because a retried
+paid request is a new payment. Its pre-call hook reads only the request's model, its fallback
+lists and its retry settings: it drops retry settings a client sent (num_retries, max_retries,
+retry_policy, model_group_retry_policy), so the gateway's config decides, and it sets
+num_retries and max_retries to 0 on every request that names a relay/ route. A request-level 0
+is what LiteLLM 1.106.5 ranks first (Router.async_function_with_retries), above the
+deployment's own num_retries and any retry policy.
 """
 from __future__ import annotations
 
@@ -92,6 +100,43 @@ def build_event(slo: dict[str, Any]) -> Optional[dict[str, Any]]:
     if call_id is not None:
         event["id"] = call_id
     return event
+
+
+RELAY_PREFIX = "relay/"
+# Request keys that change how often LiteLLM sends a request.
+RETRY_KEYS = ("num_retries", "max_retries", "retry_policy", "model_group_retry_policy")
+# Request keys that name other routes LiteLLM may try after the requested one fails.
+FALLBACK_KEYS = ("fallbacks", "context_window_fallbacks", "content_policy_fallbacks")
+
+
+def _names_relay(value: Any, depth: int = 0) -> bool:
+    """True if value is, or contains (lists and mapping keys or values), a relay/ route name."""
+    if depth > 8:
+        return True  # an absurdly nested fallback spec: treat it as reaching the relay
+    if isinstance(value, str):
+        return value.startswith(RELAY_PREFIX)
+    if isinstance(value, dict):
+        return any(_names_relay(k, depth + 1) or _names_relay(v, depth + 1) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_names_relay(v, depth + 1) for v in value)
+    return False
+
+
+def reaches_relay(data: dict[str, Any]) -> bool:
+    """True if this request may be sent to a relay/ route: as its model or as a fallback."""
+    return _names_relay(data.get("model")) or any(_names_relay(data.get(k)) for k in FALLBACK_KEYS)
+
+
+def without_relay_retries(data: Any) -> Any:
+    """The request data with client retry settings removed, and no retries if it may reach the relay."""
+    if not isinstance(data, dict):
+        return data
+    for key in RETRY_KEYS:
+        data.pop(key, None)
+    if reaches_relay(data):
+        data["num_retries"] = 0
+        data["max_retries"] = 0
+    return data
 
 
 def _env_number(name: str, default: float) -> float:
@@ -220,6 +265,10 @@ class SealedUsageLogger(CustomLogger):
         task = self._drain_task
         if task is not None and not task.done():
             await task
+
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        """Runs before LiteLLM routes a proxy request: no retries on paid relay routes (D-067)."""
+        return without_relay_retries(data)
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         if not isinstance(kwargs, dict):

@@ -63,10 +63,13 @@ telemetry_off_env:
   ANONYMIZED_TELEMETRY: "false"
   LITELLM_LOCAL_MODEL_COST_MAP: "True"
 license_exclusions:
+  # Literal patterns only (license audit F6): the lint matches an SBOM file path that contains the
+  # pattern and a package whose name is the pattern; ** and * are not expanded. Entries with
+  # "repo:path" document upstream directories that never reach an image.
   - "OpenHands/legacy:enterprise/"
-  - "/acp-node/**"
-  - "**/@anthropic-ai/claude-agent-sdk*/**"
-  - "**/litellm_enterprise/**"
+  - "/acp-node/"
+  - "@anthropic-ai/claude-agent-sdk"
+  - "litellm_enterprise"
   - "anomalyco/opencode:packages/enterprise/"
 bootstrap:
   service: coding-agent-bootstrap

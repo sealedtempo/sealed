@@ -6,8 +6,14 @@ directory and in runtime/images/local-model (Dockerfiles, config, sealed_usage.p
 sealed_entrypoint.py, sealed_keys.py, the sealed-ollama-gate source, tests) are Apache-2.0
 like the rest of this repository.
 
+The upstream license texts are in LICENSES/, byte for byte as they are at the pinned tag. Each
+entry below names the file, then the upstream repository, ref, path and git blob hash it was
+taken from (tests/test_packaging.py checks the hashes).
+
 1. LiteLLM proxy (image "litellm")
    License: MIT (root LICENSE of BerriAI/litellm; everything outside enterprise/)
+   Text:    LICENSES/litellm-v1.106.5-LICENSE
+            (BerriAI/litellm v1.106.5 LICENSE, git blob 3bfef5bae9b48c334acf426d5b7f21bc1913aab9)
    Source:  https://github.com/BerriAI/litellm/tree/v1.106.5
             commit 2569eb88694ce148dea5f324f240f79d256af8ae
    Base:    ghcr.io/berriai/litellm-database:v1.106.5
@@ -21,16 +27,20 @@ like the rest of this repository.
    Bundled: Python dependencies under rule 9 licenses, plus PSF-2.0 and Unlicense
             components (D-021 additions) and ZPL-2.1 and CNRI-Python components (OSI-approved
             permissive, allowed by D-050). Three packages carry no license classifier in
-            their wheel metadata. Their upstream licenses, checked 2026-10-28 against the
-            latest PyPI release and the GitHub default branch (not yet against the exact
-            versions in the image): google-crc32c Apache-2.0 (PyPI license field,
-            googleapis/python-crc32c), aurelio-sdk MIT (aurelio-labs/aurelio-sdk LICENSE),
-            llm-sandbox MIT (vndee/llm-sandbox LICENSE). The release SBOM needs a manual
-            license override for them once the image versions are confirmed. The release SBOM
-            lists every package and license.
+            their wheel metadata. Their versions are the ones LiteLLM's uv.lock pins at
+            v1.106.5, which the base image installs with uv sync --frozen
+            (docker/Dockerfile.database), and their licenses were read on 2026-10-28 from the
+            upstream repository at the matching tag:
+              google-crc32c 1.8.0   Apache-2.0  googleapis/python-crc32c v1.8.0 LICENSE
+              aurelio-sdk 0.0.19    MIT         aurelio-labs/aurelio-sdk v0.0.19 LICENSE
+              llm-sandbox 0.3.39    MIT         vndee/llm-sandbox 0.3.39 LICENSE
+            The release SBOM needs a manual license override for these three. It lists every
+            package and license.
 
 2. PostgreSQL 16.15 (image "postgres")
    License: PostgreSQL License
+   Text:    LICENSES/postgresql-16.15-COPYRIGHT
+            (postgres/postgres REL_16_15 COPYRIGHT, git blob 0a397648dcd3c2177acc58bd7daecd11ad64be62)
    Source:  https://www.postgresql.org/ftp/source/v16.15/
    Image:   docker.io/library/postgres:16.15
             @sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
@@ -42,6 +52,13 @@ like the rest of this repository.
             (Apache-2.0) compiled with the Go 1.27.3 standard library (BSD-3-Clause,
             builder golang:1.27.3-trixie@sha256:7b072c590a326b9d2a43b165ae247f6e8eafff32e1ad154ab97139e89f053be9,
             build stage only)
+   Text:    LICENSES/ollama-v0.40.12-LICENSE
+            (ollama/ollama v0.40.12 LICENSE, git blob 8e3dc978a7ca8c53f56bbedc5b558116140fc02e)
+            LICENSES/go-1.27.3-LICENSE
+            (golang/go go1.27.3 LICENSE, git blob 2a7cf70da6e498df9c11ab6a5eaa2ddd7af34da4)
+            LICENSES/go-1.27.3-PATENTS
+            (golang/go go1.27.3 PATENTS, git blob 733099041f84fa1e58611ab2e11af51c1f26d1d2)
+            The image carries the two Go texts at /licenses/sealed-ollama-gate/ as well.
    Source:  https://github.com/ollama/ollama/tree/v0.40.12
             commit f067033f9126993b6172bdfffa71a74ad693fda4
    Base:    ollama/ollama:0.40.12
@@ -54,6 +71,8 @@ like the rest of this repository.
 4. Model: Qwen3-4B-Instruct-2507, Ollama tag qwen3:4b-instruct-2507-q4_K_M
    License: Apache-2.0 (model card https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507 and
             the Ollama license layer sha256:d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12,
-            shipped in the image at /models/licenses/qwen3-4b-instruct-2507.Apache-2.0.txt)
+            shipped in the image at /models/licenses/qwen3-4b-instruct-2507.Apache-2.0.txt;
+            the image build checks that layer's sha256. The text is not in LICENSES/ yet: it is
+            published only as that Ollama layer and on Hugging Face, not in a git repository)
    Weights: blob sha256:85e4a5b7b8ef0e48af0e8658f5aaab9c2324c76c1641493f4d1e25fce54b18b9,
             Ollama ID 0edcdef34593. 4.0B parameters, Q4_K_M.

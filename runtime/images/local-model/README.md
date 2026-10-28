@@ -37,6 +37,10 @@ Subcommands: `probe <url>` (healthcheck without proxies) and `verify-manifest` (
 
 What the build does:
 
+0. Builds the gate offline with Go 1.27.3 and fails if it imports anything outside the Go standard
+   library (`go list -deps`). Go's `LICENSE` (BSD-3-Clause) and `PATENTS`, checked by sha256, go to
+   `/licenses/sealed-ollama-gate/` with a README, because a binary built from the standard library
+   carries them (license audit F3). `catalog/apps/llm-gateway/LICENSES/` has the same two texts.
 1. Deletes the GPU runtimes (`/usr/lib/ollama/{cuda_v12,cuda_v13,mlx_cuda_v13,vulkan}` and the NVIDIA
    license files) and fails if any CUDA, Vulkan or ROCm library is left. CPU backends
    (`libggml-cpu-*.so`, including the Sapphire Rapids build for C3) stay.

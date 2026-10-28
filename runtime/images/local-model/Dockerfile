@@ -11,15 +11,34 @@ ARG OLLAMA_BASE=ollama/ollama:0.40.12@sha256:20d1bbfbabe1c97ba4b16301f08a20d8484
 ARG GO_BASE=golang:1.27.3-trixie@sha256:7b072c590a326b9d2a43b165ae247f6e8eafff32e1ad154ab97139e89f053be9
 
 FROM --platform=linux/amd64 ${GO_BASE} AS gate
+# Go 1.27.3's LICENSE (BSD-3-Clause) and PATENTS, which a binary built with the standard library
+# carries (license audit F3). The same texts are in catalog/apps/llm-gateway/LICENSES/.
+ARG GO_LICENSE_SHA256=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+ARG GO_PATENTS_SHA256=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc
 WORKDIR /src
 COPY gate/*.go ./
-# Standard library only, so the build needs no network and no go.sum.
+# Standard library only, so the build needs no network and no go.sum. The build fails if the
+# gate imports any package outside the standard library, so the two Go texts are all it needs.
 RUN --network=none set -eux; \
     rm -f ./*_test.go; \
     go mod init sealed.local/ollama-gate; \
+    test "$(go version)" = "go version go1.27.3 linux/amd64"; \
+    nonstd="$(GOTOOLCHAIN=local GOPROXY=off go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' . | grep .)"; \
+    test "$nonstd" = "sealed.local/ollama-gate"; \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-trimpath \
       go build -ldflags='-s -w -buildid=' -o /out/sealed-ollama-gate .; \
-    /out/sealed-ollama-gate -listen 127.0.0.1:0 2>&1 | grep -q 'missing Ollama command'
+    /out/sealed-ollama-gate -listen 127.0.0.1:0 2>&1 | grep -q 'missing Ollama command'; \
+    goroot="$(go env GOROOT)"; mkdir -p /out/licenses; \
+    echo "$GO_LICENSE_SHA256  $goroot/LICENSE" | sha256sum -c -; \
+    echo "$GO_PATENTS_SHA256  $goroot/PATENTS" | sha256sum -c -; \
+    cp "$goroot/LICENSE" /out/licenses/go-1.27.3-LICENSE; \
+    cp "$goroot/PATENTS" /out/licenses/go-1.27.3-PATENTS; \
+    printf '%s\n' \
+      'sealed-ollama-gate is Sealed code under the Apache License 2.0' \
+      '(source: runtime/images/local-model/gate in the Sealed repository).' \
+      'It is built with Go 1.27.3 and links only the Go standard library, whose license and' \
+      'patent grant are the two files next to this one.' > /out/licenses/README; \
+    chmod 0644 /out/licenses/*
 
 FROM --platform=linux/amd64 ${OLLAMA_BASE} AS cpu
 # The TDX VM has no GPU: drop every GPU runtime directory and its license files.
@@ -75,6 +94,7 @@ FROM scratch
 COPY --from=cpu / /
 COPY --from=models /models /models
 COPY --from=gate /out/sealed-ollama-gate /usr/local/bin/sealed-ollama-gate
+COPY --from=gate /out/licenses /licenses/sealed-ollama-gate
 # Runs as uid 10002 (no capabilities). HOME is on the /tmp tmpfs: Ollama writes a fresh
 # keypair there at every start. OLLAMA_HOST is the loopback address the gate proxies to.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \

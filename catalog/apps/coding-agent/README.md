@@ -36,7 +36,8 @@ its secret `APP_KEY_CODING_AGENT`: alias `coding-agent`, models `relay/*` and `l
 drifts and recreates the key after a gateway database reset. This app's `LLM_GATEWAY_KEY` declares
 `same_as: llm-gateway/APP_KEY_CODING_AGENT` (D-043): the composer checks that llm-gateway is in the
 stack and declares that secret, `sealed secrets` sets the value once, and the key broker returns it
-under this app's name.
+under this app's name. llm-gateway opts in with `share_with: [coding-agent]` on that secret (D-059);
+without it the composer, the key broker and the CLI refuse the reference.
 
 agent-server V1 does not read `LLM_BASE_URL`. At every start the bootstrap job seeds the settings
 below. It never contacts llm-gateway itself: every service is on the app network `app-coding-agent`,

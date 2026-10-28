@@ -55,6 +55,18 @@ the relay call fails, for example when the relay is unfunded, unattested or down
 spend limit. Fallback targets must be `local/` routes (the renderer enforces it), so a fallback never
 sends data out of the VM. Other `relay/<model>` names do not fall back.
 
+Paid relay requests are sent exactly once (D-067), because a retried paid request is a new payment.
+Both `relay/` routes set `num_retries: 0` (the router's own retries, 2 by default in LiteLLM 1.106.5)
+and `max_retries: 0` (the OpenAI SDK's), and the renderer refuses a config where a `relay/` route
+lacks either, where another route points at `sealed-mpp-payer`, or where `router_settings` has a
+`retry_policy` or `model_group_retry_policy` (those override a deployment's `num_retries`). The
+`sealed_usage.usage_logger` callback's pre-call hook covers what clients send: it drops request
+retry settings (`num_retries`, also set by the `x-litellm-num-retries` header, `max_retries`,
+`retry_policy`, `model_group_retry_policy`), and sets `num_retries` and `max_retries` to 0 on every
+request whose model or fallback list names a `relay/` route. A request-level 0 ranks first in
+LiteLLM's retry logic. The hook reads only those fields, never messages. The fallback from
+`relay/default` to `local/qwen3-4b` still runs; it is not a retry of the paid call.
+
 Both families also need an egress addition for the provider host (for example
 `"llm-gateway": ["inference.tinfoil.sh:443"]` in the deployment config), because the release allows
 no egress by default.
@@ -71,7 +83,11 @@ drifted scope with `/key/update`, leaves keys an admin blocked alone, and delete
 secret is unset. It repeats every 5 minutes, so a reset gateway database heals by itself, and its
 status file (no secrets) is its healthcheck. The consumer app's secret refers to this one
 (`LLM_GATEWAY_KEY` of coding-agent has `same_as: llm-gateway/APP_KEY_CODING_AGENT`, D-043), so
-`sealed secrets` sets the value once and the key broker returns it to both apps.
+`sealed secrets` sets the value once and the key broker returns it to both apps. A reference needs
+the source secret's opt-in (D-059): `APP_KEY_CODING_AGENT` declares `share_with: [coding-agent]`,
+and no other secret of this app has `share_with`, so no app can refer to the master key, the salt
+key, the database password or the gate key. Each `app_keys.yaml` entry's secret is shared with
+exactly that entry's app (the tests check it).
 
 ## Boot
 
@@ -122,9 +138,10 @@ Health: `GET /health/liveliness` (liveness) and `GET /health/readiness` (DB conn
 `LITELLM_MASTER_KEY` (sk-hex32; only `llm-gateway-litellm` and `llm-gateway-keys` list it),
 `LITELLM_SALT_KEY` (sk-hex32, never change after first boot), `POSTGRES_PASSWORD` (hex32),
 `OLLAMA_GATE_KEY` (hex32; only `llm-gateway-litellm` and `llm-gateway-ollama` list it),
-`APP_KEY_CODING_AGENT` (sk-hex32, generated; coding-agent's `LLM_GATEWAY_KEY` refers to it with
-`same_as`, and a required secret may only refer to a required one, so it always exists; without
-coding-agent the key lives only inside llm-gateway), and the optional provider keys with
+`APP_KEY_CODING_AGENT` (sk-hex32, generated, `share_with: [coding-agent]`; coding-agent's
+`LLM_GATEWAY_KEY` refers to it with `same_as`, and a required secret may only refer to a required
+one, so it always exists; without coding-agent the key lives only inside llm-gateway), and the
+optional provider keys with
 `BYOK_ROUTES_ENABLED` and `EXTERNAL_ROUTES_ENABLED`.
 Secret Manager names are `sealed-llm-gateway-<NAME>`.
 

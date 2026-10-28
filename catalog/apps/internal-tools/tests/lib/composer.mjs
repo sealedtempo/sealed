@@ -117,6 +117,39 @@ export function composerLint(composer, appDir) {
   }
 }
 
+// sealed-compose lint --json of a copy of the app that carries a made-up SPDX SBOM for one image
+// (sbom/<image>.spdx.json) with the given package names (license MIT) and file paths. Returns the
+// excluded-path findings as a Map from SBOM entry (name@1.0.0 or file path) to the patterns it hit.
+export function excludedPathHits(composer, appDir, image, { packages = [], files = [] }) {
+  const scratch = mkdtempSync(join(tmpdir(), "sealed-sbom-"));
+  try {
+    const dir = briefCompatibleCopy(appDir, scratch);
+    mkdirSync(join(dir, "sbom"));
+    writeFileSync(join(dir, "sbom", `${image}.spdx.json`), JSON.stringify({
+      spdxVersion: "SPDX-2.3",
+      SPDXID: "SPDXRef-DOCUMENT",
+      name: image,
+      packages: packages.map((name) => ({ name, versionInfo: "1.0.0", licenseConcluded: "MIT" })),
+      files: files.map((fileName) => ({ fileName })),
+    }));
+    const res = runComposer(composer, ["lint", "--json", "--app-dir", dir]);
+    let findings;
+    try {
+      findings = JSON.parse(res.stdout);
+    } catch {
+      throw new Error(`sealed-compose lint failed: ${res.stderr}`);
+    }
+    const hits = new Map();
+    for (const f of findings.filter((x) => x.code === "excluded-path")) {
+      const pattern = /excluded path "([^"]*)"/.exec(f.message)?.[1] ?? "";
+      hits.set(f.field ?? "", (hits.get(f.field ?? "") ?? new Set()).add(pattern));
+    }
+    return hits;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 // Findings other than the allowed error and warning codes, as readable lines.
 export function unexpectedFindings(findings, { errors = ["unbuilt-image"], warnings = ["sbom-missing"] } = {}) {
   const allowed = { error: new Set(errors), warning: new Set(warnings) };

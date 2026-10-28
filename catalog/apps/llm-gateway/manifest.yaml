@@ -76,9 +76,12 @@ secrets:
     description: >-
       Virtual key the gateway provisions for coding-agent (alias coding-agent, models relay/* and local/*,
       rate limited). coding-agent's LLM_GATEWAY_KEY refers to this secret (same_as), so sealed secrets
-      sets it once for both apps. Generated and always present, because a required secret may only
-      refer to a required one; without coding-agent in the stack the key exists only inside llm-gateway.
+      sets it once for both apps. Only coding-agent may refer to it (share_with, D-059); no other
+      secret of this app can be referenced. Generated and always present, because a required secret
+      may only refer to a required one; without coding-agent in the stack the key exists only inside
+      llm-gateway.
     generate: sk-hex32
+    share_with: [coding-agent]
   - name: BYOK_ROUTES_ENABLED
     description: >-
       Set to true to allow byok/<provider> routes. Data leaves your cloud on those routes: the provider says
@@ -142,14 +145,17 @@ telemetry_off_env:
   OLLAMA_NO_CLOUD: "1"
   DO_NOT_TRACK: "1"
 license_exclusions:
-  - "/app/enterprise/**"
-  - "**/litellm_enterprise/**"
-  - "**/litellm_enterprise-*.dist-info/**"
+  # Literal patterns only (license audit F6): the lint matches an SBOM file path that contains the
+  # pattern and a package whose name is the pattern; ** and * are not expanded. tests/test_packaging.py
+  # checks every pattern against a made-up SBOM. Entries with "repo:path" document upstream
+  # directories that never reach an image.
+  - "/app/enterprise/"
+  - "litellm_enterprise"
   - "BerriAI/litellm:enterprise/"
-  - "/usr/lib/ollama/cuda_v12/**"
-  - "/usr/lib/ollama/cuda_v13/**"
-  - "/usr/lib/ollama/mlx_cuda_v13/**"
-  - "/usr/lib/ollama/vulkan/**"
+  - "/usr/lib/ollama/cuda_v12/"
+  - "/usr/lib/ollama/cuda_v13/"
+  - "/usr/lib/ollama/mlx_cuda_v13/"
+  - "/usr/lib/ollama/vulkan/"
 notes: >-
   Routes: local/<model> (Ollama in the VM), relay/<model> (sealed-mpp-payer to the platform relay, paid
   per token; relay/default falls back to local/qwen3-4b), byok/<provider>/<model> and

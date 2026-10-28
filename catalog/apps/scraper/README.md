@@ -195,7 +195,9 @@ The Postgres tests start a throwaway PostgreSQL 17 cluster under the repository'
 binaries are not on the usual paths, or `SCRAPER_SKIP_PG=1` to skip them locally). On CI (`CI` set) or with
 `SCRAPER_REQUIRE_PG=1`, a missing PostgreSQL fails the run instead of skipping it. A shared store contract
 runs against both the in-memory store the API tests use and Postgres. `test/licenses.test.ts` checks the
-installed production tree against the license policy (rule 9, D-021, D-050) and `LICENSE-NOTICE`.
+installed production tree against the license policy (rule 9, D-021, D-050) and `LICENSE-NOTICE`,
+and that `LICENSES/` holds the upstream texts of Crawlee, Playwright, Firefox (MPL-2.0) and
+PostgreSQL byte for byte (git blob hashes named in `LICENSE-NOTICE`).
 `test/catalog.test.ts` has no copy of the catalog rules: it runs `go run ./runtime/composer/cmd/sealed-compose
 lint` and `compose` on this app (`test/helpers/composer.ts`; it moves to `catalog/tools/` once that exists),
 requires that lint reports only the unbuilt runner digest and missing SBOMs, and checks the composed route,

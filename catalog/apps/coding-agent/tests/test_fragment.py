@@ -28,6 +28,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(GATEWAY_DIR, "tests"))
 
 import dockerfile_lint  # noqa: E402
+import license_texts  # noqa: E402
 import sealed_compose  # noqa: E402
 from fakes import FakeLiteLLM, FakeOpenHands  # noqa: E402
 
@@ -87,6 +88,10 @@ class CommonChecks:
         gateway = {s["name"]: s for s in sealed_compose.load_yaml(os.path.join(GATEWAY_DIR, "manifest.yaml"))["secrets"]}
         self.assertIn(gateway_app_key()["secret"], gateway)
         self.assertEqual([s for s in self.manifest["secrets"] if "same_as" in s], [key])
+        # D-059: the gateway opts in to exactly this reference.
+        self.assertEqual(gateway[gateway_app_key()["secret"]]["share_with"], [self.manifest["id"]])
+        # Nothing in coding-agent is shared with another app.
+        self.assertEqual([s["name"] for s in self.manifest["secrets"] if "share_with" in s], [])
 
     def test_no_service_starts_as_root(self):
         """Integration brief item 11: volume owners come from x-sealed-owner, not from a root start."""
@@ -448,6 +453,34 @@ class ComposerChecks:
         for name, svc in self.app["fragment"]["services"].items():
             self.assertEqual(envexec_secrets(self.composed[name]), set(svc.get("x-sealed-secrets") or []), name)
 
+    def test_license_exclusions_are_matched_by_the_lint(self):
+        """License audit F6: each exclusion catches what it names, in an SBOM, and nothing it should not."""
+        sp = "/usr/local/lib/python3.13/site-packages"
+        caught_files = [
+            "/usr/lib/node_modules/@anthropic-ai/claude-agent-sdk/cli.js",
+            "/opt/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",
+            f"{sp}/litellm_enterprise/__init__.py",
+        ]
+        if "/acp-node/" in self.app["manifest"]["license_exclusions"]:
+            caught_files.append("/acp-node/node_modules/@zed-industries/claude-code-acp/dist/index.js")
+        clean_files = [f"{sp}/litellm/__init__.py", f"{sp}/openhands/sdk/__init__.py", "/usr/local/bin/opencode",
+                       "/usr/lib/node_modules/npm/package.json", "/opt/acp-nodes.txt"]
+        caught_packages = ["@anthropic-ai/claude-agent-sdk", "litellm-enterprise"]
+        clean_packages = ["litellm", "openhands-sdk", "@anthropic-ai/sdk", "opencode-ai"]
+        image = self.app["manifest"]["images"][0]["name"]
+        findings = self.composer.lint_with_sbom(self.DIR, image, caught_packages + clean_packages,
+                                                caught_files + clean_files)
+        hits = sealed_compose.excluded_hits(findings)
+        for path in caught_files:
+            self.assertIn(path, hits)
+        for name in caught_packages:
+            self.assertIn(name + "@1.0.0", hits)
+        for entry in clean_files + [n + "@1.0.0" for n in clean_packages]:
+            self.assertNotIn(entry, hits)
+        used = set().union(*hits.values())
+        for pattern in sealed_compose.exclusion_patterns(self.app["manifest"]):
+            self.assertIn(pattern, used, f"license_exclusions entry {pattern!r} matches nothing")
+
     def test_services_run_as_their_fragment_users(self):
         for name, svc in self.app["fragment"]["services"].items():
             self.assertEqual(self.composed[name]["user"], svc["user"], name)
@@ -504,6 +537,39 @@ class ComposerChecks:
         self.assertNotEqual(alone["status"], 0)
         self.assertIn("llm-gateway", alone["stderr"])
 
+    def share_with_only(self):
+        if not self.composer.share_with:
+            self.skipTest(f"composer {self.composer.version} predates share_with (D-059)")
+
+    def test_same_as_needs_the_gateway_to_share_the_key(self):
+        """D-059: without share_with on APP_KEY_CODING_AGENT the composer refuses the reference."""
+        self.share_with_only()
+        scratch = os.path.join(self.tmp.name, "unshared")
+        os.makedirs(scratch)
+        gateway = sealed_compose.brief_compatible_copy(GATEWAY_DIR, scratch, brief=False, share_with=True)
+        copied = sealed_compose.load_yaml(os.path.join(gateway, "manifest.yaml"))
+        self.assertEqual([s["name"] for s in copied["secrets"] if "share_with" in s], [])
+        refused = self.composer.compose([gateway, self.DIR], os.path.join(self.tmp.name, "unshared-out"),
+                                        expect_ok=False)
+        self.assertNotEqual(refused["status"], 0)
+        self.assertIn("share_with", refused["stderr"])
+
+    def test_the_gateway_master_key_cannot_be_referenced(self):
+        self.share_with_only()
+        scratch = os.path.join(self.tmp.name, "master")
+        os.makedirs(scratch)
+        app = sealed_compose.brief_compatible_copy(self.DIR, scratch, brief=False, share_with=False)
+        manifest = sealed_compose.load_yaml(os.path.join(app, "manifest.yaml"))
+        for secret in manifest["secrets"]:
+            if secret.get("same_as"):
+                secret["same_as"] = "llm-gateway/LITELLM_MASTER_KEY"
+        with open(os.path.join(app, "manifest.yaml"), "w", encoding="utf-8") as handle:
+            yaml.safe_dump(manifest, handle, sort_keys=False)
+        refused = self.composer.compose([GATEWAY_DIR, app], os.path.join(self.tmp.name, "master-out"),
+                                        expect_ok=False)
+        self.assertNotEqual(refused["status"], 0)
+        self.assertIn("LITELLM_MASTER_KEY", refused["stderr"])
+
 
 class OpenHandsComposerTest(ComposerChecks, unittest.TestCase):
     @classmethod
@@ -532,6 +598,30 @@ class OpenCodeFallbackComposerTest(ComposerChecks, unittest.TestCase):
 
     def test_starts_in_the_volume_root(self):
         self.assertEqual(self.composed["coding-agent-server"]["working_dir"], "/workspace")
+
+
+class LicenseTextsTest(unittest.TestCase):
+    """License audit F10: the MIT texts of OpenHands and of the OpenCode fallback, byte for byte.
+
+    LICENSES/ belongs to the app directory, so both variants ship both texts (switch.sh leaves it).
+    """
+
+    EXPECTED = {
+        "openhands-software-agent-sdk-v1.58.2-LICENSE": ("OpenHands/software-agent-sdk", "v1.58.2", "LICENSE"),
+        "opencode-v1.19.5-LICENSE": ("anomalyco/opencode", "v1.19.5", "LICENSE"),
+    }
+
+    def test_texts_match_upstream(self):
+        self.assertEqual(license_texts.problems(APP_DIR), [])
+
+    def test_the_expected_texts_are_shipped_for_the_pinned_tags(self):
+        texts = license_texts.notice_texts(read(os.path.join(APP_DIR, "LICENSE-NOTICE")))
+        self.assertEqual({t.file: (t.repo, t.ref, t.path) for t in texts}, self.EXPECTED)
+        for variant in (APP_DIR, FALLBACK_DIR):
+            upstream = yaml.safe_load(read(os.path.join(variant, "manifest.yaml")))["upstream"]
+            text = next(t for t in texts if "https://github.com/" + t.repo == upstream["repo"])
+            self.assertEqual(text.ref, upstream["version"], variant)
+            self.assertIn("MIT License", read(os.path.join(APP_DIR, "LICENSES", text.file)))
 
 
 if __name__ == "__main__":

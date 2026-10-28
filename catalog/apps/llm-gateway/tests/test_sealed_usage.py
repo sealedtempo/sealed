@@ -363,5 +363,68 @@ class RealHttpTest(unittest.TestCase):
         self.assertEqual(body["id"], "chatcmpl-1")
 
 
+class RelayRetryGuardTest(unittest.TestCase):
+    """D-067: the pre-call hook keeps paid relay requests from being retried, whatever the client sends."""
+
+    def hook(self, data):
+        logger = make_logger(Recorder())
+        return run(logger.async_pre_call_hook(None, None, data, "acompletion"))
+
+    def test_overrides_the_proxy_hook(self):
+        # LiteLLM's ProxyLogging calls the hook only when the class itself defines it.
+        self.assertIn("async_pre_call_hook", vars(sealed_usage.SealedUsageLogger))
+
+    def test_relay_requests_get_no_retries(self):
+        for data in (
+            {"model": "relay/default", "messages": [{"role": "user", "content": SECRET_PROMPT}]},
+            {"model": "relay/tinfoil/glm-5-3", "num_retries": 5, "max_retries": 3},
+            {"model": "relay/default", "retry_policy": {"RateLimitErrorRetries": 4},
+             "model_group_retry_policy": {"relay/default": {"InternalServerErrorRetries": 4}}},
+        ):
+            out = self.hook(dict(data))
+            self.assertEqual((out["num_retries"], out["max_retries"]), (0, 0), data)
+            self.assertNotIn("retry_policy", out)
+            self.assertNotIn("model_group_retry_policy", out)
+            self.assertEqual(out["model"], data["model"])
+            if "messages" in data:
+                self.assertEqual(out["messages"], data["messages"])  # content is left alone
+
+    def test_fallbacks_to_the_relay_count_as_relay_requests(self):
+        for key in ("fallbacks", "context_window_fallbacks", "content_policy_fallbacks"):
+            for spec in (["relay/default"], [{"model": "relay/x"}], [{"local/qwen3-4b": ["relay/x"]}]):
+                out = self.hook({"model": "local/qwen3-4b", "num_retries": 3, key: spec})
+                self.assertEqual((out["num_retries"], out["max_retries"]), (0, 0), (key, spec))
+
+    def test_other_requests_lose_only_client_retry_settings(self):
+        out = self.hook({"model": "local/qwen3-4b", "num_retries": 9, "max_retries": 9, "temperature": 0.2,
+                         "fallbacks": ["local/qwen3-4b"]})
+        self.assertEqual(out, {"model": "local/qwen3-4b", "temperature": 0.2, "fallbacks": ["local/qwen3-4b"]})
+        # The x-litellm-num-retries header ends up as data["num_retries"] before the hook runs.
+        self.assertEqual(self.hook({"model": "external/openai/gpt-4o", "num_retries": 4}),
+                         {"model": "external/openai/gpt-4o"})
+
+    def test_names_that_only_look_like_relay_are_not_relay(self):
+        self.assertFalse(sealed_usage.reaches_relay({"model": "local/relay-default"}))
+        self.assertFalse(sealed_usage.reaches_relay({"model": "byok/tinfoil/relay/x"}))
+        self.assertTrue(sealed_usage.reaches_relay({"model": "local/x", "fallbacks": [{"relay/a": []}]}))
+
+    def test_never_raises_on_odd_input(self):
+        self.assertIsNone(self.hook(None))
+        self.assertEqual(self.hook("text"), "text")
+        out = self.hook({"model": None, "fallbacks": "relay/x"})
+        self.assertEqual(out["num_retries"], 0)
+        nested = ["local/x"]
+        for _ in range(20):
+            nested = [nested]
+        self.assertEqual(self.hook({"model": "local/x", "fallbacks": nested})["num_retries"], 0)
+
+    def test_hook_reads_and_sends_nothing(self):
+        recorder = Recorder()
+        logger = make_logger(recorder)
+        run(logger.async_pre_call_hook(None, None, {"model": "relay/default"}, "acompletion"))
+        self.assertEqual(recorder.requests, [])
+        self.assertEqual(logger.pending, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

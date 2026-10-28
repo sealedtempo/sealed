@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { load } from 'cheerio';
@@ -106,6 +106,50 @@ describe.skipIf(skip)('the real composer (runtime/composer)', () => {
     expect(unexpected).toEqual([]);
     const unbuilt = manifest.images.filter((i: { digest: string }) => /^sha256:0{64}$/.test(i.digest)).length;
     expect(findings.filter((f) => f.severity === 'error')).toHaveLength(unbuilt);
+  }, 600_000);
+
+  it('every license_exclusions entry is matched by the lint, and only where it should be (license audit F6)', () => {
+    // A copy of the app's bundle inputs with a made-up SBOM for the shipped image.
+    const dir = mkdtempSync(join(tmpdir(), 'scraper-sbom-'));
+    try {
+      for (const f of ['manifest.yaml', 'compose.fragment.yaml', 'egress.yaml', 'LICENSE-NOTICE', 'README.md']) {
+        cpSync(join(APP, f), join(dir, f));
+      }
+      cpSync(join(APP, 'LICENSES'), join(dir, 'LICENSES'), { recursive: true });
+      const caughtFiles = [
+        '/ms-playwright/chromium-1208/chrome-linux/chrome',
+        '/ms-playwright/chromium_headless_shell-1208/chrome-linux/headless_shell',
+        '/app/node_modules/@playwright/browser-chromium/package.json',
+        '/app/node_modules/idcac-playwright/dist/index.js',
+      ];
+      const cleanFiles = [
+        '/ms-playwright/firefox-1538/firefox/firefox',
+        '/app/node_modules/playwright-core/lib/server/chromium/crBrowser.js',
+        '/app/node_modules/electron-to-chromium/versions.js',
+        '/app/node_modules/@playwright/test/package.json',
+      ];
+      const caughtPackages = ['@playwright/browser-chromium', 'idcac-playwright'];
+      const cleanPackages = ['playwright', 'playwright-core', 'electron-to-chromium', '@crawlee/playwright'];
+      mkdirSync(join(dir, 'sbom'));
+      writeFileSync(join(dir, 'sbom', 'scraper-runner-playwright.spdx.json'), JSON.stringify({
+        spdxVersion: 'SPDX-2.3',
+        SPDXID: 'SPDXRef-DOCUMENT',
+        name: 'scraper-runner-playwright',
+        packages: [...caughtPackages, ...cleanPackages].map((name) => ({ name, versionInfo: '1.0.0', licenseConcluded: 'Apache-2.0' })),
+        files: [...caughtFiles, ...cleanFiles].map((fileName) => ({ fileName })),
+      }));
+      const hits = new Map<string, Set<string>>();
+      for (const f of lint(c, dir).filter((x) => x.code === 'excluded-path')) {
+        const pattern = /excluded path "([^"]*)"/.exec(f.message)?.[1] ?? '';
+        hits.set(f.field ?? '', (hits.get(f.field ?? '') ?? new Set()).add(pattern));
+      }
+      for (const entry of [...caughtFiles, ...caughtPackages.map((n) => `${n}@1.0.0`)]) expect(hits.has(entry), entry).toBe(true);
+      for (const entry of [...cleanFiles, ...cleanPackages.map((n) => `${n}@1.0.0`)]) expect(hits.has(entry), entry).toBe(false);
+      const used = new Set([...hits.values()].flatMap((s) => [...s]));
+      for (const pattern of manifest.license_exclusions as string[]) expect(used.has(pattern), pattern).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 600_000);
 
   it('gates the scraper route and points it at the runner', () => {

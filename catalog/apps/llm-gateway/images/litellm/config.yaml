@@ -44,11 +44,17 @@ model_list:
       sealed_data_location: stays in your VM
 
   # The relay's default model. Exact name, so it wins over the wildcard below.
+  # Every relay/ route is sent exactly once (D-067): a retried paid request is a new payment.
+  # num_retries: 0 stops the router's own retries (2 by default), max_retries: 0 the OpenAI SDK's.
+  # sealed_usage.usage_logger also drops retry settings a client puts in its request, so these
+  # values always win; sealed_entrypoint.check_relay_routes refuses a config without them.
   - model_name: relay/default
     litellm_params:
       model: openai/default
       api_base: http://sealed-mpp-payer:8090/v1
       api_key: sealed-mpp-payer
+      max_retries: 0
+      num_retries: 0
     model_info:
       mode: chat
       sealed_route: relay
@@ -60,6 +66,8 @@ model_list:
       model: openai/*
       api_base: http://sealed-mpp-payer:8090/v1
       api_key: sealed-mpp-payer
+      max_retries: 0
+      num_retries: 0
     model_info:
       mode: chat
       sealed_route: relay

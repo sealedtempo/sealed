@@ -6,6 +6,7 @@ ToolJet Community Edition v3.20.251-lts
            sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47
   License: GNU Affero General Public License v3.0 (AGPL-3.0-only).
            Text, verbatim from the tag: LICENSES/tooljet-v3.20.251-lts-LICENSE
+           (ToolJet/ToolJet v3.20.251-lts LICENSE, git blob e20b431bcb69267acc39eaf8fdb94c30f40e3223)
   Source:  https://github.com/ToolJet/ToolJet/tree/v3.20.251-lts
            (tag v3.20.251-lts, commit 979e6915975748e922731bd9012f3e5f8b4b1efb)
   Changes: the Sealed image only removes files and replaces the entrypoint script. The changes are
@@ -19,25 +20,30 @@ ToolJet Community Edition v3.20.251-lts
 
   Enterprise code: ToolJet's enterprise edition lives in the private git submodules server/ee and
   frontend/ee (ToolJet/ee-server, ToolJet/ee-frontend). They are not in the public repository and
-  not in the CE image; the CE server modules for enterprise features are stubs. The manifest lists
-  the ee paths under license_exclusions so CI fails if they ever appear in the image.
+  not in the CE image, whose Dockerfile (docker/ce-production.Dockerfile at the tag) copies only
+  build output; the CE server modules for enterprise features are stubs. The manifest lists /ee/
+  and the ee paths under license_exclusions, and the image build fails if a file or directory
+  named ee exists under /app outside node_modules, so CI fails if they ever appear in the image.
 
 PostgREST v12.2.12
   Image:   docker.io/postgrest/postgrest:v12.2.12
            sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
   License: MIT. Text: LICENSES/postgrest-v12.2.12-LICENSE
+           (PostgREST/postgrest v12.2.12 LICENSE, git blob 4d0857d5407b87c6528f79dbe17d611683c5cb53)
   Source:  https://github.com/PostgREST/postgrest/tree/v12.2.12
 
 PostgreSQL 16.15
   Image:   docker.io/library/postgres:16.15
            sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
   License: PostgreSQL License. Text: LICENSES/postgresql-16.15-COPYRIGHT
+           (postgres/postgres REL_16_15 COPYRIGHT, git blob 0a397648dcd3c2177acc58bd7daecd11ad64be62)
   Source:  https://github.com/postgres/postgres/tree/REL_16_15
 
 Valkey 9.0.7 (used instead of Redis, decision D-020)
   Image:   docker.io/valkey/valkey:9.0.7
            sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d
   License: BSD-3-Clause. Text: LICENSES/valkey-9.0.7-COPYING
+           (valkey-io/valkey 9.0.7 COPYING, git blob 2254cb05c4434c5d2ec74282eca5b0d00323e228)
   Source:  https://github.com/valkey-io/valkey/tree/9.0.7
 
 The base operating system packages inside these images are distribution components under their
