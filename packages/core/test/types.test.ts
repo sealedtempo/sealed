@@ -25,7 +25,7 @@ export const exampleConfig = {
     keyBroker: "https://sealed-key-broker-xyz.a.run.app",
     platformApi: "https://api.example",
     tempoRpc: "https://rpc.tempo.xyz",
-    relay: "https://relay.example",
+    relay: "https://attest.relay.example",
     relayAttest: "https://attest.relay.example/attest",
   },
   contracts: {
@@ -42,6 +42,18 @@ export const exampleConfig = {
 describe("sealed-config/v1", () => {
   it("accepts the INTERFACES example", () => {
     expect(sealedConfigSchema.parse(exampleConfig).settlement.mode).toBe("access-key");
+  });
+  it("defaults debug to false, so configHash is over the composer's normalized form", () => {
+    expect(sealedConfigSchema.parse(exampleConfig).debug).toBe(false);
+    expect(sealedConfigSchema.parse({ ...exampleConfig, debug: true }).debug).toBe(true);
+    expect(sealedConfigSchema.safeParse({ ...exampleConfig, debug: "yes" }).success).toBe(false);
+  });
+  it("with llm-gateway, serves the relay on the attest origin (D-045)", () => {
+    const relay = (r: string) => ({ ...exampleConfig, endpoints: { ...exampleConfig.endpoints, relay: r } });
+    expect(sealedConfigSchema.safeParse(relay("https://relay.example")).success).toBe(false);
+    expect(sealedConfigSchema.safeParse(relay("https://attest.relay.example/")).success).toBe(false);
+    const noGateway = { ...relay("https://relay.example"), apps: [{ id: "crm", releaseId: `0x${"c1".repeat(32)}` }] };
+    expect(sealedConfigSchema.safeParse(noGateway).success).toBe(true);
   });
   it("requires apps sorted by id", () => {
     const bad = { ...exampleConfig, apps: [...exampleConfig.apps].reverse() };

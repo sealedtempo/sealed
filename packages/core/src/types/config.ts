@@ -48,8 +48,24 @@ export const sealedConfigSchema = z
     feeToken: address,
     settlement: settlementSchema,
     relayOwner: address.optional(),
+    /** Container logs on (`local` driver) when true; part of configHash, so it defaults before hashing (composer 1.2). */
+    debug: z.boolean().default(false),
   })
-  .loose();
+  .loose()
+  .superRefine((c, ctx) => {
+    // D-045: with llm-gateway in the stack the relay is served on its deployment's attest host, so
+    // endpoints.relay is exactly the origin of endpoints.relayAttest (the composer refuses anything else).
+    if (!c.apps.some((a) => a.id === "llm-gateway") || c.endpoints.relay === undefined || c.endpoints.relayAttest === undefined) return;
+    let origin: string | undefined;
+    try {
+      origin = new URL(c.endpoints.relayAttest).origin;
+    } catch {
+      origin = undefined;
+    }
+    if (c.endpoints.relay !== origin) {
+      ctx.addIssue({ code: "custom", path: ["endpoints", "relay"], message: "with llm-gateway, endpoints.relay must equal the origin of endpoints.relayAttest (D-045)" });
+    }
+  });
 
 export type SealedConfig = z.infer<typeof sealedConfigSchema>;
 
