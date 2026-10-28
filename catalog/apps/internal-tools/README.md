@@ -70,8 +70,11 @@ crane export --platform linux/amd64 ghcr.io/sealedtempo/tooljet@<digest> - | tar
 ```
 
 which fails if any path from `license_exclusions` (the `ee` directories, `/opt/oracle/`, the Redis
-binaries, `/usr/lib/redis/` and `/etc/redis/`) is present. The Dockerfile's own `find` fails the
-build on the same files, and on any `.so` with `redis` in its path.
+binaries, `/usr/lib/redis/` and `/etc/redis/`) is present. `/ee/` matches an `ee` directory at any
+depth, except below `node_modules/` and `usr/share/locale/`, where `ee` is the Ewe locale code of
+third-party data (license audit F7). The Dockerfile's own `find` fails the build on the same Redis
+and Oracle files, on any `.so` with `redis` in its path, and on any file or directory named `ee`
+under `/app` outside `node_modules`.
 
 ## Services
 
@@ -181,8 +184,11 @@ analytics calls:
   the terminal widget and charts), and plugin schemas from `raw.githubusercontent.com`. Builders
   who need a fully offline UI should avoid those widgets.
 
-The image has no `app/frontend/build/ee` or `app/server/dist/ee` directory; the bundle itself was
-not otherwise checked for enterprise features.
+The image has no `app/frontend/build/ee` or `app/server/dist/ee` directory: ToolJet's
+`docker/ce-production.Dockerfile` at the tag copies only build output into the final image, and the
+`ee` submodules are private, so a CE build has nothing in them. The derived image's build checks
+this (no `ee` under `/app` outside `node_modules`). The bundle itself was not otherwise checked for
+enterprise features.
 
 ## Acceptance (A6)
 

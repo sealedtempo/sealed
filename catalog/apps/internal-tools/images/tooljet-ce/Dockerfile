@@ -5,6 +5,12 @@
 # Valkey instead) with its modules in /usr/lib/redis/modules (RediSearch, RedisJSON, RedisBloom,
 # RedisTimeSeries), and Oracle Instant Client 11.2 and 21.10 (Oracle license, not on the rule 9
 # list). ToolJet's Oracle data source keeps working in thin mode, which needs no client library.
+#
+# ToolJet's enterprise edition is the private git submodules server/ee and frontend/ee. The CE
+# image (docker/ce-production.Dockerfile at the tag) copies only build output (server/dist,
+# frontend/build, plugins/dist and node_modules), so no ee directory reaches it; the build fails
+# if any file or directory named ee exists under /app outside node_modules, where "ee" is the
+# Ewe locale code of third-party data (license audit F7, manifest license_exclusions "/ee/").
 # Built by the runtime image workflow (linux/amd64); its digest is then pinned in manifest.yaml.
 
 FROM docker.io/tooljet/tooljet-ce@sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47 AS upstream
@@ -25,6 +31,9 @@ RUN set -eux; \
          -o -path '/usr/lib/redis*' -o -path '/etc/redis*' -o \( -name '*.so' -path '*redis*' \) \
          -o -name 'libclntsh*' -o -name 'libnnz*' -o -name 'libociei*' -o -name 'libociicus*' -o -name 'libocci*' \) -print | grep -q .; then \
       echo "forbidden binaries left in the image" >&2; exit 1; \
+    fi; \
+    if find /app -xdev -path '*/node_modules' -prune -o -name ee -print | grep -q .; then \
+      echo "ToolJet enterprise (ee) paths in the image" >&2; exit 1; \
     fi
 
 COPY --chmod=0755 sealed-entrypoint.sh /app/server/sealed-entrypoint.sh

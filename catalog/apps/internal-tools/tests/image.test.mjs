@@ -61,6 +61,38 @@ describe("derived ToolJet image", () => {
     }
   });
 
+  test("the build fails on ToolJet enterprise (ee) paths under /app, not on third-party locale data", async () => {
+    // The find of the second check, rooted in a scratch tree instead of /app.
+    const m = /if find \/app -xdev (.*?) -print \| grep -q \.; then/.exec(dockerfile);
+    assert.ok(m, "ee find not found");
+    assert.match(dockerfile, /ToolJet enterprise \(ee\) paths in the image/);
+    const root = await mkdtemp(join(tmpdir(), "tooljet-app-"));
+    try {
+      const predicate = m[1];
+      const cases = {
+        "server/ee/index.js": true,
+        "frontend/build/ee/main.js": true,
+        "server/dist/src/modules/ee/x.js": true,
+        "server/dist/ee": true,
+        "server/dist/src/main.js": false,
+        "server/eeprom.txt": false,
+        "frontend/build/assets/free/x.svg": false,
+        "server/node_modules/cldr-data/main/ee/numbers.json": false,
+        "plugins/node_modules/x/ee": false,
+      };
+      for (const [path, forbidden] of Object.entries(cases)) {
+        const dir = join(root, `case-${Object.keys(cases).indexOf(path)}`);
+        await mkdir(join(dir, dirname(path)), { recursive: true });
+        await writeFile(join(dir, path), "");
+        const res = spawnSync("sh", ["-c", `find "${dir}" -xdev ${predicate} -print`], { encoding: "utf8" });
+        assert.equal(res.status, 0, res.stderr);
+        assert.equal(res.stdout.trim() !== "", forbidden, path);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("removes Redis and Oracle Instant Client and fails the build if any is left", () => {
     assert.match(dockerfile, /apt-get purge -y --auto-remove redis-server redis-tools/);
     assert.match(dockerfile, /\/etc\/redis \/usr\/lib\/redis /);
@@ -117,6 +149,21 @@ describe("check-image-paths", () => {
   test("passes a listing of the derived image", () => {
     const listing = ["app/server/dist/src/main.js", "app/server/sealed-entrypoint.sh", "opt/", "usr/bin/node-ish", "app/server/eeprom.txt"];
     assert.deepEqual(findExcluded(listing, ex), []);
+  });
+
+  test('"/ee/" matches an ee directory at any depth, outside node_modules and locale data', () => {
+    const listing = [
+      "app/server/dist/src/modules/ee/license.js", "app/frontend/build/ee/", "app/plugins/ee/x.js", "ee/",
+      "app/server/eeprom.txt", "app/frontend/build/assets/free/x.svg", "app/tree/ee.js", "app/server/feeds/",
+      "app/server/node_modules/cldr-data/main/ee/numbers.json", "usr/share/locale/ee/LC_MESSAGES/x.mo",
+      "app/ee/node_modules/x/index.js",
+    ];
+    assert.deepEqual(findExcluded(listing, ["/ee/"]), [
+      "app/server/dist/src/modules/ee/license.js", "app/frontend/build/ee", "app/plugins/ee/x.js", "ee",
+      "app/ee/node_modules/x/index.js",
+    ]);
+    // A multi-segment exclusion stays anchored at the root.
+    assert.deepEqual(findExcluded(["srv/app/server/ee/x", "app/server/ee/x"], ["/app/server/ee/"]), ["app/server/ee/x"]);
   });
 
   test("the CLI reads a listing on stdin and exits 1 on a hit", () => {

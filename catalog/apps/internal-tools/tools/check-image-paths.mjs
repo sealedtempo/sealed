@@ -4,6 +4,10 @@
 //   crane export --platform linux/amd64 <image@digest> - | tar -t | node tools/check-image-paths.mjs
 // An exclusion ending in "/" matches that directory and everything under it; any other
 // exclusion matches that exact path. Paths are compared without a leading "/" or "./".
+// An exclusion of a single directory name, such as "/ee/" (the open-core layout: server/ee,
+// frontend/ee and their build output), matches a directory of that name at any depth, except
+// below node_modules/ and usr/share/locale/, where "ee" is the Ewe language code of third-party
+// locale data and never ToolJet's enterprise code.
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -15,17 +19,28 @@ export function normalize(path) {
   return path.trim().replace(/^\.?\/+/, "");
 }
 
+const SEGMENT_EXEMPT = [/(^|\/)node_modules\//, /^usr\/share\/locale\//];
+
 export function findExcluded(listing, exclusions) {
   const rules = exclusions.map((e) => {
     const p = normalize(e);
-    return p.endsWith("/") ? { dir: p.slice(0, -1) } : { file: p };
+    if (!p.endsWith("/")) return { file: p };
+    const dir = p.slice(0, -1);
+    return dir.includes("/") ? { dir } : { segment: dir };
   });
+  const matches = (r, path) => {
+    if (r.file) return path === r.file;
+    if (r.dir) return path === r.dir || path.startsWith(`${r.dir}/`);
+    if (!`/${path}/`.includes(`/${r.segment}/`)) return false;
+    // Only where the segment itself sits outside the exempt trees.
+    const at = `/${path}/`.indexOf(`/${r.segment}/`);
+    return !SEGMENT_EXEMPT.some((re) => re.test(path.slice(0, at + 1)));
+  };
   const hits = [];
   for (const raw of listing) {
     const path = normalize(raw).replace(/\/+$/, "");
     if (!path) continue;
-    const rule = rules.find((r) => (r.dir ? path === r.dir || path.startsWith(`${r.dir}/`) : path === r.file));
-    if (rule) hits.push(path);
+    if (rules.some((r) => matches(r, path))) hits.push(path);
   }
   return hits;
 }

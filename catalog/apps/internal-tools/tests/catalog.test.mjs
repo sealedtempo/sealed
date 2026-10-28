@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -63,9 +63,11 @@ describe("manifest", () => {
 
   test("excludes enterprise directories, Oracle Instant Client, Redis binaries and Redis modules", () => {
     const ex = app.manifest.license_exclusions;
-    for (const path of ["/app/server/ee/", "/app/frontend/ee/", "/opt/oracle/", "/usr/bin/redis-server", "/usr/lib/redis/", "/etc/redis/"]) {
+    for (const path of ["/ee/", "/app/server/ee/", "/app/frontend/ee/", "/opt/oracle/", "/usr/bin/redis-server", "/usr/lib/redis/", "/etc/redis/"]) {
       assert.ok(ex.includes(path), path);
     }
+    // License audit F7: "/ee/" as a path segment, never a bare "ee/" (which would match tree/ or free/).
+    assert.ok(!ex.includes("ee/"));
   });
 
   test("generates the admin password with the password generator, within ToolJet's limits", () => {
@@ -212,6 +214,23 @@ describe("egress, waivers, licenses and docs", () => {
     for (const file of files) assert.ok((await readFile(join(appDir, file), "utf8")).length > 500, file);
     assert.match(await readFile(join(appDir, "LICENSES/tooljet-v3.20.251-lts-LICENSE"), "utf8"), /GNU AFFERO GENERAL PUBLIC LICENSE/);
     assert.match(notice, /https:\/\/github\.com\/ToolJet\/ToolJet\/tree\/v3\.20\.251-lts/);
+  });
+
+  test("each license text is byte for byte the upstream file LICENSE-NOTICE names (git blob)", async () => {
+    // License audit F10: the texts were compared with upstream by git blob hash; keep it that way.
+    const notice = await readFile(join(appDir, "LICENSE-NOTICE"), "utf8");
+    const entries = [...notice.matchAll(/LICENSES\/([\w.-]+)\s*\n\s*\(([\w.-]+\/[\w.-]+) (\S+) (\S+), git blob ([0-9a-f]{40})\)/g)];
+    assert.deepEqual(Object.fromEntries(entries.map((m) => [m[1], `${m[2]} ${m[3]} ${m[4]}`])), {
+      "tooljet-v3.20.251-lts-LICENSE": "ToolJet/ToolJet v3.20.251-lts LICENSE",
+      "postgrest-v12.2.12-LICENSE": "PostgREST/postgrest v12.2.12 LICENSE",
+      "postgresql-16.15-COPYRIGHT": "postgres/postgres REL_16_15 COPYRIGHT",
+      "valkey-9.0.7-COPYING": "valkey-io/valkey 9.0.7 COPYING",
+    });
+    const blob = (data) => createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${data.length}\0`), data])).digest("hex");
+    assert.equal(blob(Buffer.from("hello\n")), "ce013625030ba8dba906f756967f9e9ca394464a"); // git hash-object
+    for (const [, file, , , , sha] of entries) assert.equal(blob(readFileSync(join(appDir, "LICENSES", file))), sha, file);
+    const present = readdirSync(join(appDir, "LICENSES")).filter((n) => !n.startsWith(".")).sort();
+    assert.deepEqual(entries.map((m) => m[1]).sort(), present);
   });
 
   test("docs and manifest text contain no em-dashes", async () => {
