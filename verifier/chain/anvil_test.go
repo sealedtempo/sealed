@@ -30,7 +30,11 @@ func TestAnvilViews(t *testing.T) {
 		m.MRTD[i], m.RTMR0[i], m.RTMR1[i], m.RTMR2[i] = 0x11, 0x22, 0x33, 0x44
 	}
 	imageID := r.AddImage(t, n, "sealed-sim", "1.0.0", m, false)
-	debugID := r.AddImage(t, n, "sealed-sim-debug", "1.0.0", m, true)
+	dm := m
+	for i := range dm.MRTD {
+		dm.MRTD[i] = 0x55 // distinct measurements: PlatformRegistry may reject reusing a measurementsHash
+	}
+	debugID := r.AddImage(t, n, "sealed-sim-debug", "1.0.0", dm, true)
 	appID := r.RegisterApp(t, n, "llm-gateway")
 	relID := r.PublishRelease(t, n, appID, "1.0.0", [32]byte{0xb1})
 	stack := [32]byte{0x5a}
