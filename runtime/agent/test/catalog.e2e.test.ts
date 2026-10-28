@@ -147,15 +147,20 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
     const agentSvc = compose.services["sealed-agent"] as (typeof compose.services)[string];
     const env = settingsFromEnv(agentSvc.environment);
     settings = testSettings(dir);
-    // Exactly the secrets tmpfs volumes the compose mounts into the agent count as tmpfs.
+    // Exactly the secrets mounts the compose gives the agent count as tmpfs, with everything below
+    // them: composer 1.2 binds the host's /run/sealed/secrets (on the CVM's /run tmpfs), composer 1.1
+    // mounted one tmpfs volume per owner.
     const tmpfs = new Set<string>();
     for (const v of agentSvc.volumes) {
-      if (v.type === "volume" && v.source.startsWith("sealed-secrets-")) {
+      const hostRun = v.type === "bind" && v.source === env.secretsDir && v.target === env.secretsDir;
+      if (hostRun || (v.type === "volume" && v.source.startsWith("sealed-secrets-"))) {
         const local = join(settings.secretsDir, relative(env.secretsDir, v.target));
         await mkdir(local, { recursive: true });
         tmpfs.add(local);
       }
     }
+    expect(tmpfs.size).toBeGreaterThan(0);
+    const onTmpfs = (p: string) => [...tmpfs].some((t) => p === t || p.startsWith(`${t}/`));
     await mkdir(settings.readyDir, { recursive: true });
     await writeFile(settings.configPath, await readFile(join(out, "config.json"), "utf8"));
     const defaults = await loadDefaults(join(repo, "config/defaults.yaml"), { testOverrides: false });
@@ -174,7 +179,7 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
       },
       fsType: async (p) => {
         await stat(p);
-        return tmpfs.has(p) ? TMPFS_MAGIC : 0xef53;
+        return onTmpfs(p) ? TMPFS_MAGIC : 0xef53;
       },
       chown: async (path) => {
         chowns.push({ path, readyFlag: await stat(join(settings.readyDir, "ok")).then(() => true, () => false) });
@@ -358,17 +363,10 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
     expect(report.simulated).toBe(true);
     // The quote binds attestedAt (D-047) whatever the verifier checks.
     expect(d047ReportData).toBe(true);
-    const failed = report.checks.filter((c) => !c.ok);
-    const rd = report.checks.find((c) => c.name === "report_data");
-    if (rd && !rd.ok) {
-      // A verifier from before D-047 still expects the construction without attestedAt (verifier owners, item 20).
-      expect(rd.detail).not.toContain("attestedAt");
-      expect(failed.map((c) => c.name)).toEqual(["report_data"]);
-    } else {
-      expect(failed).toEqual([]);
-      expect(report.ok).toBe(true);
-    }
-    for (const name of ["quote", "rtmr3", "compose_hash", "config_hash", "deployment_id", "stack_recompute", "stack_approved", "approval_releases", "image_measurements", "freshness"]) {
+    // The verifier checks the D-047 construction too, so every check passes.
+    expect(report.checks.filter((c) => !c.ok)).toEqual([]);
+    expect(report.ok).toBe(true);
+    for (const name of ["report_data", "quote", "rtmr3", "compose_hash", "config_hash", "deployment_id", "stack_recompute", "stack_approved", "approval_releases", "image_measurements", "freshness"]) {
       expect(report.checks.find((c) => c.name === name)?.ok, name).toBe(true);
     }
   }, 600_000);

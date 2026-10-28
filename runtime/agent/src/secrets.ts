@@ -1,8 +1,9 @@
 // Boot step 3 (spec 5.6, INTERFACES 14-15): app secrets as files on tmpfs, the payer key for
-// sealed-mpp-payer, then the ready flag. Each owner directory is its own tmpfs volume, mounted into
-// that app only; a secret is never written to a directory that is not tmpfs, so it cannot land on
-// the container's disk-backed writable layer.
-import { mkdir, open, readdir, rename, rm, statfs } from "node:fs/promises";
+// sealed-mpp-payer, then the ready flag. From composer 1.2 (D-042) the agent binds the host's
+// /run/sealed/secrets (on the CVM's /run tmpfs) and creates the owner directories itself; each app
+// service binds exactly the files it declares. A secret is never written to a directory that is not
+// tmpfs, so it cannot land on a disk-backed layer.
+import { lstat, mkdir, open, readdir, rename, rm, statfs } from "node:fs/promises";
 import { join } from "node:path";
 
 export const PAYER_DIR = "sealed-mpp-payer";
@@ -24,11 +25,7 @@ export class SecretsTargetError extends Error {}
 
 const defaultFsType = async (path: string) => (await statfs(path)).type;
 
-async function prepareDir(layout: SecretsLayout, dir: string): Promise<void> {
-  if (!layout.requireTmpfs) {
-    await mkdir(dir, { recursive: true, mode: 0o755 });
-    return;
-  }
+async function requireTmpfs(layout: SecretsLayout, dir: string): Promise<void> {
   let type: number;
   try {
     type = await (layout.fsType ?? defaultFsType)(dir);
@@ -36,6 +33,31 @@ async function prepareDir(layout: SecretsLayout, dir: string): Promise<void> {
     throw new SecretsTargetError(`${dir} is not a mounted tmpfs (${(err as NodeJS.ErrnoException).code ?? "error"})`);
   }
   if (type !== TMPFS_MAGIC) throw new SecretsTargetError(`${dir} is not on tmpfs (f_type 0x${type.toString(16)}); refusing to write secrets there`);
+}
+
+/**
+ * Makes `<secretsDir>/<owner>` ready for secret files. An existing owner directory must be a real
+ * directory (not a symlink) on tmpfs. A missing one is created (0755) only when the secrets root is
+ * itself on tmpfs (composer 1.2 binds the host's /run/sealed/secrets), and is checked again after.
+ */
+async function prepareDir(layout: SecretsLayout, dir: string): Promise<void> {
+  if (!layout.requireTmpfs) {
+    await mkdir(dir, { recursive: true, mode: 0o755 });
+    return;
+  }
+  let exists = true;
+  try {
+    const st = await lstat(dir);
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new SecretsTargetError(`${dir} is not a directory; refusing to write secrets there`);
+  } catch (err) {
+    if (err instanceof SecretsTargetError || (err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    exists = false;
+  }
+  if (!exists) {
+    await requireTmpfs(layout, layout.secretsDir);
+    await mkdir(dir, { mode: 0o755 });
+  }
+  await requireTmpfs(layout, dir);
 }
 
 /** Writes via a temp file in the same directory and renames it into place. */
@@ -52,6 +74,13 @@ async function atomicWrite(path: string, data: string, mode: number): Promise<vo
 }
 
 export interface WriteSecretsOptions {
+  /**
+   * owner -> the exact files to write (sealed-stack/v1 `secretFiles`, composer 1.2). When set, only
+   * these files are written: released values, empty placeholders for optional secrets that were not
+   * released. Released secrets outside it are not written, since no container binds them (the gate
+   * hash stays in the agent's memory).
+   */
+  files?: ReadonlyMap<string, ReadonlySet<string>>;
   /**
    * owner -> names that some service mounts as a single file (composer 1.2, D-042). Docker cannot
    * start a container whose mount source is missing, so each of these must exist.
@@ -89,7 +118,7 @@ export async function writeSecrets(
   allowedOwners: ReadonlySet<string>,
   opts: WriteSecretsOptions = {},
 ): Promise<WriteSecretsResult> {
-  const individually = opts.individually ?? new Map<string, ReadonlySet<string>>();
+  const individually = opts.files ?? opts.individually ?? new Map<string, ReadonlySet<string>>();
   const valid = (owner: string) => OWNER_RE.test(owner) && owner !== PAYER_DIR && allowedOwners.has(owner);
   for (const [owner, values] of Object.entries(secrets)) {
     if (!valid(owner)) throw new Error(`invalid secret owner ${JSON.stringify(owner)}`);
@@ -99,11 +128,13 @@ export async function writeSecrets(
   const owners = new Set([...Object.keys(secrets), ...[...individually.keys()].filter((o) => o !== PAYER_DIR)]);
   for (const owner of [...owners].sort()) {
     if (!valid(owner)) throw new Error(`invalid secret owner ${JSON.stringify(owner)}`);
-    if (opts.onDisk && !opts.onDisk.has(owner)) {
+    if ((opts.onDisk && !opts.onDisk.has(owner)) || (opts.files && !opts.files.has(owner))) {
       if (Object.keys(secrets[owner] ?? {}).length > 0) result.skipped.push(owner);
       continue;
     }
-    const values = secrets[owner] ?? {};
+    const wanted = opts.files?.get(owner);
+    const values = Object.fromEntries(Object.entries(secrets[owner] ?? {}).filter(([name]) => !wanted || wanted.has(name)));
+    if (wanted && Object.keys(values).length < Object.keys(secrets[owner] ?? {}).length) result.skipped.push(owner);
     const keep = new Set(Object.keys(values));
     const placeholders: string[] = [];
     for (const name of [...(individually.get(owner) ?? [])].sort()) {

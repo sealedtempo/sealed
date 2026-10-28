@@ -1,8 +1,8 @@
 // Which secret files each service of the measured compose can see (brief item 5, D-042). The agent
-// writes /run/sealed/secrets/<owner>/<NAME> into one tmpfs volume per owner. Composer 1.1 mounts an
-// owner's whole directory into every service of that owner that declares secrets; composer 1.2 mounts
-// only the files a service lists in `x-sealed-secrets`, one read-only mount per file (a volume
-// `subpath` or a bind of the file). This module reads those mounts back from the compose so the agent
+// writes /run/sealed/secrets/<owner>/<NAME>. Composer 1.2 binds the host's /run/sealed/secrets (on the
+// CVM's /run tmpfs) into the agent only, and binds into each service exactly the files it lists in
+// `x-sealed-secrets`, read-only, from the same host path. Composer 1.1 mounted one tmpfs volume per
+// owner, whole, into every service of that owner. This module reads those mounts back from the compose so the agent
 // can (a) refuse a compose that hands one owner's secrets to another owner's service and (b) make sure
 // every individually mounted file exists before the ready flag, since Docker cannot start a container
 // whose mount source is missing.
@@ -66,11 +66,16 @@ export function secretMountsFromAppCompose(appCompose: string): SecretMount[] {
       const v = typeof raw === "string" ? shortSyntax(raw) : raw;
       if (typeof v.target !== "string") continue;
       const target = posix.normalize(v.target).replace(/\/$/, "");
+      if (target !== SECRETS_ROOT && !target.startsWith(`${SECRETS_ROOT}/`)) continue;
+      // A bind under the secrets root must bind the same host path, so a service can only ever see
+      // the file its target names (review finding: targets alone were checked).
+      if (v.type === "bind" && (typeof v.source !== "string" || posix.normalize(v.source).replace(/\/$/, "") !== target)) {
+        throw new Error(`compose: ${service} binds ${String(v.source)} at ${v.target}; secret binds must use the same host path`);
+      }
       if (target === SECRETS_ROOT) {
         out.push({ service, owner: "*", readOnly: v.read_only === true });
         continue;
       }
-      if (!target.startsWith(`${SECRETS_ROOT}/`)) continue;
       const parts = target.slice(SECRETS_ROOT.length + 1).split("/");
       const [owner, name, ...rest] = parts;
       const where = `${service} mounts ${v.target}`;
@@ -160,4 +165,34 @@ export function agentSecretOwners(mounts: SecretMount[]): Set<string> | undefine
   const mine = mounts.filter((m) => m.service === AGENT_SERVICE && m.name === undefined);
   if (mine.some((m) => m.owner === "*")) return undefined;
   return new Set(mine.map((m) => m.owner));
+}
+
+/**
+ * sealed-stack/v1 `secretFiles` (composer 1.2) as owner -> names, or undefined for an older stack.
+ * Every single-file secret mount of the compose must be listed, and every listed file must be bound
+ * into some service, so the agent writes exactly what the containers bind.
+ */
+export function secretFilesFromStack(stack: StackInfo, mounts: SecretMount[]): Map<string, Set<string>> | undefined {
+  if (stack.secretFiles === undefined) return undefined;
+  const root = (stack.secretsRoot ?? SECRETS_ROOT).replace(/\/$/, "");
+  if (root !== SECRETS_ROOT) throw new Error(`stack: secretsRoot ${root} is not ${SECRETS_ROOT}`);
+  const out = new Map<string, Set<string>>();
+  for (const f of stack.secretFiles) {
+    const parts = f.startsWith(`${root}/`) ? f.slice(root.length + 1).split("/") : [];
+    const [owner, name] = parts;
+    if (parts.length !== 2 || !owner || !name || !OWNER_RE.test(owner) || !NAME_RE.test(name)) {
+      throw new Error(`stack: secret file ${f} is not ${root}/<owner>/<NAME>`);
+    }
+    const names = out.get(owner) ?? new Set<string>();
+    names.add(name);
+    out.set(owner, names);
+  }
+  const bound = filesMountedIndividually(mounts);
+  const key = (m: Map<string, Set<string>>) => [...m].flatMap(([o, ns]) => [...ns].map((n) => `${o}/${n}`)).sort();
+  const listed = key(out);
+  const mounted = key(bound);
+  if (listed.join(",") !== mounted.join(",")) {
+    throw new Error(`stack: secretFiles (${listed.join(", ")}) differ from the compose's secret binds (${mounted.join(", ")})`);
+  }
+  return out;
 }

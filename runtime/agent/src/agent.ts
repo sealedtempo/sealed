@@ -15,7 +15,7 @@ import {
   type UsageEvent,
   usageDomain,
 } from "@sealed/core";
-import { type CaddySwitch, DirectCaddySwitch, HelperCaddySwitch } from "./caddy.js";
+import { type CaddySwitch, DirectCaddySwitch } from "./caddy.js";
 import { type Clock, systemClock } from "./clock.js";
 import { buildContext, checkMountedCopy, type DeploymentContext, readPublicConfig } from "./context.js";
 import { DirDisk, type DataDisk, LuksDisk } from "./disk.js";
@@ -42,6 +42,7 @@ import {
   checkSecretMounts,
   declaredSecretsFromAppCompose,
   filesMountedIndividually,
+  secretFilesFromStack,
   secretMountsFromAppCompose,
 } from "./secretMounts.js";
 import { type SecretsLayout, writePayerSecrets, writeReadyFlag, writeSecrets } from "./secrets.js";
@@ -79,8 +80,6 @@ export interface AgentDeps {
   gateVerify?: (password: Uint8Array, hash: string) => Promise<boolean>;
   /** Per-boot key for the gate cookie (tests fix it; production draws a random one at every boot). */
   gateKey?: Uint8Array;
-  /** Called when something the agent cannot recover from in-process fails (main exits so Docker restarts it). */
-  onFatal?: (err: Error) => void;
 }
 
 /** Caddy's HTTPS port on its apps-network IP, where the agent reads the served certificate. */
@@ -147,6 +146,7 @@ export class Agent {
     // D-042: no service may see another owner's secrets; checked before any secret is released.
     const secretMounts = secretMountsFromAppCompose(appCompose);
     checkSecretMounts(secretMounts, ctx.stack);
+    const secretFiles = secretFilesFromStack(ctx.stack, secretMounts);
     this.ctx = ctx;
     const log = this.log.child({ deploymentId: ctx.deploymentId });
     log.info("booting", { stackHash: ctx.stackHash, configHash: ctx.configHash, apps: ctx.apps.map((a) => a.id), devSim: s.devSim });
@@ -195,6 +195,7 @@ export class Agent {
     const layout: SecretsLayout = { secretsDir: s.secretsDir, readyDir: s.readyDir, requireTmpfs: s.requireTmpfs, fsType: this.deps.fsType };
     const optional = new Map(ctx.stack.apps.map((a) => [a.id, new Set(a.secrets.filter((x) => x.optional).map((x) => x.name))]));
     const written = await writeSecrets(layout, keys.secrets, new Set(["_gate", ...ctx.apps.map((a) => a.id)]), {
+      ...(secretFiles ? { files: secretFiles } : {}),
       individually: filesMountedIndividually(secretMounts),
       isOptional: (owner, name) => optional.get(owner)?.has(name) ?? false,
       onDisk: agentSecretOwners(secretMounts),
@@ -209,17 +210,9 @@ export class Agent {
     if (ctx.payerIp) await writePayerSecrets(layout, keys.enclaveKey, config.settlement.spendLimitPerDay);
 
     const runAs = parseRunAs(s.runAs);
-    const dropping = runAs !== undefined && process.getuid?.() === 0;
-    this.caddy =
-      this.deps.caddy ??
-      (dropping
-        ? new HelperCaddySwitch(s.caddyAdminSocket, ctx.caddyfiles, {
-            onLost: (err) => {
-              log.error("caddy helper lost; the payment-needed switch no longer works", errorFields(err));
-              this.deps.onFatal?.(err);
-            },
-          })
-        : new DirectCaddySwitch(parseEndpoint(s.caddyAdminSocket), ctx.caddyfiles));
+    // Brief item 15: Caddy creates its admin socket with mode 0660 on a tmpfs owned by 10001:10001
+    // (setgid), so the agent reaches it after dropping to 10001:10001 without a root helper.
+    this.caddy = this.deps.caddy ?? new DirectCaddySwitch(parseEndpoint(s.caddyAdminSocket), ctx.caddyfiles);
     await writeReadyFlag(layout, this.clock.now());
     await dropPrivileges(runAs, [stateDir], log);
     await this.setupMetering(ctx, keys, defaults, log);
@@ -560,7 +553,6 @@ export class Agent {
     this.abort.abort(new Error("agent stopping"));
     await Promise.allSettled(this.loops);
     await this.store?.save().catch(() => undefined);
-    if (this.caddy instanceof HelperCaddySwitch) this.caddy.close();
     await this.bcrypt?.close();
     await new Promise<void>((ok) => {
       if (!this.server) return ok();

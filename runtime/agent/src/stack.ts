@@ -60,7 +60,7 @@ const stackAppSchema = z
     version: z.string(),
     primaryService: z.string(),
     services: z.array(stackServiceSchema).min(1),
-    secrets: z.array(z.object({ name: z.string(), optional: z.boolean() })),
+    secrets: z.array(z.object({ name: z.string(), optional: z.boolean(), sameAs: z.string().optional() })),
     metering: z.object({ unit: z.enum(["tokens", "pages", "app_hour"]), source: z.enum(["callback", "heartbeat"]) }),
     healthcheck: z.object({ service: z.string(), port: z.number().int().min(0).max(65535), path: z.string() }),
     routes: z.array(stackRouteSchema).default([]),
@@ -80,6 +80,9 @@ export const stackInfoSchema = z
     /** Host path of the data disk and every data bind source on it (composer 1.1+). */
     dataRoot: z.string().startsWith("/").optional(),
     dataDirs: z.array(z.string().startsWith("/")).optional(),
+    /** Composer 1.2 (D-042): the host secrets directory and every file a container binds from it. */
+    secretsRoot: z.string().startsWith("/").optional(),
+    secretFiles: z.array(z.string().startsWith("/")).optional(),
     gate: z.object({ username: z.string().min(1), secretApp: z.string().min(1), secret: z.string().min(1) }).loose().optional(),
   })
   .loose();

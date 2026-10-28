@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -50,6 +50,36 @@ describe("tmpfs secrets (INTERFACES 14-15)", () => {
     tmpfsDirs.add(join(layout.secretsDir, "crm"));
     await writeSecrets(prod, { crm: { APP_SECRET: "s" }, _gate: {} }, owners);
     expect(await readFile(join(layout.secretsDir, "crm", "APP_SECRET"), "utf8")).toBe("s");
+  });
+
+  // Composer 1.2 binds the host's /run/sealed/secrets (a tmpfs) into the agent, with no owner
+  // directories in it (review finding: they were never created, so the boot failed closed).
+  it("in production creates owner directories on a tmpfs secrets root and refuses symlinked ones", async () => {
+    const prod: SecretsLayout = { ...layout, requireTmpfs: true, fsType: async (p) => {
+      await stat(p);
+      return p === layout.secretsDir || p.startsWith(`${layout.secretsDir}/`) ? TMPFS_MAGIC : 0xef53;
+    } };
+    await mkdir(layout.secretsDir, { recursive: true });
+    await writeSecrets(prod, { crm: { APP_SECRET: "s" } }, owners);
+    await writePayerSecrets(prod, "0xkey", "1");
+    expect(await readFile(join(layout.secretsDir, "crm", "APP_SECRET"), "utf8")).toBe("s");
+    expect((await stat(join(layout.secretsDir, "crm"))).mode & 0o777).toBe(0o755);
+    expect(await readFile(join(layout.secretsDir, "sealed-mpp-payer", "ENCLAVE_KEY"), "utf8")).toBe("0xkey");
+    await mkdir(join(dir, "elsewhere"));
+    await symlink(join(dir, "elsewhere"), join(layout.secretsDir, "_gate"));
+    await expect(writeSecrets(prod, { _gate: { GATE_PASSWORD_BCRYPT: "$2a$" } }, owners)).rejects.toThrow("is not a directory");
+    expect(await readdir(join(dir, "elsewhere"))).toEqual([]);
+  });
+
+  it("with the stack's secretFiles writes exactly those files, placeholders included", async () => {
+    const files = new Map([["crm", new Set(["APP_SECRET", "SMTP_PASSWORD"])]]);
+    const isOptional = (o: string, n: string) => o === "crm" && n === "SMTP_PASSWORD";
+    const r = await writeSecrets(layout, { crm: { APP_SECRET: "s1", UNUSED: "u" }, _gate: { GATE_PASSWORD_BCRYPT: "$2a$" } }, owners, { files, isOptional });
+    expect(r).toEqual({ placeholders: ["crm/SMTP_PASSWORD"], missing: [], skipped: ["_gate", "crm"] });
+    expect((await readdir(join(layout.secretsDir, "crm"))).sort()).toEqual(["APP_SECRET", "SMTP_PASSWORD"]);
+    await expect(stat(join(layout.secretsDir, "_gate"))).rejects.toThrow();
+    const r2 = await writeSecrets(layout, {}, owners, { files: new Map([["crm", new Set(["DB_PASSWORD"])]]) });
+    expect(r2.missing).toEqual(["crm/DB_PASSWORD"]);
   });
 
   // D-042 (composer 1.2): a service mounts each declared secret as its own file, and Docker cannot

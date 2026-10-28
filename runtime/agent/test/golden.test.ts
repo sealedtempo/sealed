@@ -3,7 +3,7 @@
 // measured configs, and a full boot on that exact app-compose.json with the dstack simulator, a fake
 // key broker and tmpfs checks driven by the compose's own volume list. Review finding: the agent and
 // the composer had drifted apart on all of these.
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalize, loadDefaults, parseCJSON } from "@sealed/core";
@@ -60,10 +60,11 @@ describe("sealed-agent against the composer's golden stack", () => {
     expect(settings.readyDir).toBe(volumeTarget("sealed-ready"));
     expect(compose.volumes["sealed-ready"]?.driver_opts?.type).toBe("tmpfs");
     expect(dirname(settings.caddyAdminSocket)).toBe(volumeTarget("sealed-caddy-admin"));
-    for (const owner of ["_gate", "llm-gateway", "notes", "sealed-mpp-payer"]) {
-      expect(volumeTarget(`sealed-secrets-${owner}`)).toBe(join(settings.secretsDir, owner));
-      expect(compose.volumes[`sealed-secrets-${owner}`]?.driver_opts?.type).toBe("tmpfs");
-    }
+    expect(compose.volumes["sealed-caddy-admin"]?.driver_opts?.type).toBe("tmpfs");
+    // D-042 (composer 1.2): the agent binds the host's secrets directory (on the CVM's /run tmpfs) and
+    // writes the owner directories itself; no Docker volume holds secrets.
+    expect(agentSvc.volumes.find((v) => v.type === "bind" && v.target === settings.secretsDir)).toMatchObject({ source: settings.secretsDir });
+    expect(Object.keys(compose.volumes).filter((v) => v.startsWith("sealed-secrets"))).toEqual([]);
     const data = agentSvc.volumes.find((v) => v.type === "bind" && v.target === settings.dataMount);
     expect(data).toMatchObject({ source: "/mnt/sealed-data", bind: { propagation: "rshared" } });
     expect(agentSvc.devices).toContain(`/dev/disk/by-id/google-sealed-data:${settings.dataDevice}`);
@@ -83,9 +84,10 @@ describe("sealed-agent against the composer's golden stack", () => {
   it("takes metering, healthchecks (by fixed IP), callers and the payer from sealed-stack/v1", () => {
     const { config, json } = parsePublicConfig(configText);
     const ctx = buildContext({ config, configJson: json, appCompose, defaults });
+    // Per-app networks (D-041): health probes use the app-network address, callers every address.
     expect(ctx.apps).toEqual([
-      expect.objectContaining({ id: "llm-gateway", metering: { unit: "tokens", source: "callback" }, healthcheck: "http://172.30.0.16:4000/health/liveliness", serviceIps: ["172.30.0.16"] }),
-      expect.objectContaining({ id: "notes", metering: { unit: "app_hour", source: "heartbeat" }, healthcheck: "http://172.30.0.17:8080/healthz", serviceIps: ["172.30.0.18", "172.30.0.17"] }),
+      expect.objectContaining({ id: "llm-gateway", metering: { unit: "tokens", source: "callback" }, healthcheck: "http://172.30.1.16:4000/health/liveliness", serviceIps: ["172.30.1.16", "172.30.0.16"] }),
+      expect.objectContaining({ id: "notes", metering: { unit: "app_hour", source: "heartbeat" }, healthcheck: "http://172.30.2.16:8080/healthz", serviceIps: ["172.30.2.17", "172.30.2.16", "172.30.0.17"] }),
     ]);
     expect(ctx.payerIp).toBe("172.30.0.5");
     expect(ctx.caddyIp).toBe("172.30.0.4");
@@ -129,14 +131,14 @@ describe("sealed-agent against the composer's golden stack", () => {
       platform = await startFakePlatform();
       sim = await startSimulator({ appCompose, socket: join(dir, "dstack.sock") });
       const base = testSettings(dir);
-      // The secrets tmpfs volumes the compose mounts into the agent, and nothing else, count as tmpfs.
+      // The host secrets directory the compose binds into the agent is on tmpfs, with everything below it.
       for (const v of agentSvc.volumes) {
-        if (v.type === "volume" && v.source.startsWith("sealed-secrets-")) {
-          const local = join(base.secretsDir, v.target.slice(settings.secretsDir.length + 1));
-          await mkdir(local, { recursive: true });
-          tmpfs.add(local);
+        if (v.type === "bind" && v.target === settings.secretsDir) {
+          await mkdir(base.secretsDir, { recursive: true });
+          tmpfs.add(base.secretsDir);
         }
       }
+      expect(tmpfs.size).toBe(1);
       await mkdir(join(base.secretsDir, "stray"), { recursive: true });
       await mkdir(base.readyDir, { recursive: true });
       await writeFile(base.configPath, configText);
@@ -153,7 +155,7 @@ describe("sealed-agent against the composer's golden stack", () => {
         },
         fsType: async (p) => {
           await stat(p);
-          return tmpfs.has(p) ? TMPFS_MAGIC : 0xef53;
+          return [...tmpfs].some((t) => p === t || p.startsWith(`${t}/`)) ? TMPFS_MAGIC : 0xef53;
         },
         clock: { now: () => now, sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 20))) },
         log: silentLogger,
@@ -179,13 +181,21 @@ describe("sealed-agent against the composer's golden stack", () => {
       await rm(dir, { recursive: true, force: true });
     });
 
-    it("opens the ready gate as <SEALED_READY_DIR>/ok and writes every secret into its own tmpfs volume", async () => {
+    it("opens the ready gate as <SEALED_READY_DIR>/ok and writes exactly the stack's secretFiles", async () => {
       const s = testSettings(dir);
       expect(await readFile(join(s.readyDir, "ok"), "utf8")).toMatch(/^\d+\n$/);
       expect(await readFile(join(s.secretsDir, "notes", "DB_PASSWORD"), "utf8")).toBe("pg");
+      expect(await readFile(join(s.secretsDir, "notes", "APP_SECRET"), "utf8")).toBe("notes-app");
+      // An optional secret the customer did not set is bound on its own, so it exists, empty.
+      expect(await readFile(join(s.secretsDir, "notes", "SMTP_PASSWORD"), "utf8")).toBe("");
       expect(await readFile(join(s.secretsDir, "llm-gateway", "MASTER_KEY"), "utf8")).toBe("sk-master");
-      expect(await readFile(join(s.secretsDir, "_gate", "GATE_PASSWORD_BCRYPT"), "utf8")).toBe("$2a$14$hash");
       expect(await readFile(join(s.secretsDir, "sealed-mpp-payer", "ENCLAVE_KEY"), "utf8")).toBe(agent.keys?.enclaveKey);
+      // No container binds the gate hash (Caddy holds no secret), so it stays in the agent's memory.
+      await expect(stat(join(s.secretsDir, "_gate"))).rejects.toThrow();
+      const stack = JSON.parse(await read("stack.json")) as { secretsRoot: string; secretFiles: string[] };
+      const written: string[] = [];
+      for (const owner of ["llm-gateway", "notes", "sealed-mpp-payer"]) for (const f of await readdir(join(s.secretsDir, owner))) written.push(`${stack.secretsRoot}/${owner}/${f}`);
+      expect(written.sort()).toEqual(stack.secretFiles);
       expect((await localRequest(ep(), "/v1/ready")).status).toBe(200);
     });
 
@@ -197,11 +207,13 @@ describe("sealed-agent against the composer's golden stack", () => {
     it("accepts usage only from the app's own service IPs and only in the unit the manifest meters", async () => {
       const post = (body: unknown, ip: string) => localRequest(ep(), "/v1/usage-events", { body, headers: fromPeer(ip) });
       expect((await post({ app: "llm-gateway", unit: "tokens", quantity: 1000, id: "c1" }, "172.30.0.16")).status).toBe(202);
+      expect((await post({ app: "llm-gateway", unit: "tokens", quantity: 500, id: "c2" }, "172.30.1.16")).status).toBe(202); // its app-network address
+      expect((await post({ app: "llm-gateway", unit: "tokens", quantity: 1000 }, "172.30.2.16")).status).toBe(403); // notes-web on app-notes
       expect((await post({ app: "llm-gateway", unit: "tokens", quantity: 1000 }, "172.30.0.17")).status).toBe(403); // notes-web
       expect((await post({ app: "llm-gateway", unit: "tokens", quantity: 1000 }, "172.30.0.5")).status).toBe(403); // the payer
       expect((await post({ app: "notes", unit: "app_hour", quantity: 60 }, "172.30.0.17")).status).toBe(422); // heartbeat-metered
       expect((await post({ app: "llm-gateway", unit: "tokens", quantity: 50_000_000 }, "172.30.0.16")).status).toBe(422); // per-event limit
-      expect(agent.ledger?.state.open["llm-gateway"]?.tokens).toBe("1000");
+      expect(agent.ledger?.state.open["llm-gateway"]?.tokens).toBe("1500");
     });
 
     it("keeps only sealed-mpp-payer's numeric spend counters", async () => {

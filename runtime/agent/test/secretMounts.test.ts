@@ -1,6 +1,6 @@
 // Brief item 5 (D-042): what each service of the measured compose can see under /run/sealed/secrets,
-// on the composer's golden stack (composer 1.1: whole owner directories) and on a compose that mounts
-// one file per declared secret (composer 1.2).
+// on the composer's golden stack (composer 1.2: the agent binds the host's secrets directory, every
+// other service binds exactly the files it declares).
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { canonicalize } from "@sealed/core";
@@ -10,6 +10,7 @@ import {
   checkSecretMounts,
   declaredSecretsFromAppCompose,
   filesMountedIndividually,
+  secretFilesFromStack,
   secretMountsFromAppCompose,
   visibleSecrets,
 } from "../src/secretMounts.js";
@@ -18,102 +19,112 @@ import { measuredConfigs, parseStackInfo } from "../src/stack.js";
 const golden = await readFile(join(import.meta.dirname, "fixtures/composer-golden/app-compose.json"), "utf8");
 const goldenStack = parseStackInfo(measuredConfigs(golden)["sealed-stack"] as string);
 
-/** The golden app-compose with every app service's whole-directory mount replaced by one mount per declared secret. */
-function perFileVariant(edit?: (services: Record<string, { volumes: Record<string, unknown>[] }>) => void): string {
+/** The golden app-compose with an edit to its services. */
+function variant(edit: (services: Record<string, { volumes: Record<string, unknown>[] }>) => void): string {
   const outer = JSON.parse(golden);
   const compose = JSON.parse(outer.docker_compose_file);
-  const declared = declaredSecretsFromAppCompose(golden);
-  for (const [name, svc] of Object.entries(compose.services as Record<string, { volumes: Record<string, unknown>[] }>)) {
-    if (name === "sealed-agent") continue;
-    const mine = declared.filter((d) => d.service === name);
-    svc.volumes = (svc.volumes ?? []).flatMap((v) => {
-      const t = String(v.target);
-      if (!t.startsWith("/run/sealed/secrets/") || mine.length === 0) return [v];
-      return mine.map((d) => ({ type: "volume", source: v.source, target: `${t}/${d.name}`, read_only: true, volume: { nocopy: true, subpath: d.name } }));
-    });
-  }
-  edit?.(compose.services);
+  edit(compose.services);
   outer.docker_compose_file = canonicalize(compose);
   return canonicalize(outer);
 }
 
+const bind = (path: string, extra: Record<string, unknown> = {}) => ({ type: "bind", source: path, target: path, read_only: true, bind: { create_host_path: false }, ...extra });
+
 describe("secret mounts in the measured compose", () => {
-  it("reads the golden stack's mounts: the agent writes every owner, each service sees only its own owner", () => {
+  it("reads the golden stack's mounts: the agent binds the root, each service exactly its own files", () => {
     const mounts = secretMountsFromAppCompose(golden);
-    expect(mounts.filter((m) => m.service === "sealed-agent").map((m) => m.owner)).toEqual(["_gate", "llm-gateway", "notes", "sealed-mpp-payer"]);
+    expect(mounts.filter((m) => m.service === "sealed-agent")).toEqual([{ service: "sealed-agent", owner: "*", readOnly: false }]);
     expect(mounts.filter((m) => m.service !== "sealed-agent")).toEqual([
-      { service: "caddy", owner: "_gate", readOnly: true },
-      { service: "llm-gateway-proxy", owner: "llm-gateway", readOnly: true },
-      // Composer 1.1 mounts the whole notes directory into both notes services (D-042 narrows this).
-      { service: "notes-db", owner: "notes", readOnly: true },
-      { service: "notes-web", owner: "notes", readOnly: true },
-      { service: "sealed-mpp-payer", owner: "sealed-mpp-payer", readOnly: true },
+      { service: "llm-gateway-proxy", owner: "llm-gateway", name: "MASTER_KEY", readOnly: true },
+      { service: "notes-db", owner: "notes", name: "DB_PASSWORD", readOnly: true },
+      { service: "notes-web", owner: "notes", name: "APP_SECRET", readOnly: true },
+      { service: "notes-web", owner: "notes", name: "DB_PASSWORD", readOnly: true },
+      { service: "notes-web", owner: "notes", name: "SMTP_PASSWORD", readOnly: true },
+      { service: "sealed-mpp-payer", owner: "sealed-mpp-payer", name: "ENCLAVE_KEY", readOnly: true },
+      { service: "sealed-mpp-payer", owner: "sealed-mpp-payer", name: "SPEND_LIMIT_PER_DAY", readOnly: true },
     ]);
     expect(() => checkSecretMounts(mounts, goldenStack)).not.toThrow();
-    expect(filesMountedIndividually(mounts).size).toBe(0);
-    expect([...(agentSecretOwners(mounts) ?? [])]).toEqual(["_gate", "llm-gateway", "notes", "sealed-mpp-payer"]);
+    expect([...(filesMountedIndividually(mounts).get("notes") ?? [])].sort()).toEqual(["APP_SECRET", "DB_PASSWORD", "SMTP_PASSWORD"]);
+    expect(agentSecretOwners(mounts)).toBeUndefined();
+    // Caddy holds no secret any more: the gate hash stays in the agent.
+    expect(mounts.some((m) => m.service === "caddy")).toBe(false);
+  });
+
+  it("matches the stack's secretFiles with the compose's binds", () => {
+    const mounts = secretMountsFromAppCompose(golden);
+    const files = secretFilesFromStack(goldenStack, mounts);
+    expect(Object.fromEntries([...(files ?? [])].map(([o, n]) => [o, [...n].sort()]))).toEqual({
+      "llm-gateway": ["MASTER_KEY"],
+      notes: ["APP_SECRET", "DB_PASSWORD", "SMTP_PASSWORD"],
+      "sealed-mpp-payer": ["ENCLAVE_KEY", "SPEND_LIMIT_PER_DAY"],
+    });
+    const fewer = variant((svcs) => {
+      const db = svcs["notes-db"] as { volumes: Record<string, unknown>[] };
+      db.volumes = db.volumes.filter((v) => !String(v.target).startsWith("/run/sealed/secrets/"));
+      const web = svcs["notes-web"] as { volumes: Record<string, unknown>[] };
+      web.volumes = web.volumes.filter((v) => v.target !== "/run/sealed/secrets/notes/DB_PASSWORD");
+    });
+    expect(() => secretFilesFromStack(goldenStack, secretMountsFromAppCompose(fewer))).toThrow("differ from the compose's secret binds");
+    expect(secretFilesFromStack({ ...goldenStack, secretFiles: undefined }, mounts)).toBeUndefined();
+    expect(() => secretFilesFromStack({ ...goldenStack, secretFiles: ["/run/sealed/secrets/notes/a/B"] }, mounts)).toThrow("is not /run/sealed/secrets/<owner>/<NAME>");
   });
 
   it("lets only the agent mount the whole secrets root", () => {
-    const agentRoot = perFileVariant((svcs) => {
-      svcs["sealed-agent"]?.volumes.push({ type: "volume", source: "sealed-secrets", target: "/run/sealed/secrets" });
-    });
-    const mounts = secretMountsFromAppCompose(agentRoot);
-    expect(agentSecretOwners(mounts)).toBeUndefined();
-    expect(() => checkSecretMounts(mounts, goldenStack)).not.toThrow();
-    const appRoot = perFileVariant((svcs) => {
-      svcs["notes-web"]?.volumes.push({ type: "volume", source: "sealed-secrets", target: "/run/sealed/secrets/", read_only: true });
+    const appRoot = variant((svcs) => {
+      svcs["notes-web"]?.volumes.push(bind("/run/sealed/secrets"));
     });
     expect(() => checkSecretMounts(secretMountsFromAppCompose(appRoot), goldenStack)).toThrow("notes-web mounts every owner's secrets");
   });
 
   it("reads the declared secrets from the envexec flags", () => {
-    expect(declaredSecretsFromAppCompose(golden)).toEqual(
+    const declared = declaredSecretsFromAppCompose(golden);
+    expect(declared).toEqual(
       expect.arrayContaining([
-        { service: "caddy", app: "_gate", name: "GATE_PASSWORD_BCRYPT", optional: false },
         { service: "notes-web", app: "notes", name: "SMTP_PASSWORD", optional: true },
         { service: "notes-web", app: "notes", name: "APP_SECRET", optional: false },
+        { service: "notes-db", app: "notes", name: "DB_PASSWORD", optional: false },
       ]),
     );
+    expect(declared.some((d) => d.service === "caddy")).toBe(false);
   });
 
-  it("with one mount per declared secret, a service sees exactly the secrets it declares", () => {
-    const compose = perFileVariant();
-    const mounts = secretMountsFromAppCompose(compose);
-    expect(() => checkSecretMounts(mounts, goldenStack)).not.toThrow();
-    const individually = filesMountedIndividually(mounts);
-    expect([...(individually.get("notes") ?? [])].sort()).toEqual(["APP_SECRET", "DB_PASSWORD", "SMTP_PASSWORD"]);
+  it("each service sees exactly the secrets it declares", () => {
+    const mounts = secretMountsFromAppCompose(golden);
     const written = { notes: ["APP_SECRET", "DB_PASSWORD", "SMTP_PASSWORD"], "llm-gateway": ["MASTER_KEY"] };
-    for (const d of declaredSecretsFromAppCompose(compose)) {
-      if (d.app === "_gate") continue;
-      const own = declaredSecretsFromAppCompose(compose).filter((x) => x.service === d.service).map((x) => `${x.app}/${x.name}`).sort();
-      expect(visibleSecrets(mounts, d.service, written)).toEqual(own);
+    const declared = declaredSecretsFromAppCompose(golden);
+    for (const service of new Set(declared.map((d) => d.service))) {
+      const own = declared.filter((x) => x.service === service).map((x) => `${x.app}/${x.name}`).sort();
+      expect(visibleSecrets(mounts, service, written)).toEqual(own);
     }
   });
 
-  it("refuses a service that mounts another owner's secrets, a writable mount and malformed targets", () => {
-    const cross = perFileVariant((svcs) => {
-      svcs["notes-web"]?.volumes.push({ type: "volume", source: "sealed-secrets-llm-gateway", target: "/run/sealed/secrets/llm-gateway/MASTER_KEY", read_only: true, volume: { subpath: "MASTER_KEY" } });
+  it("refuses another owner's secrets, writable mounts, foreign bind sources and malformed targets", () => {
+    const cross = variant((svcs) => {
+      svcs["notes-web"]?.volumes.push(bind("/run/sealed/secrets/llm-gateway/MASTER_KEY"));
     });
     expect(() => checkSecretMounts(secretMountsFromAppCompose(cross), goldenStack)).toThrow("notes-web mounts the secrets of llm-gateway, but it belongs to notes");
-    const sidecar = perFileVariant((svcs) => {
-      (svcs["sealed-egress"] as { volumes: unknown[] }).volumes.push({ type: "volume", source: "sealed-secrets-_gate", target: "/run/sealed/secrets/_gate", read_only: true });
+    const sidecar = variant((svcs) => {
+      (svcs["sealed-egress"] as { volumes: unknown[] }).volumes.push(bind("/run/sealed/secrets/notes/APP_SECRET"));
     });
-    expect(() => checkSecretMounts(secretMountsFromAppCompose(sidecar), goldenStack)).toThrow("sealed-egress mounts the secrets of _gate");
-    const writable = perFileVariant((svcs) => {
-      svcs["notes-db"]?.volumes.push({ type: "volume", source: "sealed-secrets-notes", target: "/run/sealed/secrets/notes" });
+    expect(() => checkSecretMounts(secretMountsFromAppCompose(sidecar), goldenStack)).toThrow("sealed-egress mounts the secrets of notes");
+    const writable = variant((svcs) => {
+      svcs["notes-db"]?.volumes.push(bind("/run/sealed/secrets/notes/APP_SECRET", { read_only: false }));
     });
     expect(() => checkSecretMounts(secretMountsFromAppCompose(writable), goldenStack)).toThrow("writable");
-    const wrongVolume = perFileVariant((svcs) => {
+    const foreignSource = variant((svcs) => {
+      svcs["notes-web"]?.volumes.push({ ...bind("/run/sealed/secrets/notes/X"), source: "/run/sealed/secrets/llm-gateway/MASTER_KEY" });
+    });
+    expect(() => secretMountsFromAppCompose(foreignSource)).toThrow("secret binds must use the same host path");
+    const wrongVolume = variant((svcs) => {
       svcs["notes-web"]?.volumes.push({ type: "volume", source: "sealed-secrets-llm-gateway", target: "/run/sealed/secrets/notes/X", read_only: true });
     });
     expect(() => secretMountsFromAppCompose(wrongVolume)).toThrow("not sealed-secrets-notes");
-    const wrongSubpath = perFileVariant((svcs) => {
+    const wrongSubpath = variant((svcs) => {
       svcs["notes-web"]?.volumes.push({ type: "volume", source: "sealed-secrets-notes", target: "/run/sealed/secrets/notes/X", read_only: true, volume: { subpath: "Y" } });
     });
     expect(() => secretMountsFromAppCompose(wrongSubpath)).toThrow("subpath Y");
-    const deep = perFileVariant((svcs) => {
-      svcs["notes-web"]?.volumes.push({ type: "bind", source: "/x", target: "/run/sealed/secrets/notes/A/B", read_only: true });
+    const deep = variant((svcs) => {
+      svcs["notes-web"]?.volumes.push(bind("/run/sealed/secrets/notes/A/B"));
     });
     expect(() => secretMountsFromAppCompose(deep)).toThrow("not /run/sealed/secrets/<owner>[/<NAME>]");
   });

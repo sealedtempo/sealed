@@ -4,8 +4,8 @@
 #
 # The agent starts as root because LUKS (cryptsetup open/luksFormat), dmsetup, mkfs and mount need
 # it (the composer grants this one container CAP_SYS_ADMIN and the data-disk device). After the
-# disk is mounted and the tmpfs secrets are written it forks the small Caddy admin helper (which
-# keeps root to reach the root-only admin socket) and drops to uid/gid 10001 (SEALED_RUN_AS).
+# disk is mounted and the tmpfs secrets are written it drops to uid/gid 10001 (SEALED_RUN_AS). Caddy's
+# admin socket is mode 0660 with group 10001 (brief item 15), so no root helper is needed.
 #
 # Not built in this workstream (no Docker daemon): the pins below are from packages.debian.org
 # for bookworm and must be confirmed by the CI image build.

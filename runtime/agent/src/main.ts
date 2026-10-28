@@ -15,8 +15,6 @@ export async function main(): Promise<void> {
     agent = new Agent({
       settings: settingsFromEnv(),
       log,
-      // The privileged Caddy helper cannot be restarted after the privilege drop: exit so Docker restarts the agent.
-      onFatal: () => process.exit(1),
     });
     await agent.boot();
     agent.start();
