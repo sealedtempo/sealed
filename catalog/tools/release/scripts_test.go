@@ -32,8 +32,8 @@ const (
 	alphaUSD      = "0x20c0000000000000000000000000000000000001"
 	// The scripts' FEE_TOKEN in these tests. anvil's genesis prefers AlphaUSD for dev 0 and BetaUSD for
 	// dev 1, so ThetaUSD makes both scripts send setUserToken.
-	thetaUSD = "0x20c0000000000000000000000000000000000003"
-	feeManager    = "0xfeec000000000000000000000000000000000000"
+	thetaUSD   = "0x20c0000000000000000000000000000000000003"
+	feeManager = "0xfeec000000000000000000000000000000000000"
 )
 
 func skipOrFail(t *testing.T, reason string) {
