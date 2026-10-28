@@ -217,6 +217,7 @@ func (f *fakeTerraform) Capture(_ context.Context, dir string, _ []string, args 
  "key_broker_service_account": {"value": "sealed-key-broker@acme-prod-4417.iam.gserviceaccount.com"},
  "key_broker_url": {"value": "https://sealed-key-broker-xyz-uc.a.run.app"},
  "subnetwork": {"value": "sealed-subnet"}, "boot_bucket": {"value": "acme-prod-4417-sealed-boot"},
+ "tempo_rpc_url": {"value": "https://rpc.tempo.xyz"}, "debug_log_service_account": {"value": ""},
  "kms_key_version": {"value": "projects/acme-prod-4417/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1"}
 }`), nil
 }
@@ -686,6 +687,59 @@ func TestBootstrapPrintsConnectionToken(t *testing.T) {
 	}
 	if code, _, _ := h.run("connect", "aws"); code != ExitUsage {
 		t.Fatal("connect aws")
+	}
+}
+
+// TestBootstrapNeverDropsTheCustomersRPC: the RPC the customer gave this command reaches the key broker's
+// variables when --tempo-rpc is not set (review F5), and is shown before Terraform runs.
+func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
+	base := []string{"bootstrap", "--plan", "--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
+		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
+		"--key-broker-image", "ghcr.io/sealedtempo/key-broker@sha256:" + strings.Repeat("ab", 32)}
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		args []string
+		want string
+	}{
+		"default":       {want: "https://rpc.tempo.xyz"},
+		"--rpc":         {args: []string{"--rpc", "https://tempo.customer-node.example/rpc"}, want: "https://tempo.customer-node.example/rpc"},
+		"TEMPO_RPC_URL": {env: map[string]string{"TEMPO_RPC_URL": "https://tempo.customer-node.example/env"}, want: "https://tempo.customer-node.example/env"},
+		"--tempo-rpc":   {args: []string{"--rpc", "https://reader.example", "--tempo-rpc", "https://broker.customer.example"}, want: "https://broker.customer.example"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			for k, v := range tc.env {
+				h.env[k] = v
+			}
+			work := filepath.Join(h.dir, "work")
+			code, _, errs := h.run(append(append(append([]string{}, base...), "--work-dir", work), tc.args...)...)
+			if code != ExitOK {
+				t.Fatalf("%d %s", code, errs)
+			}
+			var vars map[string]any
+			b, _ := os.ReadFile(filepath.Join(work, "terraform.tfvars.json"))
+			json.Unmarshal(b, &vars)
+			if vars["tempo_rpc_url"] != tc.want || vars["chain_id"] != float64(4217) || vars["enable_debug_logging"] != false {
+				t.Fatalf("vars %v", vars)
+			}
+			if !strings.Contains(errs, "The key broker will read Tempo chain 4217 through "+tc.want) {
+				t.Fatalf("effective RPC not shown: %s", errs)
+			}
+		})
+	}
+	h := newHarness(t)
+	work := filepath.Join(h.dir, "work")
+	if code, _, errs := h.run(append(append([]string{}, base...), "--work-dir", work, "--debug-logging", "--rpc", "http://plain.example")...); code != ExitUsage || !strings.Contains(errs, "https") {
+		t.Fatalf("plain http RPC for the broker: %d %s", code, errs)
+	}
+	if code, _, errs := h.run(append(append([]string{}, base...), "--work-dir", work, "--debug-logging")...); code != ExitOK {
+		t.Fatalf("%d %s", code, errs)
+	}
+	var vars map[string]any
+	b, _ := os.ReadFile(filepath.Join(work, "terraform.tfvars.json"))
+	json.Unmarshal(b, &vars)
+	if vars["enable_debug_logging"] != true {
+		t.Fatalf("--debug-logging: %v", vars)
 	}
 }
 

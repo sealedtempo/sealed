@@ -15,13 +15,13 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	c.register(fs)
 	p := &bootstrap.Params{EnableAPIs: true}
 	var workDir, stateBucket, subnet, kms string
-	var planOnly, yes, noAPIs bool
+	var planOnly, yes, noAPIs, debugLogging bool
 	fs.StringVar(&p.Project, "project", "", "your Google Cloud project id (required)")
 	fs.StringVar(&p.Region, "region", "", "region with C3 TDX zones (default cloud.region, us-central1)")
 	fs.StringVar(&p.Customer, "customer-address", "", "your Tempo wallet address; the key broker serves only stacks it approved (required)")
 	fs.StringVar(&p.PlatformSA, "platform-sa", "", "the platform service account allowed to impersonate the deployer (required)")
 	fs.StringVar(&p.KeyBrokerImage, "key-broker-image", bootstrap.DefaultKeyBrokerImage, "key broker image pinned by digest")
-	fs.StringVar(&p.TempoRPC, "tempo-rpc", "", "Tempo RPC the key broker reads approvals from (default chain.public_rpc_url)")
+	fs.StringVar(&p.TempoRPC, "tempo-rpc", "", "Tempo RPC the key broker reads approvals from (default --rpc, TEMPO_RPC_URL, else chain.public_rpc_url)")
 	fs.StringVar(&workDir, "work-dir", "", "where the module and its Terraform state live (default <user config dir>/sealed/bootstrap/<project>)")
 	fs.StringVar(&stateBucket, "state-bucket", "", "keep the Terraform state in this GCS bucket instead of the work dir")
 	fs.StringVar(&subnet, "subnet-cidr", "", "IPv4 range of the sealed subnet (default 10.42.0.0/24)")
@@ -29,6 +29,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	fs.BoolVar(&planOnly, "plan", false, "only show the Terraform plan; create nothing")
 	fs.BoolVar(&yes, "yes", false, "apply without asking for confirmation")
 	fs.BoolVar(&noAPIs, "no-enable-apis", false, "do not enable the Google Cloud APIs (they are managed elsewhere)")
+	fs.BoolVar(&debugLogging, "debug-logging", false, "also create sealed-debug-logs, a log writer identity for debug VMs only (spec 5.8); production VMs never get it")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -46,8 +47,10 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	if p.Region == "" {
 		p.Region = s.Defaults.Cloud.Region
 	}
+	// The customer's RPC choice reaches the key broker: --tempo-rpc, else the RPC this command was given
+	// (--rpc or TEMPO_RPC_URL), else the public RPC. It is never replaced silently (review F5).
 	if p.TempoRPC == "" {
-		p.TempoRPC = s.Defaults.Chain.PublicRPCURL
+		p.TempoRPC = s.RPCURL
 	}
 	p.ChainID = s.ChainID
 	p.Registries = s.Registries
@@ -55,7 +58,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	if c.assetBase != "" {
 		p.ReleaseAssetBase = c.assetBase
 	}
-	p.SubnetCIDR, p.KMSProtection, p.EnableAPIs = subnet, kms, !noAPIs
+	p.SubnetCIDR, p.KMSProtection, p.EnableAPIs, p.EnableDebugLogging = subnet, kms, !noAPIs, debugLogging
 	if err := p.Validate(); err != nil {
 		return usagef("%s", err)
 	}
@@ -90,6 +93,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 		return usagef("not a terminal: pass --yes to apply without confirmation, or --plan to only plan")
 	}
 	e.errorf("Bootstrapping project %s in %s for wallet %s. Module and state: %s\n", p.Project, p.Region, p.Customer, workDir)
+	e.errorf("The key broker will read Tempo chain %d through %s.\n", p.ChainID, p.TempoRPC)
 	out, err := bootstrap.Run(ctx, e.terraform(), bootstrap.Options{Dir: workDir, PlanOnly: planOnly, AutoApprove: yes, AccessToken: accessToken})
 	if err != nil {
 		return err
@@ -107,6 +111,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 			"token": tok, "project": out.Project, "region": out.Region, "deployerAccount": out.DeployerAccount,
 			"keyBrokerUrl": out.KeyBrokerURL, "customer": out.Customer, "subnetwork": out.Subnetwork,
 			"keyBrokerServiceAccount": out.KeyBrokerSA, "kmsKeyVersion": out.KMSKeyVersion, "bootBucket": out.BootBucket,
+			"tempoRpc": out.TempoRPC, "debugLogServiceAccount": out.DebugLogSA,
 		})
 	}
 	e.printf("\nYour project is ready.\n\n")
@@ -114,6 +119,12 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	e.printf("  Key broker         %s\n", out.KeyBrokerURL)
 	e.printf("  Key broker account %s\n", out.KeyBrokerSA)
 	e.printf("  KMS HMAC key       %s\n", out.KMSKeyVersion)
+	if out.TempoRPC != "" {
+		e.printf("  Key broker RPC     %s\n", out.TempoRPC)
+	}
+	if out.DebugLogSA != "" {
+		e.printf("  Debug log writer   %s (debug VMs only)\n", out.DebugLogSA)
+	}
 	if out.BootBucket != "" {
 		e.printf("  Boot bucket        %s\n", out.BootBucket)
 	}

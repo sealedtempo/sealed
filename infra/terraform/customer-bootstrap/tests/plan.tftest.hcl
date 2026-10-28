@@ -27,6 +27,15 @@ override_resource {
 }
 
 override_resource {
+  target          = google_service_account.debug_logs
+  override_during = plan
+  values = {
+    name  = "projects/sealed-test-1234/serviceAccounts/sealed-debug-logs@sealed-test-1234.iam.gserviceaccount.com"
+    email = "sealed-debug-logs@sealed-test-1234.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
   target          = google_service_account.key_broker
   override_during = plan
   values = {
@@ -128,12 +137,42 @@ run "key_broker" {
 
   assert {
     condition = (
-      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_CUSTOMER_ADDRESS"] == "0x00000000000000000000000000000000000000c1" &&
-      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["TEMPO_RPC_URL"] == "https://rpc.tempo.xyz" &&
-      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_KMS_KEY_VERSION"] == "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1" &&
-      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_DEPLOYMENT_REGISTRY"] == "0x254efb9d1809a95ec6d233cc57b3a10849bd2c8e"
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value } == {
+        SEALED_CUSTOMER            = "0x00000000000000000000000000000000000000c1"
+        SEALED_TEMPO_RPC           = "https://rpc.tempo.xyz"
+        SEALED_CHAIN_ID            = "4217"
+        SEALED_PLATFORM_REGISTRY   = "0x18ab956ea44757587896dfd25632fb3e89f7002d"
+        SEALED_APP_REGISTRY        = "0x88c91cacb74ccec3b8a1823977eec42ae3b93b43"
+        SEALED_DEPLOYMENT_REGISTRY = "0x254efb9d1809a95ec6d233cc57b3a10849bd2c8e"
+        SEALED_RELEASE_ASSET_BASE  = "https://github.com/sealedtempo/sealed/releases/download"
+        SEALED_GCP_PROJECT         = "sealed-test-1234"
+        SEALED_GCP_REGION          = "us-central1"
+        SEALED_KMS_KEY             = "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac"
+        SEALED_KMS_KEY_VERSION     = "1"
+        GOMEMLIMIT                 = "768MiB"
+      }
     )
-    error_message = "the customer, not the platform, sets the broker's address, RPC, key and registries"
+    error_message = "the broker gets exactly the variables it reads (cmd/key-broker): the customer, not the platform, sets its address, RPC, chain, key and registries"
+  }
+
+  assert {
+    condition     = { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value } == merge(module.key_broker_env.env, module.key_broker_env.runtime_env)
+    error_message = "the Cloud Run env is modules/key-broker-env unchanged (cli/internal/bootstrap TestKeyBrokerEnvContract runs the broker's parser on it)"
+  }
+
+  assert {
+    condition     = output.kms_key_version == "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1" && output.tempo_rpc_url == "https://rpc.tempo.xyz"
+    error_message = "the outputs name the key version and the RPC the broker uses"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.key_broker.template[0].timeout == "120s" && google_cloud_run_v2_service.key_broker.template[0].containers[0].resources[0].limits["memory"] == "1Gi" && google_cloud_run_v2_service.key_broker.template[0].containers[0].ports[0].container_port == 8080
+    error_message = "the request timeout exceeds the broker's 90 s release deadline; 1 GiB with GOMEMLIMIT below it; port 8080"
+  }
+
+  assert {
+    condition     = google_project_iam_member.key_broker_logging.role == "roles/logging.logWriter" && google_project_iam_member.key_broker_logging.member == "serviceAccount:sealed-key-broker@sealed-test-1234.iam.gserviceaccount.com"
+    error_message = "the broker may write its decision log"
   }
 
   assert {
@@ -187,6 +226,59 @@ run "deployer" {
   assert {
     condition     = jsondecode(google_service_account_iam_policy.deployer.policy_data) == { bindings = [{ role = "roles/iam.serviceAccountTokenCreator", members = ["serviceAccount:sealed-platform@sealed-platform-1234.iam.gserviceaccount.com"] }] }
     error_message = "only the platform service account may mint deployer tokens"
+  }
+}
+
+run "customer_rpc_and_chain_reach_the_broker" {
+  command = plan
+
+  variables {
+    tempo_rpc_url      = "https://tempo.customer-node.example/rpc"
+    chain_id           = 42431
+    region             = "europe-west4"
+    release_asset_base = "https://assets.customer.example/releases"
+  }
+
+  assert {
+    condition = (
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_TEMPO_RPC"] == "https://tempo.customer-node.example/rpc" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_CHAIN_ID"] == "42431" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_GCP_REGION"] == "europe-west4" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_RELEASE_ASSET_BASE"] == "https://assets.customer.example/releases"
+    )
+    error_message = "the customer's RPC, chain, region and asset base are never replaced by defaults"
+  }
+}
+
+run "no_debug_identity_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(google_service_account.debug_logs) == 0 && length(google_project_iam_member.debug_logs_writer) == 0 && output.debug_log_service_account == ""
+    error_message = "no debug log writer identity unless asked for"
+  }
+}
+
+run "debug_logging_identity" {
+  command = plan
+
+  variables {
+    enable_debug_logging = true
+  }
+
+  assert {
+    condition     = google_service_account.debug_logs[0].account_id == "sealed-debug-logs"
+    error_message = "the debug log writer has a fixed name"
+  }
+
+  assert {
+    condition     = google_project_iam_member.debug_logs_writer[0].role == "roles/logging.logWriter" && google_project_iam_member.debug_logs_writer[0].member == "serviceAccount:sealed-debug-logs@sealed-test-1234.iam.gserviceaccount.com" && length(google_project_iam_member.debug_logs_writer[0].condition) == 0
+    error_message = "the debug identity may only write logs"
+  }
+
+  assert {
+    condition     = jsondecode(google_service_account_iam_policy.debug_logs[0].policy_data) == { bindings = [] }
+    error_message = "nobody (the deployer in particular) holds a role on the debug identity"
   }
 }
 

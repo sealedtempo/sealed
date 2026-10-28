@@ -55,6 +55,33 @@ resource "google_artifact_registry_repository" "ghcr" {
   depends_on = [google_project_service.apis]
 }
 
+# The broker writes every release decision to Cloud Logging and withholds an
+# allowed release when that write fails, so it needs the log writer role
+# (review F5).
+resource "google_project_iam_member" "key_broker_logging" {
+  project = var.project_id
+  role    = module.iam.key_broker_logging_role
+  member  = module.iam.key_broker_member
+
+  depends_on = [google_service_account.key_broker]
+}
+
+# The environment the broker reads, name for name (modules/key-broker-env).
+module "key_broker_env" {
+  source = "./modules/key-broker-env"
+
+  customer_address    = local.customer_address
+  tempo_rpc_url       = var.tempo_rpc_url
+  chain_id            = var.chain_id
+  platform_registry   = var.platform_registry
+  app_registry        = var.app_registry
+  deployment_registry = var.deployment_registry
+  release_asset_base  = var.release_asset_base
+  project_id          = var.project_id
+  region              = var.region
+  kms_crypto_key      = google_kms_crypto_key.hmac.id
+}
+
 resource "google_cloud_run_v2_service" "key_broker" {
   name     = local.key_broker_name
   project  = var.project_id
@@ -72,7 +99,9 @@ resource "google_cloud_run_v2_service" "key_broker" {
   template {
     service_account                  = google_service_account.key_broker.email
     max_instance_request_concurrency = 40
-    timeout                          = "60s"
+    # Above the broker's 90 s release deadline (which covers the 60 s bundle
+    # fetches of a cold start), so Cloud Run never cuts a release short.
+    timeout = "120s"
 
     scaling {
       min_instance_count = 0
@@ -83,65 +112,29 @@ resource "google_cloud_run_v2_service" "key_broker" {
       image = local.key_broker_image
 
       ports {
-        container_port = 8080
+        container_port = module.key_broker_env.container_port
       }
 
       resources {
         limits = {
           cpu    = "1"
-          memory = "512Mi"
+          memory = module.key_broker_env.memory_limit
         }
       }
 
-      env {
-        name  = "SEALED_CUSTOMER_ADDRESS"
-        value = local.customer_address
-      }
-      env {
-        name  = "SEALED_GCP_PROJECT"
-        value = var.project_id
-      }
-      env {
-        name  = "SEALED_GCP_PROJECT_NUMBER"
-        value = data.google_project.this.number
-      }
-      env {
-        name  = "SEALED_SECRET_PREFIX"
-        value = local.secret_prefix
-      }
-      env {
-        name  = "SEALED_KMS_KEY_VERSION"
-        value = "${google_kms_crypto_key.hmac.id}/cryptoKeyVersions/1"
-      }
-      env {
-        name  = "TEMPO_RPC_URL"
-        value = var.tempo_rpc_url
-      }
-      env {
-        name  = "TEMPO_CHAIN_ID"
-        value = tostring(var.chain_id)
-      }
-      env {
-        name  = "SEALED_PLATFORM_REGISTRY"
-        value = lower(var.platform_registry)
-      }
-      env {
-        name  = "SEALED_APP_REGISTRY"
-        value = lower(var.app_registry)
-      }
-      env {
-        name  = "SEALED_DEPLOYMENT_REGISTRY"
-        value = lower(var.deployment_registry)
-      }
-      env {
-        name  = "SEALED_RELEASE_ASSET_BASE"
-        value = var.release_asset_base
+      dynamic "env" {
+        for_each = merge(module.key_broker_env.env, module.key_broker_env.runtime_env)
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
     }
   }
 
   depends_on = [
     google_project_iam_member.key_broker_secrets,
+    google_project_iam_member.key_broker_logging,
     google_kms_crypto_key_iam_policy.hmac,
     google_artifact_registry_repository.ghcr,
   ]

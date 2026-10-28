@@ -44,6 +44,12 @@ variable "key_broker_service_account" {
   description = "Email of the key broker service account."
 }
 
+variable "debug_logs_service_account" {
+  type        = string
+  description = "Email of the optional debug VM log writer service account."
+  default     = ""
+}
+
 locals {
   # Every resource the deployer may touch is named with this prefix.
   prefix = "sealed-"
@@ -124,6 +130,17 @@ locals {
     "resource.name.startsWith(\"projects/${var.project_number}/secrets/${local.prefix}\")",
   ])
 
+  # The key broker writes its release decisions to Cloud Logging.
+  key_broker_logging_role = "roles/logging.logWriter"
+
+  # Debug VMs only (spec 5.8): the log writer identity may write log entries
+  # and nothing else, and nobody holds a role on it through its own policy
+  # (the deployer in particular, so the platform can never attach it). The VM
+  # gets only this scope.
+  debug_logs_role      = "roles/logging.logWriter"
+  debug_logs_sa_policy = { bindings = [] }
+  debug_vm_scopes      = ["https://www.googleapis.com/auth/logging.write"]
+
   # The key broker uses the bootstrap's KMS HMAC key and nothing else in KMS.
   key_broker_kms_role = "roles/cloudkms.signer"
   key_broker_kms_policy = {
@@ -186,4 +203,24 @@ output "deployer_member" {
 
 output "key_broker_member" {
   value = "serviceAccount:${var.key_broker_service_account}"
+}
+
+output "key_broker_logging_role" {
+  value = local.key_broker_logging_role
+}
+
+output "debug_logs_role" {
+  value = local.debug_logs_role
+}
+
+output "debug_logs_sa_policy_json" {
+  value = jsonencode(local.debug_logs_sa_policy)
+}
+
+output "debug_logs_member" {
+  value = "serviceAccount:${var.debug_logs_service_account}"
+}
+
+output "debug_vm_scopes" {
+  value = local.debug_vm_scopes
 }
