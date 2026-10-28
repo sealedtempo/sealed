@@ -1,0 +1,91 @@
+{
+  "description": "What a crawl of fixtures/site with a6-job.json must produce. Paths are relative to the fixture host.",
+  "items": [
+    {
+      "path": "/",
+      "name": "Brass hinge, 3 inch",
+      "sku": "FX-1001",
+      "price": "$4.50",
+      "category": "Hinges",
+      "description": "Solid brass butt hinge with a removable pin. Sold in pairs."
+    },
+    {
+      "path": "/p02.html",
+      "name": "Wood screw \"No. 8\"",
+      "sku": "FX-1002",
+      "price": "$6.25",
+      "category": "Fasteners",
+      "description": "Box of 100, 1-1/4\" long, zinc plated."
+    },
+    {
+      "path": "/p03.html",
+      "name": "Cabinet pull & knob set",
+      "sku": "FX-1003",
+      "price": "$18.00",
+      "category": "Handles",
+      "description": "Brushed nickel; includes 4 pulls and 4 knobs."
+    },
+    {
+      "path": "/p04.html",
+      "name": "Café table bracket",
+      "sku": "FX-1004",
+      "price": "$9.75",
+      "category": "Brackets",
+      "description": "Powder-coated steel, holds up to 40 kg."
+    },
+    {
+      "path": "/p05.html",
+      "name": "Weatherproof tape, 20 m",
+      "sku": "FX-1005",
+      "price": "$7.40",
+      "category": "Tape",
+      "description": "Rated from -20 °C to 80 °C. Do not use on wet surfaces."
+    },
+    {
+      "path": "/p06.html",
+      "name": "Hex key set (9 pieces)",
+      "sku": "FX-1006",
+      "price": "$12.00",
+      "category": "Tools",
+      "description": "Metric sizes 1.5 to 10 mm, in a fold-out \"pocket\" holder."
+    },
+    {
+      "path": "/p07.html",
+      "name": "Door stop, rubber",
+      "sku": "FX-1007",
+      "price": "$3.20",
+      "category": "Hardware",
+      "description": "Wedge shaped, fits gaps up to 25 mm."
+    },
+    {
+      "path": "/p08.html",
+      "name": "Shelf pin, 5 mm (pack of 24)",
+      "sku": "FX-1008",
+      "price": "$2.90",
+      "category": "Fasteners",
+      "description": "Nickel plated. Fits standard 5 mm holes."
+    },
+    {
+      "path": "/p09.html",
+      "name": "Müller wall anchor",
+      "sku": "FX-1009",
+      "price": "$5.60",
+      "category": "Fasteners",
+      "description": "For drywall; each anchor holds 15 kg, 50 per box."
+    },
+    {
+      "path": "/p10.html",
+      "name": "Piano hinge, 1 m",
+      "sku": "FX-1010",
+      "price": "$21.00",
+      "category": "Hinges",
+      "description": "Continuous hinge, stainless steel, pre-drilled."
+    }
+  ],
+  "skipped_robots": [
+    "/private/staff.html"
+  ],
+  "not_visited": [
+    "https://example.com/"
+  ]
+}

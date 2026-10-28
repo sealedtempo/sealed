@@ -1,0 +1,18 @@
+{
+  "start_urls": [
+    "https://FIXTURE_HOST/"
+  ],
+  "max_pages": 20,
+  "crawler": "cheerio",
+  "same_domain": true,
+  "extract": {
+    "name": "h1.product-name",
+    "sku": ".sku",
+    "price": ".price",
+    "category": ".category",
+    "description": ".description"
+  },
+  "max_concurrency": 2,
+  "max_requests_per_minute": 120,
+  "respect_robots": true
+}

@@ -1,0 +1,4 @@
+# Fixture site for the Sealed scraper acceptance test (A6).
+# Serve this directory at the root of a host so this file is /robots.txt.
+User-agent: *
+Disallow: /private/
