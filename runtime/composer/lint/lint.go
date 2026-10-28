@@ -10,9 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +81,9 @@ const (
 	CodeBootstrap        = "bootstrap"
 	CodeReleaseVersion   = "release-version"
 	CodeSameAs           = "same-as"
+	// Added with the license audit fixes (F5).
+	CodeSBOMNoLicense = "sbom-no-license"
+	CodeOverrides     = "license-overrides"
 )
 
 // WaiversFile is the per-app Grype waiver list (spec 6.8).
@@ -89,9 +95,14 @@ type Options struct {
 	// whose apps must declare license_exclusions.
 	OpenCoreRepos []string
 	// EnterprisePatterns are package names or paths that must never ship
-	// (D-021), checked against SBOM packages in addition to each app's
-	// license_exclusions.
+	// (D-021), checked against SBOM packages and files in addition to each
+	// app's license_exclusions, with the same glob rules (glob.go). Unlike
+	// license_exclusions they are not applied to OS distribution packages
+	// or to files only OS packages own.
 	EnterprisePatterns []string
+	// Overrides are the reviewed license overrides for SBOM packages. nil
+	// means the embedded list (OverridesFile); an empty slice means none.
+	Overrides []LicenseOverride
 	// Registry is catalog.registry. Every resolved image ref in a bundle must
 	// be exactly <Registry>/<name>@<digest>. Defaults to the registry of the
 	// composer's runtime images, which is the registry stacks pull from.
@@ -101,6 +112,9 @@ type Options struct {
 	RequireSBOM bool
 	// Now is the clock for waiver expiry; nil means time.Now.
 	Now func() time.Time
+
+	overrides    *overrideSet
+	overridesErr error
 }
 
 // DefaultOpenCoreRepos lists upstreams with enterprise-licensed code.
@@ -110,10 +124,18 @@ var DefaultOpenCoreRepos = []string{
 	"https://github.com/appsmithorg/appsmith",
 	"https://github.com/all-hands-ai/openhands",
 	"https://github.com/openhands/openhands",
+	// ToolJet keeps enterprise code in ee/ submodules (server/ee, frontend/ee);
+	// opencode has packages/enterprise (license audit F7).
+	"https://github.com/tooljet/tooljet",
+	"https://github.com/anomalyco/opencode",
 }
 
-// DefaultEnterprisePatterns are the D-021 hard-fail paths.
-var DefaultEnterprisePatterns = []string{"litellm_enterprise", "enterprise/", "@anthropic-ai/claude-agent-sdk"}
+// DefaultEnterprisePatterns are the D-021 hard-fail paths, as globs: the
+// litellm_enterprise module and its dist-info, any enterprise/ or ee/
+// directory (a whole path segment, so tree/ and free/ do not match; ee/ is
+// the usual open-core layout, ToolJet's server/ee among them, license audit
+// F7) and the Claude Agent SDK packages.
+var DefaultEnterprisePatterns = []string{"litellm_enterprise*", "enterprise/", "ee/", "@anthropic-ai/claude-agent-sdk*"}
 
 func (o Options) withDefaults() Options {
 	if o.OpenCoreRepos == nil {
@@ -129,6 +151,17 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	list, err := o.Overrides, error(nil)
+	if list == nil {
+		list, err = DefaultLicenseOverrides()
+	}
+	if err == nil {
+		o.overrides, err = newOverrideSet(list)
+	}
+	if err != nil {
+		o.overridesErr = err
+		o.overrides = nil
 	}
 	return o
 }
@@ -356,6 +389,10 @@ func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, i
 			"write done_file as <volume>/<path> relative to %s/%s/%s; the in-container absolute form is deprecated", composer.DataRoot, m.ID, hint)
 	}
 	exempt := checkExceptions(c, m)
+	patterns := checkExclusions(c, m, opts.EnterprisePatterns)
+	if opts.overridesErr != nil {
+		c.add(Error, OverridesFile, "", CodeOverrides, "%v", opts.overridesErr)
+	}
 
 	checkLicense(c, composer.ManifestFile, "upstream.license_spdx", m.Upstream.LicenseSPDX)
 	used := map[string]bool{}
@@ -388,7 +425,7 @@ func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, i
 		case !ok:
 			c.add(Warning, "sbom/"+img.Name+".spdx.json", "", CodeSBOMMissing, "image %q has no SBOM yet (CI generates it with syft)", img.Name)
 		default:
-			lintSBOM(c, img.Name, sbom, append(append([]string{}, m.LicenseExclusions...), opts.EnterprisePatterns...), exempt, isBundle || opts.RequireSBOM)
+			lintSBOM(c, img.Name, sbom, patterns, exempt, opts.overrides, isBundle || opts.RequireSBOM)
 		}
 	}
 
@@ -445,6 +482,7 @@ func sortFindings(fs []Finding) {
 // exemption is one accepted license_exceptions path.
 type exemption struct {
 	decision, path string
+	pattern        *pathPattern
 	used           bool
 }
 
@@ -464,17 +502,59 @@ func checkExceptions(c *collector, m *composer.Manifest) []*exemption {
 				"%s is not an accepted license exception (runtime/composer/lint/exceptions.go accepts: %s)", e.Decision, accepted)
 			continue
 		}
-		for _, p := range e.Paths {
-			out = append(out, &exemption{decision: e.Decision, path: p})
+		for j, p := range e.Paths {
+			pat, err := compilePattern(p, false)
+			if err != nil || pat.note {
+				if err == nil {
+					err = fmt.Errorf("%q names an upstream source path, not an image path", p)
+				}
+				c.add(Error, composer.ManifestFile, fmt.Sprintf("%s.paths[%d]", field, j), CodeLicenseException, "%v", err)
+				continue
+			}
+			out = append(out, &exemption{decision: e.Decision, path: p, pattern: pat})
 		}
 	}
 	return out
 }
 
-// exempted returns the exemption that covers a package name or file path.
-func exempted(exempt []*exemption, name string, isFile bool) *exemption {
+// checkExclusions compiles license_exclusions and the policy patterns
+// (glob.go). A pattern that does not compile is an error.
+func checkExclusions(c *collector, m *composer.Manifest, policy []string) []*pathPattern {
+	var out []*pathPattern
+	for i, raw := range m.LicenseExclusions {
+		p, err := compilePattern(raw, false)
+		if err != nil {
+			c.add(Error, composer.ManifestFile, fmt.Sprintf("license_exclusions[%d]", i), CodeExclusions, "%v", err)
+			continue
+		}
+		out = append(out, p)
+	}
+	for _, raw := range policy {
+		p, err := compilePattern(raw, true)
+		if err != nil {
+			c.add(Error, "", "", CodeExclusions, "enterprise pattern: %v", err)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// exemptedPackage returns the exemption that covers a package.
+func exemptedPackage(exempt []*exemption, name string, files []string) *exemption {
 	for _, e := range exempt {
-		if (isFile && strings.Contains(name, e.path)) || (!isFile && matchesExclusion(name, e.path)) {
+		if e.pattern.matchPackage(name, files) {
+			e.used = true
+			return e
+		}
+	}
+	return nil
+}
+
+// exemptedFile returns the exemption that covers a file path.
+func exemptedFile(exempt []*exemption, file string) *exemption {
+	for _, e := range exempt {
+		if e.pattern.matchFile(file) != "" {
 			e.used = true
 			return e
 		}
@@ -599,6 +679,8 @@ func checkLicense(c *collector, file, field, expr string) {
 		}
 	case SystemOnly:
 		c.add(Error, file, field, CodeLicense, "%q is only acceptable for OS base-image packages, not for app code (rule 9, D-021)", expr)
+	case FontOnly:
+		c.add(Error, file, field, CodeLicense, "%q is only acceptable for fonts, not for app code (D-056)", expr)
 	case DataOnly:
 		c.add(Error, file, field, CodeLicense, "%q is only acceptable for data-only packages, not for app code (D-050)", expr)
 	case Unknown:
@@ -611,8 +693,10 @@ func checkLicense(c *collector, file, field, expr string) {
 type spdxDoc struct {
 	SPDXVersion string `json:"spdxVersion"`
 	Packages    []struct {
+		SPDXID           string `json:"SPDXID"`
 		Name             string `json:"name"`
 		VersionInfo      string `json:"versionInfo"`
+		SourceInfo       string `json:"sourceInfo"`
 		LicenseConcluded string `json:"licenseConcluded"`
 		LicenseDeclared  string `json:"licenseDeclared"`
 		ExternalRefs     []struct {
@@ -621,101 +705,273 @@ type spdxDoc struct {
 		} `json:"externalRefs"`
 	} `json:"packages"`
 	Files []struct {
+		SPDXID   string `json:"SPDXID"`
 		FileName string `json:"fileName"`
 	} `json:"files"`
+	Relationships []struct {
+		Element string `json:"spdxElementId"`
+		Related string `json:"relatedSpdxElement"`
+		Type    string `json:"relationshipType"`
+	} `json:"relationships"`
+	ExtractedLicenses []struct {
+		LicenseID string   `json:"licenseId"`
+		Name      string   `json:"name"`
+		SeeAlsos  []string `json:"seeAlsos"`
+	} `json:"hasExtractedLicensingInfos"`
 }
 
 // osPackageTypes are purl types of distribution packages (D-021 system components).
 var osPackageTypes = []string{"pkg:deb/", "pkg:apk/", "pkg:rpm/", "pkg:alpm/"}
 
-// lintSBOM checks an SPDX JSON SBOM: package licenses against the policy
-// (OS packages may use system-only licenses) and excluded paths. An
-// unrecognized license (not on the allowlist, not an OSI-approved system
-// license, for example CC-BY-NC-4.0 or a LicenseRef) fails a release for
-// non-OS packages; OS packages get a warning until a decision covers them.
-func lintSBOM(c *collector, image string, raw []byte, exclusions []string, exempt []*exemption, release bool) {
-	file := "sbom/" + image + ".spdx.json"
-	var doc spdxDoc
-	if err := json.Unmarshal(raw, &doc); err != nil || !strings.HasPrefix(doc.SPDXVersion, "SPDX-") {
-		c.add(Error, file, "", CodeSBOMInvalid, "not an SPDX JSON document")
-		return
-	}
-	for _, p := range doc.Packages {
-		pkg := p.Name
-		if p.VersionInfo != "" {
-			pkg += "@" + p.VersionInfo
-		}
-		if e := exempted(exempt, p.Name, false); e != nil {
-			c.add(Warning, file, pkg, CodeExempt, "exempt from license and excluded-path checks under %s (license_exceptions %q)", e.decision, e.path)
+// rootPackageTypes are purl types of the scanned artifact itself, which syft
+// lists as the document root package without a license.
+var rootPackageTypes = []string{"pkg:oci/", "pkg:docker/"}
+
+var noticeFileRe = regexp.MustCompile(`(?i)^NOTICE(\.(txt|md))?$`)
+
+// noticeRefs returns the LicenseRef ids syft creates for license-like files
+// it could not identify when every such file is a NOTICE file (for example
+// the Apache-2.0 NOTICE of the Prometheus Go modules, scanned with
+// --enrich golang). A NOTICE file is an attribution notice, not a license,
+// so these ids are dropped from expressions. A LicenseRef for an
+// unidentified LICENSE or COPYING file stays and needs review.
+func noticeRefs(doc *spdxDoc) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range doc.ExtractedLicenses {
+		if !strings.HasPrefix(e.LicenseID, "LicenseRef-") || len(e.SeeAlsos) == 0 {
 			continue
 		}
-		for _, ex := range exclusions {
-			if matchesExclusion(p.Name, ex) {
-				c.add(Error, file, pkg, CodeExcludedPath, "package matches excluded path %q", ex)
+		all := true
+		for _, s := range e.SeeAlsos {
+			if !noticeFileRe.MatchString(path.Base(strings.TrimPrefix(s, "file://"))) {
+				all = false
 			}
 		}
-		expr := p.LicenseConcluded
-		if expr == "" || expr == "NOASSERTION" || expr == "NONE" {
-			expr = p.LicenseDeclared
-		}
-		if expr == "" || expr == "NOASSERTION" || expr == "NONE" {
-			continue // unknown licenses are reported by the scan review, not here
-		}
-		isOS := false
-		for _, ref := range p.ExternalRefs {
-			for _, t := range osPackageTypes {
-				if ref.ReferenceType == "purl" && strings.HasPrefix(ref.ReferenceLocator, t) {
-					isOS = true
-				}
-			}
-		}
-		r := EvaluateLicense(expr)
-		switch {
-		case r.Status == Banned:
-			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is banned", expr)
-		case r.Status == SystemOnly && !isOS:
-			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is only acceptable for OS packages", expr)
-		case r.Status == DataOnly && !isDataOnlyPackage(p.Name):
-			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is only acceptable for the data-only packages %s (D-050)", expr, strings.Join(DataOnlyPackages, ", "))
-		case r.Status == Unknown && !isOS && release:
-			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is not on the allowlist (rule 9, D-021)", expr)
-		case r.Status == Unknown && isOS:
-			c.add(Warning, file, pkg, CodeSBOMLicense, "OS package license %q is not OSI-approved or not recognized; it needs a recorded decision (D-021)", expr)
-		case r.Status == Unknown:
-			c.add(Warning, file, pkg, CodeSBOMLicense, "license %q needs review (an error in release builds)", expr)
+		if all {
+			out[e.LicenseID] = true
 		}
 	}
-	for _, f := range doc.Files {
-		if e := exempted(exempt, f.FileName, true); e != nil {
-			continue
-		}
-		for _, ex := range exclusions {
-			if strings.Contains(f.FileName, ex) {
-				c.add(Error, file, f.FileName, CodeExcludedPath, "file matches excluded path %q", ex)
-			}
-		}
-	}
+	return out
 }
 
-// isDataOnlyPackage reports whether a package is on the reviewed data-only list.
-func isDataOnlyPackage(name string) bool {
-	for _, p := range DataOnlyPackages {
-		if name == p {
+func hasPrefixAny(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
 			return true
 		}
 	}
 	return false
 }
 
-// matchesExclusion compares a package name with an excluded path, treating
-// "-" and "_" alike (PyPI litellm-enterprise is module litellm_enterprise).
-func matchesExclusion(pkg, pattern string) bool {
-	norm := func(s string) string { return strings.ReplaceAll(strings.ToLower(s), "_", "-") }
-	p, n := norm(strings.TrimSuffix(pattern, "/")), norm(pkg)
-	if p == "" {
-		return false
+// fileGroup collects the files under one excluded path.
+type fileGroup struct {
+	patterns []string
+	files    map[string]bool
+	example  string
+}
+
+// lintSBOM checks an SPDX JSON SBOM (as syft writes it): package licenses
+// against the policy after the reviewed overrides, packages without license
+// metadata, and packages and files that match an excluded path.
+//
+// Licenses: OS packages may use system-only and font licenses; an
+// unrecognized license fails a release for non-OS packages and is a warning
+// for OS packages until a decision covers it. A package with no license
+// metadata and no override is an error in release mode for non-OS packages
+// (license audit F5), a warning otherwise; OS packages without metadata get
+// one warning per SBOM.
+//
+// Excluded paths: every pattern is checked against package names, the files
+// in each package's sourceInfo and every file the SBOM lists (directories
+// with entries below them are skipped, since their files are checked), and
+// the files under one excluded directory are reported once. syft lists only
+// files that a package owns unless file.metadata.selection is "all", which
+// the release scan needs for paths no package owns (license audit F6).
+func lintSBOM(c *collector, image string, raw []byte, patterns []*pathPattern, exempt []*exemption, overrides *overrideSet, release bool) {
+	file := "sbom/" + image + ".spdx.json"
+	var doc spdxDoc
+	if err := json.Unmarshal(raw, &doc); err != nil || !strings.HasPrefix(doc.SPDXVersion, "SPDX-") {
+		c.add(Error, file, "", CodeSBOMInvalid, "not an SPDX JSON document")
+		return
 	}
-	return n == p || strings.HasPrefix(n, p+"/") || strings.Contains(n, "/"+p+"/") || strings.HasSuffix(n, "/"+p)
+	notices := noticeRefs(&doc)
+	osPkgs := map[string]bool{}
+	var osMissing []string
+	for _, p := range doc.Packages {
+		pkg := p.Name
+		if p.VersionInfo != "" {
+			pkg += "@" + p.VersionInfo
+		}
+		var purls []string
+		for _, ref := range p.ExternalRefs {
+			if ref.ReferenceType == "purl" {
+				purls = append(purls, ref.ReferenceLocator)
+			}
+		}
+		isOS, isRoot := false, strings.HasPrefix(p.SPDXID, "SPDXRef-DocumentRoot-")
+		for _, u := range purls {
+			isOS = isOS || hasPrefixAny(u, osPackageTypes)
+			isRoot = isRoot || hasPrefixAny(u, rootPackageTypes)
+		}
+		if isRoot {
+			continue
+		}
+		if isOS {
+			osPkgs[p.SPDXID] = true
+		}
+		sources := sourcePaths(p.SourceInfo)
+		if e := exemptedPackage(exempt, p.Name, sources); e != nil {
+			c.add(Warning, file, pkg, CodeExempt, "exempt from license and excluded-path checks under %s (license_exceptions %q)", e.decision, e.path)
+			continue
+		}
+		for _, pat := range patterns {
+			if pat.note || (pat.policy && isOS) {
+				continue
+			}
+			if pat.matchPackage(p.Name, sources) {
+				c.add(Error, file, pkg, CodeExcludedPath, "package matches excluded path %q", pat.raw)
+			}
+		}
+
+		scanned := p.LicenseConcluded
+		if scanned == "" || scanned == "NOASSERTION" || scanned == "NONE" {
+			scanned = p.LicenseDeclared
+		}
+		if scanned == "NOASSERTION" || scanned == "NONE" {
+			scanned = ""
+		}
+		scanned = pruneLicenseRefs(scanned, notices)
+		expr, extra, via := scanned, map[string]bool(nil), ""
+		if o := overrides.lookup(purls); o != nil {
+			if scanned != "" && EvaluateLicense(scanned).Status == Banned {
+				c.add(Error, file, pkg, CodeSBOMLicense, "license %q is banned; the override %s (%q) does not apply to a banned license: review the package again", scanned, o.PURL, o.License)
+				continue
+			}
+			expr, extra, via = o.License, o.allow, " (reviewed override)"
+		}
+		if expr == "" {
+			switch {
+			case isOS:
+				osMissing = append(osMissing, pkg)
+			case release:
+				c.add(Error, file, pkg, CodeSBOMNoLicense, "no license metadata: read the license at this version and add a reviewed entry to %s (license audit F5)", OverridesFile)
+			default:
+				c.add(Warning, file, pkg, CodeSBOMNoLicense, "no license metadata (an error in release builds): read the license at this version and add a reviewed entry to %s", OverridesFile)
+			}
+			continue
+		}
+		r := evaluateLicense(expr, extra)
+		switch {
+		case r.Status == Banned:
+			c.add(Error, file, pkg, CodeSBOMLicense, "license %q%s is banned", expr, via)
+		case r.Status == SystemOnly && !isOS:
+			c.add(Error, file, pkg, CodeSBOMLicense, "license %q%s is only acceptable for OS packages", expr, via)
+		case r.Status == FontOnly && !isOS && !isFontPackage(p.Name):
+			c.add(Error, file, pkg, CodeSBOMLicense, "license %q%s is only acceptable for the font packages %s and OS packages (D-056)", expr, via, strings.Join(FontPackages, ", "))
+		case r.Status == DataOnly && !isDataOnlyPackage(p.Name):
+			c.add(Error, file, pkg, CodeSBOMLicense, "license %q%s is only acceptable for the data-only packages %s (D-050)", expr, via, strings.Join(DataOnlyPackages, ", "))
+		case r.Status == Unknown && !isOS && release:
+			c.add(Error, file, pkg, CodeSBOMLicense, "license %q%s is not on the allowlist (rule 9, D-021)", expr, via)
+		case r.Status == Unknown && isOS:
+			c.add(Warning, file, pkg, CodeSBOMLicense, "OS package license %q is not OSI-approved or not recognized; it needs a recorded decision (D-021)", expr)
+		case r.Status == Unknown:
+			c.add(Warning, file, pkg, CodeSBOMLicense, "license %q%s needs review (an error in release builds)", expr, via)
+		}
+	}
+	if len(osMissing) > 0 {
+		sort.Strings(osMissing)
+		c.add(Warning, file, "", CodeSBOMNoLicense, "%d OS packages have no license metadata (D-021 system components; check their copyright files or add reviewed overrides): %s",
+			len(osMissing), strings.Join(osMissing, ", "))
+	}
+
+	// Files: owners (CONTAINS relationships) and directories with entries below them.
+	owners := map[string][]string{}
+	for _, r := range doc.Relationships {
+		if r.Type == "CONTAINS" {
+			owners[r.Related] = append(owners[r.Related], r.Element)
+		}
+	}
+	names := make([]string, len(doc.Files))
+	dirs := map[string]bool{}
+	for i, f := range doc.Files {
+		n := cleanPath(f.FileName)
+		names[i] = n
+		for j := 0; j < len(n); j++ {
+			if n[j] == '/' {
+				dirs[n[:j]] = true
+			}
+		}
+	}
+	matchers := make([]*fileMatcher, len(patterns))
+	for i, pat := range patterns {
+		matchers[i] = newFileMatcher(pat)
+	}
+	groups := map[string]*fileGroup{}
+	for fi, f := range doc.Files {
+		name := names[fi]
+		if name == "" || dirs[name] {
+			continue
+		}
+		if e := exemptedFile(exempt, name); e != nil {
+			continue
+		}
+		osOwned := len(owners[f.SPDXID]) > 0
+		for _, o := range owners[f.SPDXID] {
+			osOwned = osOwned && osPkgs[o]
+		}
+		for i, pat := range patterns {
+			if pat.note || (pat.policy && osOwned) {
+				continue
+			}
+			root := matchers[i].match(name)
+			if root == "" {
+				continue
+			}
+			g := groups[root]
+			if g == nil {
+				g = &fileGroup{files: map[string]bool{}, example: name}
+				groups[root] = g
+			}
+			g.files[name] = true
+			if !slices.Contains(g.patterns, pat.raw) {
+				g.patterns = append(g.patterns, pat.raw)
+			}
+		}
+	}
+	for _, root := range sortedKeys(groups) {
+		g := groups[root]
+		quoted := make([]string, len(g.patterns))
+		for i, p := range g.patterns {
+			quoted[i] = strconv.Quote(p)
+		}
+		what := "excluded path " + quoted[0]
+		if len(quoted) > 1 {
+			what = "excluded paths " + strings.Join(quoted, ", ")
+		}
+		switch {
+		case len(g.files) == 1 && g.files[root]:
+			c.add(Error, file, "/"+root, CodeExcludedPath, "file matches %s", what)
+		case len(g.files) == 1:
+			c.add(Error, file, "/"+root+"/", CodeExcludedPath, "1 file under this directory matches %s (/%s)", what, g.example)
+		default:
+			c.add(Error, file, "/"+root+"/", CodeExcludedPath, "%d files under this directory match %s (for example /%s)", len(g.files), what, g.example)
+		}
+	}
+}
+
+// isDataOnlyPackage reports whether a package is on the reviewed data-only list.
+func isDataOnlyPackage(name string) bool {
+	return slices.Contains(DataOnlyPackages, name)
+}
+
+// isFontPackage reports whether a package matches the reviewed font-only list.
+func isFontPackage(name string) bool {
+	for _, p := range FontPackages {
+		if ok, _ := path.Match(p, strings.ToLower(name)); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedKeys[V any](m map[string]V) []string {

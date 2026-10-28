@@ -1,0 +1,89 @@
+# Reviewed license overrides for SBOM packages (license audit F4 and F5).
+#
+# Lint applies an entry before it evaluates a package: the package is treated as if its SBOM said
+# `license`. Keys:
+#   purl         the package URL as syft writes it, with the exact version. Lint compares purls
+#                without qualifiers and subpath, percent-decoded and case-insensitively (PyPI names
+#                also with "_" and "." as "-").
+#   any_version  true only for a purl written without a version, when every version is covered
+#                (this repository's own module).
+#   license      the SPDX expression the package is used under at that version.
+#   allow        license ids accepted for this package only, beyond the global policy (rule 9,
+#                D-021, D-050, D-056). Banned ids can never be listed.
+#   reason       what was read and why the expression is right (at least 20 characters).
+#   evidence     an https URL of the license text at that version.
+#   reviewed     the review date (YYYY-MM-DD).
+# A package without license metadata and without an entry is an error in release lint (a warning
+# otherwise). An entry never hides a banned license that the scanner reports. Read the license at
+# the exact version before adding or bumping an entry; a version bump needs a new review.
+version: 1
+overrides:
+  - purl: pkg:npm/map-stream@0.1.0
+    license: MIT
+    reason: >-
+      package.json has no license field, so syft records none. The LICENCE file in the 0.1.0
+      tarball is the MIT license, "Copyright (c) 2011 Dominic Tarr". Production dependency of the
+      scraper runner through @apify/ps-tree and event-stream 3.3.4.
+    evidence: https://unpkg.com/map-stream@0.1.0/LICENCE
+    reviewed: 2026-10-28
+  - purl: pkg:npm/pause-stream@0.0.11
+    license: MIT
+    reason: >-
+      package.json says license ["MIT", "Apache2"], which is not an SPDX expression, so syft
+      records none. The author offers both licenses; we use it under MIT. Same scraper dependency
+      path as map-stream.
+    evidence: https://unpkg.com/pause-stream@0.0.11/package.json
+    reviewed: 2026-10-28
+  - purl: pkg:golang/github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime@v0.0.0-20251001021608-1fe7b43fc4d6
+    license: MIT OR Apache-2.0
+    reason: >-
+      The module directory has no license file. At that commit the repository root has
+      LICENSE-MIT and LICENSE-APACHE and Cargo.toml says "MIT OR Apache-2.0". It is in go.mod
+      through go-ethereum and linked into no binary.
+    evidence: https://github.com/ProjectZKM/Ziren/tree/1fe7b43fc4d6
+    reviewed: 2026-10-28
+  - purl: pkg:golang/github.com/ethereum/go-ethereum@v1.17.10
+    license: LGPL-3.0-or-later AND BSD-3-Clause AND BSD-2-Clause-Views AND MIT
+    allow: [BSD-2-Clause-Views]
+    reason: >-
+      syft reports "BSD-2-Clause-Views AND BSD-3-Clause AND GPL-3.0-only AND LGPL-3.0-only AND
+      MIT". The library files are LGPL-3.0-or-later (headers say "or any later version"). GPL-3.0
+      covers only cmd/, which none of our binaries links (go list -deps, license audit F3).
+      metrics/ derives from rcrowley/go-metrics under BSD-2-Clause-Views, the FreeBSD license
+      (BSD-2-Clause plus a sentence that the views are the authors'). It is accepted for this
+      module only (license audit F4), not added to the global allowlist. The LGPL notices that
+      binaries need are license audit F3.
+    evidence: https://github.com/ethereum/go-ethereum/blob/v1.17.10/metrics/LICENSE
+    reviewed: 2026-10-28
+  - purl: pkg:pypi/google-crc32c@1.8.0
+    license: Apache-2.0
+    reason: >-
+      The 1.8.0 wheel has no license field or classifier (PyPI shows none for 1.8.0). LICENSE at
+      tag v1.8.0 of googleapis/python-crc32c is Apache-2.0. In the LiteLLM images of llm-gateway
+      and inference-relay (base litellm-database v1.106.5, sha256:0d10536c...).
+    evidence: https://github.com/googleapis/python-crc32c/blob/v1.8.0/LICENSE
+    reviewed: 2026-10-28
+  - purl: pkg:pypi/aurelio-sdk@0.0.19
+    license: MIT
+    reason: >-
+      The 0.0.19 wheel has no license field or classifier. pyproject.toml at tag v0.0.19 says
+      license = {file = "LICENSE"}, and that LICENSE is MIT. In the LiteLLM images (same base as
+      google-crc32c).
+    evidence: https://github.com/aurelio-labs/aurelio-sdk/blob/v0.0.19/LICENSE
+    reviewed: 2026-10-28
+  - purl: pkg:pypi/llm-sandbox@0.3.39
+    license: MIT
+    reason: >-
+      The 0.3.39 wheel has no license field or classifier. LICENSE at tag 0.3.39 of
+      vndee/llm-sandbox is MIT. In the LiteLLM images (same base as google-crc32c).
+    evidence: https://github.com/vndee/llm-sandbox/blob/0.3.39/LICENSE
+    reviewed: 2026-10-28
+  - purl: pkg:golang/github.com/sealed-dev/sealed
+    any_version: true
+    license: Apache-2.0
+    reason: >-
+      This repository's own Go module, the main module of every Go binary we ship. syft lists it
+      without a license, and without a version when the build has no VCS data. The repository
+      LICENSE is Apache-2.0.
+    evidence: https://github.com/sealed-dev/sealed/blob/main/LICENSE
+    reviewed: 2026-10-28
