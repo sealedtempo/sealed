@@ -11,31 +11,38 @@ import {
   type Hex,
   loadDefaults,
   priceRuleFor,
+  recoverUsageReportSigner,
   settlementDefaults,
+  signUsageReportsRead,
+  type StoredUsageReport,
   type UsageEvent,
   usageDomain,
+  usageReportDigest,
+  usageReportFromJson,
+  usageReportsPageSchema,
 } from "@sealed/core";
-import { type CaddySwitch, DirectCaddySwitch } from "./caddy.js";
+import { adminSocketReachable, type CaddySwitch, DirectCaddySwitch } from "./caddy.js";
 import { type Clock, systemClock } from "./clock.js";
-import { buildContext, checkMountedCopy, type DeploymentContext, readPublicConfig } from "./context.js";
+import { buildContext, checkMountedCopy, type DeploymentContext, readPublicConfig, requireHttpsEndpoints } from "./context.js";
 import { DirDisk, type DataDisk, LuksDisk } from "./disk.js";
 import { DstackClient, type QuoteProvider } from "./dstack.js";
 import { attestAndSubmit, type EvidenceResult, HttpPlatformClient, type PlatformClient, buildEvidence } from "./evidence.js";
 import { type EgressStatsSource, httpEgressStats, sendHealthReport } from "./healthReport.js";
-import { parseEndpoint } from "./http.js";
+import { HttpError, parseEndpoint } from "./http.js";
 import { BcryptWorker } from "./gate/bcrypt.js";
 import { BootstrapError, BootstrapTracker } from "./gate/bootstrap.js";
 import { Gate, type GateDecision, type GateRequest, type GateRoute } from "./gate/gate.js";
 import { HttpKeyBroker, type KeyBroker, type ReleasedKeys, releaseKeys } from "./keyRelease.js";
 import { createLogger, errorFields, type Logger } from "./log.js";
 import { AppHealthPoller, type Probe } from "./metering/appHealth.js";
-import { Ledger, TooManyReportsError } from "./metering/ledger.js";
+import { emptyLedgerState, Ledger, LedgerUnverifiedError, TooManyReportsError, type VerifiedReport } from "./metering/ledger.js";
 import { UsageLimiter, UsageLimitError } from "./metering/limits.js";
 import { emptyBudgetState, SpendBudget } from "./payments/budget.js";
 import { type FeePayer, TempoFeePayer } from "./payments/feePayer.js";
 import { type SettlementResult, Settler } from "./payments/settler.js";
 import { liveAttestation } from "./attest.js";
 import { dropPrivileges, parseRunAs } from "./privileges.js";
+import { withRetry } from "./retry.js";
 import { every } from "./scheduler.js";
 import {
   agentSecretOwners,
@@ -92,6 +99,8 @@ const CADDY_TLS_PORT = 443;
 export const NETWORK_FEE_ALLOWANCE = 10_000n;
 /** A reservation older than this since the last read of the access key's limit triggers a new read. */
 export const ONCHAIN_LIMIT_MAX_AGE_SEC = 60;
+/** A ledger rebuild reads at most this many pages of stored reports (500 each) before it gives up (D-062). */
+export const MAX_REBUILD_PAGES = 2000;
 
 export class Agent {
   readonly clock: Clock;
@@ -109,6 +118,9 @@ export class Agent {
   private perPaymentCap = 0n;
   private bcrypt?: BcryptWorker;
   private limitRead?: Promise<void>;
+  private rebuilding?: Promise<boolean>;
+  /** When the last ledger rebuild read the platform's stored reports (D-062). */
+  private ledgerReadAt?: number;
   gate?: Gate;
   bootstrap?: BootstrapTracker;
   budget?: SpendBudget;
@@ -138,6 +150,7 @@ export class Agent {
   async boot(): Promise<void> {
     const s = this.deps.settings;
     const { config, json } = await readPublicConfig(s.configPath);
+    requireHttpsEndpoints(config.endpoints, s.devSim);
     const defaults = this.deps.defaults ?? (await loadDefaults(s.defaultsPath, { testOverrides: s.testOverrides }));
     const dstack = this.deps.dstack ?? new DstackClient(parseEndpoint(s.dstackEndpoint));
     this.dstack = dstack;
@@ -185,6 +198,17 @@ export class Agent {
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
     this.store = await StateStore.open(join(stateDir, "state.json"), this.clock.now());
     const store = this.store;
+    if (store.state.deploymentId !== undefined && store.state.deploymentId !== ctx.deploymentId) {
+      // D-058: a stack upgrade keeps the data disk and the enclave signer but is a new deployment. Its usage and
+      // payment status start fresh: the previous deployment's reports can only be paid under its own id.
+      log.warn("the agent state on the data disk belongs to another deployment; starting a new usage ledger", {
+        previous: store.state.deploymentId,
+        unpaidLegsLeft: store.state.ledger.reports.flatMap((r) => Object.values(r.payments)).filter((p) => p.status === "unpaid").length,
+      });
+      store.state.ledger = emptyLedgerState(this.clock.now());
+      store.state.payments = { failingSince: null, paymentNeeded: false };
+    }
+    store.state.deploymentId = ctx.deploymentId;
     this.bootstrap = new BootstrapTracker(ctx.stack, s.dataMount, {
       log,
       now: () => this.clock.now() * 1000,
@@ -213,12 +237,25 @@ export class Agent {
     if (ctx.payerIp) await writePayerSecrets(layout, keys.enclaveKey, config.settlement.spendLimitPerDay);
 
     const runAs = parseRunAs(s.runAs);
-    // Brief item 15: Caddy creates its admin socket with mode 0660 on a tmpfs owned by 10001:10001
-    // (setgid), so the agent reaches it after dropping to 10001:10001 without a root helper.
+    // Brief item 15, review ws-int-agent 9: Caddy creates its admin socket with mode 0660 on a tmpfs owned by
+    // 10001:10001 (setgid), so the agent reaches it after dropping to 10001:10001 and keeps no root process.
+    // When the dropped user could not reach it (a socket the stack does not describe that way), the
+    // payment-needed switch would silently never work, so the boot fails before the ready flag instead.
+    const dropping = runAs !== undefined && process.getuid?.() === 0;
+    if (dropping && !(await adminSocketReachable(runAs, s.caddyAdminSocket, ctx.stack.caddy))) {
+      throw new Error(`caddy admin socket ${s.caddyAdminSocket} is not reachable as ${runAs.uid}:${runAs.gid} (sealed-stack/v1 caddy.adminSocketMode and adminSocketOwner); refusing to boot without the payment-needed switch`);
+    }
     this.caddy = this.deps.caddy ?? new DirectCaddySwitch(parseEndpoint(s.caddyAdminSocket), ctx.caddyfiles);
     await writeReadyFlag(layout, this.clock.now());
     await dropPrivileges(runAs, [stateDir], log);
     await this.setupMetering(ctx, keys, defaults, log);
+    // D-062: nothing is cut until the platform's stored reports are merged; keep trying in the background.
+    void withRetry(
+      async () => {
+        if (!(await this.rebuildLedger(log))) throw new Error("the platform's stored usage reports could not be read");
+      },
+      { attempts: Number.POSITIVE_INFINITY, initialDelayMs: 2000, maxDelayMs: 300_000, signal: this.abort.signal, clock: this.clock, log, what: "usage ledger rebuild" },
+    ).catch(() => undefined);
     const g = ctx.stack.gate ?? GATE_DEFAULTS;
     this.gate.setHash(keys.secrets[g.secretApp]?.[g.secret]);
     this.ready = true;
@@ -276,6 +313,8 @@ export class Agent {
       perPaymentCap: () => this.perPaymentCap,
       onChange: scheduleSave,
     });
+    // The state came from a disk the host may have rolled back (D-062).
+    this.ledger.holdForRebuild(this.clock.now());
     store.state.budget ??= emptyBudgetState(this.clock.now());
     this.budget = new SpendBudget({
       limit: BigInt(ctx.config.settlement.spendLimitPerDay),
@@ -299,7 +338,78 @@ export class Agent {
       log: log.child({ part: "settlement" }),
       onPerPaymentCap: setCap,
       spend: this.budget,
+      feeLimit: (now) => this.budget?.feeHeadroom(now),
+      rebuild: () => this.rebuildLedger(log),
     });
+  }
+
+  /**
+   * D-062: reads the reports the platform stores for this deployment (signed read, one page at a time from the
+   * ledger's cursor), keeps those whose signature recovers to this enclave signer, and merges them into the ledger.
+   * One rebuild at a time. Resolves false when the listing could not be read (the ledger keeps its state).
+   */
+  rebuildLedger(log: Logger = this.log): Promise<boolean> {
+    if (this.rebuilding) return this.rebuilding;
+    const p = this.readStoredReports(log).finally(() => {
+      if (this.rebuilding === p) this.rebuilding = undefined;
+    });
+    this.rebuilding = p;
+    return p;
+  }
+
+  private async readStoredReports(log: Logger): Promise<boolean> {
+    const ctx = this.ctx as DeploymentContext;
+    const keys = this.keys as ReleasedKeys;
+    const ledger = this.ledger as Ledger;
+    const platform = this.platform();
+    const domain = usageDomain(ctx.config.contracts.feeSplitter as Address, ctx.config.chainId);
+    const signer = keys.enclaveSigner.toLowerCase();
+    const known = new Set(ledger.state.reports.map((r) => r.usageHash.toLowerCase()));
+    const verified: VerifiedReport[] = [];
+    let cursor = ledger.state.platformCursor;
+    let rejected = 0;
+    try {
+      for (let page = 0; platform.usageReports; page++) {
+        if (page >= MAX_REBUILD_PAGES) throw new Error(`more than ${MAX_REBUILD_PAGES} pages of stored usage reports`);
+        const read = await signUsageReportsRead(ctx.deploymentId, this.clock.now(), keys.enclaveKey);
+        let raw: unknown;
+        try {
+          raw = await platform.usageReports(ctx.deploymentId, read, cursor);
+        } catch (err) {
+          // Not registered (yet): the platform cannot hold a report for it.
+          if (err instanceof HttpError && err.status === 404) break;
+          throw err;
+        }
+        const parsed = usageReportsPageSchema.safeParse(raw);
+        if (!parsed.success) throw new Error("the platform's stored usage reports page is malformed");
+        if (parsed.data.deploymentId.toLowerCase() !== ctx.deploymentId) throw new Error("the platform answered for another deployment");
+        for (const e of parsed.data.reports) {
+          const v = await verifyStoredReport(e, ctx.deploymentId, domain, signer, known);
+          if (v) verified.push(v);
+          else rejected++;
+        }
+        const last = parsed.data.reports.at(-1);
+        if (parsed.data.next) {
+          if (parsed.data.next === cursor) throw new Error("the platform's listing does not advance");
+          cursor = parsed.data.next;
+          continue;
+        }
+        if (last) cursor = `${last.periodStart}:${last.usageHash.toLowerCase()}`;
+        break;
+      }
+    } catch (err) {
+      log.warn("could not read the platform's stored usage reports; no report is cut until they are read", errorFields(err));
+      return false;
+    }
+    const wasVerified = ledger.verified;
+    const r = ledger.adopt(verified, cursor);
+    this.ledgerReadAt = this.clock.now();
+    if (!wasVerified || r.adopted > 0 || r.droppedUsage > 0 || rejected > 0) {
+      const fields = { adopted: r.adopted, confirmed: r.confirmed, droppedUsage: r.droppedUsage, keptUsage: r.keptUsage, rejected, signedThrough: r.signedThrough };
+      if (r.adopted > 0 || r.droppedUsage > 0) log.warn("the platform holds signed reports this state did not (a rolled back data disk?); merged them, usage they cover is not billed again", fields);
+      else log.info("usage ledger rebuilt from the platform's stored reports", fields);
+    }
+    return true;
   }
 
   /** The gate in front of every gated route (Caddy forward_auth to GET /v1/gate). */
@@ -310,7 +420,7 @@ export class Agent {
         if (r.auth === "public") continue;
         const prev = routes.get(r.name);
         if (prev && prev.app !== app.id) throw new Error(`sealed-stack: route ${r.name} belongs to both ${prev.app} and ${app.id}`);
-        routes.set(r.name, { app: app.id });
+        routes.set(r.name, { app: app.id, ...(prev?.bearer || r.auth === "bearer-passthrough" ? { bearer: true } : {}) });
       }
     }
     const verify =
@@ -345,7 +455,11 @@ export class Agent {
     const horizon = Math.max(0, end - now);
     const apps = new Set<string>();
     let total = 0n;
+    // Legs the last settlement found it cannot pay (over the cap, another token, an app outside the deployment) are
+    // left out, so they do not shrink the payer's share for good (review L2).
+    const unpayable = this.store?.state.payments.unpayable ?? {};
     for (const e of ledger.unpaid()) {
+      if (unpayable[`${e.usageHash}:${e.app}`]) continue;
       total += e.fee;
       apps.add(e.app);
     }
@@ -408,6 +522,7 @@ export class Agent {
       },
       postUsage: (b) => platform.postUsage(b),
       postHealth: (b) => platform.postHealth(b),
+      ...(platform.usageReports ? { usageReports: platform.usageReports.bind(platform) } : {}),
     };
     const p: Promise<EvidenceResult> = attestAndSubmit(ctx, this.dstack as QuoteProvider, recording, signer, {
       clock: this.clock,
@@ -452,7 +567,7 @@ export class Agent {
     const st = store.state.payments;
     const totals = (this.ledger as Ledger).totals();
     const egress = await (this.deps.egressStats ?? httpEgressStats(this.deps.settings.egressStatsUrl))();
-    return sendHealthReport(this.platform(), ctx.deploymentId, (this.keys as ReleasedKeys).enclaveKey, {
+    const sent = await sendHealthReport(this.platform(), ctx.deploymentId, (this.keys as ReleasedKeys).enclaveKey, {
       at: now,
       apps: (this.poller as AppHealthPoller).status(),
       egress,
@@ -466,10 +581,20 @@ export class Agent {
         metered: totals.metered.toString(),
         unpaid: totals.unpaid.toString(),
         overCap: st.overCap ?? 0,
+        unpayableLegs: Object.keys(st.unpayable ?? {}).length,
+        ledger_verified: (this.ledger as Ledger).verified,
+        ...(this.ledgerReadAt !== undefined ? { ledger_verifiedAt: this.ledgerReadAt } : {}),
+        ledger_signedThrough: (this.ledger as Ledger).state.signedThrough ?? 0,
         ...(this.budget?.snapshot(now) ?? {}),
         ...this.spend,
       },
     });
+    if (sent.reattest) {
+      // The customer asked for a re-attestation (D-068): fresh evidence now, not at the next 24 h one.
+      this.log.info("re-attestation requested through the platform");
+      void this.attest();
+    }
+    return sent;
   }
 
   /** A fresh evidence bundle without submitting it (sealed verify tests, debugging). */
@@ -504,6 +629,7 @@ export class Agent {
     } catch (err) {
       this.limiter.release(ev.app, ev.unit, quantity, now);
       if (err instanceof TooManyReportsError) throw new UsageRejected(err.message, 422);
+      if (err instanceof LedgerUnverifiedError) throw new UsageRejected(err.message, 503);
       throw err;
     }
     return "accepted";
@@ -621,6 +747,30 @@ export function settlementIntervalMs(
   const sec = (defaults as { settlement_interval_seconds?: unknown }).settlement_interval_seconds;
   if (settings.devSim && settings.testOverrides && typeof sec === "number" && Number.isInteger(sec) && sec > 0) return sec * 1000;
   return config.settlement.intervalMinutes * 60_000;
+}
+
+/**
+ * A stored report as the agent signed it, or undefined: the report must be for this deployment, have a period, and
+ * its EIP-712 signature must recover to this enclave signer. Reports the local state already holds (by digest) skip
+ * the signature check. The platform's own usageHash is not trusted; the digest is recomputed.
+ */
+async function verifyStoredReport(e: StoredUsageReport, deploymentId: Hex, domain: ReturnType<typeof usageDomain>, signer: string, known: ReadonlySet<string>): Promise<VerifiedReport | undefined> {
+  let report: ReturnType<typeof usageReportFromJson>;
+  try {
+    report = usageReportFromJson(e.report as Parameters<typeof usageReportFromJson>[0]);
+  } catch {
+    return undefined;
+  }
+  if (report.deploymentId.toLowerCase() !== deploymentId.toLowerCase() || report.periodEnd <= report.periodStart) return undefined;
+  const usageHash = usageReportDigest(report, domain).toLowerCase() as Hex;
+  if (!known.has(usageHash)) {
+    try {
+      if ((await recoverUsageReportSigner(report, domain, e.signature as Hex)).toLowerCase() !== signer) return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return { report, signature: e.signature as Hex, usageHash, receivedAt: e.receivedAt };
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {

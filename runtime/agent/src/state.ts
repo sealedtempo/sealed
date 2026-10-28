@@ -15,10 +15,14 @@ export interface PaymentStatus {
   lastOutcome?: string;
   /** Legs that cannot be paid at the current FeeSplitter per-payment cap (last settlement). */
   overCap?: number;
+  /** `${usageHash}:${app}` of legs the last settlement found it cannot pay, and why (review L2). */
+  unpayable?: Record<string, "over_payment_cap" | "leg_token_mismatch" | "not_in_deployment">;
 }
 
 export interface AgentState {
   version: 1;
+  /** The deployment this state belongs to. D-058 keeps the disk across stack upgrades, which change the id. */
+  deploymentId?: string;
   ledger: LedgerState;
   payments: PaymentStatus;
   /** The shared daily spend budget (D-048). */

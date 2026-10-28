@@ -147,6 +147,7 @@ export function createApiServer(h: ApiHandlers, log: Logger, opts: ApiServerOpti
               method: first(req.headers["x-forwarded-method"]),
               uri: first(req.headers["x-forwarded-uri"]),
               fetchMode: first(req.headers["sec-fetch-mode"]),
+              ...(url.searchParams.get("bearer") === "1" ? { bearer: true } : {}),
             },
             peer,
           );

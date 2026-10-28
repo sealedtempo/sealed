@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { BcryptWorker, GateBusyError } from "../src/gate/bcrypt.js";
-import { GATE_COOKIE_TTL_SEC, Gate, type GateDecision, type GateOptions, sameOriginPath, TokenBucket } from "../src/gate/gate.js";
+import { clientKey, GATE_COOKIE_TTL_SEC, Gate, type GateDecision, type GateOptions, sameOriginPath, TokenBucket } from "../src/gate/gate.js";
 
 const vectors = (await readFile(join(import.meta.dirname, "fixtures/bcrypt-go-vectors.jsonl"), "utf8"))
   .trim()
@@ -24,6 +24,7 @@ function makeGate(over: Partial<GateOptions> & { t?: { now: number }; done?: Set
     routes: new Map([
       ["crm", { app: "crm" }],
       ["tools", { app: "tools-app" }],
+      ["gateway", { app: "tools-app", bearer: true }],
     ]),
     username: "sealed",
     bootstrapDone: async (app) => done.has(app),
@@ -156,10 +157,11 @@ describe("password gate (/v1/gate)", () => {
     expect(calls.filter((c) => c === "nope")).toHaveLength(2);
   });
 
-  it("rate limits failed attempts per client and overall, and a success gives its token back", async () => {
+  it("rate limits failed attempts per client and, for clients that failed recently, overall; a success gives its token back", async () => {
     const t = { now: 1_800_000_000_000 };
-    const { gate, calls } = makeGate({ t, limits: { clientBurst: 3, clientPerSec: 1 / 6, globalBurst: 5, globalPerSec: 1 } });
+    const { gate, calls } = makeGate({ t, limits: { clientBurst: 3, clientPerSec: 1 / 6, globalBurst: 3, globalPerSec: 1 / 3600, suspectMs: 600_000 } });
     const wrong = { route: "crm", authorization: basic("sealed", "guess"), client: "9.9.9.9" };
+    // The first failure costs only the client's budget; later ones, while the client is suspect, also a global token.
     for (let i = 0; i < 3; i++) expect(await gate.check(wrong)).toEqual({ status: 401 });
     expect(await gate.check(wrong)).toEqual({ status: 429, retryAfterSec: 6 });
     expect(calls).toHaveLength(3);
@@ -167,15 +169,93 @@ describe("password gate (/v1/gate)", () => {
     expect((await gate.check({ ...wrong, authorization: basic("sealed", PASSWORD) })).status).toBe(429);
     t.now += 6_000;
     expect((await gate.check({ ...wrong, authorization: basic("sealed", PASSWORD) })).status).toBe(200);
-    // That success refunded its token: the client can fail once more right away.
+    // That success refunded both tokens: the client can fail once more right away, which takes the last global token.
     expect(await gate.check(wrong)).toEqual({ status: 401 });
-    // Other clients have their own budget, until the global one (5, 4 left) runs out.
-    for (const c of ["8.8.8.8", "7.7.7.7", "6.6.6.6", "5.5.5.5"]) expect(await gate.check({ ...wrong, client: c })).toEqual({ status: 401 });
-    expect(await gate.check({ ...wrong, client: "4.4.4.4" })).toEqual({ status: 429, retryAfterSec: 1 });
-    expect(calls).toHaveLength(9);
+    // Another client's first failure is on its own budget; its second waits for the global budget.
+    expect(await gate.check({ ...wrong, client: "8.8.8.8" })).toEqual({ status: 401 });
+    expect(await gate.check({ ...wrong, client: "8.8.8.8" })).toEqual({ status: 429, retryAfterSec: 3594 }); // 6 s of refill since the global budget was last full
+    // A client without recent failures is never held to it.
+    expect((await gate.check({ ...wrong, client: "7.7.7.7", authorization: basic("sealed", PASSWORD) })).status).toBe(200);
+    expect(calls).toHaveLength(6); // 7.7.7.7's check hit the success cache
     // A valid cookie is never rate limited.
     const ok = await makeGate({ t }).gate.check({ ...wrong, authorization: basic("sealed", PASSWORD) });
     expect(ok.status).toBe(200);
+  });
+
+  // Review ws-int-agent 6: a few addresses, each inside its own budget, kept the global budget empty, and then
+  // nobody could log in with Basic.
+  it("other clients' failures never lock out a login from a client without recent failures", async () => {
+    const t = { now: 1_800_000_000_000 };
+    const { gate } = makeGate({ t });
+    const attackers = Array.from({ length: 12 }, (_, i) => `198.51.100.${i + 1}`);
+    // Each attacker stays inside its own budget (10 burst, one per 6 s) for ten minutes.
+    for (let round = 0; round < 100; round++) {
+      for (const a of attackers) await gate.check({ route: "crm", authorization: basic("sealed", `guess-${round}`), client: a });
+      t.now += 6_000;
+    }
+    // The global budget is spent by now: suspect clients get 429 ...
+    const last = await Promise.all(attackers.map((a) => gate.check({ route: "crm", authorization: basic("sealed", "guess"), client: a })));
+    expect(last.filter((d) => d.status === 429).length).toBeGreaterThan(0);
+    // ... but a new client with the right password gets in at once.
+    expect((await gate.check({ route: "crm", authorization: basic("sealed", PASSWORD), client: "203.0.113.50" })).status).toBe(200);
+    // A client whose last failure is older than the suspect window is not held to the global budget either.
+    expect((await gate.check({ route: "crm", authorization: basic("sealed", "typo"), client: "203.0.113.51" })).status).toBe(401);
+    t.now += 11 * 60_000;
+    expect((await gate.check({ route: "crm", authorization: basic("sealed", PASSWORD), client: "203.0.113.51" })).status).toBe(200);
+  });
+
+  it("counts IPv6 clients per /64", async () => {
+    expect(clientKey("2001:db8:1:2:aaaa::1")).toBe("2001:db8:1:2::/64");
+    expect(clientKey("2001:0db8:0001:0002:ffff:ffff:ffff:ffff")).toBe("2001:db8:1:2::/64");
+    expect(clientKey("2001:db8::7")).toBe("2001:db8:0:0::/64");
+    expect(clientKey("203.0.113.9")).toBe("203.0.113.9");
+    const { gate } = makeGate({ limits: { clientBurst: 2, clientPerSec: 1 / 6, globalBurst: 100, globalPerSec: 1, suspectMs: 600_000 } });
+    const wrong = (client: string) => gate.check({ route: "crm", authorization: basic("sealed", "guess"), client });
+    expect((await wrong("2001:db8:1:2::a")).status).toBe(401);
+    expect((await wrong("2001:db8:1:2::b")).status).toBe(401);
+    expect((await wrong("2001:db8:1:2::c")).status).toBe(429);
+    expect((await wrong("2001:db8:1:3::a")).status).toBe(401);
+  });
+
+  // Review ws-int-agent 7 and C-3: the gate accepted forms Caddy did not strip, so the gate's credential reached the app.
+  it("accepts only the Basic and cookie forms Caddy strips", async () => {
+    const { gate, calls } = makeGate();
+    const b64 = Buffer.from(`sealed:${PASSWORD}`).toString("base64");
+    // Every accepted form starts with Caddy's prefix match (composer 1.2: spaces; 1.3: spaces or tabs).
+    for (const header of [`Basic ${b64}`, `basic  ${b64}`, `BASIC ${b64}`]) {
+      expect(header).toMatch(/^[Bb][Aa][Ss][Ii][Cc] +c2VhbGVkO/);
+      expect(await gate.check({ route: "crm", authorization: header, client: "c" }), header).toMatchObject({ status: 200, via: "basic", stripAuthorization: true });
+    }
+    // A tab, a missing pad, base64url characters or trailing junk are not the gate's credential: 401, no bcrypt.
+    const before = calls.length;
+    for (const header of [`Basic\t${b64}`, `Basic ${Buffer.from("sealed:pwd1").toString("base64").replace(/=+$/, "")}`, `Basic ${Buffer.from("sealed:a?>").toString("base64").replace("/", "_")}`, `Basic ${b64} x`, `Basic ${b64}==`]) {
+      expect(await gate.check({ route: "crm", authorization: header, client: "c" }), header).toEqual({ status: 401 });
+    }
+    expect(calls.length).toBe(before);
+    // Cookies: only the exact name after the separator's whitespace counts, as `(^|;\s*)sealed_gate=` matches.
+    const d = await gate.check({ route: "crm", authorization: basic("sealed", PASSWORD), client: "c" });
+    const value = cookieOf(d).slice("sealed_gate=".length);
+    for (const cookie of [`sealed_gate=${value}`, `a=1;sealed_gate=${value}`, `a=1;\t sealed_gate=${value}`]) {
+      expect((await gate.check({ route: "crm", cookie, client: "c" })).status, cookie).toBe(200);
+    }
+    for (const cookie of [`sealed_gate =${value}`, `a=1; sealed_gate\t=${value}`, `xsealed_gate=${value}`, `a=1;\u000bsealed_gate=${value}`]) {
+      expect(await gate.check({ route: "crm", cookie, client: "c" }), JSON.stringify(cookie)).toEqual({ status: 401 });
+    }
+  });
+
+  // Review C-6: requests with a Bearer token on a bearer-passthrough route skipped the bootstrap hold.
+  it("?bearer=1 holds a bearer-passthrough route until bootstrap is done, then opens it for Bearer requests only", async () => {
+    const { gate, done } = makeGate({ done: new Set() });
+    const bearer = { route: "gateway", authorization: "Bearer sk-app-key", client: "c", bearer: true };
+    expect(await gate.check(bearer)).toEqual({ status: 503, reason: "starting" });
+    done.add("tools-app");
+    expect(await gate.check(bearer)).toEqual({ status: 200, via: "bearer", stripAuthorization: false });
+    expect(await gate.check({ ...bearer, authorization: basic("sealed", PASSWORD) })).toEqual({ status: 401 });
+    expect(await gate.check({ ...bearer, authorization: undefined })).toEqual({ status: 401 });
+    expect(await gate.check({ ...bearer, route: "crm" })).toEqual({ status: 403, reason: "not a bearer-passthrough route" });
+    // Before the keys are released the route is starting, whatever the token.
+    const fresh = new Gate({ routes: new Map([["gateway", { app: "a", bearer: true }]]), username: "sealed", bootstrapDone: async () => true, verify: async () => true });
+    expect(await fresh.check(bearer)).toEqual({ status: 503, reason: "starting" });
   });
 
   it("answers 429 when too many checks are in flight", async () => {

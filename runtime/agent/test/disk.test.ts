@@ -173,6 +173,18 @@ describe("LUKS2 data disk", () => {
     expect(f.dev.mounted).toBe(true);
   });
 
+  // Review ws-int-agent 10: corrupted ciphertext at the start of an established volume reads as "no filesystem";
+  // formatting it would replace the customer's data instead of failing.
+  it("never formats an established volume whose plaintext shows no filesystem: the boot fails and the volume is closed", async () => {
+    const f = fakeDevice(dir, { luks: ours(), fs: false });
+    await expect(disk(f.runner).open(diskKey)).rejects.toThrow("holds no filesystem; it is left untouched");
+    const subs = f.calls.map((c) => `${c.cmd} ${c.args[0]}`);
+    expect(subs).not.toContain("mkfs.ext4 -q");
+    expect(subs).not.toContain("cryptsetup luksFormat");
+    expect(f.dev.mounted).toBe(false);
+    expect(f.dev.closed).toBe(1);
+  });
+
   // Review finding (critical): the composer bind-mounts /mnt/sealed-data at the same path, which used to
   // count as "already mounted", so the disk was never unlocked.
   it("the composer's bind mount at the mount point does not count as mounted", async () => {

@@ -1,8 +1,9 @@
 // Spend counters from sealed-mpp-payer (POST /v1/spend). The body is the payer's SpendReport as
 // runtime/mpp-payer builds it (spend-reporter.ts): {source, mode, currency, counters{...}, relay{...},
-// sentAt}. The counters go to the platform in signed health reports, flattened as `mpp_<counter>`, so
-// only a fixed set of numeric counters and booleans is kept: anything else (free text, extra keys,
-// other callers) would be a channel out of the VM (property P5).
+// recovery{...}?, sentAt}. The counters go to the platform in signed health reports, flattened as
+// `mpp_<counter>` and rounded (D-065), so only a fixed set of numeric counters and booleans is kept:
+// anything else (free text, extra keys, other callers) would be a channel out of the VM (property P5).
+// Unknown fields are dropped, so a newer payer's report still parses.
 //
 // Also the bodies of POST /v1/spend/reserve {amount} and /release {reservationId, used} (D-048).
 import { z } from "zod";
@@ -42,8 +43,13 @@ const spendReportSchema = z.object({
     .object({ attested: z.boolean(), checkedAt: count, stackHash: dropped, sessionsAvailable: z.boolean() })
     .partial()
     .optional(),
+  /** Orphaned-channel recovery (ws/fix-payments ChannelRecovery.snapshot()): counts and the refunded amount. */
+  recovery: z.object({ requestCloses: count, withdrawals: count, recovered: decimal, failures: count }).partial().optional(),
   sentAt: count.optional(),
 });
+
+/** Flat names of the recovery counters in the health report. */
+const RECOVERY_FIELDS = { requestCloses: "mpp_recoveryRequestCloses", withdrawals: "mpp_recoveryWithdrawals", recovered: "mpp_recovered", failures: "mpp_recoveryFailures" } as const;
 
 export type SpendCounters = Record<string, string | number | boolean>;
 
@@ -63,6 +69,10 @@ export function parseSpendReport(body: unknown): SpendReport | undefined {
   if (relay?.attested !== undefined) out.mpp_relayAttested = relay.attested;
   if (relay?.checkedAt !== undefined) out.mpp_relayCheckedAt = relay.checkedAt;
   if (relay?.sessionsAvailable !== undefined) out.mpp_sessionsAvailable = relay.sessionsAvailable;
+  for (const [k, name] of Object.entries(RECOVERY_FIELDS)) {
+    const v = r.data.recovery?.[k as keyof typeof RECOVERY_FIELDS];
+    if (v !== undefined) out[name] = v;
+  }
   if (r.data.sentAt !== undefined) out.mpp_sentAt = r.data.sentAt;
   return { counters: out, ...(r.data.currency ? { currency: r.data.currency.toLowerCase() } : {}) };
 }

@@ -12,9 +12,17 @@
 // (terminal) switches at once. The next successful settlement restores the normal Caddyfile. Only
 // limits the operator sets onchain are deferrals: the daily cap, and legs above a lowered
 // per-payment cap (reported as overCap, never paid at that cap).
+//
+// D-062: a report is paid only once the platform has accepted it, so every paid period is among the
+// stored reports the agent rebuilds its ledger from after a disk rollback. Each tick first rebuilds
+// (the agent reads the platform's stored reports), cuts nothing while this boot's ledger is not yet
+// rebuilt, saves a cut report before it leaves the VM, and voids a report the platform refuses as
+// overlapping a stored one. A report that cannot be submitted is a failure like any other, so blocking
+// the platform API does not stop billing from failing closed.
 import type { Hex } from "@sealed/core";
 import type { CaddySwitch } from "../caddy.js";
 import type { PlatformClient } from "../evidence.js";
+import { HttpError } from "../http.js";
 import { errorFields, type Logger } from "../log.js";
 import type { Ledger, UnpaidEntry } from "../metering/ledger.js";
 import type { PaymentStatus } from "../state.js";
@@ -65,6 +73,28 @@ export interface SettlerDeps {
   onPerPaymentCap?: (cap: bigint) => void;
   /** Records what each payment took from the spend limit (D-048). */
   spend?: SpendRecorder;
+  /**
+   * What fee settlement may still take from the spend limit, when the agent and not the chain enforces the limit
+   * (enclave-account mode, review I6); undefined when the chain does (access-key mode).
+   */
+  feeLimit?: (now: number) => bigint | undefined;
+  /**
+   * Rebuilds the ledger from the platform's stored reports (D-062), before anything is cut or paid. Resolves to
+   * whether the read succeeded; the ledger says whether this boot was rebuilt at all.
+   */
+  rebuild?: () => Promise<boolean>;
+}
+
+/** Content-free reasons a leg cannot be paid as things stand; they are left out of reserved_for_fees (review L2). */
+export type UnpayableReason = "over_payment_cap" | "leg_token_mismatch" | "not_in_deployment";
+
+/** The platform's answer to a report whose period overlaps a stored one (API_CONTRACT 15, D-062). */
+function overlapConflict(err: unknown): { usageHash?: string } | undefined {
+  if (!(err instanceof HttpError) || err.status !== 409) return undefined;
+  const body = err.json() as { error?: { code?: unknown; detail?: { usageHash?: unknown } } } | undefined;
+  if (body?.error?.code !== "conflict") return undefined;
+  const h = body.error.detail?.usageHash;
+  return typeof h === "string" ? { usageHash: h.toLowerCase() } : {};
 }
 
 const sumOwed = (es: Due[]) => es.reduce((s, e) => s + e.owed, 0n);
@@ -83,6 +113,20 @@ export class Settler {
         this.d.ledger.markSubmitted(r.usageHash);
         n++;
       } catch (err) {
+        const conflict = overlapConflict(err);
+        if (conflict) {
+          if (conflict.usageHash === r.usageHash.toLowerCase()) {
+            this.d.ledger.markSubmitted(r.usageHash);
+            n++;
+            continue;
+          }
+          // Its period overlaps a report the platform already stores, signed by this enclave signer (another copy
+          // of this disk, or a state from before a rollback that the rebuild has not seen): billing it would bill
+          // that period twice. The next rebuild adopts the stored report.
+          this.d.ledger.voidReport(r.usageHash);
+          this.d.log.error("the platform already holds a report for this period; this one is void and never paid", { usageHash: r.usageHash, stored: conflict.usageHash });
+          continue;
+        }
         this.d.log.warn("usage report submission failed", { usageHash: r.usageHash, ...errorFields(err) });
         break;
       }
@@ -97,14 +141,15 @@ export class Settler {
     return m;
   }
 
-  private async payApps(now: number): Promise<AppOutcome[]> {
+  private async payApps(now: number, payable: UnpaidEntry[]): Promise<AppOutcome[]> {
     const { ledger, payer, log } = this.d;
     const outcomes: AppOutcome[] = [];
     const cap = await payer.perPaymentCap();
     this.d.onPerPaymentCap?.(cap);
     let daily = await payer.dailyRemaining();
     let overCap = 0;
-    for (const [app, all] of this.byApp(ledger.unpaid())) {
+    const unpayable: Record<string, UnpayableReason> = {};
+    for (const [app, all] of this.byApp(payable)) {
       const due: Due[] = [];
       let appOverCap = 0;
       let mismatched = 0;
@@ -116,11 +161,13 @@ export class Settler {
         }
         if (e.fee > cap) {
           appOverCap++;
+          unpayable[`${e.usageHash}:${app}`] = "over_payment_cap";
           continue;
         }
         if (paid > 0n) {
           if ((await payer.legToken(e.usageHash, e.appId)) !== payer.feeToken) {
             mismatched++;
+            unpayable[`${e.usageHash}:${app}`] = "leg_token_mismatch";
             continue;
           }
           log.warn("usage paid short onchain, topping up to the report's fee", { app, usageHash: e.usageHash, paid: paid.toString(), fee: e.fee.toString() });
@@ -138,6 +185,7 @@ export class Settler {
       }
       if (due.length === 0) continue;
       if (!(await payer.appInDeployment((due[0] as Due).appId))) {
+        for (const e of due) unpayable[`${e.usageHash}:${app}`] = "not_in_deployment";
         outcomes.push({ app, result: "failed", reason: "not_in_deployment" });
         continue;
       }
@@ -151,7 +199,18 @@ export class Settler {
       }
     }
     this.d.status.overCap = overCap;
+    this.d.status.unpayable = unpayable;
     return outcomes;
+  }
+
+  /** The payer's budget, capped by what the agent's own spend limit leaves for fees (enclave-account mode, review I6). */
+  private async budget(reserve: bigint, now: number): Promise<Budget> {
+    const b = await this.d.payer.budget(reserve);
+    const limit = this.d.feeLimit?.(now);
+    if (limit === undefined) return b;
+    const left = limit - reserve;
+    if (left >= b.spendable) return b;
+    return left > 0n ? { spendable: left, binding: "spend_limit" } : { spendable: 0n, problem: "spend_limit", binding: "spend_limit" };
   }
 
   /**
@@ -160,7 +219,7 @@ export class Settler {
    */
   private async payApp(app: string, due: Due[], daily: bigint, now: number): Promise<AppOutcome> {
     const { ledger, payer, log } = this.d;
-    const raw = await payer.budget(0n);
+    const raw = await this.budget(0n, now);
     const limit = raw.spendable < daily ? raw.spendable : daily;
     let chosen: Due[] = [];
     let sum = 0n;
@@ -188,7 +247,7 @@ export class Settler {
       }
       if (sumOwed(chosen) + reserve <= raw.spendable) break;
       if (chosen.length === 1) {
-        return { app, result: "failed", reason: shortfall(await payer.budget(reserve)) };
+        return { app, result: "failed", reason: shortfall(await this.budget(reserve, now)) };
       }
       chosen = chosen.slice(0, -1);
     }
@@ -241,9 +300,16 @@ export class Settler {
   async tick(now: number): Promise<SettlementResult> {
     const { ledger, status, log, payer } = this.d;
     await this.reconcilePending(now);
-    const reportCut = (await ledger.closePeriod(now)) !== undefined;
+    if (this.d.rebuild) await this.d.rebuild();
+    let reportCut = false;
+    if (ledger.verified) {
+      reportCut = (await ledger.closePeriod(now)) !== undefined;
+      // On disk before it leaves the VM: a restart must not cut the same usage again.
+      if (reportCut) await this.saveNow();
+    }
     const submitted = await this.submitReports();
     const unpaid = ledger.unpaid();
+    const waiting = unpaid.filter((e) => !e.submitted);
     let deployment: DeploymentStatus | "unknown";
     try {
       deployment = await payer.deploymentStatus();
@@ -254,18 +320,23 @@ export class Settler {
     let apps: AppOutcome[] = [];
     let outcome: SettlementResult["outcome"];
     if (deployment === "closed") outcome = "deployment_closed";
-    else if (unpaid.length === 0) outcome = "nothing_due";
+    else if (!ledger.verified) {
+      outcome = "failed";
+      apps = [{ app: "*", result: "failed", reason: "ledger_unverified" }];
+    } else if (unpaid.length === 0) outcome = "nothing_due";
     else if (deployment === "unknown") {
       outcome = "failed";
       apps = [{ app: "*", result: "failed", reason: "rpc_error" }];
     } else if (deployment === "none") outcome = "deployment_not_registered";
     else {
       try {
-        apps = await this.payApps(now);
+        apps = await this.payApps(now, unpaid.filter((e) => e.submitted));
       } catch (err) {
         log.warn("settlement failed", errorFields(err));
         apps = [{ app: "*", result: "failed", reason: "rpc_error" }];
       }
+      // Paid only once the platform holds them (D-062): waiting reports keep billing failing until they are in.
+      if (waiting.length > 0) apps.push({ app: "*", result: "failed", reason: "usage_not_submitted" });
       const failed = apps.some((a) => a.result === "failed");
       const paid = apps.some((a) => a.result === "paid");
       outcome = failed ? (paid ? "partial" : "failed") : "settled";
@@ -276,8 +347,11 @@ export class Settler {
     else if (outcome === "deployment_not_registered") {
       const oldest = Math.min(...unpaid.map((e) => e.createdAt));
       status.failingSince = status.failingSince === null ? oldest : Math.min(status.failingSince, oldest);
-    } else if (apps.some((a) => a.result === "failed")) status.failingSince ??= now;
-    else status.failingSince = null;
+    } else if (apps.some((a) => a.result === "failed")) {
+      // Measured from the oldest report the platform has not accepted, so blocking the platform API does not help.
+      const since = waiting.length > 0 ? Math.min(now, ...waiting.map((e) => e.createdAt)) : now;
+      status.failingSince = status.failingSince === null ? since : Math.min(status.failingSince, since);
+    } else status.failingSince = null;
     if (apps.some((a) => a.result === "paid")) status.lastPaidAt = now;
     await this.updateGate(now, outcome === "deployment_closed", ledger.unpaid().length === 0 || apps.some((a) => a.result === "paid"));
     await this.d.save();

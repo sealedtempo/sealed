@@ -6,7 +6,7 @@ import { deriveEnclavePrivateKey, feeScheduleFromDefaults, parseDefaults, usageD
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DirectCaddySwitch } from "../src/caddy.js";
 import type { PlatformClient } from "../src/evidence.js";
-import { parseEndpoint } from "../src/http.js";
+import { HttpError, parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
 import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
 import { emptyBudgetState, SpendBudget } from "../src/payments/budget.js";
@@ -402,6 +402,126 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect((await settler.tick(2000)).submitted).toBe(0);
     platformDown = false;
     expect((await settler.tick(3000)).submitted).toBe(1);
+  });
+
+  // D-062: every paid period must be among the reports the platform stores, or a rolled-back disk could bill it again.
+  it("pays a report only once the platform accepted it; until then billing fails, measured from the report", async () => {
+    platformDown = true;
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    const r1 = await settler.tick(2000);
+    expect(r1).toMatchObject({ outcome: "failed", submitted: 0, apps: [{ app: "*", result: "failed", reason: "usage_not_submitted" }] });
+    expect(payer.paid).toEqual([]);
+    expect(status.failingSince).toBe(2000);
+    expect(status.lastOutcome).toBe("usage_not_submitted");
+    platformDown = false;
+    const r2 = await settler.tick(2100);
+    expect(r2.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" })]);
+    expect(status.failingSince).toBeNull();
+  });
+
+  it("voids a report the platform refuses as overlapping a stored one, and never pays it", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    const cut = await ledger.closePeriod(1500);
+    const stored = `0x${"5e".repeat(32)}`;
+    const conflict = new HttpError(409, JSON.stringify({ error: { code: "conflict", message: "overlaps", detail: { usageHash: stored, periodStart: 900, periodEnd: 1600 } } }), "/v1/usage");
+    let calls = 0;
+    const platform: PlatformClient = {
+      postEvidence: async () => ({ deploymentId: "0x" }),
+      postUsage: async () => {
+        calls++;
+        if (calls === 1) throw conflict;
+        return undefined;
+      },
+      postHealth: async () => undefined,
+    };
+    settler = new Settler({ ledger, payer, platform, status, graceSec: GRACE, save: async () => {}, log: silentLogger });
+    await ledger.record("crm", "app_hour", 60n, 1600);
+    const r = await settler.tick(2000);
+    expect(ledger.state.reports.find((x) => x.usageHash === cut?.usageHash)?.void).toBe(true);
+    // The void report is not paid and does not block the next one, which was submitted and paid.
+    expect(r.submitted).toBe(1);
+    expect(payer.paid.flat().map((l) => l.usageHash)).not.toContain(cut?.usageHash);
+    expect(r.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" })]);
+    expect(ledger.totals().metered).toBe(BigInt(ledger.state.reports.find((x) => !x.void)?.payments.crm?.fee ?? "0"));
+    // A 409 that names the report itself means the platform already has it: submitted.
+    await ledger.record("crm", "app_hour", 60n, 2001);
+    const again = await ledger.closePeriod(2100);
+    let same = true;
+    settler = new Settler({
+      ledger,
+      payer,
+      platform: {
+        ...platform,
+        postUsage: async () => {
+          if (same) {
+            same = false;
+            throw new HttpError(409, JSON.stringify({ error: { code: "conflict", detail: { usageHash: again?.usageHash } } }), "/v1/usage");
+          }
+        },
+      },
+      status,
+      graceSec: GRACE,
+      save: async () => {},
+      log: silentLogger,
+    });
+    await settler.tick(2200);
+    expect(ledger.state.reports.find((x) => x.usageHash === again?.usageHash)).toMatchObject({ submitted: true });
+    expect(ledger.state.reports.find((x) => x.usageHash === again?.usageHash)?.void).toBeUndefined();
+  });
+
+  it("cuts nothing and fails closed while the ledger waits for its boot rebuild", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    ledger.holdForRebuild();
+    let readable = false;
+    settler = new Settler({
+      ledger,
+      payer,
+      platform: { postEvidence: async () => ({ deploymentId: "0x" }), postUsage: async (b) => usage.push(b), postHealth: async () => undefined },
+      status,
+      graceSec: GRACE,
+      save: async () => {},
+      log: silentLogger,
+      rebuild: async () => {
+        if (readable) ledger.adopt([]);
+        return readable;
+      },
+    });
+    const r = await settler.tick(2000);
+    expect(r).toMatchObject({ outcome: "failed", reportCut: false, apps: [{ app: "*", result: "failed", reason: "ledger_unverified" }] });
+    expect(usage).toEqual([]);
+    readable = true;
+    const r2 = await settler.tick(2100);
+    // Nothing was signed for this deployment, so the held usage is kept and billed now.
+    expect(r2.reportCut).toBe(true);
+    expect(r2.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" })]);
+  });
+
+  // Review L2: legs the settler cannot pay stayed in reserved_for_fees for good.
+  it("records the legs it cannot pay and why", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001); // 50_000
+    await ledger.record("llm-gateway", "tokens", 50_000n, 1002); // 10_000
+    await ledger.closePeriod(1500);
+    payer.cap = 40_000n; // the crm leg is above the lowered cap
+    payer.inDeployment = false; // and the gateway leg's app is not in the deployment onchain
+    await settler.tick(2000);
+    expect(Object.values(status.unpayable ?? {}).sort()).toEqual(["not_in_deployment", "over_payment_cap"]);
+    payer.cap = 5_000_000n;
+    payer.inDeployment = true;
+    await settler.tick(2100);
+    expect(status.unpayable).toEqual({});
+    expect(ledger.unpaid()).toEqual([]);
+  });
+
+  // Review I6: in enclave-account mode nothing onchain limits fee settlement, so the agent's own limit does.
+  it("caps fee settlement by the agent's spend limit when the chain does not enforce one", async () => {
+    let left = 30_000n;
+    settler = new Settler({ ledger, payer, platform: { postEvidence: async () => ({ deploymentId: "0x" }), postUsage: async () => undefined, postHealth: async () => undefined }, status, graceSec: GRACE, save: async () => {}, log: silentLogger, feeLimit: () => left });
+    await ledger.record("crm", "app_hour", 3600n, 1001); // 50_000
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "spend_limit" }]);
+    expect(payer.paid).toEqual([]);
+    left = 1_000_000n;
+    expect((await settler.tick(2100)).apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" })]);
   });
 
   describe("what settlement takes from the shared spend limit (review M4)", () => {

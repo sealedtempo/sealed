@@ -7,6 +7,8 @@ export * from "./hpke.js";
 export * from "./signer.js";
 export * from "./defaults.js";
 export * from "./pricing.js";
+export * from "./counts.js";
+export * from "./usageReports.js";
 export * from "./chain.js";
 export * from "./accessKey.js";
 export * from "./dstack.js";
