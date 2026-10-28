@@ -14,3 +14,4 @@ deployments/anvil*.json
 .e2e/
 # Files written by the script tests
 deployments/test-*.json
+deployments/*.dry-run.json
