@@ -15,6 +15,7 @@ import {
   settlementDefaults,
   signUsageReportsRead,
   type StoredUsageReport,
+  TEMPO_MAINNET_ID,
   type UsageEvent,
   usageDomain,
   usageReportDigest,
@@ -38,7 +39,7 @@ import { AppHealthPoller, type Probe } from "./metering/appHealth.js";
 import { emptyLedgerState, Ledger, LedgerUnverifiedError, TooManyReportsError, type VerifiedReport } from "./metering/ledger.js";
 import { UsageLimiter, UsageLimitError } from "./metering/limits.js";
 import { emptyBudgetState, SpendBudget } from "./payments/budget.js";
-import { type FeePayer, TempoFeePayer } from "./payments/feePayer.js";
+import { type FeePayer, feeUnitsReserved, LOCAL_MIN_GAS, TempoFeePayer } from "./payments/feePayer.js";
 import { type SettlementResult, Settler } from "./payments/settler.js";
 import { liveAttestation } from "./attest.js";
 import { dropPrivileges, parseRunAs } from "./privileges.js";
@@ -92,11 +93,28 @@ export interface AgentDeps {
 /** Caddy's HTTPS port on its apps-network IP, where the agent reads the served certificate. */
 const CADDY_TLS_PORT = 443;
 /**
- * Network fee allowance per settlement transaction, in fee-token base units (0.01 USD). A batch costs
+ * Network fee allowance per settlement transaction on mainnet, in fee-token base units (0.01 USD). A batch costs
  * about 3.6M gas, a fraction of a cent at mainnet's base fee (tempo-viem notes); self-paid fees count
  * against an access-key limit, so the payer must leave room for them.
  */
 export const NETWORK_FEE_ALLOWANCE = 10_000n;
+/**
+ * The highest gas price a local Tempo node charges, in attodollars per gas: TIP-1067 caps the base fee at 1.2e10
+ * (a fresh anvil starts there and falls as blocks are mined), plus the 1e9 priority fee anvil suggests.
+ */
+export const LOCAL_MAX_GAS_PRICE = 13_000_000_000n;
+
+/**
+ * The network fee allowance per settlement transaction (D-048 reserved_for_fees). Off mainnet every settlement
+ * transaction has at least LOCAL_MIN_GAS, and the settler only sends one when its own reserve for that gas
+ * (feeUnitsReserved) fits the limit, so the allowance is that reserve at the highest local gas price: 0.13 USD
+ * instead of mainnet's 0.01, which a local settlement's reserve far exceeds.
+ */
+export function networkFeeAllowance(chainId: number): bigint {
+  if (chainId === TEMPO_MAINNET_ID) return NETWORK_FEE_ALLOWANCE;
+  const local = feeUnitsReserved(LOCAL_MIN_GAS, LOCAL_MAX_GAS_PRICE);
+  return local > NETWORK_FEE_ALLOWANCE ? local : NETWORK_FEE_ALLOWANCE;
+}
 /** A reservation older than this since the last read of the access key's limit triggers a new read. */
 export const ONCHAIN_LIMIT_MAX_AGE_SEC = 60;
 /** A ledger rebuild reads at most this many pages of stored reports (500 each) before it gives up (D-062). */
@@ -281,7 +299,7 @@ export class Agent {
         deploymentRegistry: ctx.config.contracts.deploymentRegistry as Address,
         deploymentId: ctx.deploymentId,
         // Headroom on local Tempo nodes in tests; mainnet uses the node's estimate and the per-line floors.
-        minGas: ctx.config.chainId === 4217 ? 0n : 5_000_000n,
+        minGas: ctx.config.chainId === TEMPO_MAINNET_ID ? 0n : LOCAL_MIN_GAS,
       });
     this.payer = payer;
     // Reports must never be cut above the onchain cap, or a leg could never be paid: read it before
@@ -478,8 +496,11 @@ export class Agent {
     }
     const later = BigInt(Math.max(0, Math.ceil(horizon / intervalSec) - 1) * accruing);
     const seen = this.budget?.state.networkFeePerTx;
+    // Later transactions are counted at what they will pay (not at the next one's reserve): twice the last network
+    // fee, or the mainnet allowance until one is seen (a floor-sized guess for every settlement of a short local
+    // interval would leave the payer nothing before the first payment).
     const perTx = seen !== undefined ? 2n * BigInt(seen) : NETWORK_FEE_ALLOWANCE;
-    return total + NETWORK_FEE_ALLOWANCE * BigInt(apps.size) + later * perTx;
+    return total + networkFeeAllowance(ctx.config.chainId) * BigInt(apps.size) + later * perTx;
   }
 
   /**
