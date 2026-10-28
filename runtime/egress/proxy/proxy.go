@@ -133,6 +133,8 @@ func New(opts Options) (*Proxy, error) {
 	})
 	p.gp = gp
 
+	// No read or write timeout: tunnels and long plain-HTTP transfers are
+	// bounded by the idle timeout instead (smokescreen wraps hijacked conns).
 	p.server = &http.Server{
 		Handler:           gp,
 		ReadHeaderTimeout: opts.ReadHeaderTimeout,

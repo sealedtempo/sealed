@@ -57,7 +57,7 @@ func (c *Client) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	if len(q.Question) != 1 {
 		return nil, errors.New("query must have exactly one question")
 	}
-	start := int(c.next.Add(1)-1) % len(c.servers)
+	start := int((c.next.Add(1) - 1) % uint32(len(c.servers)))
 	var lastResp *dns.Msg
 	var lastErr error
 	for i := range c.servers {

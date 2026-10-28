@@ -165,6 +165,7 @@ func startEnv(t *testing.T) *env {
 	up.AddWildcardA("wild.alpha.test", "203.0.113.11")
 	up.AddA("beta.test", "203.0.113.20")
 	up.AddA("rebind.alpha.test", "169.254.169.254")
+	up.AddAAAA("rebind6.alpha.test", "::ffff:169.254.169.254", "fd20:ce::254")
 	up.AddA("loop.alpha.test", "127.0.0.1")
 	up.AddA("private.alpha.test", "10.0.0.5")
 	up.AddA("vpc.alpha.test", "10.20.0.5")
@@ -197,6 +198,7 @@ func startEnv(t *testing.T) *env {
 				"api.alpha.test:80",
 				"*.wild.alpha.test:443",
 				"rebind.alpha.test:443",
+				"rebind6.alpha.test:443",
 				"loop.alpha.test:443",
 				"private.alpha.test:443",
 				"vpc.alpha.test:443",
@@ -427,7 +429,7 @@ func TestRawIPAndMetadataAreBlocked(t *testing.T) {
 
 func TestMetadataBlockedEvenWhenAllowedNameResolvesToIt(t *testing.T) {
 	e := startEnv(t)
-	for _, target := range []string{"rebind.alpha.test:443", "loop.alpha.test:443", "private.alpha.test:443"} {
+	for _, target := range []string{"rebind.alpha.test:443", "rebind6.alpha.test:443", "loop.alpha.test:443", "private.alpha.test:443"} {
 		if code := e.connect(alphaIP, target); code != http.StatusForbidden {
 			t.Errorf("CONNECT %s = %d, want 403", target, code)
 		}
@@ -435,12 +437,12 @@ func TestMetadataBlockedEvenWhenAllowedNameResolvesToIt(t *testing.T) {
 	if !e.dns.QueriedName("rebind.alpha.test") {
 		t.Error("allowed name was not resolved, so the IP check never ran")
 	}
-	if e.routes.wasDialed("169.254.") || e.routes.wasDialed("127.") || e.routes.wasDialed("10.0.0.5") {
+	if e.routes.wasDialed("169.254.") || e.routes.wasDialed("127.") || e.routes.wasDialed("10.0.0.5") || e.routes.wasDialed("[") {
 		t.Errorf("proxy dialed a denied address: %v", e.routes.dialed)
 	}
 	_, s := e.stats(agentIP)
 	b := s.Callers["alpha"].Blocked
-	for _, key := range []string{"rebind.alpha.test:443", "loop.alpha.test:443", "private.alpha.test:443"} {
+	for _, key := range []string{"rebind.alpha.test:443", "rebind6.alpha.test:443", "loop.alpha.test:443", "private.alpha.test:443"} {
 		if b[key] != 1 {
 			t.Errorf("blocked[%s] = %d (all: %v)", key, b[key], b)
 		}
@@ -449,6 +451,10 @@ func TestMetadataBlockedEvenWhenAllowedNameResolvesToIt(t *testing.T) {
 	r := e.lookup(alphaIP, "udp", "rebind.alpha.test", dns.TypeA)
 	if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
 		t.Errorf("DNS returned the metadata address: %v", r.Answer)
+	}
+	r = e.lookup(alphaIP, "udp", "rebind6.alpha.test", dns.TypeAAAA)
+	if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
+		t.Errorf("DNS returned an IPv6 metadata address: %v", r.Answer)
 	}
 }
 
