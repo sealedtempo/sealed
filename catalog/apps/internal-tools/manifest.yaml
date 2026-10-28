@@ -1,0 +1,122 @@
+schema: sealed-manifest/v1
+id: internal-tools
+name: Internal tools (ToolJet)
+category: internal-tools
+description: >-
+  ToolJet Community Edition, a low-code builder for internal apps and admin panels on top of your
+  databases and APIs, with its own PostgreSQL-backed table store. Runs entirely on PostgreSQL and
+  Valkey. Sign-up closed, telemetry off, no enterprise code shipped.
+upstream:
+  repo: https://github.com/ToolJet/ToolJet
+  version: v3.20.251-lts
+  license_spdx: AGPL-3.0-only
+  source_url: https://github.com/ToolJet/ToolJet/tree/v3.20.251-lts
+maintainer:
+  name: Sealed
+  payout_address: "${MAINTAINER_DEFAULT_ADDRESS}"
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: internal-tools-server
+images:
+  # Derived from docker.io/tooljet/tooljet-ce:v3.20.251-lts
+  # (index sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47, linux/amd64
+  # sha256:ee967e14617ce5c1d177e8a9892df698063ff21c50634464c32d84f616881d90) by
+  # images/tooljet-ce/Dockerfile. The digest is pinned after the runtime image workflow builds it.
+  - name: tooljet
+    source: build:images/tooljet-ce
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    platform: linux/amd64
+    license_spdx: AGPL-3.0-only
+  # Index digests (multi-arch). linux/amd64 manifests: postgrest
+  # sha256:be3b6ab31a94e3e89f08edad40be0234ae0951e3297f2043d797c219165f5afa, postgres
+  # sha256:b95b87e93ceb7594715d5c71fb6e09f6fc878851ab537735d617325eb9ba8b1b, valkey
+  # sha256:be4238e32d835947409227c1527aa372783df8bbbfa1f7f7c842f084896e5ec9.
+  - name: postgrest
+    source: docker.io/postgrest/postgrest:v12.2.12
+    digest: sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2
+    platform: linux/amd64
+    license_spdx: MIT
+  - name: postgres
+    source: docker.io/library/postgres:16.15
+    digest: sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+    platform: linux/amd64
+    license_spdx: PostgreSQL
+  - name: valkey
+    source: docker.io/valkey/valkey:9.0.7
+    digest: sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d
+    platform: linux/amd64
+    license_spdx: BSD-3-Clause
+resources:
+  cpu: 2
+  memory_gb: 4
+  disk_gb: 10
+routes:
+  - name: tools
+    service: internal-tools-server
+    internal_port: 3000
+    path_or_host: tools
+    auth: gate
+healthcheck:
+  service: internal-tools-server
+  http: /api/health
+  port: 3000
+  start_period_s: 300
+metering:
+  unit: app_hour
+  source: heartbeat
+secrets:
+  - name: LOCKBOX_MASTER_KEY
+    description: >-
+      ToolJet LOCKBOX_MASTER_KEY (32 random bytes, hex). Encrypts data source credentials and
+      other secrets in the database. Changing it makes stored credentials unreadable.
+    generate: hex32
+  - name: SECRET_KEY_BASE
+    description: ToolJet SECRET_KEY_BASE, the HMAC key that signs session tokens (32 random bytes, hex).
+    generate: hex32
+  - name: PGRST_JWT_SECRET
+    description: Shared secret ToolJet uses to sign requests to PostgREST (32 random bytes, hex).
+    generate: hex32
+  - name: PGPASSWORD
+    description: Password of the postgres superuser of internal-tools-db.
+    generate: hex32
+  - name: SAMPLE_DB_PASSWORD
+    description: Password of the tooljet_sample role that owns the sample database.
+    generate: hex32
+  - name: REDIS_PASSWORD
+    description: Password of internal-tools-valkey, which holds the workflow job queues.
+    generate: hex32
+  - name: ADMIN_EMAIL
+    description: Email of the first ToolJet admin, created by the bootstrap job.
+    generate: none
+  - name: ADMIN_PASSWORD
+    description: Password of the first ToolJet admin, 8 to 100 characters.
+    generate: none
+telemetry_off_env:
+  DISABLE_TOOLJET_TELEMETRY: "true"
+  # Loopback sinks: plugin marketplace downloads and license trial requests fail at once.
+  TOOLJET_MARKETPLACE_URL: "http://127.0.0.1:9"
+  TJ_LICENSE_TRIAL_API: "http://127.0.0.1:9"
+  SENTRY_DNS: ""
+  APM_VENDOR: ""
+  ENABLE_OTEL: "false"
+license_exclusions:
+  - /app/server/ee/
+  - /app/frontend/ee/
+  - /app/server/dist/ee/
+  - /app/frontend/build/ee/
+  - /opt/oracle/
+  - /usr/bin/redis-server
+  - /usr/bin/redis-check-aof
+  - /usr/bin/redis-check-rdb
+  - /usr/bin/redis-benchmark
+  - /usr/bin/redis-cli
+bootstrap:
+  service: internal-tools-bootstrap
+  done_file: internal-tools-bootstrap/done.json
+notes: >-
+  D-018a: Appsmith CE cannot run on FerretDB 2.x (no multi-document transactions, no change
+  streams), so internal-tools ships ToolJet CE, which runs on PostgreSQL. ToolJet's enterprise code
+  lives in private git submodules (server/ee, frontend/ee) that are not part of the public
+  repository or the CE image; the CE modules are stubs. The derived image removes the bundled Redis
+  server and Oracle Instant Client and is flattened.
