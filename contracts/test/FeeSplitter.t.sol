@@ -519,6 +519,24 @@ contract FeeSplitterTest is SealedTest {
         assertEq(splitter.usagePaid(deploymentId, USAGE, appA), PER_PAYMENT_CAP, "a leg tops up to the cap exactly");
     }
 
+    function test_topUpFees_requiresTheLegsToken() public {
+        _pay(customer, appA, 1000, USAGE);
+        assertEq(splitter.usageToken(deploymentId, USAGE, appA), address(token), "leg remembers its token");
+        MockERC20 other = new MockERC20("Other", "OTH");
+        vm.prank(owner);
+        splitter.setToken(address(other), true, PER_PAYMENT_CAP, PER_PAYMENT_CAP);
+        other.mint(customer, 1_000_000);
+        vm.startPrank(customer);
+        other.approve(address(splitter), type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(FeeSplitter.UsageTokenMismatch.selector, address(token), address(other)));
+        splitter.topUpFees(deploymentId, appA, address(other), 1_000_000, USAGE);
+        vm.stopPrank();
+        _topUp(customer, appA, 1_000_000, USAGE);
+        assertEq(splitter.usagePaid(deploymentId, USAGE, appA), 1_000_000, "same-token top-up still works");
+        _assertInvariant(address(token));
+        _assertInvariant(address(other));
+    }
+
     function test_topUpFees_checksPayerDeploymentAndApp() public {
         _pay(customer, appA, 1, USAGE);
         _fund(stranger, 1_000_000);

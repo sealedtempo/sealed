@@ -78,6 +78,11 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     mapping(bytes32 deploymentId => mapping(bytes32 usageHash => mapping(bytes32 appId => uint256 amount))) public
         usagePaid;
 
+    /// @notice Token a (deploymentId, usageHash, appId) leg was opened in. topUpFees must use the same token, so
+    ///         usagePaid never mixes units even if a second token is allowlisted.
+    mapping(bytes32 deploymentId => mapping(bytes32 usageHash => mapping(bytes32 appId => address token))) public
+        usageToken;
+
     /// @notice Emitted for every payment.
     /// @param maintainerAmount The part credited to the maintainer; the rest went to the treasury.
     event FeesPaid(
@@ -139,6 +144,8 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
     error UsageNotPaid(bytes32 deploymentId, bytes32 usageHash, bytes32 appId);
     /// @notice topUpFees with a total that is not above the amount already paid.
     error NothingToTopUp(bytes32 deploymentId, bytes32 usageHash, bytes32 appId, uint256 paid);
+    /// @notice topUpFees used a different token than the one the leg was opened in.
+    error UsageTokenMismatch(address legToken, address token);
     /// @notice The contract's balance did not grow by exactly the amount (fee-on-transfer or rebasing token).
     error TransferAmountMismatch(uint256 expected, uint256 received);
     /// @notice The caller has no credited balance for the token.
@@ -380,9 +387,13 @@ contract FeeSplitter is OwnableNoRenounce, Pausable, ReentrancyGuard {
         uint256 paid = paidForUsage[appId];
         if (topUp) {
             if (paid == 0) revert UsageNotPaid(deploymentId, usageHash, appId);
+            address legToken = usageToken[deploymentId][usageHash][appId];
+            if (legToken != token) revert UsageTokenMismatch(legToken, token);
             if (total <= paid) revert NothingToTopUp(deploymentId, usageHash, appId, paid);
         } else if (paid != 0) {
             revert UsageAlreadyPaid(deploymentId, usageHash, appId);
+        } else {
+            usageToken[deploymentId][usageHash][appId] = token;
         }
         amount = total - paid;
 
