@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,6 +57,9 @@ func TestGoldenFixtureStack(t *testing.T) {
 
 	dir := filepath.Join("testdata", "golden")
 	if *update {
+		if err := checkVersionBumped(dir, files); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -74,5 +78,59 @@ func TestGoldenFixtureStack(t *testing.T) {
 		if !bytes.Equal(want, b) {
 			t.Errorf("%s differs from testdata/golden (composer output changed: bump Version, then -update)", name)
 		}
+	}
+}
+
+// checkVersionBumped refuses -update when the output changed but Version did
+// not: two builds of the same composer version must give the same stackHash
+// for the same inputs, or the key broker and verifiers disagree.
+func checkVersionBumped(dir string, files map[string][]byte) error {
+	raw, err := os.ReadFile(filepath.Join(dir, "summary.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var old goldenSummary
+	if err := json.Unmarshal(raw, &old); err != nil {
+		return fmt.Errorf("testdata/golden/summary.json: %v", err)
+	}
+	if old.ComposerVersion != Version {
+		return nil
+	}
+	for name, b := range files {
+		if name == "summary.json" {
+			continue
+		}
+		want, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || !bytes.Equal(want, b) {
+			return fmt.Errorf("%s changed but composer Version is still %s: bump Version (and the configs' composerVersion) before -update", name, Version)
+		}
+	}
+	return nil
+}
+
+func TestGoldenUpdateNeedsVersionBump(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("app-compose.json", "old")
+	write("summary.json", `{"composerVersion":"`+Version+`"}`)
+	if err := checkVersionBumped(dir, map[string][]byte{"app-compose.json": []byte("old"), "summary.json": nil}); err != nil {
+		t.Fatalf("unchanged output refused: %v", err)
+	}
+	if err := checkVersionBumped(dir, map[string][]byte{"app-compose.json": []byte("new")}); err == nil {
+		t.Fatal("changed output without a version bump accepted")
+	}
+	if err := checkVersionBumped(dir, map[string][]byte{"stack.json": []byte("new file")}); err == nil {
+		t.Fatal("new golden file without a version bump accepted")
+	}
+	write("summary.json", `{"composerVersion":"0.0.1"}`)
+	if err := checkVersionBumped(dir, map[string][]byte{"app-compose.json": []byte("new")}); err != nil {
+		t.Fatalf("bumped version refused: %v", err)
 	}
 }
