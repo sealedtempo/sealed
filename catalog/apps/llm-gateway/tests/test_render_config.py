@@ -24,6 +24,7 @@ SALT = "sk-" + "b2" * 32
 PG_PASSWORD = "p@ss/w:rd%#?"
 TINFOIL = "tinfoil-key-value-123"
 OPENAI = "sk-openai-key-value-456"
+GATE_KEY = "c3" * 32
 
 # Enterprise-only general_settings / litellm_settings keys (docs/notes/litellm.md section 3).
 ENTERPRISE_KEYS = {
@@ -45,7 +46,8 @@ class Env:
         self.secrets = os.path.join(self.tmp.name, "secrets")
         self.out = os.path.join(self.tmp.name, "out")
         os.makedirs(self.secrets)
-        base = {"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": PG_PASSWORD}
+        base = {"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": PG_PASSWORD,
+                "OLLAMA_GATE_KEY": GATE_KEY}
         if files is not None:
             base = files
         for name, value in base.items():
@@ -105,6 +107,9 @@ class RenderTest(unittest.TestCase):
         local = config["model_list"][0]
         self.assertEqual(local["litellm_params"]["model"], "ollama_chat/qwen3:4b-instruct-2507-q4_K_M")
         self.assertEqual(local["litellm_params"]["api_base"], "http://llm-gateway-ollama:11434")
+        for entry in config["model_list"]:
+            if entry["model_name"].startswith("local/"):
+                self.assertEqual(entry["litellm_params"]["api_key"], "os.environ/OLLAMA_GATE_KEY")
         mode = stat.S_IMODE(os.stat(os.path.join(self.e.out, "config.yaml")).st_mode)
         self.assertEqual(mode, 0o644)
 
@@ -205,6 +210,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(child["HTTPS_PROXY"], "http://172.30.0.2:3128")
         self.assertEqual(child["LITELLM_MASTER_KEY"], MASTER)
         self.assertEqual(child["LITELLM_SALT_KEY"], SALT)
+        self.assertEqual(child["OLLAMA_GATE_KEY"], GATE_KEY)
         self.assertEqual(child["DATABASE_URL"],
                          "postgresql://litellm:p%40ss%2Fw%3Ard%25%23%3F@llm-gateway-db:5432/litellm")
 
@@ -213,7 +219,7 @@ class RenderTest(unittest.TestCase):
         self.e.add("BYOK_TINFOIL_API_KEY", TINFOIL)
         self.e.prepare()
         text = self.e.rendered()
-        for value in (MASTER, SALT, PG_PASSWORD, TINFOIL):
+        for value in (MASTER, SALT, PG_PASSWORD, TINFOIL, GATE_KEY):
             self.assertNotIn(value, text)
 
     def test_config_flag_is_rejected(self):
@@ -229,6 +235,16 @@ class RenderTest(unittest.TestCase):
             for source, targets in item.items():
                 self.assertIn(source, names)
                 self.assertTrue(all(t in names and t.startswith("local/") for t in targets))
+
+    def test_local_routes_must_send_the_gate_key(self):
+        base = ep.load_yaml(os.path.join(IMAGE_DIR, "config.yaml"))
+        for change in ({"api_key": "os.environ/OTHER"}, {"api_key": GATE_KEY}, {}):
+            config = yaml.safe_load(yaml.safe_dump(base))
+            params = config["model_list"][1]["litellm_params"]
+            params.pop("api_key")
+            params.update(change)
+            with self.assertRaises(ep.ConfigError, msg=change):
+                ep.render(config, [])
 
     def test_fallback_rules_are_enforced(self):
         base = ep.load_yaml(os.path.join(IMAGE_DIR, "config.yaml"))
@@ -253,23 +269,36 @@ class BootChecksTest(unittest.TestCase):
         return code, calls, err.getvalue()
 
     def test_missing_master_key(self):
-        code, calls, err = self.run_main({"LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": "x"})
+        code, calls, err = self.run_main({"LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": "x", "OLLAMA_GATE_KEY": GATE_KEY})
         self.assertEqual((code, calls), (2, []))
         self.assertIn("LITELLM_MASTER_KEY is missing", err)
 
     def test_weak_master_keys(self):
         for weak in ("sk-1234", "abc" * 20, "sk-short", "sk-" + "a" * 20 + " " + "b" * 20):
             code, calls, err = self.run_main({"LITELLM_MASTER_KEY": weak, "LITELLM_SALT_KEY": SALT,
-                                              "POSTGRES_PASSWORD": "x"})
+                                              "POSTGRES_PASSWORD": "x", "OLLAMA_GATE_KEY": GATE_KEY})
             self.assertEqual((code, calls), (2, []), weak)
             self.assertNotIn(weak, err)
 
     def test_missing_salt_and_db_password(self):
-        self.assertEqual(self.run_main({"LITELLM_MASTER_KEY": MASTER, "POSTGRES_PASSWORD": "x"})[0], 2)
-        self.assertEqual(self.run_main({"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT})[0], 2)
+        self.assertEqual(self.run_main({"LITELLM_MASTER_KEY": MASTER, "POSTGRES_PASSWORD": "x",
+                                        "OLLAMA_GATE_KEY": GATE_KEY})[0], 2)
+        self.assertEqual(self.run_main({"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT,
+                                        "OLLAMA_GATE_KEY": GATE_KEY})[0], 2)
+
+    def test_missing_or_short_gate_key(self):
+        files = {"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": "pw"}
+        code, calls, err = self.run_main(files)
+        self.assertEqual((code, calls), (2, []))
+        self.assertIn("OLLAMA_GATE_KEY is missing", err)
+        for bad in ("short-key", "c3" * 8 + " " + "c3" * 8):
+            code, calls, err = self.run_main(dict(files, OLLAMA_GATE_KEY=bad))
+            self.assertEqual((code, calls), (2, []), bad)
+            self.assertNotIn(bad, err)
 
     def test_execs_litellm(self):
-        files = {"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": "pw"}
+        files = {"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": "pw",
+                 "OLLAMA_GATE_KEY": GATE_KEY}
         code, calls, err = self.run_main(files, ["--port", "4000", "--num_workers", "2"])
         self.assertEqual(code, 0)
         self.assertEqual(len(calls), 1)
@@ -279,11 +308,13 @@ class BootChecksTest(unittest.TestCase):
         self.assertEqual(args[3:], ["--port", "4000", "--num_workers", "2"])
         self.assertIn("routes=local/qwen3-4b,local/*,relay/default,relay/*", err)
         self.assertIn("byok_opt_in=false external_opt_in=false", err)
-        for value in (MASTER, SALT, "pw@"):
+        for value in (MASTER, SALT, "pw@", GATE_KEY):
             self.assertNotIn(value, err)
+        self.assertEqual(env["OLLAMA_GATE_KEY"], GATE_KEY)
 
     def test_render_only_does_not_exec(self):
-        files = {"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": "pw"}
+        files = {"LITELLM_MASTER_KEY": MASTER, "LITELLM_SALT_KEY": SALT, "POSTGRES_PASSWORD": "pw",
+                 "OLLAMA_GATE_KEY": GATE_KEY}
         code, calls, _ = self.run_main(files, ["--render-only", "--port", "4000"])
         self.assertEqual((code, calls), (0, []))
 

@@ -67,10 +67,16 @@ secrets:
   - name: POSTGRES_PASSWORD
     description: Password of the gateway's own Postgres (virtual keys and spend logs).
     generate: hex32
+  - name: OLLAMA_GATE_KEY
+    description: >-
+      Bearer key between the gateway and its local model (sealed-ollama-gate). Only llm-gateway-litellm and
+      llm-gateway-ollama see it. Generated; never needs to leave the VM.
+    generate: hex32
   - name: APP_KEY_CODING_AGENT
     description: >-
       Virtual key the gateway provisions for coding-agent (alias coding-agent, models relay/* and local/*,
-      rate limited). Set coding-agent's LLM_GATEWAY_KEY to the same value. Leave unset without coding-agent.
+      rate limited). coding-agent's LLM_GATEWAY_KEY refers to this secret (same_as), so sealed secrets
+      sets it once for both apps. Not needed without coding-agent.
     generate: sk-hex32
     optional: true
   - name: BYOK_ROUTES_ENABLED

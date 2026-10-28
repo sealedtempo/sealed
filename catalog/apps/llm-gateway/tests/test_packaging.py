@@ -1,8 +1,14 @@
-"""Packaging tests for llm-gateway: manifest, fragment, egress, Dockerfiles and their consistency."""
+"""Packaging tests for llm-gateway: manifest, fragment, egress, Dockerfiles and their consistency.
+
+The catalog rules themselves are checked by the real composer (sealed_compose.py runs
+`go run ./runtime/composer/cmd/sealed-compose lint` and `compose`); these tests add what is
+specific to this app.
+"""
 from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 
 import yaml
@@ -10,8 +16,8 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import catalog_lint  # noqa: E402
 import dockerfile_lint  # noqa: E402
+import sealed_compose  # noqa: E402
 
 APP_DIR = os.path.normpath(os.path.join(HERE, ".."))
 IMAGE_DIR = os.path.join(APP_DIR, "images", "litellm")
@@ -28,33 +34,16 @@ def read(path):
 class PackagingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = catalog_lint.load_app(APP_DIR)
+        cls.app = sealed_compose.load_app(APP_DIR)
         cls.manifest = cls.app["manifest"]
         cls.services = cls.app["fragment"]["services"]
         cls.providers = yaml.safe_load(read(os.path.join(IMAGE_DIR, "providers.yaml")))
         cls.config = yaml.safe_load(read(os.path.join(IMAGE_DIR, "config.yaml")))
         cls.dockerfile = read(os.path.join(IMAGE_DIR, "Dockerfile"))
 
-    def test_lint_clean(self):
-        self.assertEqual(catalog_lint.lint_app(APP_DIR), [])
-
-    def test_manifest_schema(self):
-        errors = catalog_lint.schema_errors(self.manifest)
-        if errors is None:
-            self.skipTest("jsonschema not installed")
-        self.assertEqual(errors, [])
-
-    def test_compose_config(self):
-        result = catalog_lint.compose_config(self.app["fragment_text"])
-        if result is None:
-            self.skipTest("docker CLI not installed")
-        code, out = result
-        self.assertEqual(code, 0, out)
-        parsed = yaml.safe_load(out)
-        self.assertEqual(sorted(parsed["services"]),
+    def test_service_names(self):
+        self.assertEqual(sorted(self.services),
                          ["llm-gateway-db", "llm-gateway-keys", "llm-gateway-litellm", "llm-gateway-ollama"])
-        self.assertIn("LITELLM_MASTER_KEY", parsed["services"]["llm-gateway-litellm"]["x-sealed-secrets"])
-        self.assertEqual(parsed["services"]["llm-gateway-ollama"]["user"], "10002:10002")
 
     def test_metering_and_payout(self):
         self.assertEqual(self.manifest["metering"], {"unit": "tokens", "source": "callback"})
@@ -80,8 +69,12 @@ class PackagingTest(unittest.TestCase):
         self.assertEqual(secrets["LITELLM_MASTER_KEY"]["generate"], "sk-hex32")
         self.assertEqual(secrets["LITELLM_SALT_KEY"]["generate"], "sk-hex32")
         self.assertEqual(secrets["POSTGRES_PASSWORD"]["generate"], "hex32")
-        for name in ("LITELLM_MASTER_KEY", "LITELLM_SALT_KEY", "POSTGRES_PASSWORD"):
+        self.assertEqual(secrets["OLLAMA_GATE_KEY"]["generate"], "hex32")
+        for name in ("LITELLM_MASTER_KEY", "LITELLM_SALT_KEY", "POSTGRES_PASSWORD", "OLLAMA_GATE_KEY"):
             self.assertFalse(secrets[name].get("optional", False))
+        # Nothing here refers to another app's secret; coding-agent refers to APP_KEY_CODING_AGENT.
+        self.assertFalse([s for s in secrets.values() if "same_as" in s])
+        self.assertIn("same_as", secrets["APP_KEY_CODING_AGENT"]["description"])
 
     def test_provider_secrets_match_manifest_and_fragment(self):
         secrets = {s["name"]: s for s in self.manifest["secrets"]}
@@ -152,7 +145,7 @@ class PackagingTest(unittest.TestCase):
                 rel = image["source"][len("build:"):]
                 self.assertTrue(os.path.isfile(os.path.join(APP_DIR, rel, "Dockerfile")), rel)
         target = os.path.realpath(os.path.join(APP_DIR, "images", "local-model"))
-        self.assertEqual(target, os.path.realpath(os.path.join(catalog_lint.REPO_ROOT, "runtime", "images", "local-model")))
+        self.assertEqual(target, os.path.realpath(os.path.join(sealed_compose.REPO_ROOT, "runtime", "images", "local-model")))
 
     def test_ollama_service_locked_down(self):
         svc = self.services["llm-gateway-ollama"]
@@ -165,15 +158,82 @@ class PackagingTest(unittest.TestCase):
         self.assertEqual(command[sep + 1:], ["/bin/ollama", "serve"])
         flags = dict(zip(command[:sep:2], command[1:sep:2]))
         self.assertEqual(flags, {"-listen": "0.0.0.0:11434", "-upstream": "127.0.0.1:11435",
-                                 "-allow-peer": "llm-gateway-litellm"})
+                                 "-allow-peer": "llm-gateway-litellm", "-key-env": "OLLAMA_GATE_KEY"})
         self.assertIn("llm-gateway-litellm", self.services)
         self.assertEqual(svc["healthcheck"]["test"][1:], ["/usr/local/bin/sealed-ollama-gate", "probe",
                                                           "http://127.0.0.1:11434/healthz"])
-        # Ollama holds no secret, so the app's secret directory is not mounted into it.
-        self.assertNotIn("x-sealed-secrets", svc)
+        # Per-service secret mounts (integration brief item 5): Ollama gets its gate key and nothing else.
+        self.assertEqual(svc["x-sealed-secrets"], ["OLLAMA_GATE_KEY"])
+        self.assertIn("OLLAMA_GATE_KEY", self.services["llm-gateway-litellm"]["x-sealed-secrets"])
+        holders = {n for n, s in self.services.items() if "OLLAMA_GATE_KEY" in (s.get("x-sealed-secrets") or [])}
+        self.assertEqual(holders, {"llm-gateway-litellm", "llm-gateway-ollama"})
         local = [m for m in self.config["model_list"] if m["model_name"].startswith("local/")]
+        self.assertEqual(len(local), 2)
         for entry in local:
             self.assertEqual(entry["litellm_params"]["api_base"], "http://llm-gateway-ollama:11434")
+            self.assertEqual(entry["litellm_params"]["api_key"], "os.environ/OLLAMA_GATE_KEY")
+
+
+def envexec_secrets(service):
+    """Secret names a composed service's envexec entrypoint exports (--secret / --optional-secret)."""
+    entry = service["entrypoint"]
+    sep = entry.index("--")
+    return {entry[i + 1] for i in range(sep) if entry[i] in ("--secret", "--optional-secret")}
+
+
+class ComposerTest(unittest.TestCase):
+    """The real composer on this app: lint findings and the composed stack."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.composer = sealed_compose.composer_for(cls)
+        cls.app = sealed_compose.load_app(APP_DIR)
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.stack = cls.composer.compose([APP_DIR], os.path.join(cls.tmp.name, "out"))
+        cls.composed = cls.stack["compose"]["services"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_lint_only_blocks_on_the_unbuilt_images(self):
+        findings = self.composer.lint([APP_DIR])
+        self.assertEqual(sealed_compose.unexpected(findings), [])
+        unbuilt = sorted(f["field"] for f in findings if f["code"] == "unbuilt-image")
+        names = sealed_compose.unbuilt_images(self.app["manifest"])
+        self.assertEqual(len(unbuilt), len(names), unbuilt)
+        self.assertEqual(sorted(names), ["litellm", "local-model"])
+
+    def test_composed_services(self):
+        fragment = set(self.app["fragment"]["services"])
+        self.assertTrue(fragment <= set(self.composed))
+        self.assertIn("sealed-mpp-payer", self.composed)
+
+    def test_each_service_exports_only_its_declared_secrets(self):
+        for name, svc in self.app["fragment"]["services"].items():
+            self.assertEqual(envexec_secrets(self.composed[name]), set(svc.get("x-sealed-secrets") or []), name)
+        self.assertEqual(envexec_secrets(self.composed["llm-gateway-ollama"]), {"OLLAMA_GATE_KEY"})
+
+    def test_secret_files_are_mounted_per_service(self):
+        if not self.composer.brief:
+            self.skipTest(f"composer {self.composer.version} mounts the whole app secret directory "
+                          "(per-service mounts arrive with 1.2.0, integration brief item 5)")
+        root = "/run/sealed/secrets/llm-gateway"
+        for name, svc in self.app["fragment"]["services"].items():
+            want = {f"{root}/{s}" for s in svc.get("x-sealed-secrets") or []}
+            self.assertEqual(sealed_compose.secret_mounts(self.composed[name], "llm-gateway"), want, name)
+
+    def test_gateway_route_passes_bearer_keys(self):
+        site = sealed_compose.caddy_site(self.stack["caddyfile"], "gateway.34-1-2-3.sslip.io")
+        self.assertIsNotNone(site)
+        self.assertIn("reverse_proxy llm-gateway-litellm:4000", site)
+        self.assertIn('header Authorization "Bearer *"', site)
+
+    def test_docker_compose_accepts_the_composed_document(self):
+        result = sealed_compose.docker_compose_config(self.stack["compose_path"])
+        if result is None:
+            self.skipTest("docker CLI not installed")
+        self.assertEqual(result[0], 0, result[1])
 
 
 class LitellmDockerfileTest(unittest.TestCase):

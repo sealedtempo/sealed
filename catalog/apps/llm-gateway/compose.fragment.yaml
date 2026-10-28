@@ -1,12 +1,16 @@
 # llm-gateway compose fragment (INTERFACES section 14).
 # The composer adds networks, fixed IPs, DNS, proxy env, telemetry_off_env, envexec,
-# secret mounts, restart and logging. All services sit on the shared apps network, so
-# every app container can open a connection to them; none of them has a route out of
-# the VM. What protects each one:
+# secret mounts, restart and logging. Every service is on the app's own network
+# (app-llm-gateway); only llm-gateway-litellm, the primary service, is also on the shared
+# apps network, where other apps reach it as llm-gateway. Each service gets bind mounts of
+# exactly the secret files it lists in x-sealed-secrets (integration brief item 5), so
+# llm-gateway-ollama sees only OLLAMA_GATE_KEY and never the master key. None of them has a
+# route out of the VM. What protects each one:
 #   llm-gateway-litellm  LiteLLM virtual keys (the intended entry point, alias llm-gateway)
 #   llm-gateway-db       Postgres password (scram-sha-256)
 #   llm-gateway-ollama   sealed-ollama-gate: only llm-gateway-litellm (by DNS name) and
-#                        loopback get an answer, and only inference/read endpoints
+#                        loopback get an answer, every inference call needs the bearer key
+#                        OLLAMA_GATE_KEY, and only inference/read endpoints pass
 #   llm-gateway-keys     listens on nothing; provisions other apps' virtual keys so they
 #                        never need the master key (images/litellm/app_keys.yaml)
 services:
@@ -18,6 +22,7 @@ services:
       - LITELLM_MASTER_KEY
       - LITELLM_SALT_KEY
       - POSTGRES_PASSWORD
+      - OLLAMA_GATE_KEY
       - BYOK_ROUTES_ENABLED
       - BYOK_TINFOIL_API_KEY
       - BYOK_REDPILL_API_KEY
@@ -82,11 +87,14 @@ services:
 
   llm-gateway-ollama:
     image: "{{image:local-model}}"
-    # Ollama on loopback; the gate answers on :11434 to llm-gateway-litellm only.
+    # Ollama on loopback; the gate answers on :11434 to llm-gateway-litellm only, with the
+    # bearer key from OLLAMA_GATE_KEY (removed from Ollama's own environment).
     entrypoint: ["/usr/local/bin/sealed-ollama-gate"]
-    command: ["-listen", "0.0.0.0:11434", "-upstream", "127.0.0.1:11435", "-allow-peer", "llm-gateway-litellm", "--", "/bin/ollama", "serve"]
+    command: ["-listen", "0.0.0.0:11434", "-upstream", "127.0.0.1:11435", "-allow-peer", "llm-gateway-litellm", "-key-env", "OLLAMA_GATE_KEY", "--", "/bin/ollama", "serve"]
     user: "10002:10002"
     read_only: true
+    x-sealed-secrets:
+      - OLLAMA_GATE_KEY
     environment:
       HOME: /tmp/ollama
     tmpfs:
