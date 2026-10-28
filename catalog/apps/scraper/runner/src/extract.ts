@@ -1,4 +1,5 @@
 import { load } from 'cheerio';
+import { truncate } from './text.js';
 
 // A field selector is a CSS selector, optionally followed by `@attribute`:
 //   "h1.title"      -> trimmed text of the first match
@@ -82,7 +83,7 @@ export function extractFields($: ParsedPage, fields: Record<string, string>, pag
         value = normalizeText(el.text());
       }
     }
-    out[name] = value === null ? null : value.slice(0, MAX_VALUE_LENGTH);
+    out[name] = value === null ? null : truncate(value, MAX_VALUE_LENGTH);
   }
   return out;
 }

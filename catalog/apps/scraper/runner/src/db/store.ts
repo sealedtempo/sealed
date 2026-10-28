@@ -3,6 +3,7 @@ import type pg from 'pg';
 import type { CrawledItem } from '../crawl/types.js';
 import type { ItemData } from '../extract.js';
 import type { CrawlerKind, JobSpec } from '../job.js';
+import { storableText, truncate } from '../text.js';
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export const FINISHED: ReadonlySet<RunStatus> = new Set(['succeeded', 'failed', 'cancelled']);
@@ -68,14 +69,13 @@ export function isRunId(id: string): boolean {
 const MAX_DETAIL = 1000;
 const MAX_URL = 4096;
 
-// Postgres text and jsonb reject NUL characters, which scraped pages can contain.
 function clean(text: string, max: number): string {
-  return text.replace(/\u0000/g, '').slice(0, max);
+  return truncate(storableText(text), max);
 }
 
 function cleanData(data: ItemData): ItemData {
   const out: ItemData = {};
-  for (const [k, v] of Object.entries(data)) out[k] = v === null ? null : v.replace(/\u0000/g, '');
+  for (const [k, v] of Object.entries(data)) out[k] = v === null ? null : storableText(v);
   return out;
 }
 

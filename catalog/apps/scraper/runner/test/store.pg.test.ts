@@ -85,6 +85,17 @@ describe.runIf(hasPostgres)('PgRunStore on a throwaway PostgreSQL 17 cluster', (
     expect((await store.getRun(run.id))?.pagesOk).toBe(2);
   });
 
+  it('stores values with lone surrogates (a cut emoji) instead of failing the insert', async () => {
+    const run = await store.createRun(spec({ b: 'h1' }));
+    const cut = 'a'.repeat(9999) + '\u{1F600}'.slice(0, 1);
+    await store.addItem(run.id, { url: 'https://shop.example/\uD83D', statusCode: 200, data: { b: cut } });
+    await store.addFailure(run.id, 'https://shop.example/\uDE00', 'bad \uD83D', true);
+    const [item] = await store.listItems(run.id, { limit: 1 });
+    expect(item?.data.b).toBe('a'.repeat(9999) + '\uFFFD');
+    expect(item?.url).toBe('https://shop.example/\uFFFD');
+    expect((await store.listEvents(run.id, { limit: 1 }))[0]?.detail).toBe('bad \uFFFD');
+  });
+
   it('counts failures and skips, logging events only when asked', async () => {
     const run = await store.createRun(spec());
     await store.addFailure(run.id, 'https://shop.example/x', 'HTTP 500', true);

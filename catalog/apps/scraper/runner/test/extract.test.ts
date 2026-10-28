@@ -63,6 +63,13 @@ describe('extractFields', () => {
     expect(extractFields(page, { long: '.long' }, 'https://shop.test/').long).toHaveLength(MAX_VALUE_LENGTH);
   });
 
+  it('caps values on a code point boundary, so no lone surrogate reaches jsonb', () => {
+    const emoji = load(`<p>${'a'.repeat(MAX_VALUE_LENGTH - 1)}\u{1F600}tail</p>`);
+    const value = extractFields(emoji, { p: 'p' }, 'https://shop.test/').p!;
+    expect(value).toBe('a'.repeat(MAX_VALUE_LENGTH - 1));
+    expect(value.isWellFormed()).toBe(true);
+  });
+
   it('never treats a selector as markup to create', () => {
     expect(extractFields(page, { x: '<p>hello</p>' }, 'https://shop.test/')).toEqual({ x: null });
   });
