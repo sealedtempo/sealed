@@ -7,6 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	"github.com/sealed-dev/sealed/verifier/internal/strictjson"
 )
 
 // Schemas this package understands.
@@ -56,10 +57,10 @@ type BundleRecord struct {
 	Method int    `json:"method"`
 }
 
-// ParseBundle decodes an evidence bundle.
+// ParseBundle decodes an evidence bundle. Keys are case-sensitive and unique (internal/strictjson).
 func ParseBundle(raw []byte) (*Bundle, error) {
 	var b Bundle
-	if err := json.Unmarshal(raw, &b); err != nil {
+	if err := strictjson.Unmarshal(raw, &b); err != nil {
 		return nil, fmt.Errorf("evidence bundle: %w", err)
 	}
 	return &b, nil
@@ -101,7 +102,7 @@ func parseConfig(raw json.RawMessage) (*parsedConfig, error) {
 		return nil, fmt.Errorf("config missing")
 	}
 	var c parsedConfig
-	if err := json.Unmarshal(raw, &c.Config); err != nil {
+	if err := strictjson.Unmarshal(raw, &c.Config); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	if c.Schema != ConfigSchema {

@@ -31,6 +31,28 @@ type ChainReader interface {
 	RecordDigest(ctx context.Context, r chain.Record) ([32]byte, error)
 }
 
+// BlockPinner is a ChainReader that can pin every read of one verification to the current head block. *chain.Client
+// is pinned through BlockNumber and AtBlock without implementing it.
+type BlockPinner interface {
+	PinHead(ctx context.Context) (ChainReader, uint64, error)
+}
+
+// pinHead returns a reader pinned to the head block, and false when r cannot be pinned.
+func pinHead(ctx context.Context, r ChainReader) (ChainReader, uint64, bool, error) {
+	switch c := r.(type) {
+	case BlockPinner:
+		pinned, n, err := c.PinHead(ctx)
+		return pinned, n, true, err
+	case *chain.Client:
+		n, err := c.BlockNumber(ctx)
+		if err != nil {
+			return r, 0, true, err
+		}
+		return c.AtBlock(n), n, true, nil
+	}
+	return r, 0, false, nil
+}
+
 // Composer recomputes a stack deterministically (runtime/composer, D-006). The adapter fetches each release
 // bundle by its onchain bundleHash, checks sha256 against it, and runs the composer with the given config.
 type Composer interface {
@@ -97,10 +119,18 @@ type Options struct {
 	RequireOnchainRecord bool
 	// MaxEvidenceAge, when non-zero, bounds now - attestedAt (the oracle uses 15 minutes).
 	MaxEvidenceAge time.Duration
-	// ExpectedDeploymentID, when set, must equal the bundle's deployment id (sealed verify --deployment).
+	// ExpectedDeploymentID, when set, must equal the verified deployment id (sealed verify --deployment), in
+	// evidence and live mode.
 	ExpectedDeploymentID *[32]byte
 	// ExpectedCustomer, when set, must equal config.customer (for example the operator for the relay).
 	ExpectedCustomer *common.Address
+	// ExpectedAppIDs, when set, must all be among config.apps[].id (for example inference-relay for the payer).
+	ExpectedAppIDs []string
+	// Heartbeat verifies evidence for DeploymentRegistry.heartbeat: the deployment must be registered and Active
+	// with the same identity, and the bundle must carry a new quote (quoteHash differs from the record) attested
+	// after the record's lastAttestedAt. Without it, evidence must be the record's latest (same quoteHash and
+	// attestedAt).
+	Heartbeat bool
 }
 
 // maxFutureSkew matches DeploymentRegistry.MAX_FUTURE_SKEW.

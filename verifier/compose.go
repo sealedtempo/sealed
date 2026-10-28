@@ -22,9 +22,13 @@ func ComposeFromChain(ctx context.Context, deps Deps, config json.RawMessage) (*
 	}
 	ctx, cancel := context.WithTimeout(ctx, chainCallTimeout)
 	defer cancel()
+	reader, _, _, err := pinHead(ctx, deps.Chain)
+	if err != nil {
+		return nil, fmt.Errorf("eth_blockNumber: %w", err)
+	}
 	in := ComposeInput{Config: config}
 	for i, id := range cfg.releaseIDs {
-		rel, err := deps.Chain.GetRelease(ctx, id)
+		rel, err := reader.GetRelease(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("config.apps[%d] (%s): %w", i, cfg.Apps[i].ID, err)
 		}

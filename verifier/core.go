@@ -25,10 +25,11 @@ const chainCallTimeout = 20 * time.Second
 // session carries the state shared by the checks of one verification. Every check records exactly one entry in
 // the report; a check whose inputs are unavailable fails with the reason instead of being skipped.
 type session struct {
-	ctx  context.Context
-	deps Deps
-	opts Options
-	rep  *Report
+	ctx   context.Context
+	deps  Deps
+	opts  Options
+	rep   *Report
+	chain ChainReader // deps.Chain, pinned to one block by checkChain when the reader supports it
 
 	quote      *attest.Quote
 	runtime    *attest.RuntimeInfo
@@ -65,6 +66,15 @@ func (s *session) checkChain(claimedChainID uint64, claimed *BundleContracts) {
 	}
 	data := map[string]any{"rpcChainId": rpcID}
 	var problems []string
+	if pinned, block, ok, err := pinHead(ctx, s.deps.Chain); ok {
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("eth_blockNumber: %v", err))
+		} else {
+			s.chain = pinned
+			s.rep.BlockNumber = block
+			data["blockNumber"] = block
+		}
+	}
 	if s.opts.ChainID != 0 && rpcID != s.opts.ChainID {
 		problems = append(problems, fmt.Sprintf("RPC is chain %d, verifier expects %d", rpcID, s.opts.ChainID))
 	}
@@ -99,7 +109,11 @@ func (s *session) checkChain(claimedChainID uint64, claimed *BundleContracts) {
 		s.rep.fail(CheckChain, joinProblems(problems), data)
 		return
 	}
-	s.rep.pass(CheckChain, fmt.Sprintf("chain %d, registries match", rpcID), data)
+	at := "latest block"
+	if s.rep.BlockNumber != 0 {
+		at = fmt.Sprintf("block %d", s.rep.BlockNumber)
+	}
+	s.rep.pass(CheckChain, fmt.Sprintf("chain %d, registries match, reads at %s", rpcID, at), data)
 }
 
 // checkQuote verifies the quote (signature chain, collateral, TCB policy) and its TD attributes.
@@ -149,7 +163,7 @@ func (s *session) checkQuote(raw []byte) {
 func (s *session) checkImage(imageID [32]byte) {
 	ctx, cancel := s.callCtx()
 	defer cancel()
-	img, err := s.deps.Chain.GetImage(ctx, imageID)
+	img, err := s.chain.GetImage(ctx, imageID)
 	if err != nil {
 		s.rep.failf(CheckImageMeasurements, "PlatformRegistry.getImage(%s): %v", hex0x(imageID[:]), err)
 		s.rep.failf(CheckImageApproved, "image %s unavailable", hex0x(imageID[:]))
@@ -167,7 +181,7 @@ func (s *session) checkImage(imageID [32]byte) {
 		s.rep.pass(CheckImageMeasurements, fmt.Sprintf("measurements match image %s %s", img.Name, img.Version), data)
 	}
 
-	approved, err := s.deps.Chain.IsApprovedImage(ctx, imageID)
+	approved, err := s.chain.IsApprovedImage(ctx, imageID)
 	data = map[string]any{"imageId": hex0x(imageID[:]), "isDebug": img.IsDebug, "status": img.Status}
 	switch {
 	case err != nil:
@@ -247,13 +261,13 @@ func (s *session) checkReleases() {
 	var list []map[string]any
 	for i, id := range s.cfg.releaseIDs {
 		app := s.cfg.Apps[i].ID
-		rel, err := s.deps.Chain.GetRelease(ctx, id)
+		rel, err := s.chain.GetRelease(ctx, id)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s release %s: %v", app, hex0x(id[:]), err))
 			continue
 		}
 		s.releases[i] = rel
-		active, err := s.deps.Chain.IsActiveRelease(ctx, id)
+		active, err := s.chain.IsActiveRelease(ctx, id)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s isActiveRelease: %v", app, err))
 			continue
@@ -329,7 +343,7 @@ func (s *session) checkApproval() {
 	defer cancel()
 	customer := s.cfg.customer
 	data := map[string]any{"customer": customer.Hex(), "stackHash": hex0x(s.stackHash[:])}
-	ok, err := s.deps.Chain.IsStackApproved(ctx, customer, s.stackHash)
+	ok, err := s.chain.IsStackApproved(ctx, customer, s.stackHash)
 	switch {
 	case err != nil:
 		s.rep.failf(CheckStackApproved, "isStackApproved: %v", err)
@@ -339,7 +353,7 @@ func (s *session) checkApproval() {
 		s.rep.pass(CheckStackApproved, "isStackApproved(customer, stackHash)", data)
 	}
 
-	ap, err := s.deps.Chain.GetStackApproval(ctx, customer, s.stackHash)
+	ap, err := s.chain.GetStackApproval(ctx, customer, s.stackHash)
 	if err != nil {
 		s.rep.failf(CheckApprovalReleases, "getStackApproval: %v", err)
 		return
@@ -371,8 +385,9 @@ type recordExpectation struct {
 	imageID       [32]byte
 	configHash    [32]byte
 	enclaveSigner common.Address
-	// Evidence mode also binds the exact quote and event log; live mode has a fresh quote.
+	// Evidence mode also binds the exact quote, its attestedAt and the event log; live mode has a fresh quote.
 	quoteHash    *[32]byte
+	attestedAt   *uint64
 	eventLogHash *[32]byte
 	// eventLogHashInfo is compared for information only (live mode).
 	eventLogHashInfo *[32]byte
@@ -381,9 +396,11 @@ type recordExpectation struct {
 func (s *session) checkRecord(want recordExpectation) {
 	ctx, cancel := s.callCtx()
 	defer cancel()
-	d, err := s.deps.Chain.GetDeployment(ctx, want.deploymentID)
+	d, err := s.chain.GetDeployment(ctx, want.deploymentID)
 	if errors.Is(err, chain.ErrNotFound) {
-		if s.opts.RequireOnchainRecord {
+		if s.opts.Heartbeat {
+			s.rep.failf(CheckOnchainRecord, "heartbeat for deployment %s, which is not registered", hex0x(want.deploymentID[:]))
+		} else if s.opts.RequireOnchainRecord {
 			s.rep.failf(CheckOnchainRecord, "deployment %s is not registered in DeploymentRegistry", hex0x(want.deploymentID[:]))
 		} else {
 			s.rep.pass(CheckOnchainRecord, "deployment not registered yet (not required by this verification)", map[string]any{"registered": false})
@@ -414,8 +431,21 @@ func (s *session) checkRecord(want recordExpectation) {
 	cmp32("imageId", d.ImageId, want.imageID)
 	cmp32("configHash", d.ConfigHash, want.configHash)
 	cmpAddr("enclaveSigner", d.EnclaveSigner, want.enclaveSigner)
-	if want.quoteHash != nil {
+	switch {
+	case want.quoteHash != nil && s.opts.Heartbeat:
+		// DeploymentRegistry.heartbeat rejects a reused quote (QuoteReused) and a stale attestedAt (StaleHeartbeat).
+		if d.QuoteHash == *want.quoteHash {
+			problems = append(problems, "heartbeat reuses the recorded quote")
+		}
+		if want.attestedAt != nil && *want.attestedAt <= d.LastAttestedAt {
+			problems = append(problems, fmt.Sprintf("heartbeat attestedAt %d is not after lastAttestedAt %d", *want.attestedAt, d.LastAttestedAt))
+		}
+	case want.quoteHash != nil:
 		cmp32("quoteHash", d.QuoteHash, *want.quoteHash)
+		// attestedAt is not covered by the quote, so the bundle's value only counts once the record vouches for it.
+		if want.attestedAt != nil && *want.attestedAt != d.LastAttestedAt {
+			problems = append(problems, fmt.Sprintf("attestedAt %d != recorded lastAttestedAt %d", *want.attestedAt, d.LastAttestedAt))
+		}
 	}
 	if want.eventLogHash != nil {
 		cmp32("eventLogHash", d.EventLogHash, *want.eventLogHash)
@@ -443,6 +473,33 @@ func (s *session) checkExpectedCustomer() {
 		return
 	}
 	s.rep.pass(CheckExpectedCustomer, "customer is "+s.cfg.customer.Hex(), nil)
+}
+
+// checkExpectedApps requires every Options.ExpectedAppIDs entry among config.apps[].id.
+func (s *session) checkExpectedApps() {
+	if len(s.opts.ExpectedAppIDs) == 0 {
+		return
+	}
+	if s.cfg == nil {
+		s.rep.fail(CheckExpectedApps, "no config", nil)
+		return
+	}
+	have := make([]string, len(s.cfg.Apps))
+	for i, a := range s.cfg.Apps {
+		have[i] = a.ID
+	}
+	var missing []string
+	for _, id := range s.opts.ExpectedAppIDs {
+		if !slices.Contains(have, id) {
+			missing = append(missing, id)
+		}
+	}
+	data := map[string]any{"apps": have, "expected": s.opts.ExpectedAppIDs}
+	if len(missing) > 0 {
+		s.rep.fail(CheckExpectedApps, fmt.Sprintf("stack lacks %q", missing), data)
+		return
+	}
+	s.rep.pass(CheckExpectedApps, "stack runs the expected apps", data)
 }
 
 func sameIDSet(a, b [][32]byte) bool {

@@ -108,7 +108,7 @@ func VerifyEvidence(ctx context.Context, b *Bundle, deps Deps, opts Options) (*R
 	rep.DeploymentID = hex0x(f.deploymentID[:])
 	rep.StackHash = hex0x(f.stackHash[:])
 
-	s := &session{ctx: ctx, deps: deps, opts: opts, rep: rep, cfgRaw: b.Config, appCompose: []byte(b.AppCompose)}
+	s := &session{ctx: ctx, deps: deps, chain: deps.Chain, opts: opts, rep: rep, cfgRaw: b.Config, appCompose: []byte(b.AppCompose)}
 	s.stackHash = sha256.Sum256(s.appCompose)
 	cfg, cfgErr := parseConfig(b.Config)
 	if cfgErr != nil {
@@ -158,15 +158,18 @@ func VerifyEvidence(ctx context.Context, b *Bundle, deps Deps, opts Options) (*R
 	s.checkRecompute(derived)
 	s.checkApproval()
 	s.checkExpectedCustomer()
+	s.checkExpectedApps()
+	attestedAt := b.AttestedAt
 	s.checkRecord(recordExpectation{
 		deploymentID: f.deploymentID, customer: f.customer, stackHash: f.stackHash, imageID: f.imageID,
-		configHash: f.configHash, enclaveSigner: f.enclaveSigner, quoteHash: &f.quoteHash, eventLogHash: &f.eventLogHash,
+		configHash: f.configHash, enclaveSigner: f.enclaveSigner, quoteHash: &f.quoteHash, attestedAt: &attestedAt,
+		eventLogHash: &f.eventLogHash,
 	})
 
 	// The digest the oracle signs for registerDeployment (informational).
 	ctx2, cancel := s.callCtx()
 	defer cancel()
-	if d, err := deps.Chain.RecordDigest(ctx2, chain.Record{
+	if d, err := s.chain.RecordDigest(ctx2, chain.Record{
 		DeploymentId: f.deploymentID, Customer: f.customer, StackHash: f.stackHash, ImageId: f.imageID,
 		QuoteHash: f.quoteHash, EventLogHash: f.eventLogHash, ConfigHash: f.configHash, EnclaveSigner: f.enclaveSigner,
 		AttestedAt: b.AttestedAt,
@@ -251,7 +254,9 @@ func (s *session) checkEvidenceFreshness(attestedAt uint64, now time.Time) {
 	case now.Sub(at) > s.opts.MaxEvidenceAge:
 		s.rep.fail(CheckFreshness, fmt.Sprintf("evidence is %s old, limit %s", now.Sub(at).Round(time.Second), s.opts.MaxEvidenceAge), data)
 	default:
-		s.rep.pass(CheckFreshness, fmt.Sprintf("attested %s ago", now.Sub(at).Round(time.Second)), data)
+		// The quote does not cover attestedAt (INTERFACES section 3): the age is the sender's claim until
+		// onchain_record matches it against the record (or the oracle's own acceptance window bounds it).
+		s.rep.pass(CheckFreshness, fmt.Sprintf("attested %s ago (attestedAt is not in report_data: advisory unless the record matches)", now.Sub(at).Round(time.Second)), data)
 	}
 }
 

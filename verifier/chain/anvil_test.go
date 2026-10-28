@@ -96,12 +96,24 @@ func TestAnvilViews(t *testing.T) {
 		t.Fatalf("recordDigest %x, offchain %x", got, want)
 	}
 
+	head, err := c.BlockNumber(ctx)
+	if err != nil || head == 0 {
+		t.Fatalf("BlockNumber %d %v", head, err)
+	}
+	pinned := c.AtBlock(head)
 	r.RevokeRelease(t, n, relID)
 	if ok, _ := c.IsActiveRelease(ctx, relID); ok {
 		t.Fatal("revoked release active")
 	}
 	if ok, _ := c.IsStackApproved(ctx, cust, stack); ok {
 		t.Fatal("stack with revoked release still approved")
+	}
+	// Reads pinned before the revocation keep seeing that block's state.
+	if ok, err := pinned.IsStackApproved(ctx, cust, stack); err != nil || !ok {
+		t.Fatalf("pinned read moved with the head: %v %v", ok, err)
+	}
+	if ok, err := pinned.IsActiveRelease(ctx, relID); err != nil || !ok {
+		t.Fatalf("pinned release read: %v %v", ok, err)
 	}
 	if id, err := c.ChainID(ctx); err != nil || id != 31337 {
 		t.Fatalf("chain id %d %v", id, err)

@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	verify "github.com/sealed-dev/sealed/verifier"
 	"github.com/sealed-dev/sealed/verifier/chain"
 )
 
@@ -22,6 +23,8 @@ type MemChain struct {
 	Approvals   map[common.Address]map[[32]byte]*chain.StackApproval
 	Deployments map[[32]byte]*chain.Deployment
 	Now         uint64
+	// Head is the block number PinHead reports.
+	Head uint64
 	// FailCalls makes every read fail, like an unreachable RPC.
 	FailCalls bool
 }
@@ -35,7 +38,16 @@ func NewMemChain(id uint64, addrs chain.Addresses) *MemChain {
 		Approvals:   map[common.Address]map[[32]byte]*chain.StackApproval{},
 		Deployments: map[[32]byte]*chain.Deployment{},
 		Now:         1_793_000_000,
+		Head:        100,
 	}
+}
+
+// PinHead implements verify.BlockPinner. The in-memory state has no history, so the reader is m itself.
+func (m *MemChain) PinHead(context.Context) (verify.ChainReader, uint64, error) {
+	if err := m.fail(); err != nil {
+		return nil, 0, err
+	}
+	return m, m.Head, nil
 }
 
 var errRPC = fmt.Errorf("rpc unavailable")

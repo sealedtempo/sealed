@@ -18,6 +18,7 @@ import (
 
 	"github.com/sealed-dev/sealed/verifier/attest"
 	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	"github.com/sealed-dev/sealed/verifier/internal/strictjson"
 )
 
 // LiveOptions extend Options for a live attestation.
@@ -30,6 +31,13 @@ type LiveOptions struct {
 	// InsecureSkipTLSVerify skips WebPKI validation of the served certificate (dev only: self-signed sslip
 	// certificates). The quote still has to bind the key of the certificate actually served.
 	InsecureSkipTLSVerify bool
+	// AllowedHosts, when non-empty, restricts attest URLs to these hosts: exact names or addresses, or "*.domain"
+	// for any name below domain (for example "*.sslip.io" and the relay's host).
+	AllowedHosts []string
+	// AllowPrivateAddresses lets the fetch connect to loopback, private, link-local and other non-public addresses
+	// (dev only). Otherwise every resolved destination must be public, unless the request goes through the
+	// HTTPS_PROXY from the environment.
+	AllowPrivateAddresses bool
 }
 
 const maxAttestBody = 8 << 20
@@ -81,6 +89,9 @@ func fetchAttest(ctx context.Context, attestURL string, opts LiveOptions) (*fetc
 	if u.Scheme != "https" {
 		return nil, fmt.Errorf("attest URL must be https (the TLS key binding needs a TLS connection)")
 	}
+	if !hostAllowed(u.Hostname(), opts.AllowedHosts) {
+		return nil, fmt.Errorf("attest host %q is not one of the allowed hosts %v", u.Hostname(), opts.AllowedHosts)
+	}
 	f := &fetched{}
 	if _, err := rand.Read(f.nonce[:]); err != nil {
 		return nil, err
@@ -95,18 +106,19 @@ func fetchAttest(ctx context.Context, attestURL string, opts LiveOptions) (*fetc
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: opts.RootCAs, InsecureSkipVerify: opts.InsecureSkipTLSVerify}, // #nosec G402 -- dev flag; the key binding is checked below
-			DisableKeepAlives: true,
-			Proxy:             http.ProxyFromEnvironment,
-		},
-		// A redirect would move the request to another connection; refuse it.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+	tlsConf := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: opts.RootCAs, InsecureSkipVerify: opts.InsecureSkipTLSVerify} // #nosec G402 -- dev flag; the key binding is checked below
+	tr, err := liveTransport(req, tlsConf, opts.AllowPrivateAddresses)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Transport: tr,
+		// A redirect would move the request to another connection; refuse it.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	start := time.Now()
 	resp, err := client.Do(req)
@@ -129,15 +141,56 @@ func fetchAttest(ctx context.Context, attestURL string, opts LiveOptions) (*fetc
 		return nil, errors.New("no TLS peer certificate on the /attest connection")
 	}
 	f.servedSPKI = sha256.Sum256(resp.TLS.PeerCertificates[0].RawSubjectPublicKeyInfo)
-	if err := json.Unmarshal(body, &f.resp); err != nil {
-		return nil, fmt.Errorf("decode /attest: %w", err)
+	if f.resp, err = decodeAttest(body); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// decodeAttest decodes a GET /attest document with case-sensitive, unique keys.
+func decodeAttest(body []byte) (liveResponse, error) {
+	var r liveResponse
+	if err := strictjson.Unmarshal(body, &r); err != nil {
+		return r, fmt.Errorf("decode /attest: %w", err)
 	}
 	// dstack-style APIs return the event log as a JSON string; accept both shapes.
 	var inner string
-	if json.Unmarshal(f.resp.EventLog, &inner) == nil {
-		f.resp.EventLog = json.RawMessage(inner)
+	if json.Unmarshal(r.EventLog, &inner) == nil {
+		if err := strictjson.CheckKeys([]byte(inner), nil); err != nil {
+			return r, fmt.Errorf("decode /attest eventLog: %w", err)
+		}
+		r.EventLog = json.RawMessage(inner)
 	}
-	return f, nil
+	return r, nil
+}
+
+// LiveSubmission is a live attestation the caller fetched itself (sealed-mpp-payer checking the relay): its own
+// nonce, the GET /attest document and the SPKI hash of the certificate it saw on that connection.
+type LiveSubmission struct {
+	AttestURL             string
+	Nonce                 [32]byte
+	ObservedTLSPubKeyHash [32]byte
+	Attest                json.RawMessage
+}
+
+// VerifyLiveSubmission verifies a live attestation fetched by the caller. The verifier makes no connection, so
+// freshness and the TLS key binding are relative to the nonce and key the caller reports: only a caller that
+// generated the nonce and observed the key itself learns anything about liveness. Every stack check is the same
+// as in VerifyLive. The report mode is ModeLiveSubmitted.
+func VerifyLiveSubmission(ctx context.Context, sub LiveSubmission, deps Deps, opts Options) (*Report, error) {
+	if err := deps.validate(); err != nil {
+		return nil, err
+	}
+	rep := newReport(ModeLiveSubmitted, deps.now())
+	data := map[string]any{"url": sub.AttestURL, "nonce": hex0x(sub.Nonce[:]), "observedTlsPubKeyHash": hex0x(sub.ObservedTLSPubKeyHash[:])}
+	resp, err := decodeAttest(sub.Attest)
+	if err != nil {
+		rep.fail(CheckLiveFetch, err.Error(), data)
+		return rep.finish(), nil
+	}
+	rep.pass(CheckLiveFetch, "attestation submitted by the caller; nonce and TLS key are as the caller observed them", data)
+	f := &fetched{nonce: sub.Nonce, servedSPKI: sub.ObservedTLSPubKeyHash, resp: resp}
+	return verifyLiveResponse(ctx, f, deps, opts, rep), nil
 }
 
 func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options, rep *Report) *Report {
@@ -152,7 +205,7 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 		return rep.finish()
 	}
 
-	s := &session{ctx: ctx, deps: deps, opts: opts, rep: rep, cfgRaw: r.Config, appCompose: []byte(r.AppCompose)}
+	s := &session{ctx: ctx, deps: deps, chain: deps.Chain, opts: opts, rep: rep, cfgRaw: r.Config, appCompose: []byte(r.AppCompose)}
 	s.stackHash = sha256.Sum256(s.appCompose)
 	rep.StackHash = hex0x(s.stackHash[:])
 	cfg, err := parseConfig(r.Config)
@@ -164,7 +217,7 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 	}
 
 	if tlsHash != f.servedSPKI {
-		rep.fail(CheckTLSBinding, "tlsPubKeyHash is not the SPKI hash of the certificate served on this connection", map[string]any{
+		rep.fail(CheckTLSBinding, "tlsPubKeyHash is not the SPKI hash of the certificate served on the /attest connection", map[string]any{
 			"claimed": hex0x(tlsHash[:]), "served": hex0x(f.servedSPKI[:]),
 		})
 	} else {
@@ -178,7 +231,11 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 	if [attest.ReportDataSize]byte(claimedRD) != want {
 		rep.fail(CheckFreshness, "reportData does not bind our nonce, the served TLS key and the enclave signer", map[string]any{"nonce": hex0x(f.nonce[:])})
 	} else {
-		rep.pass(CheckFreshness, fmt.Sprintf("fresh: our nonce is bound, answered in %s", f.elapsed.Round(time.Millisecond)), map[string]any{"nonce": hex0x(f.nonce[:])})
+		detail := fmt.Sprintf("fresh: our nonce is bound, answered in %s", f.elapsed.Round(time.Millisecond))
+		if rep.Mode == ModeLiveSubmitted {
+			detail = "the caller's nonce is bound (freshness as observed by the caller)"
+		}
+		rep.pass(CheckFreshness, detail, map[string]any{"nonce": hex0x(f.nonce[:])})
 	}
 	s.checkReportData(want, "sha256(\"sealed/attest/v1\" || nonce || sha256(served SPKI) || enclaveSigner)")
 
@@ -206,9 +263,7 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 	var customer common.Address
 	if s.cfg != nil {
 		customer = s.cfg.customer
-		deploymentID = DeploymentID(customer, s.stackHash, s.cfg.salt)
-		rep.DeploymentID = hex0x(deploymentID[:])
-		rep.pass(CheckDeploymentID, "deploymentId = keccak256(abi.encode(customer, stackHash, salt)) derived", map[string]any{"derived": rep.DeploymentID})
+		deploymentID = s.checkLiveDeploymentID()
 	} else {
 		rep.fail(CheckDeploymentID, "no config", nil)
 	}
@@ -217,6 +272,7 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 	s.checkRecompute(deploymentID)
 	s.checkApproval()
 	s.checkExpectedCustomer()
+	s.checkExpectedApps()
 	if s.cfg != nil {
 		var elh *[32]byte
 		if canon, err := canonicalHash(r.EventLog); err == nil {
@@ -230,4 +286,23 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 		rep.fail(CheckOnchainRecord, "no config", nil)
 	}
 	return rep.finish()
+}
+
+// checkLiveDeploymentID derives the deployment id of the served stack and compares it with
+// Options.ExpectedDeploymentID, so a caller pinning a deployment never accepts another deployment's attestation.
+func (s *session) checkLiveDeploymentID() [32]byte {
+	derived := DeploymentID(s.cfg.customer, s.stackHash, s.cfg.salt)
+	s.rep.DeploymentID = hex0x(derived[:])
+	data := map[string]any{"derived": s.rep.DeploymentID}
+	if want := s.opts.ExpectedDeploymentID; want != nil && *want != derived {
+		data["expected"] = hex0x(want[:])
+		s.rep.fail(CheckDeploymentID, fmt.Sprintf("served stack is deployment %s, expected %s", s.rep.DeploymentID, hex0x(want[:])), data)
+		return derived
+	}
+	detail := "deploymentId = keccak256(abi.encode(customer, stackHash, salt)) derived"
+	if s.opts.ExpectedDeploymentID != nil {
+		detail += ", the expected deployment"
+	}
+	s.rep.pass(CheckDeploymentID, detail, data)
+	return derived
 }

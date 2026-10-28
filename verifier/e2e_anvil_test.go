@@ -81,6 +81,9 @@ func TestEndToEndAnvil(t *testing.T) {
 		if !rep.OK || !rep.Simulated {
 			t.Fatal("not OK or not flagged simulated")
 		}
+		if head, _ := client.BlockNumber(context.Background()); rep.BlockNumber == 0 || rep.BlockNumber > head {
+			t.Fatalf("reads not pinned to a block: %d (head %d)", rep.BlockNumber, head)
+		}
 		// The digest the report carries is the contract's recordDigest of the bundle's record.
 		want, err := client.RecordDigest(context.Background(), rec)
 		if err != nil || rep.RecordDigest != "0x"+hexString(want[:]) {
@@ -117,16 +120,13 @@ func TestEndToEndAnvil(t *testing.T) {
 		check(t, db, verify.CheckTDAttributes, verify.CheckImageApproved, verify.CheckStackApproved, verify.CheckApprovalReleases, verify.CheckOnchainRecord)
 	})
 	t.Run("approval re-issued with another release set (D-014)", func(t *testing.T) {
-		_, err := n.Try(anviltest.Customer, r.DeploymentRegistry, r.Artifacts["DeploymentRegistry"].ABI, "approveStack", rec.StackHash, w.ReleaseIDs()[:1], imageID, uint64(0))
-		if err != nil {
-			// Current contracts pin the release list of an existing approval (ReleasesChanged).
-			t.Logf("contract refused to change the release set: %v", err)
-			check(t, b)
-			return
+		// The contracts pin the release list of an existing approval; the verifier's own D-014 comparison is
+		// covered against the in-memory registries (evidence tamper matrix).
+		depABI := r.Artifacts["DeploymentRegistry"].ABI
+		_, err := n.Try(anviltest.Customer, r.DeploymentRegistry, depABI, "approveStack", rec.StackHash, w.ReleaseIDs()[:1], imageID, uint64(0))
+		if name := anviltest.RevertName(depABI, err); name != "ReleasesChanged" {
+			t.Fatalf("approveStack with another release set: err %v (revert %q), want ReleasesChanged", err, name)
 		}
-		// Contracts that allow overwriting the release set: the verifier must catch the mismatch (D-014).
-		check(t, b, verify.CheckApprovalReleases)
-		r.ApproveStack(t, n, anviltest.Customer, rec.StackHash, w.ReleaseIDs(), imageID)
 		check(t, b)
 	})
 	t.Run("revoked approval", func(t *testing.T) {

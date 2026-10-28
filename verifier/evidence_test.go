@@ -103,12 +103,13 @@ func TestEvidenceHappyPath(t *testing.T) {
 			t.Errorf("check %s missing", want)
 		}
 	}
-	if rep.DeploymentID != e.b.DeploymentID || rep.StackHash != e.b.StackHash || rep.RecordDigest == "" {
+	if rep.DeploymentID != e.b.DeploymentID || rep.StackHash != e.b.StackHash || rep.RecordDigest == "" || rep.BlockNumber != e.m.Head {
 		t.Fatalf("report header %+v", rep)
 	}
 	text := rep.Text()
 	t.Log("\n" + text)
-	if !strings.Contains(text, "PASS") || !strings.Contains(text, "WARNING: the quote comes from the dev simulator") || strings.Contains(text, "\u2014") {
+	if !strings.Contains(text, "PASS") || !strings.Contains(text, "WARNING: the quote comes from the dev simulator") || strings.Contains(text, "\u2014") ||
+		!strings.Contains(text, "block       100") {
 		t.Fatalf("text report:\n%s", text)
 	}
 	raw, err := rep.JSON()
@@ -356,6 +357,65 @@ func TestTamperMatrix(t *testing.T) {
 			mutate: func(t *testing.T, e *env) { e.opts.ExpectedCustomer = &stranger },
 			fail:   []string{verify.CheckExpectedCustomer},
 		},
+		{
+			// attestedAt is not in report_data: an old quote resent with a new attestedAt must not pass as fresh.
+			name: "old quote resent with a new attestedAt",
+			mutate: func(t *testing.T, e *env) {
+				e.opts.MaxEvidenceAge = 15 * time.Minute
+				e.b.AttestedAt += 3600
+				e.deps.Now = func() time.Time { return time.Unix(int64(e.b.AttestedAt)+5, 0) }
+			},
+			fail: []string{verify.CheckOnchainRecord},
+		},
+		{
+			name:   "expected apps present",
+			mutate: func(t *testing.T, e *env) { e.opts.ExpectedAppIDs = []string{e.w.Apps[0].Slug} },
+		},
+		{
+			name:   "expected app missing",
+			mutate: func(t *testing.T, e *env) { e.opts.ExpectedAppIDs = []string{"inference-relay"} },
+			fail:   []string{verify.CheckExpectedApps},
+		},
+		{
+			name:   "heartbeat that reuses the recorded quote",
+			mutate: func(t *testing.T, e *env) { e.opts.Heartbeat = true },
+			fail:   []string{verify.CheckOnchainRecord},
+		},
+		{
+			name: "heartbeat with a new quote",
+			mutate: func(t *testing.T, e *env) {
+				e.opts.Heartbeat = true
+				e.w.Nonce2[0] ^= 0xff
+				e.b = e.w.Bundle(e.b.AttestedAt + 600)
+				e.deps.Now = func() time.Time { return time.Unix(int64(e.b.AttestedAt)+5, 0) }
+			},
+		},
+		{
+			name: "heartbeat with a new quote but a stale attestedAt",
+			mutate: func(t *testing.T, e *env) {
+				e.opts.Heartbeat = true
+				e.w.Nonce2[0] ^= 0xff
+				e.b = e.w.Bundle(e.b.AttestedAt)
+			},
+			fail: []string{verify.CheckOnchainRecord},
+		},
+		{
+			name: "heartbeat for an unregistered deployment",
+			mutate: func(t *testing.T, e *env) {
+				e.opts.Heartbeat = true
+				e.opts.RequireOnchainRecord = false
+				delete(e.m.Deployments, mustID(e.b.DeploymentID))
+			},
+			fail: []string{verify.CheckOnchainRecord},
+		},
+		{
+			name: "new evidence without the heartbeat option",
+			mutate: func(t *testing.T, e *env) {
+				e.w.Nonce2[0] ^= 0xff
+				e.b = e.w.Bundle(e.b.AttestedAt + 600)
+			},
+			fail: []string{verify.CheckOnchainRecord},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -397,6 +457,24 @@ func TestMalformedBundles(t *testing.T) {
 			}
 		})
 	}
+	t.Run("config key spelled with another case", func(t *testing.T) {
+		e := newEnv(t, false)
+		// A JSON.parse consumer (the agent) reads "customer"; encoding/json would also read "CUSTOMER".
+		e.b.Config = json.RawMessage(strings.Replace(string(e.b.Config), `"customer":`, `"CUSTOMER":"`+strings.ToLower(stranger.Hex())+`","customer":`, 1))
+		rep := e.run(t)
+		if rep.OK || rep.Check(verify.CheckBundle).OK || !strings.Contains(rep.Check(verify.CheckBundle).Detail, `"CUSTOMER"`) {
+			t.Fatalf("case-variant config key accepted:\n%s", rep.Text())
+		}
+	})
+	t.Run("bundle key spelled with another case", func(t *testing.T) {
+		e := newEnv(t, false)
+		raw, _ := json.Marshal(e.b)
+		raw = []byte(strings.Replace(string(raw), `"deploymentId":`, `"DeploymentID":`, 1))
+		rep, err := verify.VerifyEvidenceJSON(context.Background(), raw, e.deps, e.opts)
+		if err != nil || rep.OK || len(rep.Checks) != 1 || !strings.Contains(rep.Checks[0].Detail, `"deploymentId"`) {
+			t.Fatalf("case-variant bundle key: %v %+v", err, rep)
+		}
+	})
 	t.Run("bad config schema", func(t *testing.T) {
 		e := newEnv(t, false)
 		e.b.Config = json.RawMessage(strings.Replace(string(e.b.Config), "sealed-config/v1", "sealed-config/v0", 1))

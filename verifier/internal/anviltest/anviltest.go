@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -25,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // Anvil's default dev keys (mnemonic "test test ... junk"). Public; local use only.
@@ -339,6 +342,28 @@ func (n *Node) Try(from int, to common.Address, a abi.ABI, method string, args .
 		return nil, err
 	}
 	return n.Send(from, &to, data)
+}
+
+// RevertName returns the name of the custom error of a reverted call or gas estimate, decoded with a, or "".
+func RevertName(a abi.ABI, err error) string {
+	var de rpc.DataError
+	if !errors.As(err, &de) {
+		return ""
+	}
+	s, ok := de.ErrorData().(string)
+	if !ok {
+		return ""
+	}
+	data, decErr := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	if decErr != nil || len(data) < 4 {
+		return ""
+	}
+	for name, e := range a.Errors {
+		if bytes.Equal(e.ID[:4], data[:4]) {
+			return name
+		}
+	}
+	return ""
 }
 
 // Registries is a deployed and wired set of Sealed contracts.
