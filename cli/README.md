@@ -35,7 +35,12 @@ wallet has not approved the stack.
 
 Writes the module to `<user config dir>/sealed/bootstrap/<project>` (or `--work-dir`), with the Terraform state
 there or in `--state-bucket`, and runs `terraform init` and `apply` with your token. `--plan` only plans. It refuses
-a key broker image that is not pinned by digest or still has the all-zero placeholder. The output is the `sct_`
+a key broker image that is not pinned by digest or still has the all-zero placeholder. The key broker reads Tempo
+through `--tempo-rpc`, else the RPC the command was given (`--rpc` or `TEMPO_RPC_URL`), else the public RPC; the
+RPC and chain are printed before Terraform runs and the RPC again in the summary, so your choice is never replaced
+silently. The broker's Cloud Run environment is fixed by `modules/key-broker-env` and checked against the broker's
+own parser (see the module README). `--debug-logging` also creates `sealed-debug-logs`, the log writer identity
+that only debug VMs get (spec 5.8). The output is the `sct_`
 token: `sct_` + base64url(JSON) with `v`, `project`, `region`, `deployerAccount`, `keyBrokerUrl`, `customer`,
 `subnetwork` and `issuedAt`. It holds no secret.
 
