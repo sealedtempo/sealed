@@ -46,6 +46,8 @@ const fakeDocker = `#!/usr/bin/env bash
 set -euo pipefail
 echo "docker $*" >>"$FAKE_LOG"
 [ "$1" = login ] && { cat >/dev/null; exit 0; }
+# docker compose goes to the real docker CLI when the test provides one (no daemon needed for config).
+[ "$1" = compose ] && [ -n "${REAL_DOCKER:-}" ] && exec "$REAL_DOCKER" "$@"
 [ "$1 $2" = "buildx build" ] || { echo "fake docker: unsupported $*" >&2; exit 2; }
 shift 2
 meta="" output="" nocache=0 file="" ctx=""

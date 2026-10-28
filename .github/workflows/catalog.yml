@@ -75,7 +75,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
-        run: scripts/release/plan-releases.sh pr-check --changed "${{ steps.changed.outputs.file }}"
+          CHANGED: ${{ steps.changed.outputs.file }}
+        run: scripts/release/plan-releases.sh pr-check --changed "$CHANGED"
       - name: Release plan warnings
         run: sealed-release plan --apps all >/dev/null
       - name: Scan matrix
@@ -153,13 +154,14 @@ jobs:
         run: |
           out="$RUNNER_TEMP/scan/$APP"
           failed=0
-          while IFS=$'\t' read -r name ref unbuilt; do
+          # No empty fields: read collapses consecutive tabs.
+          while IFS=$'\t' read -r name unbuilt ref; do
             if [ "$unbuilt" = true ]; then
               echo "::notice title=unbuilt::$APP/$name is not built yet; the runtime image workflow scans it before its pin PR"
               continue
             fi
             scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "$WAIVERS" --out "$out" || failed=1
-          done < <(jq -r '.[] | [.name, (.ref // ""), (.unbuilt // false | tostring)] | @tsv' <<<"$IMAGES")
+          done < <(jq -r '.[] | [.name, (.unbuilt // false | tostring), (.ref // "none")] | @tsv' <<<"$IMAGES")
           exit "$failed"
       # Licenses of every SBOM package (D-021, D-050), enterprise paths and license_exclusions, with the SBOMs.
       - name: Catalog lint with the SBOMs

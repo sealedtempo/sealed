@@ -256,6 +256,12 @@ func (s *simulator) useAction(ctx map[string]any, st simStep) {
 		}
 		dst := filepath.Join(s.artifacts, with["name"])
 		for _, p := range paths {
+			if _, err := os.Stat(p); os.IsNotExist(err) {
+				if with["if-no-files-found"] == "ignore" || with["if-no-files-found"] == "warn" {
+					continue
+				}
+				s.t.Fatalf("upload-artifact %s: %s does not exist", with["name"], p)
+			}
 			rel, _ := filepath.Rel(root, p)
 			if st, err := os.Stat(p); err == nil && st.IsDir() {
 				copyTree(s.t, p, filepath.Join(dst, rel))
