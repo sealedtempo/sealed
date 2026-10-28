@@ -8,6 +8,8 @@ import type { Address } from "./hex.js";
 export const TEMPO_MAINNET_ID = 4217;
 export const LOCAL_ANVIL_ID = 31337;
 export const PATH_USD: Address = "0x20c0000000000000000000000000000000000000";
+/** Bridged USDC (Stargate), the mainnet FEE_TOKEN (D-035, config/defaults.yaml chain.fee_token). */
+export const USDC_E: Address = "0x20c000000000000000000000b9537d11c60e8b50";
 export const ACCOUNT_KEYCHAIN: Address = "0xaaaaaaaa00000000000000000000000000000000";
 export const FEE_TOKEN_DECIMALS = 6;
 
@@ -17,16 +19,24 @@ export interface TempoChainOptions {
   /** 4217 (default) for mainnet; any other id gives a local/dev chain with the same Tempo config. */
   chainId?: number;
   rpcUrl?: string;
-  /** Default fee token for transactions (pathUSD unless set). */
+  /**
+   * Default fee token for transactions. Callers pass the deployment's configured feeToken; without one,
+   * mainnet uses USDC.e (D-035) and local nodes use pathUSD (what anvil --network tempo funds).
+   */
   feeToken?: Address;
   /** Tempo hardfork the node runs. Local anvil 1.7.1 supports up to t4. */
   hardfork?: Hardfork.Hardfork;
 }
 
+/** The fee token a chain falls back to when the config names none: USDC.e on mainnet, pathUSD elsewhere. */
+export function defaultFeeToken(chainId: number): Address {
+  return chainId === TEMPO_MAINNET_ID ? USDC_E : (Addresses.pathUsd as Address);
+}
+
 /** A viem Chain for Tempo mainnet or a local Tempo node (anvil --network tempo). */
 export function tempoChain(opts: TempoChainOptions = {}): Chain {
   const chainId = opts.chainId ?? TEMPO_MAINNET_ID;
-  const feeToken = opts.feeToken ?? (Addresses.pathUsd as Address);
+  const feeToken = opts.feeToken ?? defaultFeeToken(chainId);
   if (chainId === TEMPO_MAINNET_ID) {
     return tempo.extend({
       feeToken,

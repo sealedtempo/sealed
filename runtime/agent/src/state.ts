@@ -3,6 +3,7 @@
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { emptyLedgerState, type LedgerState } from "./metering/ledger.js";
+import type { BudgetState } from "./payments/budget.js";
 
 export interface PaymentStatus {
   /** First failed settlement of the current failure streak (unix seconds), null when healthy. */
@@ -20,6 +21,10 @@ export interface AgentState {
   version: 1;
   ledger: LedgerState;
   payments: PaymentStatus;
+  /** The shared daily spend budget (D-048). */
+  budget?: BudgetState;
+  /** Apps whose bootstrap job reported done (only jobs without a done file on the data disk). */
+  bootstrapDone?: string[];
 }
 
 export function emptyState(now: number): AgentState {

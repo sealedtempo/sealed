@@ -1,5 +1,6 @@
 // End to end boot flow (spec 5.6) against the dstack simulator, a fake key broker and a fake
 // platform API: key release, secrets, evidence, /attest, metering, usage reports and health.
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import tls from "node:tls";
@@ -62,6 +63,7 @@ describe("sealed-agent boot flow", () => {
   const brokerKey = Buffer.alloc(32, 3);
   const secrets = { crm: { APP_SECRET: "crm-secret-value" }, "llm-gateway": { LITELLM_MASTER_KEY: "sk-test" }, _gate: { GATE_PASSWORD_BCRYPT: "$2a$14$hash" } };
   let now = 1_800_000_000;
+  const chowns: { path: string; uid: number; gid: number; readyFlag: boolean }[] = [];
   const clock = { now: () => now, sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, Math.min(ms, 20))) };
 
   function newAgent(p = new FakePayer()) {
@@ -79,6 +81,9 @@ describe("sealed-agent boot flow", () => {
       defaults,
       releaseDeniedDelayMs: 10,
       peerOf: testPeerOf,
+      chown: async (path, uid, gid) => {
+        chowns.push({ path: path.slice(settings.dataMount.length + 1), uid, gid, readyFlag: existsSync(join(settings.readyDir, "ok")) });
+      },
     });
   }
 
@@ -135,9 +140,12 @@ describe("sealed-agent boot flow", () => {
     const { stat } = await import("node:fs/promises");
     expect((await stat(join(settings.dataMount, "crm", "db"))).isDirectory()).toBe(true);
     expect((await stat(join(settings.dataMount, "crm", "files"))).isDirectory()).toBe(true);
+    // Brief item 11: the declared owner is applied, before the ready flag exists.
+    expect(chowns.filter((c) => c.path === "crm/db")).toEqual([{ path: "crm/db", uid: 999, gid: 999, readyFlag: false }]);
+    expect(chowns.every((c) => !c.readyFlag)).toBe(true);
   });
 
-  it("submitted an evidence bundle (after one retry) whose quote binds stack, config, signer and nonce2", async () => {
+  it("submitted an evidence bundle (after one retry) whose quote binds stack, config, signer, nonce2 and attestedAt", async () => {
     await agent.evidence;
     expect(platform.evidence.length).toBe(1);
     const b = evidenceBundleSchema.parse(platform.evidence[0]);
@@ -152,8 +160,11 @@ describe("sealed-agent boot flow", () => {
     expect(b.eventLogHash).toBe(eventLogHash(b.eventLog));
     expect(b.attestedAt).toBe(now);
     const q = decodeSimQuote(hexToBytes(b.quote));
-    const rd = evidenceReportData(b.stackHash as Hex, b.configHash as Hex, b.enclaveSigner as Hex, b.nonce2 as Hex);
+    const rd = evidenceReportData(b.stackHash as Hex, b.configHash as Hex, b.enclaveSigner as Hex, b.nonce2 as Hex, b.attestedAt);
     expect(q.reportData).toBe(bytesToHex(rd).slice(2));
+    // D-047: the same quote with another attestedAt does not verify.
+    const redated = evidenceReportData(b.stackHash as Hex, b.configHash as Hex, b.enclaveSigner as Hex, b.nonce2 as Hex, b.attestedAt + 60);
+    expect(q.reportData).not.toBe(bytesToHex(redated).slice(2));
   });
 
   it("serves /attest bound to the nonce, the TLS key and the enclave signer", async () => {

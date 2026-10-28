@@ -12,7 +12,11 @@ function handlers(over: Partial<ApiHandlers> = {}): ApiHandlers {
     readyInfo: () => ({ deploymentId: "0x01" }),
     recordUsage: async () => "accepted",
     recordSpend: () => {},
+    reserveSpend: () => ({ ok: true }),
+    releaseSpend: () => ({ ok: true }),
     attest: async () => ({ ok: true }),
+    gate: async () => ({ status: 401 }),
+    bootstrapDone: () => {},
     ...over,
   };
 }

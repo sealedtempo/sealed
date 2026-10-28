@@ -96,8 +96,18 @@ export function makeStackInfo(config: Config, o: { payer?: boolean } = {}) {
         metering: k.metering,
         healthcheck: { service: primary, port: k.port, path: k.path },
         routes: [],
+        // crm declares an owner for its database volume (manifest x-sealed-owner, brief item 11).
+        volumes:
+          a.id === "crm"
+            ? [
+                { name: "db", path: "/mnt/sealed-data/crm/db", owner: "999:999" },
+                { name: "files", path: "/mnt/sealed-data/crm/files" },
+              ]
+            : [],
       };
     }),
+    dataRoot: "/mnt/sealed-data",
+    dataDirs: config.apps.some((a) => a.id === "crm") ? ["/mnt/sealed-data/crm/db", "/mnt/sealed-data/crm/files"] : [],
     sidecars: {
       caddy: IPS.caddy,
       "sealed-agent": IPS.agent,
@@ -116,6 +126,15 @@ export function makeStackInfo(config: Config, o: { payer?: boolean } = {}) {
 
 const dollars = (s: string) => s.replaceAll("$", "$$");
 
+/** A secrets tmpfs volume mount as the composer writes it (whole owner directory). */
+const secretsVolume = (owner: string, readOnly: boolean) => ({
+  type: "volume",
+  source: `sealed-secrets-${owner}`,
+  target: `/run/sealed/secrets/${owner}`,
+  volume: { nocopy: true },
+  ...(readOnly ? { read_only: true } : {}),
+});
+
 /** app-compose.json in the INTERFACES 6 shape: measured configs, app volumes bound from /mnt/sealed-data. */
 export function makeAppCompose(config: Config, o: { stack?: unknown; omit?: string[] } = {}): string {
   const configs: Record<string, { content: string }> = {
@@ -130,8 +149,12 @@ export function makeAppCompose(config: Config, o: { stack?: unknown; omit?: stri
     services: {
       "crm-server": {
         image: `ghcr.io/sealed-dev/twenty@sha256:${"00".repeat(32)}`,
+        entrypoint: ["/sealed/bin/envexec", "--app", "crm", "--secret", "APP_SECRET", "--", "/app/start"],
         user: "1000:1000",
-        volumes: [{ type: "bind", source: "/mnt/sealed-data/crm/files", target: "/app/files" }],
+        volumes: [
+          { type: "bind", source: "/mnt/sealed-data/crm/files", target: "/app/files" },
+          secretsVolume("crm", true),
+        ],
       },
       "crm-db": {
         image: `ghcr.io/sealed-dev/postgres@sha256:${"00".repeat(32)}`,
@@ -139,7 +162,10 @@ export function makeAppCompose(config: Config, o: { stack?: unknown; omit?: stri
       },
       "sealed-agent": {
         image: `ghcr.io/sealed-dev/sealed-agent@sha256:${"00".repeat(32)}`,
-        volumes: [{ type: "bind", source: "/mnt/sealed-data", target: "/mnt/sealed-data", bind: { propagation: "rshared" } }],
+        volumes: [
+          { type: "bind", source: "/mnt/sealed-data", target: "/mnt/sealed-data", bind: { propagation: "rshared" } },
+          ...["_gate", ...config.apps.map((a) => a.id), "sealed-mpp-payer"].map((o) => secretsVolume(o, false)),
+        ],
       },
     },
   };

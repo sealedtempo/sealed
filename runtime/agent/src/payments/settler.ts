@@ -48,6 +48,8 @@ export interface SettlerDeps {
   log: Logger;
   /** Receives the onchain per-payment cap at every settlement (the ledger cuts reports at it). */
   onPerPaymentCap?: (cap: bigint) => void;
+  /** Called after each payment with what it took from the spend limit (fees plus the network fee, D-048). */
+  onSpent?: (amount: bigint, now: number) => void;
 }
 
 const sumOwed = (es: Due[]) => es.reduce((s, e) => s + e.owed, 0n);
@@ -176,8 +178,9 @@ export class Settler {
       chosen = chosen.slice(0, -1);
     }
     sum = sumOwed(chosen);
-    const { txHash, gasUsed } = await payer.pay(asLines(chosen));
+    const { txHash, gasUsed, networkFee } = await payer.pay(asLines(chosen));
     for (const e of chosen) ledger.markPaid(e.usageHash, app, txHash, now);
+    this.d.onSpent?.(sum + (networkFee ?? 0n), now);
     const topUps = chosen.filter((e) => e.paid > 0n).length;
     log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, topUps, txHash, gasUsed, mode: payer.mode });
     return { app, result: "paid", txHash, amount: sum, reports: chosen.length };

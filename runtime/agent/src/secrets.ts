@@ -51,25 +51,81 @@ async function atomicWrite(path: string, data: string, mode: number): Promise<vo
   await rename(tmp, path);
 }
 
+export interface WriteSecretsOptions {
+  /**
+   * owner -> names that some service mounts as a single file (composer 1.2, D-042). Docker cannot
+   * start a container whose mount source is missing, so each of these must exist.
+   */
+  individually?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Whether `<owner>/<name>` is an optional secret (sealed-stack/v1 apps[].secrets). */
+  isOptional?: (owner: string, name: string) => boolean;
+  /**
+   * Owners whose secrets directory the compose mounts into the agent. Released secrets of any other
+   * owner are validated but not written: no container could read them.
+   */
+  onDisk?: ReadonlySet<string>;
+}
+
+export interface WriteSecretsResult {
+  /** `<owner>/<NAME>` of optional secrets that were not released and are mounted alone: written empty. */
+  placeholders: string[];
+  /** `<owner>/<NAME>` of required secrets that are mounted alone but were not released. */
+  missing: string[];
+  /** Owners with released secrets that were not written because the agent has no directory for them. */
+  skipped: string[];
+}
+
 /**
  * Writes /run/sealed/secrets/<owner>/<NAME> for every released secret and removes files that are no
- * longer released. Owners must be apps of the stack or `_gate`. Files are 0444: each directory is
- * mounted read-only into its own app only, and app containers run as arbitrary users.
+ * longer released. Owners must be apps of the stack or `_gate`. Files are 0444: each owner directory
+ * is a tmpfs mounted read-only into that owner's services only (or, from composer 1.2, one file per
+ * declared secret), and app containers run as arbitrary users. An optional secret that was not
+ * released but is mounted as a single file gets an empty placeholder so its service can start; a
+ * missing required one is reported, and that service fails to start rather than run without it.
  */
-export async function writeSecrets(layout: SecretsLayout, secrets: Record<string, Record<string, string>>, allowedOwners: ReadonlySet<string>): Promise<void> {
+export async function writeSecrets(
+  layout: SecretsLayout,
+  secrets: Record<string, Record<string, string>>,
+  allowedOwners: ReadonlySet<string>,
+  opts: WriteSecretsOptions = {},
+): Promise<WriteSecretsResult> {
+  const individually = opts.individually ?? new Map<string, ReadonlySet<string>>();
+  const valid = (owner: string) => OWNER_RE.test(owner) && owner !== PAYER_DIR && allowedOwners.has(owner);
   for (const [owner, values] of Object.entries(secrets)) {
-    if (!OWNER_RE.test(owner) || owner === PAYER_DIR || !allowedOwners.has(owner)) throw new Error(`invalid secret owner ${JSON.stringify(owner)}`);
+    if (!valid(owner)) throw new Error(`invalid secret owner ${JSON.stringify(owner)}`);
     for (const name of Object.keys(values)) if (!NAME_RE.test(name)) throw new Error(`invalid secret name for ${owner}`);
   }
-  for (const [owner, values] of Object.entries(secrets)) {
-    if (Object.keys(values).length === 0) continue;
+  const result: WriteSecretsResult = { placeholders: [], missing: [], skipped: [] };
+  const owners = new Set([...Object.keys(secrets), ...[...individually.keys()].filter((o) => o !== PAYER_DIR)]);
+  for (const owner of [...owners].sort()) {
+    if (!valid(owner)) throw new Error(`invalid secret owner ${JSON.stringify(owner)}`);
+    if (opts.onDisk && !opts.onDisk.has(owner)) {
+      if (Object.keys(secrets[owner] ?? {}).length > 0) result.skipped.push(owner);
+      continue;
+    }
+    const values = secrets[owner] ?? {};
+    const keep = new Set(Object.keys(values));
+    const placeholders: string[] = [];
+    for (const name of [...(individually.get(owner) ?? [])].sort()) {
+      if (keep.has(name)) continue;
+      if (!NAME_RE.test(name)) throw new Error(`invalid secret name for ${owner}`);
+      if (opts.isOptional?.(owner, name)) placeholders.push(name);
+      else result.missing.push(`${owner}/${name}`);
+    }
+    if (keep.size === 0 && placeholders.length === 0) continue;
     const dir = join(layout.secretsDir, owner);
     await prepareDir(layout, dir);
     for (const [name, value] of Object.entries(values)) await atomicWrite(join(dir, name), value, 0o444);
+    for (const name of placeholders) {
+      await atomicWrite(join(dir, name), "", 0o444);
+      keep.add(name);
+      result.placeholders.push(`${owner}/${name}`);
+    }
     for (const existing of await readdir(dir)) {
-      if (!(existing in values)) await rm(join(dir, existing), { force: true });
+      if (!keep.has(existing)) await rm(join(dir, existing), { force: true });
     }
   }
+  return result;
 }
 
 /** /run/sealed/secrets/sealed-mpp-payer/{ENCLAVE_KEY,SPEND_LIMIT_PER_DAY} (INTERFACES 15). Only for stacks with the payer. */
