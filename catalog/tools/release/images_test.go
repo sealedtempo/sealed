@@ -8,7 +8,8 @@ import (
 )
 
 // The real catalog: every build source has a build entry, symlinked image dirs resolve, sidecars are
-// included, and the Twenty image is never mirrored (D-049).
+// included, and nothing is blocked: crm is EspoCRM (D-049a), so the never_mirror entry for Twenty (D-049) matches no
+// manifest and the Twenty image is not mirrored.
 func TestLoadImagesRealCatalog(t *testing.T) {
 	set, err := LoadImages(repoRoot(t))
 	if err != nil {
@@ -19,7 +20,7 @@ func TestLoadImagesRealCatalog(t *testing.T) {
 		byName[b.Name] = b
 	}
 	for _, name := range []string{"sealed-agent", "sealed-egress", "sealed-init", "sealed-mpp-payer", "sealed-verifierd", "relay",
-		"litellm", "litellm-relay", "local-model", "tooljet", "scraper-runner-playwright", "opencode"} {
+		"litellm", "litellm-relay", "local-model", "tooljet", "scraper-runner-playwright", "opencode", "espocrm"} {
 		if _, ok := byName[name]; !ok {
 			t.Errorf("build image %s missing", name)
 		}
@@ -45,8 +46,8 @@ func TestLoadImagesRealCatalog(t *testing.T) {
 	for _, m := range set.Blocked {
 		blocked = append(blocked, m.Name)
 	}
-	if strings.Join(blocked, ",") != "twenty" {
-		t.Errorf("blocked = %v, want twenty (D-049)", blocked)
+	if len(blocked) != 0 {
+		t.Errorf("blocked = %v, want none (crm is EspoCRM, D-049a)", blocked)
 	}
 	for _, m := range set.Mirror {
 		if m.Name == "twenty" {

@@ -20,6 +20,7 @@
 version: 1
 builds:
   catalog/apps/coding-agent/fallback-opencode/images/opencode: {context: dir}
+  catalog/apps/crm/images/espocrm: {context: dir}
   catalog/apps/inference-relay/images/litellm-relay: {context: dir}
   catalog/apps/inference-relay/images/relay: {context: root}
   catalog/apps/internal-tools/images/tooljet-ce: {context: dir}

@@ -35,7 +35,8 @@ type ComposeOutcome struct {
 	Error       string   `json:"error,omitempty"`
 }
 
-// DefaultStacks is every top-level app alone, plus the customer stack of every app except the relay.
+// DefaultStacks is every top-level app with the apps its secrets refer to (same_as, D-043), plus the
+// customer stack of every app except the relay.
 func DefaultStacks(apps []App) []ComposeStack {
 	var all []string
 	var out []ComposeStack
@@ -43,7 +44,7 @@ func DefaultStacks(apps []App) []ComposeStack {
 		if a.Nested {
 			continue
 		}
-		out = append(out, ComposeStack{Name: a.ID, Apps: []string{a.ID}})
+		out = append(out, ComposeStack{Name: a.ID, Apps: withSameAsApps(apps, a.ID)})
 		if a.ID != relayApp {
 			all = append(all, a.ID)
 		}
@@ -51,6 +52,35 @@ func DefaultStacks(apps []App) []ComposeStack {
 	if len(all) > 1 {
 		out = append(out, ComposeStack{Name: "customer-stack", Apps: all})
 	}
+	return out
+}
+
+// withSameAsApps returns id and every app its secrets refer to through same_as, transitively, sorted. The
+// composer refuses a stack that lacks a referenced app, so an app with same_as never composes alone.
+func withSameAsApps(apps []App, id string) []string {
+	seen := map[string]bool{}
+	var walk func(string)
+	walk = func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		a, ok := FindApp(apps, id)
+		if !ok {
+			return
+		}
+		for _, s := range a.Manifest.Secrets {
+			if ref, _, ok := s.SameAsRef(); ok {
+				walk(ref)
+			}
+		}
+	}
+	walk(id)
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
 }
 

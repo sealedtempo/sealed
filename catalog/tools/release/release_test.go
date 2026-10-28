@@ -363,8 +363,8 @@ func TestScanMatrix(t *testing.T) {
 	if len(m) != 2 || m[0].App != "crm" || m[1].App != "llm-gateway" || m[1].Waivers != "catalog/apps/llm-gateway/waivers.yaml" {
 		t.Fatalf("matrix %+v", m)
 	}
-	if tw := m[0].Images[0]; tw.Name != "twenty" || tw.Blocked == "" || !strings.HasPrefix(tw.Ref, "docker.io/twentycrm/twenty@sha256:") {
-		t.Fatalf("twenty: %+v", tw)
+	if es := m[0].Images[0]; es.Name != "espocrm" || !es.Unbuilt || es.Ref != "" || es.Blocked != "" {
+		t.Fatalf("crm's espocrm image is built by the image workflow and not pinned yet (D-028): %+v", es)
 	}
 	for _, img := range m[1].Images {
 		switch img.Name {
