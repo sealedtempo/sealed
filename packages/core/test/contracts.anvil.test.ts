@@ -1,26 +1,18 @@
 // Cross-checks the EIP-712 helpers against DeploymentRegistry.recordDigest / heartbeatDigest on a
-// local Tempo node with the contracts deployed. Skipped when anvil or the contracts are missing.
-import { execFileSync } from "node:child_process";
+// local Tempo node with the contracts deployed. Skipped when anvil or the contracts are missing (fails
+// instead with SEALED_REQUIRE_CHAIN_TESTS=1).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type DeploymentRecord, HEARTBEAT_TYPEHASH, heartbeatDigest, RECORD_TYPEHASH, recordDigest, registryDomain } from "../src/eip712.js";
 import { deploymentId as computeDeploymentId, measurementsHash } from "../src/ids.js";
 import {
+  chainTestsEnabled,
   deploySealedContracts,
-  findContractsDir,
   type LocalTempo,
   type SealedDeployment,
   startLocalTempo,
 } from "../src/testing/index.js";
 
-const hasAnvil = (() => {
-  try {
-    execFileSync("anvil", ["--version"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-})();
-const enabled = hasAnvil && !!findContractsDir();
+const enabled = chainTestsEnabled();
 
 describe.skipIf(!enabled)("EIP-712 digests against the deployed DeploymentRegistry", () => {
   let node: LocalTempo;

@@ -1,7 +1,7 @@
 // Test harness: a local Tempo node (anvil --network tempo, chain 31337) with the Sealed contracts
 // deployed from the Foundry artifacts. Node only; uses anvil's public dev keys; never touches a
 // public network.
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -154,6 +154,25 @@ export function findContractsDir(): string | undefined {
     resolve(repoRoot, "../contracts/contracts"),
   ].filter((p): p is string => !!p);
   return candidates.find((p) => existsSync(join(p, "foundry.toml")));
+}
+
+/**
+ * Whether the local-chain suites can run (anvil on PATH and the Foundry project found). With
+ * SEALED_REQUIRE_CHAIN_TESTS=1 (CI) a missing prerequisite throws instead, so the suites fail
+ * rather than report green while skipped.
+ */
+export function chainTestsEnabled(): boolean {
+  let anvil = true;
+  try {
+    execFileSync("anvil", ["--version"], { stdio: "ignore" });
+  } catch {
+    anvil = false;
+  }
+  const contracts = !!findContractsDir();
+  if ((!anvil || !contracts) && process.env.SEALED_REQUIRE_CHAIN_TESTS === "1") {
+    throw new Error(`SEALED_REQUIRE_CHAIN_TESTS=1 but ${!anvil ? "anvil is not on PATH" : "the Foundry contracts project was not found (SEALED_CONTRACTS_DIR)"}`);
+  }
+  return anvil && contracts;
 }
 
 async function run(cmd: string, args: string[], cwd: string): Promise<void> {
@@ -325,6 +344,11 @@ export async function registerDeployment(node: LocalTempo, d: SealedDeployment, 
     record, 1, evidence,
   ]);
   return digest;
+}
+
+/** Closes a deployment (terminal), as its customer or the owner would. */
+export async function closeDeployment(node: LocalTempo, d: SealedDeployment, key: Hex, deploymentId: Hex): Promise<void> {
+  await send(node.client, key, d.deploymentRegistry, d.abis.DeploymentRegistry, "closeDeployment", [deploymentId]);
 }
 
 /** Transfers TIP-20 tokens from the funder dev account. */

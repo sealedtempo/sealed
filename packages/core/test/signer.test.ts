@@ -16,6 +16,12 @@ describe("enclave signer derivation", () => {
     const okm = Buffer.from(hkdfSync("sha256", Buffer.from("42".repeat(32), "hex"), "sealed/enclave-signer/v1", Buffer.from([0]), 32));
     expect(deriveEnclavePrivateKey(seed)).toBe(`0x${okm.toString("hex")}`);
   });
+  // Frozen: the key fixes the access-key id and FeeSplitter's enclaveSigner across reboots, so any
+  // change to the derivation strands every deployment (spec gap in INTERFACES 9, pinned here).
+  it("keeps the frozen vector", () => {
+    expect(deriveEnclavePrivateKey(seed)).toBe("0x4d4d5af101bb41b2efc70a1a4178de19427df499354dd41b26e9280041758307");
+    expect(enclaveSignerAddress(seed)).toBe("0x0a8814ee1725ee6cc3bdb23d7c82b869ac0a4092");
+  });
   it("rejects seeds of the wrong size", () => {
     expect(() => deriveEnclavePrivateKey("0x1234")).toThrow("32 bytes");
   });
