@@ -1,5 +1,5 @@
 
-# locally built binaries
-verifier/cmd/sealed-verifierd/sealed-verifierd
+# locally built binaries (D-057); a pattern with a slash is relative to this directory
+/cmd/sealed-verifierd/sealed-verifierd
 __pycache__/
 *.pyc
