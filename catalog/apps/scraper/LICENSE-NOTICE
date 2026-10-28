@@ -12,8 +12,10 @@ scraper-runner-playwright (shipped by the catalog release)
   - Crawlee 3.18.2 (@crawlee/*)           Apache-2.0   https://github.com/apify/crawlee
   - Playwright 1.62.1 (npm playwright,    Apache-2.0   https://github.com/microsoft/playwright
     playwright-core)
-  - Firefox, as patched and built by      MPL-2.0      https://github.com/microsoft/playwright/tree/main/browser_patches/firefox
-    Playwright for 1.62.1                              (Mozilla source: https://hg.mozilla.org/)
+  - Firefox 153.0, as patched and built   MPL-2.0      https://github.com/microsoft/playwright/tree/v1.62.1/browser_patches/firefox
+    by Playwright for 1.62.1 (browsers.json            (Mozilla source: https://github.com/mozilla-firefox/firefox,
+    revision 1538)                                      base f1b6c0f86b96b7e0688c26f65803576f27cdaf88 from
+                                                        UPSTREAM_CONFIG.sh at that tag)
   - Node.js 24 (NodeSource build)         MIT          https://github.com/nodejs/node
   - tini 0.19.0                           MIT          https://github.com/krallin/tini
   - Ubuntu 24.04 base packages from       various OSI-approved licenses, treated as OS system
@@ -65,3 +67,23 @@ Not shipped
     no layer contains them. WebKit and ffmpeg are removed as unused.
   - idcac-playwright (optional Crawlee peer dependency, GPL-3.0-only) is not installed.
   - No enterprise or proprietary components are used.
+
+License texts
+-------------
+
+LICENSES/ holds the upstream texts byte for byte (runner/test/licenses.test.ts compares git blob
+hashes). Each file is followed by the repository, ref, path and git blob hash it was copied from.
+
+  Crawlee:     LICENSES/crawlee-v3.18.2-LICENSE.md
+               (apify/crawlee v3.18.2 LICENSE.md, git blob 8effb33b6996f6db058161cfe48b01e1f614e726)
+  Playwright:  LICENSES/playwright-v1.62.1-LICENSE
+               (microsoft/playwright v1.62.1 LICENSE, git blob df112373eb2e23e459bf93ec412be1764dc5a38b)
+               LICENSES/playwright-v1.62.1-NOTICE
+               (microsoft/playwright v1.62.1 NOTICE, git blob 814ec1696f7ad36c1b524fb6adeef14b4b367fec)
+  Firefox:     LICENSES/firefox-MPL-2.0.txt
+               (mozilla/bedrock a15178c3c7c976c67b3641af77cae0b66093a175 media/MPL/2.0/index.txt, git blob d0a1fa1482eea82e19510e7920cbe3a03e41f691)
+               The canonical MPL 2.0 text that Mozilla serves at
+               https://www.mozilla.org/media/MPL/2.0/index.txt. Firefox's own root LICENSE only points
+               to toolkit/content/license.html, which the browser shows at about:license.
+  PostgreSQL:  LICENSES/postgresql-17.11-COPYRIGHT
+               (postgres/postgres REL_17_11 COPYRIGHT, git blob 0a397648dcd3c2177acc58bd7daecd11ad64be62)

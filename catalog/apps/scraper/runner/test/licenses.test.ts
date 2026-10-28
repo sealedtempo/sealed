@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { productionTree, type InstalledPackage } from './helpers/prod-tree.js';
@@ -98,6 +99,68 @@ describe('production dependency licenses', () => {
       for (const name of names) expect(NOTICE, `${name} ${license}`).toMatch(new RegExp(`${name}[^\\n]*${license}|${license}[^\\n]*${name}`));
     }
     for (const [name, { license }] of Object.entries(UNDECLARED)) expect(NOTICE).toMatch(new RegExp(`${name}[^\\n]*${license}`));
+  });
+});
+
+// License audit F10 (D-069): LICENSES/ carries the upstream texts byte for byte. LICENSE-NOTICE
+// names each file, then "(<owner>/<repo> <ref> <path>, git blob <sha1>)" as gh api reports it.
+const APP = resolve(RUNNER, '..');
+const TEXT_ENTRY = /LICENSES\/([\w.-]+)\s*\n\s*\(([\w.-]+\/[\w.-]+) (\S+) (\S+), git blob ([0-9a-f]{40})\)/g;
+
+function gitBlobHash(data: Buffer): string {
+  return createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${data.length}\0`), data])).digest('hex');
+}
+
+type NoticeText = { file: string; repo: string; ref: string; path: string; blob: string };
+
+function noticeTexts(notice: string): NoticeText[] {
+  return [...notice.matchAll(TEXT_ENTRY)].map((m) => ({
+    file: m[1] ?? '',
+    repo: m[2] ?? '',
+    ref: m[3] ?? '',
+    path: m[4] ?? '',
+    blob: m[5] ?? '',
+  }));
+}
+
+describe('upstream license texts (LICENSES/)', () => {
+  const texts = noticeTexts(NOTICE);
+
+  it('ships the texts the license audit lists, for the pinned versions', () => {
+    expect(Object.fromEntries(texts.map((t) => [t.file, `${t.repo} ${t.ref} ${t.path}`]))).toEqual({
+      'crawlee-v3.18.2-LICENSE.md': 'apify/crawlee v3.18.2 LICENSE.md',
+      'playwright-v1.62.1-LICENSE': 'microsoft/playwright v1.62.1 LICENSE',
+      'playwright-v1.62.1-NOTICE': 'microsoft/playwright v1.62.1 NOTICE',
+      'firefox-MPL-2.0.txt': 'mozilla/bedrock a15178c3c7c976c67b3641af77cae0b66093a175 media/MPL/2.0/index.txt',
+      'postgresql-17.11-COPYRIGHT': 'postgres/postgres REL_17_11 COPYRIGHT',
+    });
+    const pkg = JSON.parse(readFileSync(resolve(RUNNER, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+      optionalDependencies: Record<string, string>;
+    };
+    expect(`v${pkg.dependencies['@crawlee/core']}`).toBe(texts.find((t) => t.repo === 'apify/crawlee')?.ref);
+    expect(`v${pkg.optionalDependencies.playwright}`).toBe(texts.find((t) => t.file.startsWith('playwright-'))?.ref);
+    const manifest = readFileSync(resolve(APP, 'manifest.yaml'), 'utf8');
+    expect(manifest).toContain('postgres:17.11');
+  });
+
+  it('every text is byte for byte the upstream file', () => {
+    for (const t of texts) {
+      expect(gitBlobHash(readFileSync(join(APP, 'LICENSES', t.file))), t.file).toBe(t.blob);
+    }
+    expect(readFileSync(join(APP, 'LICENSES', 'firefox-MPL-2.0.txt'), 'utf8')).toMatch(/^Mozilla Public License Version 2\.0\n/);
+  });
+
+  it('LICENSE-NOTICE names every file in LICENSES/ with its source, and nothing else', () => {
+    const present = readdirSync(join(APP, 'LICENSES')).filter((n) => !n.startsWith('.')).sort();
+    expect(texts.map((t) => t.file).sort()).toEqual(present);
+    const mentioned = new Set([...NOTICE.matchAll(/LICENSES\/([\w.-]+)/g)].map((m) => m[1]));
+    expect([...mentioned].sort()).toEqual(present);
+  });
+
+  it('the hash is git\'s blob id', () => {
+    // printf 'hello\n' | git hash-object --stdin
+    expect(gitBlobHash(Buffer.from('hello\n'))).toBe('ce013625030ba8dba906f756967f9e9ca394464a');
   });
 });
 
