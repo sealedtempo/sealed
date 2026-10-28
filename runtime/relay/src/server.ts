@@ -95,7 +95,10 @@ export function createRelayApp(deps: RelayDeps): Hono {
     return pay.withReceipt(async function* () {})
   }
 
-  app.on('HEAD', '/v1/chat/completions', (c) => management(c.req.raw))
+  // Hono routes HEAD through GET handlers; HEAD is the mppx session bootstrap probe.
+  app.get('/v1/chat/completions', (c) =>
+    c.req.raw.method === 'HEAD' ? management(c.req.raw) : errorResponse(405, 'method_not_allowed', 'use POST'),
+  )
 
   app.post('/v1/chat/completions', async (c) => {
     const request = c.req.raw
