@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sealed-dev/sealed/verifier/internal/cjson"
+	"github.com/sealed-dev/sealed/runtime/composer/cjson"
 	"github.com/sealed-dev/sealed/verifier/internal/hexb"
 )
 
