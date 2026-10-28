@@ -648,7 +648,7 @@ func TestBootstrapPrintsConnectionToken(t *testing.T) {
 	work := filepath.Join(h.dir, "work")
 	args := []string{"--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
 		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
-		"--key-broker-image", "ghcr.io/sealedtempo/key-broker@sha256:" + strings.Repeat("ab", 32), "--work-dir", work}
+		"--key-broker-image", "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32), "--work-dir", work}
 	// The default key broker image is a placeholder until it is published.
 	if code, _, errs := h.run("bootstrap", "--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1", "--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com"); code != ExitUsage || !strings.Contains(errs, "not published yet") {
 		t.Fatalf("placeholder: %d %s", code, errs)

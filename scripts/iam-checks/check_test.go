@@ -115,7 +115,7 @@ func compliant(w *world, mutate map[string]bool) {
 	w.add("GET", iamv1+"/roles/sealedSubnetUser", "operator-token", "*", 200, map[string]any{"includedPermissions": []string{"compute.subnetworks.use", "compute.subnetworks.useExternalIp"}})
 	w.add("GET", compute+"/regions/us-central1/subnetworks/sealed-subnet/getIamPolicy?optionsRequestedPolicyVersion=3", "operator-token", "*", 200, map[string]any{"bindings": []any{map[string]any{"role": "projects/" + project + "/roles/sealedSubnetUser", "members": []string{"serviceAccount:" + deployer}}}})
 	w.add("GET", kmsKey+":getIamPolicy?options.requestedPolicyVersion=3", "operator-token", "*", 200, map[string]any{"bindings": []any{map[string]any{"role": "roles/cloudkms.signer", "members": []string{"serviceAccount:" + kbSA}}}})
-	w.add("GET", run, "operator-token", "*", 200, map[string]any{"uri": kbURL, "template": map[string]any{"serviceAccount": kbSA, "containers": []any{map[string]any{"image": "us-central1-docker.pkg.dev/acme-prod-4417/sealed-ghcr/sealedtempo/key-broker@sha256:" + strings.Repeat("ab", 32)}}}})
+	w.add("GET", run, "operator-token", "*", 200, map[string]any{"uri": kbURL, "template": map[string]any{"serviceAccount": kbSA, "containers": []any{map[string]any{"image": "us-central1-docker.pkg.dev/acme-prod-4417/sealed-ghcr/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32)}}}})
 	ingressPorts := []string{"80", "443"}
 	if mutate["ssh-firewall"] {
 		ingressPorts = []string{"22", "80", "443"}

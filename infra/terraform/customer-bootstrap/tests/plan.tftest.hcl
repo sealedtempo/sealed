@@ -40,7 +40,7 @@ variables {
   region                   = "us-central1"
   customer_address         = "0x00000000000000000000000000000000000000C1"
   platform_service_account = "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com"
-  key_broker_image         = "ghcr.io/sealedtempo/key-broker@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  key_broker_image         = "ghcr.io/sealedtempo/sealed-key-broker@sha256:1111111111111111111111111111111111111111111111111111111111111111"
   platform_registry        = "0x18AB956ea44757587896dfD25632FB3e89F7002d"
   app_registry             = "0x88C91CAcB74cCeC3b8A1823977EEC42aE3b93b43"
   deployment_registry      = "0x254eFB9d1809A95Ec6d233cC57b3a10849bd2C8E"
@@ -112,7 +112,7 @@ run "key_broker" {
   command = plan
 
   assert {
-    condition     = google_cloud_run_v2_service.key_broker.template[0].containers[0].image == "us-central1-docker.pkg.dev/sealed-test-1234/sealed-ghcr/sealedtempo/key-broker@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    condition     = google_cloud_run_v2_service.key_broker.template[0].containers[0].image == "us-central1-docker.pkg.dev/sealed-test-1234/sealed-ghcr/sealedtempo/sealed-key-broker@sha256:1111111111111111111111111111111111111111111111111111111111111111"
     error_message = "ghcr.io images are pulled through the remote repository with the same digest"
   }
 
@@ -203,7 +203,7 @@ run "rejects_tag_pinned_key_broker" {
   command = plan
 
   variables {
-    key_broker_image = "ghcr.io/sealedtempo/key-broker:latest"
+    key_broker_image = "ghcr.io/sealedtempo/sealed-key-broker:latest"
   }
 
   expect_failures = [var.key_broker_image]
@@ -213,7 +213,7 @@ run "rejects_placeholder_digest" {
   command = plan
 
   variables {
-    key_broker_image = "ghcr.io/sealedtempo/key-broker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    key_broker_image = "ghcr.io/sealedtempo/sealed-key-broker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   }
 
   expect_failures = [var.key_broker_image]

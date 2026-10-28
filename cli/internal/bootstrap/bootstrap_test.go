@@ -21,7 +21,7 @@ func params() *Params {
 	return &Params{
 		Project: "acme-prod-4417", Region: "us-central1", Customer: "0x00000000000000000000000000000000000000C1",
 		PlatformSA:     "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
-		KeyBrokerImage: "ghcr.io/sealedtempo/key-broker@sha256:" + strings.Repeat("ab", 32),
+		KeyBrokerImage: "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32),
 		TempoRPC:       "https://rpc.tempo.xyz", ChainID: 4217,
 		Registries: chain.Addresses{
 			PlatformRegistry:   common.HexToAddress("0x18AB956ea44757587896dfD25632FB3e89F7002d"),
@@ -42,7 +42,7 @@ func TestValidate(t *testing.T) {
 		"customer":      func(p *Params) { p.Customer = "0x12" },
 		"platform sa":   func(p *Params) { p.PlatformSA = "someone@gmail.com" },
 		"own sa":        func(p *Params) { p.PlatformSA = "sealed-platform@acme-prod-4417.iam.gserviceaccount.com" },
-		"tag image":     func(p *Params) { p.KeyBrokerImage = "ghcr.io/sealedtempo/key-broker:latest" },
+		"tag image":     func(p *Params) { p.KeyBrokerImage = "ghcr.io/sealedtempo/sealed-key-broker:latest" },
 		"placeholder":   func(p *Params) { p.KeyBrokerImage = DefaultKeyBrokerImage },
 		"http rpc":      func(p *Params) { p.TempoRPC = "http://rpc.tempo.xyz" },
 		"no registries": func(p *Params) { p.Registries = chain.Addresses{} },
@@ -212,5 +212,30 @@ func TestEmbeddedModuleValidates(t *testing.T) {
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("terraform %s: %v\n%s", args[0], err, out)
 		}
+	}
+}
+
+// Release CI publishes the key broker as sealed-key-broker and pins its digest in extra-images.json; the CLI
+// deploys exactly that image.
+func TestDefaultKeyBrokerImagePin(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "catalog", "tools", "release", "extra-images.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extra struct {
+		Registry string `json:"registry"`
+		Images   map[string]struct {
+			Digest string `json:"digest"`
+		} `json:"images"`
+	}
+	if err := json.Unmarshal(raw, &extra); err != nil {
+		t.Fatal(err)
+	}
+	kb, ok := extra.Images["sealed-key-broker"]
+	if !ok {
+		t.Fatal("extra-images.json has no sealed-key-broker")
+	}
+	if want := extra.Registry + "/sealed-key-broker@" + kb.Digest; DefaultKeyBrokerImage != want {
+		t.Fatalf("DefaultKeyBrokerImage = %s, want %s (the pin in extra-images.json)", DefaultKeyBrokerImage, want)
 	}
 }

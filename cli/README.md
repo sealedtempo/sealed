@@ -13,7 +13,7 @@ never printed. The CLI only reads Tempo (eth_call); it holds no keys and sends n
 
 ```sh
 sealed bootstrap --project <id> --customer-address <0x...> --platform-sa <email> \
-  --key-broker-image ghcr.io/sealedtempo/key-broker@sha256:<digest> [--region us-central1] [--plan] [--yes]
+  --key-broker-image ghcr.io/sealedtempo/sealed-key-broker@sha256:<digest> [--region us-central1] [--plan] [--yes]
 sealed connect gcp --project <id> ...                  # the same command (D-032)
 
 sealed secrets set --config stack.yaml --missing       # generate or ask for every required secret, once
