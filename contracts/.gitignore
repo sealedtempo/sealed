@@ -12,3 +12,5 @@ broadcast/**/dry-run/
 deployments/local.json
 deployments/anvil*.json
 .e2e/
+# Files written by the script tests
+deployments/test-*.json
