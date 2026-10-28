@@ -1,0 +1,7 @@
+*
+!tsconfig.base.json
+!catalog/apps/scraper/runner/package.json
+!catalog/apps/scraper/runner/pnpm-lock.yaml
+!catalog/apps/scraper/runner/tsconfig.json
+!catalog/apps/scraper/runner/tsconfig.build.json
+!catalog/apps/scraper/runner/src/**

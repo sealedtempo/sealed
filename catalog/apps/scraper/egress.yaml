@@ -1,0 +1,8 @@
+version: 1
+default_allow: []
+customer_additions_allowed: true
+notes: >-
+  The scraper has no built-in destinations. It reaches only the sites the customer adds to
+  egressAdditions.scraper (host:port, for example example.com:443). Page fetches, robots.txt
+  fetches and Firefox all go through sealed-egress; the runner refuses to start without it.
+  Usage events go to sealed-agent and the database is scraper-db, both on the internal network.

@@ -1,0 +1,42 @@
+Scraper (catalog app "scraper")
+===============================
+
+scraper-runner is first-party code in this repository, licensed under the Apache License 2.0
+(see LICENSE at the repository root). Source: catalog/apps/scraper/runner.
+
+Components shipped in the images
+--------------------------------
+
+scraper-runner-playwright (shipped by the catalog release)
+  - scraper-runner                        Apache-2.0
+  - Crawlee 3.18.2 (@crawlee/*)           Apache-2.0   https://github.com/apify/crawlee
+  - Playwright 1.62.1 (npm playwright,    Apache-2.0   https://github.com/microsoft/playwright
+    playwright-core)
+  - Firefox, as patched and built by      MPL-2.0      https://github.com/microsoft/playwright/tree/main/browser_patches/firefox
+    Playwright for 1.62.1                              (Mozilla source: https://hg.mozilla.org/)
+  - Node.js 24 (NodeSource build)         MIT          https://github.com/nodejs/node
+  - tini 0.19.0                           MIT          https://github.com/krallin/tini
+  - Ubuntu 24.04 base packages from       various OSI-approved licenses, treated as OS system
+    mcr.microsoft.com/playwright:v1.62.1-noble          components (D-021)
+  - npm dependencies (hono, @hono/node-server, pg, cheerio, got-scraping and their transitive
+    dependencies): MIT, Apache-2.0, ISC, BSD-2-Clause or BSD-3-Clause. The SBOM in the release
+    bundle (sbom/scraper-runner-playwright.spdx.json) lists every package and license.
+
+scraper-runner (Cheerio-only variant)
+  - The same npm packages without @crawlee/playwright and playwright, Node.js 24.22.1 (MIT),
+    tini 0.19.0 (MIT), and Debian 12 base packages from node:24.22.1-bookworm-slim (OS system
+    components, D-021).
+
+postgres (scraper-db)
+  - PostgreSQL 17.11                      PostgreSQL License   https://www.postgresql.org/about/licence/
+  - Alpine Linux base packages            OS system components (D-021)
+
+Not shipped
+-----------
+
+  - Chromium from the Playwright base image. On Linux x64, Playwright 1.57 and later ship Google's
+    "Chrome for Testing" build, whose license terms are unclear (D-022). The image build deletes
+    /ms-playwright/chromium-* and /ms-playwright/chromium_headless_shell-* and flattens the image so
+    no layer contains them. WebKit and ffmpeg are removed as unused.
+  - idcac-playwright (optional Crawlee peer dependency, GPL-3.0-only) is not installed.
+  - No enterprise or proprietary components are used.

@@ -1,0 +1,74 @@
+schema: sealed-manifest/v1
+id: scraper
+name: Scraper
+category: data
+description: >-
+  First-party web scraper built on Crawlee. Create crawl jobs with CSS selectors, follow links
+  on the same host, respect robots.txt, and export results as JSON or CSV. Results stay in the
+  app's own Postgres. Pages are fetched only through sealed-egress, so the scraper reaches only
+  the sites you add.
+upstream:
+  repo: https://github.com/sealed-dev/sealed
+  version: 0.1.0
+  license_spdx: Apache-2.0
+  source_url: https://github.com/sealed-dev/sealed/tree/main/catalog/apps/scraper/runner
+maintainer:
+  name: Sealed
+  payout_address: ${MAINTAINER_DEFAULT_ADDRESS}
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: scraper-runner
+images:
+  # Built by the runtime image workflow from images/scraper-runner-playwright (Cheerio and
+  # Playwright Firefox). The digest is pinned by a follow-up PR once the image is built (D-028).
+  - name: scraper-runner-playwright
+    source: build:images/scraper-runner-playwright
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    platform: linux/amd64
+    license_spdx: Apache-2.0 AND MPL-2.0
+  # postgres:17.11-alpine index; linux/amd64 child
+  # sha256:e4cb93687b062cd25a0e8f672d85a7708235009d70d31f8a7698d9370092a9c4
+  - name: postgres
+    source: docker.io/library/postgres:17.11-alpine
+    digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    platform: linux/amd64
+    license_spdx: PostgreSQL
+resources:
+  cpu: 2
+  memory_gb: 4
+  disk_gb: 10
+routes:
+  - name: scraper
+    service: scraper-runner
+    internal_port: 8080
+    path_or_host: scraper
+    auth: gate
+healthcheck:
+  service: scraper-runner
+  http: /healthz
+  port: 8080
+  start_period_s: 30
+metering:
+  unit: pages
+  source: callback
+secrets:
+  - name: SCRAPER_DB_PASSWORD
+    description: Password of the scraper's own Postgres database. Never leaves the VM.
+    generate: hex32
+telemetry_off_env:
+  # Crawlee 3.18.2 and the runner send no telemetry; Firefox background traffic is turned off by
+  # preferences in the runner. These keep any tool from phoning home or downloading browsers.
+  DO_NOT_TRACK: "1"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+license_exclusions:
+  # Playwright's Linux Chromium is Chrome for Testing (unclear license, D-022). Only Firefox ships.
+  - ms-playwright/chromium-*
+  - ms-playwright/chromium_headless_shell-*
+  - "**/node_modules/@playwright/browser-chromium"
+  - "**/node_modules/idcac-playwright"
+notes: >-
+  Metering: one usage event per batch of successful pages ({app: scraper, unit: pages,
+  quantity: N}) to sealed-agent. robots.txt is honoured by default with RFC 9309 failure
+  handling and is fetched through sealed-egress. The slim image in images/scraper-runner is a
+  Cheerio-only build of the same code for a lighter release.
