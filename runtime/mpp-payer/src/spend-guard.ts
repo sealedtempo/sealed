@@ -18,10 +18,12 @@ export class SpendLimitError extends Error {
     readonly remaining: bigint,
     /** local: this guard; shared: sealed-agent's shared budget (fee settlement has priority). */
     readonly scope: 'local' | 'shared' = 'local',
+    /** The shared budget's reason when it is not plain lack of budget (for example too_many_reservations). */
+    readonly reason?: string,
   ) {
     super(
       scope === 'shared'
-        ? `shared daily budget reached (fee settlement has priority): requested ${requested}, remaining ${remaining} base units`
+        ? `shared daily budget refused (fee settlement has priority${reason ? `; ${reason}` : ''}): requested ${requested}, remaining ${remaining} base units`
         : `daily spend limit reached: requested ${requested}, remaining ${remaining} base units`,
     )
     this.name = 'SpendLimitError'

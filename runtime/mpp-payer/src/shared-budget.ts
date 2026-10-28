@@ -61,7 +61,7 @@ function decimal(value: unknown): bigint | undefined {
  * Client of sealed-agent's shared spend budget (brief item 21, D-048):
  *
  *   POST /v1/spend/reserve {"amount":"<base units>"}  ->  {"ok":true,"reservationId":"…","remaining":"…"}
- *                                                        {"ok":false,"remaining":"…"} when refused
+ *                                                        {"ok":false,"remaining":"…","reason"?} when refused
  *   POST /v1/spend/release {"reservationId":"…","used":"<base units>"}
  *
  * Amounts are decimal strings of FEE_TOKEN base units (INTERFACES conventions). The agent keeps
@@ -88,7 +88,7 @@ export class AgentSpendBudget implements SpendBudget {
       this.current.lastError = error.message
       throw new BudgetUnavailableError(`sealed-agent spend budget unreachable: ${error.message}`)
     })
-    const body = (json ?? {}) as { ok?: unknown; reservationId?: unknown; remaining?: unknown; error?: unknown }
+    const body = (json ?? {}) as { ok?: unknown; reservationId?: unknown; remaining?: unknown; reason?: unknown; error?: unknown }
     const remaining = decimal(body.remaining)
     if (status >= 500 || status === 400 || status === 401 || status === 403 || status === 404) {
       const detail = typeof body.error === 'string' ? `: ${body.error.slice(0, 200)}` : ''
@@ -97,7 +97,8 @@ export class AgentSpendBudget implements SpendBudget {
     }
     if (body.ok === false) {
       this.note(remaining)
-      throw new SpendLimitError(amount, remaining ?? 0n, 'shared')
+      const reason = typeof body.reason === 'string' && /^[a-z_]{1,40}$/.test(body.reason) && body.reason !== 'budget' ? body.reason : undefined
+      throw new SpendLimitError(amount, remaining ?? 0n, 'shared', reason)
     }
     const id = body.reservationId
     if (status < 200 || status > 299 || body.ok !== true || typeof id !== 'string' || id.length === 0 || id.length > MAX_RESERVATION_ID) {

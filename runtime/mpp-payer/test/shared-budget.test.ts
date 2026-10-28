@@ -56,6 +56,13 @@ describe('shared spend budget client (sealed-agent /v1/spend/reserve and /releas
     expect(error).toMatchObject({ scope: 'shared', requested: 5_000n, remaining: 1_200n })
     reply = () => ({ status: 200, body: JSON.stringify({ ok: false }) })
     expect(await new AgentSpendBudget({ agentUrl }).reserve(5_000n).catch((e) => e)).toMatchObject({ scope: 'shared', remaining: 0n })
+    // The agent's reason is kept when it is not plain lack of budget.
+    reply = () => ({ status: 200, body: JSON.stringify({ ok: false, remaining: '9', reason: 'too_many_reservations' }) })
+    const busy = await new AgentSpendBudget({ agentUrl }).reserve(5n).catch((e) => e)
+    expect(busy).toMatchObject({ scope: 'shared', reason: 'too_many_reservations' })
+    expect(busy.message).toMatch(/too_many_reservations/)
+    reply = () => ({ status: 200, body: JSON.stringify({ ok: false, remaining: '1', reason: 'budget' }) })
+    expect(await new AgentSpendBudget({ agentUrl }).reserve(5n).catch((e) => e)).toMatchObject({ reason: undefined })
   })
 
   it.each([
