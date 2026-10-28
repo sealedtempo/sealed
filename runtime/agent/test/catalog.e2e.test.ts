@@ -108,7 +108,7 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
         keyBroker: "https://sealed-key-broker-test.a.run.app",
         platformApi: "https://api.sealed.example",
         tempoRpc: "https://rpc.tempo.xyz",
-        relay: "https://relay.sealed.example",
+        relay: "https://attest.relay.sealed.example",
         relayAttest: "https://attest.relay.sealed.example/attest",
       },
       contracts: {

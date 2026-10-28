@@ -219,7 +219,7 @@ func (w *World) Compose(t testing.TB, o StackOptions) *Stack {
 			KeyBroker:   "https://sealed-key-broker-xyz.a.run.app",
 			PlatformAPI: "https://api.sealed.example",
 			TempoRPC:    "https://rpc.tempo.xyz",
-			Relay:       "https://relay.sealed.example",
+			Relay:       "https://attest.relay.sealed.example",
 			RelayAttest: "https://attest.relay.sealed.example/attest",
 		},
 		Contracts: composer.Contracts{
