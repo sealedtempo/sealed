@@ -1,6 +1,6 @@
 // Package chain is a read-only client for the Sealed registries on Tempo (PlatformRegistry, AppRegistry,
-// DeploymentRegistry). It only issues eth_call and eth_chainId: go-ethereum cannot decode Tempo 0x76
-// transactions, so it never fetches blocks or transactions (D-025).
+// DeploymentRegistry). It only issues eth_call, eth_chainId and eth_blockNumber: go-ethereum cannot decode Tempo
+// 0x76 transactions, so it never fetches blocks or transactions (D-025).
 package chain
 
 import (
@@ -32,6 +32,7 @@ var ErrNotFound = errors.New("not found onchain")
 type Backend interface {
 	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
 	ChainID(ctx context.Context) (*big.Int, error)
+	BlockNumber(ctx context.Context) (uint64, error)
 }
 
 // Client reads the registries. It holds no keys and cannot send transactions.
@@ -39,6 +40,7 @@ type Client struct {
 	backend Backend
 	addrs   Addresses
 	abis    map[string]*abi.ABI
+	block   *big.Int // nil: latest
 }
 
 // RevertError is a decoded custom error from a reverted eth_call.
@@ -60,13 +62,15 @@ func (e *RevertError) Unwrap() error {
 	return nil
 }
 
-// Dial connects to a Tempo JSON-RPC endpoint.
+// Dial connects to a Tempo JSON-RPC endpoint. Errors of the returned client never contain the URL's userinfo, path
+// or query (where provider API keys live).
 func Dial(ctx context.Context, rpcURL string, addrs Addresses) (*Client, error) {
+	r := newRedactor(rpcURL)
 	ec, err := ethclient.DialContext(ctx, rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", rpcURL, err)
+		return nil, fmt.Errorf("dial %s: %w", RedactURL(rpcURL), r.redact(err))
 	}
-	return New(ec, addrs)
+	return New(redactingBackend{inner: ec, r: r}, addrs)
 }
 
 // New returns a reader over backend for the given registry addresses.
@@ -100,6 +104,24 @@ func loadABIs() (map[string]*abi.ABI, error) {
 // Addresses returns the registry addresses this client reads.
 func (c *Client) Addresses() Addresses { return c.addrs }
 
+// BlockNumber returns eth_blockNumber, the current head.
+func (c *Client) BlockNumber(ctx context.Context) (uint64, error) { return c.backend.BlockNumber(ctx) }
+
+// AtBlock returns a client whose reads all run against block n, so one verification sees one consistent state.
+func (c *Client) AtBlock(n uint64) *Client {
+	cp := *c
+	cp.block = new(big.Int).SetUint64(n)
+	return &cp
+}
+
+// Block returns the block reads are pinned to, and false when they use the latest block.
+func (c *Client) Block() (uint64, bool) {
+	if c.block == nil {
+		return 0, false
+	}
+	return c.block.Uint64(), true
+}
+
 // ChainID returns eth_chainId.
 func (c *Client) ChainID(ctx context.Context) (uint64, error) {
 	id, err := c.backend.ChainID(ctx)
@@ -118,7 +140,7 @@ func (c *Client) call(ctx context.Context, contract string, to common.Address, m
 	if err != nil {
 		return nil, fmt.Errorf("pack %s.%s: %w", contract, method, err)
 	}
-	out, err := c.backend.CallContract(ctx, ethereum.CallMsg{To: &to, Data: data}, nil)
+	out, err := c.backend.CallContract(ctx, ethereum.CallMsg{To: &to, Data: data}, c.block)
 	if err != nil {
 		if rev := decodeRevert(contract, a, err); rev != nil {
 			return nil, rev

@@ -19,6 +19,8 @@ type fakeBackend struct {
 	results map[string][]byte // 4-byte selector hex -> return data
 	reverts map[string]error
 	calls   int
+	blocks  []*big.Int // block argument of each call
+	head    uint64
 }
 
 type dataErr struct{ data string }
@@ -27,8 +29,9 @@ func (e dataErr) Error() string          { return "execution reverted" }
 func (e dataErr) ErrorCode() int         { return 3 }
 func (e dataErr) ErrorData() interface{} { return e.data }
 
-func (f *fakeBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+func (f *fakeBackend) CallContract(_ context.Context, call ethereum.CallMsg, block *big.Int) ([]byte, error) {
 	f.calls++
+	f.blocks = append(f.blocks, block)
 	sel := hex.EncodeToString(call.Data[:4])
 	if err, ok := f.reverts[sel]; ok {
 		return nil, err
@@ -41,6 +44,8 @@ func (f *fakeBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *
 }
 
 func (f *fakeBackend) ChainID(context.Context) (*big.Int, error) { return big.NewInt(4217), nil }
+
+func (f *fakeBackend) BlockNumber(context.Context) (uint64, error) { return f.head, nil }
 
 var testAddrs = Addresses{
 	PlatformRegistry:   common.HexToAddress("0x1000000000000000000000000000000000000001"),

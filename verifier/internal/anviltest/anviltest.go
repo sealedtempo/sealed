@@ -61,6 +61,19 @@ func Key(i int) *ecdsa.PrivateKey {
 // Addr returns dev account i's address.
 func Addr(i int) common.Address { return crypto.PubkeyToAddress(Key(i).PublicKey) }
 
+// RequireEnv set to "1" (in CI) turns every skip for a missing anvil, forge or contracts tree into a failure, so the
+// end-to-end and tamper tests on the real contracts cannot be skipped silently.
+const RequireEnv = "SEALED_REQUIRE_ANVIL"
+
+// SkipOrFail skips the test, or fails it when RequireEnv is "1".
+func SkipOrFail(t testing.TB, reason string) {
+	t.Helper()
+	if os.Getenv(RequireEnv) == "1" {
+		t.Fatalf("%s=1 but %s", RequireEnv, reason)
+	}
+	t.Skip(reason)
+}
+
 // Node is a running anvil instance.
 type Node struct {
 	URL     string
@@ -73,7 +86,7 @@ func Start(t testing.TB) *Node {
 	t.Helper()
 	bin, err := exec.LookPath("anvil")
 	if err != nil {
-		t.Skip("anvil not installed")
+		SkipOrFail(t, "anvil not installed")
 	}
 	port := freePort(t)
 	// Block gas limit 500M as on mainnet: Foundry 1.7.1's T4 rules charge about 27M gas for DeploymentRegistry.
@@ -212,7 +225,7 @@ func BuildContracts(t testing.TB) map[string]Artifact {
 		}
 	})
 	if buildSkip != "" {
-		t.Skip(buildSkip)
+		SkipOrFail(t, buildSkip)
 	}
 	if buildErr != nil {
 		t.Fatal(buildErr)

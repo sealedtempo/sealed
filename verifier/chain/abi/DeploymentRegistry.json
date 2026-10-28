@@ -1220,6 +1220,22 @@
   },
   {
     "type": "error",
+    "name": "AttestedBeforeApproval",
+    "inputs": [
+      {
+        "name": "attestedAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "approvedAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "DeploymentAlreadyRegistered",
     "inputs": [
       {
@@ -1394,10 +1410,37 @@
   },
   {
     "type": "error",
+    "name": "QuoteReused",
+    "inputs": [
+      {
+        "name": "quoteHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ReleaseNotApprovable",
     "inputs": [
       {
         "name": "releaseId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ReleasesChanged",
+    "inputs": [
+      {
+        "name": "customer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "stackHash",
         "type": "bytes32",
         "internalType": "bytes32"
       }
