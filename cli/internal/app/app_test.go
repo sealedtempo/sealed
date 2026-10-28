@@ -45,6 +45,8 @@ type harness struct {
 	answers []string
 	// real, when set, replaces the in-memory chain (anvil tests).
 	real registry.Reader
+	// now, when set, replaces the fixed clock testkit.HarnessNow (anvil tests use the node's head time).
+	now func() time.Time
 }
 
 func newHarness(t *testing.T) *harness {
@@ -72,13 +74,20 @@ func (h *harness) write(name, content string) string {
 	return p
 }
 
+func (h *harness) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Unix(testkit.HarnessNow, 0)
+}
+
 // run executes the CLI and returns exit code, stdout and stderr.
 func (h *harness) run(args ...string) (int, string, string) {
 	h.t.Helper()
 	var out, errb bytes.Buffer
 	e := &Env{
 		Stdin: strings.NewReader(h.stdin), Stdout: &out, Stderr: &errb,
-		Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return time.Unix(1793200300, 0) },
+		Getenv: func(k string) string { return h.env[k] }, Now: h.clock,
 		Interactive: h.tty,
 		ReadSecret: func(string) (string, error) {
 			if len(h.answers) == 0 {
@@ -269,6 +278,13 @@ func TestVerifyEvidenceEndToEnd(t *testing.T) {
 	if b, err := os.ReadFile(report); err != nil || !bytes.Contains(b, []byte(`"stack_recompute"`)) {
 		t.Fatal("report file not written")
 	}
+
+	// A chain head more than 60 s old fails the chain check (D-060), so a lagging RPC cannot hide a revocation.
+	h.chain.HeadTime = testkit.HarnessNow - 61
+	if code, _, errs := h.run("verify", "--deployment", id, "--evidence", path, "--dev-allow-simulated"); code != ExitFailed || !strings.Contains(errs, "evidence/chain") {
+		t.Fatalf("stale head: %d %s", code, errs)
+	}
+	h.chain.HeadTime = testkit.HarnessNow - 10
 
 	// Another deployment id fails.
 	other := "0x" + strings.Repeat("ab", 32)

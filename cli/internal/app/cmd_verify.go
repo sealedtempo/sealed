@@ -199,7 +199,8 @@ func runVerify(ctx context.Context, args []string, e *Env) error {
 		chainReader = rc.Chain() // pins every read of a verification to one block
 	}
 	deps := verify.Deps{Quotes: quotes, Chain: chainReader, Composer: &bundles.Composer{Fetcher: c.fetcher(e, s)}, Now: e.now}
-	opts := verify.Options{ChainID: s.ChainID, RequireOnchainRecord: true, MaxEvidenceAge: maxAge, ExpectedDeploymentID: &id}
+	opts := verify.Options{ChainID: s.ChainID, RequireOnchainRecord: true, MaxEvidenceAge: maxAge, ExpectedDeploymentID: &id,
+		AcceptSimulated: allowSim}
 	if expectCustomer != "" {
 		if !common.IsHexAddress(expectCustomer) {
 			return usagef("--expect-customer is not an address")

@@ -175,12 +175,13 @@ func main() {
 	}
 	now := time.Unix(int64(b.AttestedAt)+60, 0)
 	deps := verify.Deps{
-		Quotes:   quotes,
-		Chain:    &fakeChain{cfg: cfg, stackHash: sha256.Sum256([]byte(b.AppCompose)), releases: byRelease},
+		Quotes: quotes,
+		// The fake chain's head is fresh at the verification clock (D-060).
+		Chain:    verify.WithHead(&fakeChain{cfg: cfg, stackHash: sha256.Sum256([]byte(b.AppCompose)), releases: byRelease}, 1, func() time.Time { return now }),
 		Composer: &localComposer{byHash: byHash},
 		Now:      func() time.Time { return now },
 	}
-	rep, err := verify.VerifyEvidence(context.Background(), b, deps, verify.Options{ChainID: cfg.ChainID, MaxEvidenceAge: 15 * time.Minute})
+	rep, err := verify.VerifyEvidence(context.Background(), b, deps, verify.Options{ChainID: cfg.ChainID, MaxEvidenceAge: 15 * time.Minute, AcceptSimulated: true})
 	if err != nil {
 		fail(err)
 	}

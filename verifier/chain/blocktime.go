@@ -38,6 +38,10 @@ type rpcBackend struct {
 
 func newRPCBackend(ec *ethclient.Client) rpcBackend { return rpcBackend{Client: ec, rpc: ec.Client()} }
 
+// RPCBackend returns ec as a Backend that is also a BlockTimer. Callers that wrap the backend (for example to redact
+// errors) use it so the wrapped backend can still read block timestamps (D-060).
+func RPCBackend(ec *ethclient.Client) Backend { return newRPCBackend(ec) }
+
 // BlockTime implements BlockTimer.
 func (b rpcBackend) BlockTime(ctx context.Context, n uint64) (uint64, error) {
 	return blockTime(ctx, b.rpc, n)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -135,6 +136,9 @@ relayOwner: "0x00000000000000000000000000000000000000b1"
 	evidence, _ := abi.Arguments{{Type: bytesT}}.Pack(sig)
 	n.Call(t, testchain.Ops, n.Addrs.DeploymentRegistry, "DeploymentRegistry", "registerDeployment", rec, uint8(1), evidence)
 
+	// verify refuses a head more than 60 s from its clock (D-060): run it on the node's time.
+	head := n.BlockTime(t)
+	h.now = func() time.Time { return time.Unix(int64(head)+5, 0) }
 	id := w.Result.DeploymentID.Hex()
 	code, out, errs = h.run("verify", "--deployment", id, "--evidence", evPath, "--dev-allow-simulated", "--json", "--collateral-cache", filepath.Join(h.dir, "pcs"))
 	var rep struct {

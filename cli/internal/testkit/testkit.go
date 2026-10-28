@@ -308,9 +308,16 @@ type MemChain struct {
 	ReleaseList map[[32]byte][][32]byte
 	Approvals   map[string]*chain.StackApproval
 	Deployments map[[32]byte]*chain.Deployment
+	// Head is the block number PinHead reports, HeadTime its timestamp (unix seconds). A verification refuses a
+	// head more than 60 s away from its clock (D-060); the default is 10 s before HarnessNow.
+	Head     uint64
+	HeadTime uint64
 	// Err, when set, fails every call (RPC down).
 	Err error
 }
+
+// HarnessNow is the clock of the CLI's in-process test harness (unix seconds).
+const HarnessNow = 1793200300
 
 // NewMemChain returns an empty chain 4217 with Addresses.
 func NewMemChain() *MemChain {
@@ -318,7 +325,27 @@ func NewMemChain() *MemChain {
 		ID: 4217, Addrs: Addresses,
 		Images: map[[32]byte]*chain.Image{}, AppsByID: map[[32]byte]*chain.App{}, Releases: map[[32]byte]*chain.Release{},
 		ReleaseList: map[[32]byte][][32]byte{}, Approvals: map[string]*chain.StackApproval{}, Deployments: map[[32]byte]*chain.Deployment{},
+		Head: 100, HeadTime: HarnessNow - 10,
 	}
+}
+
+// PinHead implements verify.BlockPinner. The in-memory state has no history, so the pinned reader is m itself.
+func (m *MemChain) PinHead(context.Context) (verify.ChainReader, uint64, error) {
+	if m.Err != nil {
+		return nil, 0, m.Err
+	}
+	return m, m.Head, nil
+}
+
+// BlockTime implements verify.BlockTimer for the head block.
+func (m *MemChain) BlockTime(_ context.Context, n uint64) (uint64, error) {
+	if m.Err != nil {
+		return 0, m.Err
+	}
+	if n != m.Head {
+		return 0, fmt.Errorf("block %d is not the head %d", n, m.Head)
+	}
+	return m.HeadTime, nil
 }
 
 func approvalKey(c common.Address, s [32]byte) string { return c.Hex() + hex.EncodeToString(s[:]) }

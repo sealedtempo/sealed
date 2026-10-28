@@ -81,7 +81,7 @@ func Dial(ctx context.Context, rpcURL string, addrs chain.Addresses) (*Client, e
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %s", chain.RedactURL(rpcURL), redact(err.Error(), rpcURL))
 	}
-	c, err := New(redacting{ec, rpcURL}, addrs)
+	c, err := New(redacting{chain.RPCBackend(ec), rpcURL}, addrs)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +142,16 @@ func (r redacting) ChainID(ctx context.Context) (*big.Int, error) {
 func (r redacting) BlockNumber(ctx context.Context) (uint64, error) {
 	n, err := r.inner.BlockNumber(ctx)
 	return n, r.wrap(err)
+}
+
+// BlockTime implements chain.BlockTimer, so verifications can check the head block's age (D-060).
+func (r redacting) BlockTime(ctx context.Context, n uint64) (uint64, error) {
+	bt, ok := r.inner.(chain.BlockTimer)
+	if !ok {
+		return 0, chain.ErrNoBlockTime
+	}
+	ts, err := bt.BlockTime(ctx, n)
+	return ts, r.wrap(err)
 }
 
 // Chain returns the verifier's client (it pins every read of a verification to one block).
