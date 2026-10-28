@@ -309,6 +309,14 @@ describe("the real composer (runtime/composer)", { skip: composer.skip }, () => 
       }
     });
 
+    test("only internal-tools-server joins the shared apps network (D-041)", { skip: brief }, () => {
+      for (const name of Object.keys(services)) {
+        const networks = Object.keys(composed[name].networks);
+        assert.ok(networks.includes("app-internal-tools"), name);
+        assert.equal(networks.includes("apps"), name === "internal-tools-server", name);
+      }
+    });
+
     test("valkey's password stays out of the composed argv", () => {
       const valkey = composed["internal-tools-valkey"];
       assert.ok(!JSON.stringify([valkey.entrypoint, valkey.command]).includes("--requirepass"));

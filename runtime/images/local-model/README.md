@@ -65,4 +65,6 @@ The fallback model `qwen3:1.7b` (ID `8f68893c685c`, Apache-2.0) can be built by 
 Tests: `make -C runtime/images/local-model test` (static Dockerfile checks, no daemon, plus
 `go vet` and `go test` of the gate, which also runs the built gate binary as a supervising process).
 After a build, CI must run one generation on the stripped image (VERIFY-AT-BUILD in
-`docs/notes/litellm.md` section 10).
+`docs/notes/litellm.md` section 10). The default command runs the gate with
+`-key-env OLLAMA_GATE_KEY`, so such a run needs `-e OLLAMA_GATE_KEY=<16 or more characters>` and
+`Authorization: Bearer <that key>` on the request; without the variable the gate exits with code 2.

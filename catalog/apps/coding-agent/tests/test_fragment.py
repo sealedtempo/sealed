@@ -226,7 +226,6 @@ class OpenHandsPackagingTest(CommonChecks, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             done = os.path.join(tmp, "run", "bootstrap", "done")
             with FakeLiteLLM(master) as gw, FakeOpenHands(session, tmp) as oh:
-                gw.add_key(key, key_alias="coding-agent", models=["relay/*", "local/*"])
                 env = dict(self.boot["environment"])
                 env.update({
                     "SEALED_GATEWAY_URL": gw.url, "SEALED_AGENT_SERVER_URL": oh.url, "SEALED_DONE_FILE": done,
@@ -241,6 +240,7 @@ class OpenHandsPackagingTest(CommonChecks, unittest.TestCase):
                 self.assertEqual(oh.settings["agent_settings"]["llm"]["model"], "litellm_proxy/relay/default")
                 self.assertEqual(oh.settings["agent_settings"]["llm"]["api_key"], key)
                 self.assertNotIn(key, proc.stderr + proc.stdout)
+                self.assertEqual(gw.calls, [])  # the job is not on the network llm-gateway is on
             self.assertTrue(os.path.exists(done))
 
 
@@ -487,6 +487,16 @@ class ComposerChecks:
         for name, spec in self.app["fragment"]["volumes"].items():
             entry = next(v for v in self.info["volumes"] if v["name"] == name)
             self.assertIn(spec["x-sealed-owner"], json.dumps(entry), name)
+
+    def test_only_the_primary_service_reaches_other_apps(self):
+        """D-041: the bootstrap job cannot reach llm-gateway, which is why seed.py never calls it."""
+        self.brief_only()
+        primary = self.app["manifest"]["primary_service"]
+        for name in self.app["fragment"]["services"]:
+            networks = set(self.composed[name]["networks"])
+            self.assertIn("app-coding-agent", networks, name)
+            self.assertEqual("apps" in networks, name == primary, name)
+        self.assertIn("apps", self.composed["llm-gateway-litellm"]["networks"])
 
     def test_same_as_needs_llm_gateway_in_the_stack(self):
         self.brief_only()

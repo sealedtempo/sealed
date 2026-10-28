@@ -78,8 +78,9 @@ notes: >-
   socket; no service starts as root (volume owners come from x-sealed-owner). This app never holds the
   gateway master key: llm-gateway provisions the virtual key LLM_GATEWAY_KEY (alias coding-agent,
   models relay/* and local/*, rate limited) from its secret APP_KEY_CODING_AGENT, which LLM_GATEWAY_KEY
-  refers to (same_as). At every start the bootstrap job waits until the gateway accepts that key and
-  seeds PATCH /api/settings with base_url http://llm-gateway:4000 and model litellm_proxy/relay/default
-  (a gateway model chosen earlier is kept); the gateway itself falls back from relay/default to the local
-  model. Egress is closed by default; add git hosts (for example github.com:443) as customer egress
+  refers to (same_as). At every start the bootstrap job seeds PATCH /api/settings with that key,
+  base_url http://llm-gateway:4000 and model litellm_proxy/relay/default (a gateway model chosen earlier is
+  kept); it never contacts the gateway itself, because only coding-agent-server, the primary service, is
+  on the shared apps network (D-041). The gateway falls back from relay/default to the local model.
+  Egress is closed by default; add git hosts (for example github.com:443) as customer egress
   additions. Tokens are metered at llm-gateway; this app is metered per app hour.

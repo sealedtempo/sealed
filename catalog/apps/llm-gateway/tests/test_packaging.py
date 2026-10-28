@@ -226,6 +226,15 @@ class ComposerTest(unittest.TestCase):
             want = {f"{root}/{s}" for s in svc.get("x-sealed-secrets") or []}
             self.assertEqual(sealed_compose.secret_mounts(self.composed[name], "llm-gateway"), want, name)
 
+    def test_only_the_gateway_itself_is_on_the_shared_network(self):
+        """D-041: other apps reach llm-gateway-litellm only; Postgres, Ollama and the keys job stay private."""
+        if not self.composer.brief:
+            self.skipTest(f"composer {self.composer.version} has one shared network (per-app networks arrive with 1.2.0)")
+        for name in self.app["fragment"]["services"]:
+            networks = set(self.composed[name]["networks"])
+            self.assertIn("app-llm-gateway", networks, name)
+            self.assertEqual("apps" in networks, name == "llm-gateway-litellm", name)
+
     def test_gateway_route_passes_bearer_keys(self):
         site = sealed_compose.caddy_site(self.stack["caddyfile"], "gateway.34-1-2-3.sslip.io")
         self.assertIsNotNone(site)

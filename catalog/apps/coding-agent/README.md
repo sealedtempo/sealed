@@ -12,7 +12,7 @@ Requires `llm-gateway` in the same stack.
 | service | role |
 |---|---|
 | `coding-agent-server` (alias `coding-agent`) | agent-server on port 8000, uid 10001 from the start. `bootstrap/prepdirs.py` creates the workspace directories, checks no_new_privs (so setuid binaries in the image cannot regain root) and execs agent-server. |
-| `coding-agent-bootstrap` | manifest bootstrap job (`bootstrap/seed.py`, uid 10003, `restart: on-failure` from the composer), run at every start of the stack: waits until llm-gateway accepts this app's virtual key `LLM_GATEWAY_KEY`, then stores `{model, base_url, api_key}` with `PATCH /api/settings`, writes `coding-agent-bootstrap/done` (manifest `bootstrap.done_file`; the volume is not mounted into the agent's container, so the agent cannot forge or delete it) and exits. sealed-agent keeps the code route closed (503 `starting`) until the file exists. |
+| `coding-agent-bootstrap` | manifest bootstrap job (`bootstrap/seed.py`, uid 10003, `restart: on-failure` from the composer), run at every start of the stack: stores `{model, base_url, api_key}` with `PATCH /api/settings` (the key is `LLM_GATEWAY_KEY`), writes `coding-agent-bootstrap/done` (manifest `bootstrap.done_file`; the volume is not mounted into the agent's container, so the agent cannot forge or delete it) and exits. sealed-agent keeps the code route closed (503 `starting`) until the file exists. |
 
 No service starts as root. Both volumes declare `x-sealed-owner` (`coding-agent-workspace` 10001:10001,
 `coding-agent-bootstrap` 10003:10003), and sealed-agent creates them with that owner before the ready gate
@@ -38,7 +38,11 @@ drifts and recreates the key after a gateway database reset. This app's `LLM_GAT
 stack and declares that secret, `sealed secrets` sets the value once, and the key broker returns it
 under this app's name.
 
-agent-server V1 does not read `LLM_BASE_URL`. At every start the bootstrap job seeds:
+agent-server V1 does not read `LLM_BASE_URL`. At every start the bootstrap job seeds the settings
+below. It never contacts llm-gateway itself: every service is on the app network `app-coding-agent`,
+and only `coding-agent-server`, the primary service, also joins the shared `apps` network where
+llm-gateway is (D-041). `same_as` makes the key the value llm-gateway's keys job provisions, and the A6
+helper checks the whole path through the gateway.
 
 ```json
 {"agent_settings_diff": {"llm": {"model": "litellm_proxy/relay/default", "base_url": "http://llm-gateway:4000",

@@ -138,6 +138,14 @@ describe.skipIf(skip)('the real composer (runtime/composer)', () => {
     }
   });
 
+  it.skipIf(notBrief)('keeps scraper-db off the shared apps network (D-041)', () => {
+    for (const name of Object.keys(fragment.services)) {
+      const networks = Object.keys(stack.compose.services[name]!.networks);
+      expect(networks, name).toContain('app-scraper');
+      expect(networks.includes('apps'), name).toBe(name === 'scraper-runner');
+    }
+  });
+
   const docker = spawnSync('docker', ['compose', 'version'], { encoding: 'utf8' });
   it.runIf(docker.status === 0)('docker compose accepts the composed document', () => {
     const r = spawnSync('docker', ['compose', '-p', 'sealed-scraper-check', '-f', stack.composePath, 'config', '--quiet'], { encoding: 'utf8' });

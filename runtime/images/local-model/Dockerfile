@@ -100,4 +100,6 @@ LABEL org.opencontainers.image.source="https://github.com/ollama/ollama" \
 USER 10002:10002
 EXPOSE 11434
 ENTRYPOINT ["/usr/local/bin/sealed-ollama-gate"]
-CMD ["-listen", "0.0.0.0:11434", "-upstream", "127.0.0.1:11435", "-allow-peer", "llm-gateway-litellm", "--", "/bin/ollama", "serve"]
+# The gate requires the bearer key in OLLAMA_GATE_KEY (the llm-gateway secret of the same name) and
+# refuses to start without it.
+CMD ["-listen", "0.0.0.0:11434", "-upstream", "127.0.0.1:11435", "-allow-peer", "llm-gateway-litellm", "-key-env", "OLLAMA_GATE_KEY", "--", "/bin/ollama", "serve"]
