@@ -158,3 +158,86 @@ func TestCachingGetterSingleflight(t *testing.T) {
 		t.Fatalf("inner calls = %d, want 1", n)
 	}
 }
+
+// TestCachingGetterSharedFetchOutlivesCaller: one caller giving up neither cancels the shared fetch nor fails the
+// other callers waiting on it.
+func TestCachingGetterSharedFetchOutlivesCaller(t *testing.T) {
+	inner := &ctxGetter{gate: make(chan struct{})}
+	c, _ := NewCachingGetter(CacheOptions{Inner: inner})
+	first, cancelFirst := context.WithCancel(context.Background())
+	firstErr := make(chan error, 1)
+	go func() {
+		_, _, err := c.GetContext(first, tcbURL)
+		firstErr <- err
+	}()
+	inner.waitStarted(t)
+	secondErr := make(chan error, 1)
+	go func() {
+		_, b, err := c.GetContext(context.Background(), tcbURL)
+		if err == nil && string(b) != "ok" {
+			err = errors.New("wrong body")
+		}
+		secondErr <- err
+	}()
+	cancelFirst()
+	if err := <-firstErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller: %v", err)
+	}
+	close(inner.gate)
+	if err := <-secondErr; err != nil {
+		t.Fatalf("waiting caller failed with the first caller's context: %v", err)
+	}
+	if inner.calls.Load() != 1 {
+		t.Fatalf("inner calls %d", inner.calls.Load())
+	}
+}
+
+func TestCachingGetterFetchTimeout(t *testing.T) {
+	inner := &ctxGetter{gate: make(chan struct{})} // never released: only the fetch timeout ends it
+	c, _ := NewCachingGetter(CacheOptions{Inner: inner, FetchTimeout: 50 * time.Millisecond})
+	if _, _, err := c.GetContext(context.Background(), tcbURL); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the fetch deadline", err)
+	}
+}
+
+// ctxGetter blocks until gate closes or its context ends.
+type ctxGetter struct {
+	calls   atomic.Int32
+	gate    chan struct{}
+	started sync.Once
+	startCh chan struct{}
+	mu      sync.Mutex
+}
+
+func (g *ctxGetter) startedCh() chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.startCh == nil {
+		g.startCh = make(chan struct{})
+	}
+	return g.startCh
+}
+
+func (g *ctxGetter) waitStarted(t *testing.T) {
+	select {
+	case <-g.startedCh():
+	case <-time.After(5 * time.Second):
+		t.Fatal("fetch never started")
+	}
+}
+
+func (g *ctxGetter) Get(url string) (map[string][]string, []byte, error) {
+	return g.GetContext(context.Background(), url)
+}
+
+func (g *ctxGetter) GetContext(ctx context.Context, _ string) (map[string][]string, []byte, error) {
+	g.calls.Add(1)
+	ch := g.startedCh()
+	g.started.Do(func() { close(ch) })
+	select {
+	case <-g.gate:
+		return map[string][]string{}, []byte("ok"), nil
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+}

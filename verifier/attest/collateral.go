@@ -24,6 +24,9 @@ var DefaultCollateralURLPrefixes = []string{
 	"https://certificates.trustedservices.intel.com/",
 }
 
+// DefaultFetchTimeout bounds one shared PCS fetch (with its retries), independently of the callers waiting on it.
+const DefaultFetchTimeout = 45 * time.Second
+
 // DefaultCollateralTTL bounds how long fetched collateral is reused. The bodies are signed and re-verified on every
 // use (including nextUpdate), so the TTL only controls how quickly TCB recoveries and new CRLs are picked up.
 const DefaultCollateralTTL = time.Hour
@@ -40,6 +43,8 @@ type CacheOptions struct {
 	Now func() time.Time
 	// AllowedURLPrefixes restricts what may be fetched; nil means DefaultCollateralURLPrefixes.
 	AllowedURLPrefixes []string
+	// FetchTimeout bounds one fetch shared by concurrent callers; 0 means DefaultFetchTimeout.
+	FetchTimeout time.Duration
 }
 
 // CachingGetter is a trust.HTTPSGetter that caches Intel PCS responses (headers and bodies) in memory and
@@ -51,6 +56,7 @@ type CachingGetter struct {
 	dir      string
 	now      func() time.Time
 	prefixes []string
+	timeout  time.Duration
 
 	mu  sync.Mutex
 	mem map[string]cacheEntry
@@ -72,7 +78,11 @@ func NewCachingGetter(o CacheOptions) (*CachingGetter, error) {
 		dir:      o.Dir,
 		now:      o.Now,
 		prefixes: o.AllowedURLPrefixes,
+		timeout:  o.FetchTimeout,
 		mem:      map[string]cacheEntry{},
+	}
+	if c.timeout <= 0 {
+		c.timeout = DefaultFetchTimeout
 	}
 	if c.inner == nil {
 		c.inner = &trust.RetryHTTPSGetter{Timeout: 30 * time.Second, MaxRetryDelay: 5 * time.Second, Getter: &trust.SimpleHTTPSGetter{}}
@@ -107,11 +117,15 @@ func (c *CachingGetter) GetContext(ctx context.Context, url string) (map[string]
 	if e, ok := c.lookup(url); ok {
 		return e.Header, e.Body, nil
 	}
-	v, err, _ := c.sf.Do(url, func() (any, error) {
+	// The fetch is shared by every caller of the same URL, so it must not die with the first caller's context: it
+	// runs detached (keeping values such as trace ids) with its own timeout, and each caller waits on its own ctx.
+	ch := c.sf.DoChan(url, func() (any, error) {
 		if e, ok := c.lookup(url); ok {
 			return e, nil
 		}
-		h, b, err := trust.GetWith(ctx, c.inner, url)
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
+		defer cancel()
+		h, b, err := trust.GetWith(fctx, c.inner, url)
 		if err != nil {
 			return nil, err
 		}
@@ -119,11 +133,16 @@ func (c *CachingGetter) GetContext(ctx context.Context, url string) (map[string]
 		c.store(e)
 		return e, nil
 	})
-	if err != nil {
-		return nil, nil, err
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case r := <-ch:
+		if r.Err != nil {
+			return nil, nil, r.Err
+		}
+		e := r.Val.(cacheEntry)
+		return e.Header, e.Body, nil
 	}
-	e := v.(cacheEntry)
-	return e.Header, e.Body, nil
 }
 
 // cachedHeaders are the response headers the verifier reads: the signing chains of the collateral bodies.
