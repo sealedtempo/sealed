@@ -16,6 +16,7 @@ import { createPayerApp } from '../src/server.js'
 import { SpendGuard } from '../src/spend-guard.js'
 import { fakeAgentBudget } from './helpers/fake-agent-budget.js'
 import { fakeAttest, fakeVerifierd, relayAppCompose } from './helpers/fake-relay-attest.js'
+import { MAINNET_FEE_SPLITTER, authorizeD054, d054Authorization } from './helpers/relay-world.js'
 
 const prices = parsePriceTable(
   {
@@ -44,7 +45,12 @@ describe.skipIf(!anvilAvailable())('payer -> relay -> LiteLLM, paid with mppx on
 
   beforeAll(async () => {
     node = await startLocalTempo()
-    await node.client.accessKey.authorize({ account: customer, accessKey: payerAccount, expiry: Math.floor(Date.now() / 1000) + 3600 } as never)
+    // The production authorization (D-054): limited and scoped, never allowAnyCalls.
+    await authorizeD054(
+      node,
+      customer,
+      d054Authorization({ keyId: payerAccount.accessKeyAddress, feeToken: PATHUSD, feeSplitter: MAINNET_FEE_SPLITTER, treasury, limit: 5_000_000n }),
+    )
     await waitFor(async () => {
       const meta = (await node.client.accessKey.getMetadata({ account: customer.address, accessKey: payerAccount.accessKeyAddress } as never)) as { address: string }
       return meta.address.toLowerCase() === payerAccount.accessKeyAddress.toLowerCase()
@@ -178,7 +184,8 @@ describe.skipIf(!anvilAvailable())('payer -> relay -> LiteLLM, paid with mppx on
   })
 
   it('falls back from sessions to per-request charges when no channel can be opened locally', async () => {
-    const { payer, llm, relay } = stack({ sessions: true, limit: 2_000_000n })
+    // The local guard cannot cover one deposit (200_000), so the open is refused before it leaves.
+    const { payer, llm, relay } = stack({ sessions: true, limit: 100_000n })
     const before = await balanceOf(node.client, treasury)
     const res = await payer.request('/v1/chat/completions', post(body))
     expect(res.status).toBe(200)
