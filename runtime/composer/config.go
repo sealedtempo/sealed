@@ -32,6 +32,10 @@ type Config struct {
 	FeeToken         string              `json:"feeToken"`
 	Settlement       Settlement          `json:"settlement"`
 	RelayOwner       string              `json:"relayOwner,omitempty"`
+	// Debug selects the local logging driver for every container instead of
+	// none (integration brief item 13). It is part of configHash, so the
+	// customer approves it, and it is always present in the canonical form.
+	Debug bool `json:"debug"`
 }
 
 type ConfigApp struct {
@@ -210,7 +214,7 @@ func (c *Config) Validate() error {
 		if last := lastAddr(p); !last.IsPrivate() {
 			return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q extends beyond private address space", r)
 		}
-		for _, internal := range []string{AppsSubnet, EdgeSubnet} {
+		for _, internal := range vmSubnets() {
 			if p.Overlaps(netip.MustParsePrefix(internal)) {
 				return fail(fmt.Sprintf("allowedVpcRanges[%d]", i), "%q overlaps the VM's internal network %s", r, internal)
 			}
@@ -310,6 +314,16 @@ func (c *Config) validateHostnames() error {
 		return fmt.Errorf("config: hostnames.scheme: must be sslip or custom")
 	}
 	return nil
+}
+
+// vmSubnets are every Docker network a stack can use: apps, edge and the
+// per-app networks of up to MaxConfigApps apps.
+func vmSubnets() []string {
+	out := []string{AppsSubnet, EdgeSubnet}
+	for n := 1; n <= MaxConfigApps; n++ {
+		out = append(out, AppSubnet(n))
+	}
+	return out
 }
 
 // routeNames are the Caddy routes a stack can expose (manifest route names plus attest).

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sealed host rules v2 (composer 1.1.1). Measured into stackHash.
+# Sealed host rules v2 (composer 1.2.0). Measured into stackHash.
 # Traffic forwarded from the edge network to anything outside it is dropped
 # unless it comes from sealed-egress; replies to inbound connections to Caddy
 # (ESTABLISHED,RELATED) are allowed. Exits non-zero if the rules are not hooked.

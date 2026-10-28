@@ -14,29 +14,30 @@ import (
 
 // Manifest is a catalog app manifest (catalog/schema/manifest.schema.json).
 type Manifest struct {
-	Schema             string            `json:"schema"`
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	Category           string            `json:"category"`
-	Description        string            `json:"description"`
-	ReleaseVersion     string            `json:"release_version,omitempty"`
-	Upstream           Upstream          `json:"upstream"`
-	Maintainer         Maintainer        `json:"maintainer"`
-	MaintainerShareBps int               `json:"maintainer_share_bps"`
-	ComposeFragment    string            `json:"compose_fragment"`
-	EgressPolicy       string            `json:"egress_policy"`
-	PrimaryService     string            `json:"primary_service"`
-	Images             []Image           `json:"images"`
-	Resources          Resources         `json:"resources"`
-	Routes             []Route           `json:"routes"`
-	Healthcheck        Healthcheck       `json:"healthcheck"`
-	Metering           Metering          `json:"metering"`
-	Secrets            []Secret          `json:"secrets"`
-	TelemetryOffEnv    map[string]string `json:"telemetry_off_env"`
-	TelemetryNone      string            `json:"telemetry_none_reason,omitempty"`
-	LicenseExclusions  []string          `json:"license_exclusions"`
-	Bootstrap          *Bootstrap        `json:"bootstrap,omitempty"`
-	Notes              string            `json:"notes,omitempty"`
+	Schema             string             `json:"schema"`
+	ID                 string             `json:"id"`
+	Name               string             `json:"name"`
+	Category           string             `json:"category"`
+	Description        string             `json:"description"`
+	ReleaseVersion     string             `json:"release_version,omitempty"`
+	Upstream           Upstream           `json:"upstream"`
+	Maintainer         Maintainer         `json:"maintainer"`
+	MaintainerShareBps int                `json:"maintainer_share_bps"`
+	ComposeFragment    string             `json:"compose_fragment"`
+	EgressPolicy       string             `json:"egress_policy"`
+	PrimaryService     string             `json:"primary_service"`
+	Images             []Image            `json:"images"`
+	Resources          Resources          `json:"resources"`
+	Routes             []Route            `json:"routes"`
+	Healthcheck        Healthcheck        `json:"healthcheck"`
+	Metering           Metering           `json:"metering"`
+	Secrets            []Secret           `json:"secrets"`
+	TelemetryOffEnv    map[string]string  `json:"telemetry_off_env"`
+	TelemetryNone      string             `json:"telemetry_none_reason,omitempty"`
+	LicenseExclusions  []string           `json:"license_exclusions"`
+	LicenseExceptions  []LicenseException `json:"license_exceptions,omitempty"`
+	Bootstrap          *Bootstrap         `json:"bootstrap,omitempty"`
+	Notes              string             `json:"notes,omitempty"`
 }
 
 type Upstream struct {
@@ -92,7 +93,13 @@ type Route struct {
 	InternalPort int    `json:"internal_port"`
 	PathOrHost   string `json:"path_or_host"`
 	Auth         string `json:"auth"`
+	// OnAttestHost serves the route's path prefix on the attest host (same
+	// origin and certificate as /attest, D-045). Only the relay route.
+	OnAttestHost bool `json:"on_attest_host,omitempty"`
 }
+
+// AttestHostRoute is the only route name that may set on_attest_host.
+const AttestHostRoute = "relay"
 
 // PathPrefix returns the routed path prefix, or "" when the route owns its
 // whole host (path_or_host is the route name or "/").
@@ -120,6 +127,26 @@ type Secret struct {
 	Description string `json:"description"`
 	Generate    string `json:"generate"`
 	Optional    bool   `json:"optional,omitempty"`
+	// SameAs is "<appId>/<NAME>": the value of another app's secret (D-043).
+	// Compose requires that app in the stack and the secret in its manifest.
+	SameAs string `json:"same_as,omitempty"`
+}
+
+// SameAsRef splits same_as into the referenced app and secret name.
+func (s Secret) SameAsRef() (app, name string, ok bool) {
+	if s.SameAs == "" {
+		return "", "", false
+	}
+	return strings.Cut(s.SameAs, "/")
+}
+
+// LicenseException exempts SBOM paths from license and excluded-path
+// findings under a recorded decision. Lint accepts only the decision ids in
+// runtime/composer/lint/exceptions.go.
+type LicenseException struct {
+	Decision string   `json:"decision"`
+	Paths    []string `json:"paths"`
+	Reason   string   `json:"reason"`
 }
 
 type Bootstrap struct {
@@ -294,6 +321,23 @@ func (m *Manifest) validate() error {
 		if p := r.PathPrefix(); p != "" && !safePathRe.MatchString(p) {
 			return fail(f+".path_or_host", "%q contains characters not allowed in a route path", r.PathOrHost)
 		}
+		// Caddy and the sidecars live on the shared apps network, where only
+		// the primary service is attached (D-041), so a route can only reach it.
+		if r.Service != m.PrimaryService {
+			return fail(f+".service", "%q is not the primary service %q: Caddy reaches only an app's primary service (the other services are on the app's own network)", r.Service, m.PrimaryService)
+		}
+		if r.OnAttestHost {
+			if r.Name != AttestHostRoute {
+				return fail(f+".on_attest_host", "only the %s route may be served on the attest host", AttestHostRoute)
+			}
+			p := r.PathPrefix()
+			if p == "" {
+				return fail(f+".path_or_host", "a route on the attest host needs a path prefix such as /v1, not the whole host")
+			}
+			if p == "/attest" || strings.HasPrefix(p, "/attest/") {
+				return fail(f+".path_or_host", "%q would shadow /attest on the attest host", r.PathOrHost)
+			}
+		}
 		if r.Auth != AuthGate && routeAuthExceptions[m.ID+"/"+r.Name] != r.Auth {
 			return fail(f+".auth", "%q is not allowed for app %q route %q: every app UI sits behind the password gate (only llm-gateway/gateway may use %s and inference-relay/relay %s)",
 				r.Auth, m.ID, r.Name, AuthBearerPassthrough, AuthPublic)
@@ -326,13 +370,29 @@ func (m *Manifest) validate() error {
 			return fail(f, "%q is reserved for the password gate", s.Name)
 		}
 		seenSecret[s.Name] = true
+		if app, _, ok := s.SameAsRef(); ok {
+			sf := fmt.Sprintf("secrets[%d].same_as", i)
+			if app == m.ID {
+				return fail(sf, "%q names this app; declare one secret and list it where it is needed", s.SameAs)
+			}
+			if s.Generate != "none" {
+				return fail(fmt.Sprintf("secrets[%d].generate", i), "must be none when same_as is set: the value comes from %s", s.SameAs)
+			}
+		}
 	}
 	for _, k := range sortedKeys(m.TelemetryOffEnv) {
 		if !envNameRe.MatchString(k) {
 			return fail("telemetry_off_env", "%q is not a valid environment variable name", k)
 		}
-		if reservedEnv[k] {
+		if isReservedEnv(k) {
 			return fail("telemetry_off_env", "%q is set by the composer", k)
+		}
+	}
+	for i, e := range m.LicenseExceptions {
+		for j, p := range e.Paths {
+			if strings.TrimSpace(p) != p || p == "" {
+				return fail(fmt.Sprintf("license_exceptions[%d].paths[%d]", i, j), "%q must be a non-empty path without surrounding spaces", p)
+			}
 		}
 	}
 	if m.Bootstrap != nil && m.Bootstrap.Service != "" && !strings.HasPrefix(m.Bootstrap.Service, m.ID+"-") {

@@ -25,6 +25,26 @@ const (
 	lastAppHost  = 254
 )
 
+// Per-app internal networks (D-041). App number n (1..MaxConfigApps, in the
+// config's sorted app order) gets network app-<appId>, subnet 172.30.<n>.0/24,
+// gateway .1. sealed-egress is .2 and sealed-agent .3 on every app network;
+// the app's services get .16 upwards (primary first, then name order). Only
+// the primary service also joins the shared apps network.
+const (
+	AppNetworkPrefix = "app-"
+	appNetEgressHost = 2
+	appNetAgentHost  = 3
+)
+
+// AppSubnet is the subnet of app number n (1-based).
+func AppSubnet(n int) string { return fmt.Sprintf("172.30.%d.0/24", n) }
+
+// appNetIP is host h on app network n.
+func appNetIP(n, h int) string { return fmt.Sprintf("172.30.%d.%d", n, h) }
+
+// AppNetwork is the compose network name of an app.
+func AppNetwork(appID string) string { return AppNetworkPrefix + appID }
+
 // Defaults is the subset of config/defaults.yaml the composer and the bundle
 // builder read.
 type Defaults struct {

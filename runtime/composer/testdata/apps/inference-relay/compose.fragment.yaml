@@ -1,0 +1,5 @@
+services:
+  inference-relay-front:
+    image: "{{image:relay}}"
+    entrypoint: ["/app/relay"]
+    x-sealed-secrets: [MPP_SECRET_KEY]

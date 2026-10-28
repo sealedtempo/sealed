@@ -47,4 +47,5 @@ services:
       nofile: {soft: 4096, hard: 8192}
 volumes:
   uploads:
+    x-sealed-owner: "1000:1000"
   pgdata: {}

@@ -2,7 +2,6 @@ package composer
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -20,27 +19,24 @@ const (
 )
 
 // Docker volume names for sidecar plumbing. App data never uses Docker
-// volumes; it is bind-mounted from the encrypted data disk.
+// volumes; it is bind-mounted from the encrypted data disk. Secrets are
+// bind-mounted file by file from the host tmpfs under SecretsRoot.
 const (
 	volBin        = "sealed-bin"
 	volReady      = "sealed-ready"
 	volCaddyAdmin = "sealed-caddy-admin"
-	volSecretsPfx = "sealed-secrets-"
 )
 
-func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGateway bool, res *Result) (map[string]any, error) {
+// agentDeviceCgroupRules let sealed-agent open and mount the device-mapper
+// devices cryptsetup creates for the LUKS data disk. The dm major is
+// assigned at boot (usually 252 to 254), so all three are allowed for block
+// devices only (integration brief item 15).
+var agentDeviceCgroupRules = []string{"b 252:* rwm", "b 253:* rwm", "b 254:* rwm"}
+
+func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri *RuntimeImages, hasGateway bool, res *Result) (map[string]any, error) {
 	noProxy := noProxyList(apps)
 	services := map[string]any{}
-	secretVolumes := []string{GateApp}
-	if hasGateway {
-		secretVolumes = append(secretVolumes, svcPayer)
-	}
-	for _, a := range apps {
-		if appHasSecrets(a) {
-			secretVolumes = append(secretVolumes, a.id)
-		}
-	}
-	sort.Strings(secretVolumes)
+	logs := logging(cfg.Debug)
 
 	img := func(name string) string { return ri.Images[name].Ref }
 
@@ -50,15 +46,25 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		"network_mode": "none",
 		"read_only":    true,
 		"restart":      "no",
-		"logging":      logging(),
+		"logging":      logs,
 		"volumes":      []any{volumeMount(volBin, BinDir, false)},
 	}, capsNone, nil)
+
+	// sealed-egress and sealed-agent join every app network at fixed
+	// addresses (D-041): each app's services reach them without the shared
+	// apps network.
+	egressNets := map[string]any{
+		"apps": map[string]any{"ipv4_address": EgressAppsIP},
+		"edge": map[string]any{"ipv4_address": EgressEdgeIP},
+	}
+	agentNets := map[string]any{"apps": map[string]any{"ipv4_address": AgentIP}}
+	for _, a := range apps {
+		egressNets[a.network()] = map[string]any{"ipv4_address": a.egressIP()}
+		agentNets[a.network()] = map[string]any{"ipv4_address": a.agentIP()}
+	}
 	services[svcEgress] = harden(map[string]any{
-		"image": img(imgEgress),
-		"networks": map[string]any{
-			"apps": map[string]any{"ipv4_address": EgressAppsIP},
-			"edge": map[string]any{"ipv4_address": EgressEdgeIP},
-		},
+		"image":       img(imgEgress),
+		"networks":    egressNets,
 		"environment": map[string]any{"SEALED_EGRESS_CONFIG": EgressConfigPath},
 		"configs":     []any{configMount(cfgEgress, EgressConfigPath)},
 		"volumes":     []any{volumeMount(volBin, BinDir, true)},
@@ -66,23 +72,24 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		"healthcheck": probe("tcp://127.0.0.1:3128", "2s", "60s"),
 		"depends_on":  dependsOn(map[string]string{svcInit: "service_completed_successfully"}),
 		"restart":     "unless-stopped",
-		"logging":     logging(),
+		"logging":     logs,
 	}, capsNone, nil)
 
-	// The agent's DataRoot bind is only the mount point it opens LUKS on;
-	// nothing is written there before the mount, so Docker may create it.
+	// The agent's DataRoot bind is only the mount point it opens LUKS on, and
+	// SecretsRoot is a directory on the host's /run tmpfs where it writes the
+	// secret files the app services bind one by one; nothing is written to
+	// either before the agent runs, so Docker may create both.
 	agentVolumes := []any{
 		map[string]any{"type": "bind", "source": DstackSocket, "target": DstackSocket},
 		map[string]any{"type": "bind", "source": DataRoot, "target": DataRoot,
 			"bind": map[string]any{"propagation": "rshared", "create_host_path": true}},
+		map[string]any{"type": "bind", "source": SecretsRoot, "target": SecretsRoot,
+			"bind": map[string]any{"create_host_path": true}},
 		volumeMount(volBin, BinDir, true),
 		volumeMount(volReady, ReadyDir, false),
 		volumeMount(volCaddyAdmin, CaddyAdminDir, false),
 	}
-	for _, v := range secretVolumes {
-		agentVolumes = append(agentVolumes, volumeMount(volSecretsPfx+v, SecretsRoot+"/"+v, false))
-	}
-	agentEnv := proxyEnv(noProxy)
+	agentEnv := proxyEnv(ProxyURL, noProxy)
 	for k, v := range map[string]string{
 		"PORT":                            strconv.Itoa(AgentPort),
 		"SEALED_CONFIG_FILE":              ConfigPath,
@@ -101,7 +108,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 	}
 	services[svcAgent] = harden(map[string]any{
 		"image":       img(imgAgent),
-		"networks":    map[string]any{"apps": map[string]any{"ipv4_address": AgentIP}},
+		"networks":    agentNets,
 		"dns":         []any{DNSIP},
 		"environment": agentEnv,
 		"volumes":     agentVolumes,
@@ -111,23 +118,28 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 			configMount(cfgCaddyfile, AgentCaddyfilePath),
 			configMount(cfgCaddyfilePN, AgentCaddyfilePNPath),
 		},
-		"devices":     []any{DataDeviceHost + ":" + DataDevice, "/dev/mapper/control:/dev/mapper/control"},
-		"healthcheck": probe("http://127.0.0.1:"+strconv.Itoa(AgentPort)+"/v1/ready", "5s", "24h"),
+		"devices":             []any{DataDeviceHost + ":" + DataDevice, "/dev/mapper/control:/dev/mapper/control"},
+		"device_cgroup_rules": toAny(agentDeviceCgroupRules),
+		"healthcheck":         probe("http://127.0.0.1:"+strconv.Itoa(AgentPort)+"/v1/ready", "5s", "24h"),
 		"depends_on": dependsOn(map[string]string{
 			svcInit:   "service_completed_successfully",
 			svcEgress: "service_healthy",
 		}),
 		"restart": "unless-stopped",
-		"logging": logging(),
+		"logging": logs,
 	}, capsAgentDrop, []string{"SYS_ADMIN"})
 
-	caddyEnv := proxyEnv(noProxy)
+	// Caddy needs no secret: the gate runs in sealed-agent (forward_auth,
+	// D-044). Its admin socket is created on a tmpfs owned by the agent's
+	// uid with the setgid bit, so the socket belongs to the agent's group and
+	// mode 0660 lets the agent connect without a root helper; group_add gives
+	// Caddy (root without CAP_DAC_OVERRIDE) the right to create it there.
+	caddyEnv := proxyEnv(ProxyURL, noProxy)
 	caddyEnv["XDG_DATA_HOME"] = "/data"
 	caddyEnv["XDG_CONFIG_HOME"] = "/config"
 	services[svcCaddy] = harden(map[string]any{
-		"image": img(imgCaddy),
-		"entrypoint": []any{EnvexecPath, "--app", GateApp, "--secret", gateSecret, "--",
-			"caddy", "run", "--config", CaddyfilePath, "--adapter", "caddyfile"},
+		"image":      img(imgCaddy),
+		"entrypoint": []any{"caddy", "run", "--config", CaddyfilePath, "--adapter", "caddyfile"},
 		"networks": map[string]any{
 			"apps": map[string]any{"ipv4_address": CaddyIP},
 			"edge": map[string]any{"ipv4_address": CaddyEdgeIP},
@@ -135,10 +147,8 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		"ports":       []any{"80:80/tcp", "443:443/tcp"},
 		"dns":         []any{DNSIP},
 		"environment": caddyEnv,
+		"group_add":   []any{agentUID},
 		"volumes": []any{
-			volumeMount(volBin, BinDir, true),
-			volumeMount(volReady, ReadyDir, true),
-			volumeMount(volSecretsPfx+GateApp, SecretsRoot+"/"+GateApp, true),
 			volumeMount(volCaddyAdmin, CaddyAdminDir, false),
 			dataBind(caddyDataApp, caddyDataVolume, "/data", false),
 			map[string]any{"type": "tmpfs", "target": "/config"},
@@ -148,39 +158,39 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 			configMount(cfgPaymentPage, caddy.DefaultPageDir+"/"+caddy.DefaultPageFile),
 		},
 		"depends_on": dependsOn(map[string]string{
-			svcInit:   "service_completed_successfully",
 			svcEgress: "service_healthy",
 			svcAgent:  "service_healthy",
 		}),
 		"restart": "unless-stopped",
-		"logging": logging(),
+		"logging": logs,
 	}, capsNone, []string{"NET_BIND_SERVICE"})
 
 	if hasGateway {
-		payerEnv := proxyEnv(noProxy)
+		payerEnv := proxyEnv(ProxyURL, noProxy)
 		payerEnv["PORT"] = strconv.Itoa(PayerPort)
 		payerEnv["SEALED_CONFIG_FILE"] = ConfigPath
 		payerEnv["SEALED_SECRETS_DIR"] = SecretsRoot + "/" + svcPayer
 		payerEnv["SEALED_AGENT_URL"] = "http://" + svcAgent + ":" + strconv.Itoa(AgentPort)
 		payerEnv["SEALED_VERIFIERD_URL"] = "http://" + svcVerifierd + ":" + strconv.Itoa(VerifierdPort)
+		payerVolumes := []any{volumeMount(volReady, ReadyDir, true)}
+		for _, n := range payerSecrets {
+			payerVolumes = append(payerVolumes, secretBind(svcPayer, n))
+		}
 		services[svcPayer] = harden(map[string]any{
 			"image":       img(imgPayer),
 			"networks":    map[string]any{"apps": map[string]any{"ipv4_address": PayerIP}},
 			"dns":         []any{DNSIP},
 			"environment": payerEnv,
-			"volumes": []any{
-				volumeMount(volReady, ReadyDir, true),
-				volumeMount(volSecretsPfx+svcPayer, SecretsRoot+"/"+svcPayer, true),
-			},
-			"configs": []any{configMount(cfgConfig, ConfigPath)},
+			"volumes":     payerVolumes,
+			"configs":     []any{configMount(cfgConfig, ConfigPath)},
 			"depends_on": dependsOn(map[string]string{
 				svcAgent:     "service_healthy",
 				svcVerifierd: "service_started",
 			}),
 			"restart": "unless-stopped",
-			"logging": logging(),
+			"logging": logs,
 		}, capsNone, nil)
-		vdEnv := proxyEnv(noProxy)
+		vdEnv := proxyEnv(ProxyURL, noProxy)
 		vdEnv["PORT"] = strconv.Itoa(VerifierdPort)
 		vdEnv["SEALED_CONFIG_FILE"] = ConfigPath
 		services[svcVerifierd] = harden(map[string]any{
@@ -192,13 +202,20 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 			"read_only":   true,
 			"depends_on":  dependsOn(map[string]string{svcEgress: "service_healthy"}),
 			"restart":     "unless-stopped",
-			"logging":     logging(),
+			"logging":     logs,
 		}, capsNone, nil)
 	}
 
+	publicURLs := map[string]map[string]any{}
+	for _, r := range routes {
+		if publicURLs[r.app] == nil {
+			publicURLs[r.app] = map[string]any{}
+		}
+		publicURLs[r.app][PublicURLEnv(r.name)] = r.publicURL()
+	}
 	for _, a := range apps {
 		for _, s := range a.services {
-			svc, err := appService(a, s, noProxy)
+			svc, err := appService(a, s, noProxy, publicURLs[a.id], logs)
 			if err != nil {
 				return nil, err
 			}
@@ -206,22 +223,22 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 		}
 	}
 
-	volumes := map[string]any{
-		volBin:        map[string]any{},
-		volReady:      tmpfsVolume("0755"),
-		volCaddyAdmin: tmpfsVolume("0750"),
+	networks := map[string]any{
+		"apps": network(AppsSubnet, "172.30.0.1", "sealed-apps", true, true),
+		"edge": network(EdgeSubnet, "172.31.0.1", "sealed-edge", false, false),
 	}
-	for _, v := range secretVolumes {
-		volumes[volSecretsPfx+v] = tmpfsVolume("0755")
+	for _, a := range apps {
+		networks[a.network()] = network(AppSubnet(a.n), appNetIP(a.n, 1), "sealed-app"+strconv.Itoa(a.n), true, true)
 	}
 
 	return map[string]any{
-		"name": ProjectName,
-		"networks": map[string]any{
-			"apps": network(AppsSubnet, "172.30.0.1", "sealed-apps", true, true),
-			"edge": network(EdgeSubnet, "172.31.0.1", "sealed-edge", false, false),
+		"name":     ProjectName,
+		"networks": networks,
+		"volumes": map[string]any{
+			volBin:        map[string]any{},
+			volReady:      tmpfsVolume("0755", ""),
+			volCaddyAdmin: tmpfsVolume("2770", AgentRunAs),
 		},
-		"volumes": volumes,
 		"configs": map[string]any{
 			cfgConfig:      map[string]any{"content": string(res.ConfigJSON)},
 			cfgStack:       map[string]any{"content": string(res.StackInfo)},
@@ -234,16 +251,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, ri *RuntimeImages, hasGate
 	}, nil
 }
 
-func appHasSecrets(a *plannedApp) bool {
-	for _, s := range a.services {
-		if len(s.spec.Secrets) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func appService(a *plannedApp, s *plannedService, noProxy string) (map[string]any, error) {
+func appService(a *plannedApp, s *plannedService, noProxy string, publicURLs map[string]any, logs map[string]any) (map[string]any, error) {
 	m := a.bundle.Manifest
 	spec := s.spec
 	fail := func(format string, args ...any) error {
@@ -276,21 +284,27 @@ func appService(a *plannedApp, s *plannedService, noProxy string) (map[string]an
 		}
 		env[k] = v
 	}
-	for k, v := range proxyEnv(noProxy) {
+	for k, v := range proxyEnv(a.proxyURL(), noProxy) {
+		env[k] = v
+	}
+	for k, v := range publicURLs {
 		env[k] = v
 	}
 
-	appsNet := map[string]any{"ipv4_address": s.ip}
+	// Every service joins its app's network; only the primary also joins
+	// the shared apps network, with the app id as an alias (D-041).
+	nets := map[string]any{a.network(): map[string]any{"ipv4_address": s.netIP}}
 	if s.primary {
-		appsNet["aliases"] = []any{a.id}
+		nets["apps"] = map[string]any{"ipv4_address": s.appsIP, "aliases": []any{a.id}}
 	}
 
 	volumes := []any{
 		volumeMount(volBin, BinDir, true),
 		volumeMount(volReady, ReadyDir, true),
 	}
-	if len(spec.Secrets) > 0 {
-		volumes = append(volumes, volumeMount(volSecretsPfx+a.id, SecretsRoot+"/"+a.id, true))
+	// Exactly the declared secret files, read-only (D-042).
+	for _, name := range spec.Secrets {
+		volumes = append(volumes, secretBind(a.id, name))
 	}
 	for _, mnt := range spec.Mounts {
 		switch mnt.Type {
@@ -327,13 +341,13 @@ func appService(a *plannedApp, s *plannedService, noProxy string) (map[string]an
 	svc := map[string]any{
 		"image":       image,
 		"entrypoint":  entry,
-		"networks":    map[string]any{"apps": appsNet},
-		"dns":         []any{DNSIP},
+		"networks":    nets,
+		"dns":         []any{a.egressIP()},
 		"environment": env,
 		"volumes":     volumes,
 		"depends_on":  dependsOn(deps),
 		"restart":     restart,
-		"logging":     logging(),
+		"logging":     logs,
 	}
 	harden(svc, capsAppDrop, nil)
 	switch c := spec.Command.(type) {
@@ -431,19 +445,26 @@ func noProxyList(apps []*plannedApp) string {
 	return strings.Join(sortedStrings(names), ",")
 }
 
-func proxyEnv(noProxy string) map[string]any {
+func proxyEnv(proxyURL, noProxy string) map[string]any {
 	return map[string]any{
-		"HTTP_PROXY":         ProxyURL,
-		"HTTPS_PROXY":        ProxyURL,
-		"http_proxy":         ProxyURL,
-		"https_proxy":        ProxyURL,
+		"HTTP_PROXY":         proxyURL,
+		"HTTPS_PROXY":        proxyURL,
+		"http_proxy":         proxyURL,
+		"https_proxy":        proxyURL,
 		"NO_PROXY":           noProxy,
 		"no_proxy":           noProxy,
 		"NODE_USE_ENV_PROXY": "1",
 	}
 }
 
-func logging() map[string]any { return map[string]any{"driver": "none"} }
+// logging is the driver every container uses: none in production, local
+// when the config sets debug (integration brief item 13).
+func logging(debug bool) map[string]any {
+	if debug {
+		return map[string]any{"driver": "local"}
+	}
+	return map[string]any{"driver": "none"}
+}
 
 // Capability sets. Docker's default set includes NET_RAW, which lets a
 // container forge source IPs and ARP replies on the shared apps bridge;
@@ -497,6 +518,20 @@ func dataBind(app, volume, target string, readOnly bool) map[string]any {
 	return m
 }
 
+// secretBind mounts one secret file read-only. The source is the same path
+// on the host tmpfs, written by sealed-agent before the ready gate opens;
+// Docker must not create it (a missing file would become a directory).
+func secretBind(owner, name string) map[string]any {
+	p := secretFile(owner, name)
+	return map[string]any{
+		"type":      "bind",
+		"source":    p,
+		"target":    p,
+		"read_only": true,
+		"bind":      map[string]any{"create_host_path": false},
+	}
+}
+
 func configMount(source, target string) map[string]any {
 	return map[string]any{"source": source, "target": target}
 }
@@ -520,13 +555,20 @@ func probe(target, interval, startPeriod string) map[string]any {
 	}
 }
 
-func tmpfsVolume(mode string) map[string]any {
+// tmpfsVolume is a small tmpfs Docker volume; owner ("<uid>:<gid>") sets
+// the owner of its root directory.
+func tmpfsVolume(mode, owner string) map[string]any {
+	o := "size=1m,mode=" + mode
+	if owner != "" {
+		uid, gid, _ := strings.Cut(owner, ":")
+		o += ",uid=" + uid + ",gid=" + gid
+	}
 	return map[string]any{
 		"driver": "local",
 		"driver_opts": map[string]any{
 			"type":   "tmpfs",
 			"device": "tmpfs",
-			"o":      "size=1m,mode=" + mode + ",noexec,nosuid,nodev",
+			"o":      o + ",noexec,nosuid,nodev",
 		},
 	}
 }
