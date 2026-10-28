@@ -13,7 +13,7 @@ import { PinnedRelayTransport } from './relay-transport.js'
 import { createPayerApp } from './server.js'
 import { AgentSpendBudget } from './shared-budget.js'
 import { FileSpendStore, SpendGuard } from './spend-guard.js'
-import { SpendReporter } from './spend-reporter.js'
+import { SpendReporter, spendSnapshot } from './spend-reporter.js'
 import { ChainTxWatcher, receiptReader } from './tx-watcher.js'
 
 const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), ...event }))
@@ -100,18 +100,7 @@ function main(): void {
   const reporter = new SpendReporter({
     agentUrl: config.agentUrl,
     intervalSeconds: config.reportIntervalSeconds,
-    snapshot: () => ({
-      mode: config.mode,
-      currency: config.currency,
-      counters: guard.counters(),
-      relay: {
-        attested: gate.isOpen(),
-        checkedAt: gate.state().checkedAt,
-        stackHash: gate.state().stackHash,
-        sessionsAvailable: relay.sessionsAvailable(),
-      },
-      recovery: recovery.snapshot(),
-    }),
+    snapshot: () => spendSnapshot({ mode: config.mode, currency: config.currency, guard, gate, relay, recovery }),
     log,
   })
   const callers = new CallerAllowlist(config.allowedCallers)

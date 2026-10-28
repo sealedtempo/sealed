@@ -8,8 +8,31 @@ export type SpendReport = {
   counters: SpendCounters
   relay: { attested: boolean; checkedAt?: number; stackHash?: string; sessionsAvailable: boolean }
   /** Orphaned-channel recovery counters; sealed-agent reports them as mpp_recovery* (runtime/agent/src/spend.ts). */
-  recovery?: RecoveryCounters
+  recovery: RecoveryCounters
   sentAt: number
+}
+
+/** The parts of the running payer a spend report is read from (main.ts passes the real ones). */
+export type SpendSources = {
+  mode: string
+  currency: string
+  guard: { counters(): SpendCounters }
+  gate: { isOpen(): boolean; state(): { checkedAt?: number; stackHash?: string } }
+  relay: { sessionsAvailable(): boolean }
+  /** ChannelRecovery: its counters go to the agent with every report (they were once kept in the payer only). */
+  recovery: { snapshot(): RecoveryCounters }
+}
+
+/** What the payer reports to sealed-agent: its counters, the relay attestation state and the recovery counters. */
+export function spendSnapshot(s: SpendSources): Omit<SpendReport, 'sentAt' | 'source'> {
+  const gate = s.gate.state()
+  return {
+    mode: s.mode,
+    currency: s.currency,
+    counters: s.guard.counters(),
+    relay: { attested: s.gate.isOpen(), checkedAt: gate.checkedAt, stackHash: gate.stackHash, sessionsAvailable: s.relay.sessionsAvailable() },
+    recovery: s.recovery.snapshot(),
+  }
 }
 
 /**

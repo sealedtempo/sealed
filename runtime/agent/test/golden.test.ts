@@ -26,7 +26,9 @@ import { type FakePlatform, startFakePlatform } from "./helpers/fakePlatform.js"
 import { fromPeer, testPeerOf, testSettings } from "./helpers/fixtures.js";
 // The payer's own code builds the /v1/spend body (brief item 21: accept it as payments built it).
 import { SpendGuard } from "../../mpp-payer/src/spend-guard.js";
-import { SpendReporter } from "../../mpp-payer/src/spend-reporter.js";
+import { SpendReporter, spendSnapshot } from "../../mpp-payer/src/spend-reporter.js";
+import { ChannelJournal } from "../../mpp-payer/src/channel-journal.js";
+import { ChannelRecovery } from "../../mpp-payer/src/channel-recovery.js";
 import { AgentSpendBudget, BudgetUnavailableError } from "../../mpp-payer/src/shared-budget.js";
 import { SpendLimitError } from "../../mpp-payer/src/spend-guard.js";
 
@@ -245,18 +247,43 @@ describe("sealed-agent against the composer's golden stack", () => {
       expect(JSON.stringify(h.body)).not.toContain("sealed-mpp-payer");
     });
 
-    it("accepts the body the real payer sends (runtime/mpp-payer SpendGuard and SpendReporter)", async () => {
+    it("accepts the body the real payer sends (runtime/mpp-payer SpendGuard, ChannelRecovery, spendSnapshot, SpendReporter)", async () => {
       const guard = new SpendGuard(2_000_000n, () => now * 1000);
       guard.reserve(1200n, "charge");
+      // The payer's channel recovery after one orphaned channel was closed and withdrawn (refund 487654).
+      const channelId = `0x${"0c".repeat(32)}` as const;
+      const journal = new ChannelJournal(undefined, () => now);
+      journal.recordOpen({
+        channelId,
+        chainId: 4217,
+        escrow: "0x4d50500000000000000000000000000000000000",
+        descriptor: { payer: `0x${"11".repeat(20)}`, payee: `0x${"ab".repeat(20)}`, operator: `0x${"ab".repeat(20)}`, token: config.feeToken as `0x${string}`, salt: channelId, authorizedSigner: `0x${"22".repeat(20)}`, expiringNonceHash: channelId },
+        deposit: 500_000n,
+      });
+      const recovery = new ChannelRecovery({
+        journal,
+        chain: {
+          state: async () => ({ deposit: 500_000n, settled: 12_346n, closeRequestedAt: now - 1000 }),
+          gracePeriod: async () => 900,
+          prepare: async () => ({ feeCap: 100n, send: async () => ({ status: "success", refunded: 487_654n }) }),
+        },
+        liveChannels: () => new Set<string>(),
+        guard,
+        now: () => now + 400,
+      });
+      await recovery.sweep();
+      const sources = {
+        mode: "access-key",
+        currency: config.feeToken,
+        guard,
+        gate: { isOpen: () => true, state: () => ({ checkedAt: now, stackHash: `0x${"ab".repeat(32)}` }) },
+        relay: { sessionsAvailable: () => false },
+        recovery,
+      };
       const reporter = new SpendReporter({
         agentUrl: `http://127.0.0.1:${agent.port}`,
         intervalSeconds: 60,
-        snapshot: () => ({
-          mode: "access-key",
-          currency: config.feeToken,
-          counters: guard.counters(),
-          relay: { attested: true, checkedAt: now, stackHash: `0x${"ab".repeat(32)}`, sessionsAvailable: false },
-        }),
+        snapshot: () => spendSnapshot(sources),
         fetch: (url, init) => fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), ...fromPeer("172.30.0.5") } }),
       });
       expect(await reporter.send()).toBe(true);
@@ -265,10 +292,15 @@ describe("sealed-agent against the composer's golden stack", () => {
         mpp_day: new Date(now * 1000).toISOString().slice(0, 10),
         mpp_limit: "2000000",
         mpp_budget: "2000000",
-        mpp_debited: "1200",
+        mpp_debited: "1300",
         mpp_charges: 1,
         mpp_relayAttested: true,
         mpp_sessionsAvailable: false,
+        // The payer's recovery counters reach the platform in the signed report (rounded, D-065).
+        mpp_recoveryRequestCloses: 0,
+        mpp_recoveryWithdrawals: 1,
+        mpp_recovered: "480000",
+        mpp_recoveryFailures: 0,
       });
       expect(JSON.stringify(h.body)).not.toContain("abab");
     });
