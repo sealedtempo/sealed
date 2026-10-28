@@ -19,7 +19,7 @@ func TestAssetURL(t *testing.T) {
 	if err != nil || u != "https://github.com/sealedtempo/sealed/releases/download/crm-v2.52.0-sealed.1/crm-2.52.0-sealed.1.bundle.tar" {
 		t.Fatalf("%q %v", u, err)
 	}
-	for _, bad := range [][2]string{{"Crm", "1"}, {"crm", "../x"}, {"crm", "1/2"}, {"crm", ""}} {
+	for _, bad := range [][2]string{{"Crm", "1"}, {"crm", "../x"}, {"crm", "1/2"}, {"crm", ""}, {"crm", "1.0.0+build.7"}} {
 		if _, err := bundles.AssetURL("https://x.example", bad[0], bad[1]); err == nil {
 			t.Errorf("accepted %v", bad)
 		}

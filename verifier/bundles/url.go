@@ -9,8 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strings"
+
+	"github.com/sealed-dev/sealed/runtime/composer"
 )
 
 // DefaultReleaseAssetBase is catalog.release_asset_base of config/defaults.yaml (TestDefaultBaseMatchesDefaults
@@ -26,36 +27,28 @@ type URLRule interface {
 //
 //	<release_asset_base>/<appId>-v<release_version>/<appId>-<release_version>.bundle.tar
 //
-// where appId is the app slug. The composer workstream adds the shared helper in runtime/composer/release.go;
-// until it is merged this local copy implements the same rule (see docs/notes/build-int-verifier.md).
+// where appId is the app slug. It delegates to runtime/composer's NewReleaseAssets, the one implementation the
+// key broker, the CLI and release CI share, so every fetcher computes the URL release CI publishes.
 type AssetRule struct {
 	// Base is release_asset_base without a trailing slash, for example
 	// https://github.com/sealedtempo/sealed/releases/download.
 	Base string
 }
 
-var (
-	// slugRe is the manifest id pattern of catalog/schema/manifest.schema.json.
-	slugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}[a-z0-9]$`)
-	// versionRe is the manifest release_version pattern; a version outside it has no asset URL.
-	versionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$`)
-)
-
-// ErrNoAssetURL is returned for an app slug or version the URL rule cannot express (path characters, empty).
+// ErrNoAssetURL is returned for an app slug or version the URL rule cannot express (path characters, empty,
+// characters GitHub renames in asset names such as "+").
 var ErrNoAssetURL = errors.New("no release asset URL")
 
 // BundleURL implements URLRule.
 func (r AssetRule) BundleURL(app, version string) (string, error) {
-	if !slugRe.MatchString(app) {
-		return "", fmt.Errorf("%w: app id %q is not a catalog slug", ErrNoAssetURL, app)
-	}
-	if !versionRe.MatchString(version) || strings.Contains(version, "..") {
-		return "", fmt.Errorf("%w: release version %q", ErrNoAssetURL, version)
-	}
 	if r.Base == "" {
 		return "", fmt.Errorf("%w: release asset base not set", ErrNoAssetURL)
 	}
-	return strings.TrimRight(r.Base, "/") + "/" + app + "-v" + version + "/" + app + "-" + version + ".bundle.tar", nil
+	a, err := composer.NewReleaseAssets(r.Base, app, version)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrNoAssetURL, err)
+	}
+	return a.Bundle, nil
 }
 
 // ParseBases splits a comma-separated list of release asset bases (the first is the catalog's, later ones are

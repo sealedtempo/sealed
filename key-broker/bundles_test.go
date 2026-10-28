@@ -53,11 +53,10 @@ func TestBundleURLRule(t *testing.T) {
 	if u != "https://github.com/sealedtempo/sealed/releases/download/crm-v2.52.0-sealed.1/crm-2.52.0-sealed.1.bundle.tar" {
 		t.Fatalf("url %s", u)
 	}
-	u, _ = BundleURL("https://example.com/r", "llm-gateway", "1.0.0+build.7")
-	if u != "https://example.com/r/llm-gateway-v1.0.0+build.7/llm-gateway-1.0.0+build.7.bundle.tar" {
-		t.Fatalf("url %s", u)
-	}
 	for _, bad := range []struct{ base, app, version string }{
+		// GitHub renames asset names with "+" or spaces, so such versions have no asset URL.
+		{"https://example.com/r", "llm-gateway", "1.0.0+build.7"},
+		{"https://example.com", "crm", "1 2?x"},
 		{"https://example.com", "Crm", "1"},
 		{"https://example.com", "../x", "1"},
 		{"https://example.com", "crm", "../../evil"},
@@ -68,11 +67,6 @@ func TestBundleURLRule(t *testing.T) {
 		if _, err := BundleURL(bad.base, bad.app, bad.version); err == nil {
 			t.Errorf("accepted %+v", bad)
 		}
-	}
-	// Characters that need escaping stay inside their path segment.
-	u, _ = BundleURL("https://example.com", "crm", "1 2?x")
-	if !strings.HasSuffix(u, "/crm-v1%202%3Fx/crm-1%202%3Fx.bundle.tar") {
-		t.Fatalf("url %s", u)
 	}
 }
 

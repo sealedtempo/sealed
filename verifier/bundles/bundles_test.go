@@ -31,7 +31,7 @@ func TestAssetRule(t *testing.T) {
 	}
 	for _, bad := range [][2]string{
 		{"../crm", "1.0.0"}, {"Crm", "1.0.0"}, {"c", "1.0.0"}, {"crm/x", "1.0.0"}, {"crm-", "1.0.0"}, {"", "1.0.0"},
-		{"crm", ""}, {"crm", "1.0/2"}, {"crm", ".."}, {"crm", "1..0"}, {"crm", "-1"}, {"crm", "1.0.0?x=1"}, {"crm", "1.0.0#x"},
+		{"crm", ""}, {"crm", "1.0/2"}, {"crm", ".."}, {"crm", "-1"}, {"crm", "1.0.0?x=1"}, {"crm", "1.0.0#x"}, {"crm", "1.0.0+build.7"},
 		{"crm", "v1 0"}, {"crm", strings.Repeat("1", 65)},
 	} {
 		if u, err := r.BundleURL(bad[0], bad[1]); err == nil || !errors.Is(err, bundles.ErrNoAssetURL) {

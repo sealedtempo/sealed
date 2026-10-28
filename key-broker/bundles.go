@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -38,22 +37,15 @@ type BundleSource interface {
 	Fetch(ctx context.Context, ref BundleRef) (*composer.Bundle, error)
 }
 
-// BundleURL applies the release asset URL rule (D-046, INTERFACES brief item 18):
+// BundleURL applies the release asset URL rule (D-046, brief item 18) through runtime/composer's
+// NewReleaseAssets, the implementation verifierd, the CLI and release CI share:
 // <release_asset_base>/<appId>-v<release_version>/<appId>-<release_version>.bundle.tar.
 func BundleURL(base, app, version string) (string, error) {
-	if !appIDRe.MatchString(app) {
-		return "", fmt.Errorf("app id %q is not a slug", app)
+	a, err := composer.NewReleaseAssets(base, app, version)
+	if err != nil {
+		return "", err
 	}
-	if version == "" || strings.ContainsAny(version, "/\\") || version == "." || version == ".." {
-		return "", fmt.Errorf("release version %q cannot be part of a release asset URL", version)
-	}
-	u, err := url.Parse(strings.TrimRight(base, "/"))
-	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return "", fmt.Errorf("release asset base %q is not an http(s) URL", base)
-	}
-	tag := url.PathEscape(app + "-v" + version)
-	file := url.PathEscape(app + "-" + version + ".bundle.tar")
-	return u.String() + "/" + tag + "/" + file, nil
+	return a.Bundle, nil
 }
 
 // HTTPBundleSourceOptions configure an HTTPBundleSource.

@@ -11,10 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -25,24 +23,14 @@ import (
 // MaxBundleSize bounds a download. Bundles hold manifests, SBOMs and scans, a few MiB at most.
 const MaxBundleSize = 64 << 20
 
-var (
-	appRe     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
-	versionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$`)
-)
-
-// AssetURL is <base>/<appId>-v<version>/<appId>-<version>.bundle.tar (D-046).
+// AssetURL is <base>/<appId>-v<version>/<appId>-<version>.bundle.tar (D-046), from runtime/composer's
+// NewReleaseAssets, the implementation the key broker, verifierd and release CI share.
 func AssetURL(base, app, version string) (string, error) {
-	if !appRe.MatchString(app) {
-		return "", fmt.Errorf("app id %q", app)
+	a, err := composer.NewReleaseAssets(base, app, version)
+	if err != nil {
+		return "", err
 	}
-	if !versionRe.MatchString(version) {
-		return "", fmt.Errorf("release version %q", version)
-	}
-	u, err := url.Parse(base)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("release asset base %q is not a URL", base)
-	}
-	return strings.TrimRight(base, "/") + "/" + url.PathEscape(app+"-v"+version) + "/" + url.PathEscape(app+"-"+version+".bundle.tar"), nil
+	return a.Bundle, nil
 }
 
 // Fetcher downloads bundles.
