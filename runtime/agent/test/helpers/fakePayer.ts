@@ -1,5 +1,5 @@
 import type { Address, Hex } from "@sealed/core";
-import type { Budget, DeploymentStatus, FeePayer, PaymentLine } from "../../src/payments/feePayer.js";
+import { type Budget, type DeploymentStatus, type FeePayer, PaymentError, type PaymentLine, type PaymentReceipt, type SpendLimit } from "../../src/payments/feePayer.js";
 
 export const PATH_USD = "0x20c0000000000000000000000000000000000000" as Address;
 
@@ -27,9 +27,13 @@ export class FakePayer implements FeePayer {
   reserve = 1000n;
   /** What each payment transaction paid in network fees (counts against the spend limit, D-048). */
   networkFee = 2_000n;
-  /** The access key's period end, as getRemainingLimit reports it. */
-  periodEnd: number | undefined;
+  /** The access key's limit as the chain reports it; undefined = a key without limits (config applies). */
+  limit: SpendLimit | undefined;
   failNext = 0;
+  /** The next payment fails like a mined revert (`reverted`) or a lost broadcast or receipt (`unknown`). */
+  failNextAs: "reverted" | "unknown" | undefined;
+  /** Receipts paymentReceipt() reports, by transaction hash. */
+  receipts = new Map<string, PaymentReceipt>();
   private key(usageHash: Hex, appId: Hex) {
     return `${usageHash}:${appId}`;
   }
@@ -96,6 +100,12 @@ export class FakePayer implements FeePayer {
       this.failNext--;
       throw new Error("execution reverted");
     }
+    if (this.failNextAs) {
+      const outcome = this.failNextAs;
+      this.failNextAs = undefined;
+      const txHash = `0x${"ee".repeat(31)}${String(this.paid.length).padStart(2, "0")}` as Hex;
+      throw new PaymentError(`payment ${outcome}`, outcome, txHash, outcome === "reverted" ? this.networkFee : undefined);
+    }
     // The batch is atomic: check every line against FeeSplitter's rules before recording any.
     this.check(lines);
     for (const l of lines) {
@@ -107,8 +117,12 @@ export class FakePayer implements FeePayer {
     this.paid.push(lines);
     return { txHash: `0x${String(this.paid.length).padStart(64, "0")}` as Hex, gasUsed: 100_000n, networkFee: this.networkFee };
   }
-  async limitPeriodEnd() {
+  async spendLimit() {
     this.chainRead();
-    return this.periodEnd;
+    return this.limit;
+  }
+  async paymentReceipt(txHash: Hex) {
+    this.chainRead();
+    return this.receipts.get(txHash);
   }
 }

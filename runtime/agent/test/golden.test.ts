@@ -281,6 +281,9 @@ describe("sealed-agent against the composer's golden stack", () => {
       expect(agent.budget?.available(now)).toBe(base);
       const first = JSON.parse((await post("/v1/spend/reserve", { amount: "100000", currency: config.feeToken })).body);
       expect(first).toMatchObject({ ok: true, remaining: (base - 100_000n).toString() });
+      // On disk before the payer hears of it: an agent restart cannot forget the reservation (review M4).
+      const onDisk = JSON.parse(await readFile(join(testSettings(dir).dataMount, ".sealed-agent", "state.json"), "utf8"));
+      expect(onDisk.budget.reservations[first.reservationId]).toMatchObject({ amount: "100000" });
       const tooMuch = JSON.parse((await post("/v1/spend/reserve", { amount: base.toString() })).body);
       expect(tooMuch).toEqual({ ok: false, remaining: (base - 100_000n).toString(), reason: "budget" });
       const released = JSON.parse((await post("/v1/spend/release", { reservationId: first.reservationId, used: "40000" })).body);
@@ -296,9 +299,12 @@ describe("sealed-agent against the composer's golden stack", () => {
     });
 
     it("follows the access key's limit period for the budget window", async () => {
-      payer.periodEnd = now + 3600;
+      payer.limit = { remaining: 1_500_000n, periodEnd: now + 3600 };
       await agent.settle(now);
-      expect(agent.budget?.state).toMatchObject({ windowEnd: now + 3600, aligned: true });
+      expect(agent.budget?.state).toMatchObject({ windowEnd: now + 3600, aligned: true, onchain: { remaining: "1500000", periodEnd: now + 3600 } });
+      // The onchain remaining limit, not the config's 2 USD, bounds the payer's share now.
+      expect(agent.budget?.available(now)).toBe(1_500_000n - agent.feeReserve(now + 3600, now));
+      payer.limit = undefined;
     });
 
     it("answers the gate only for Caddy, and fails closed on a released hash it cannot use", async () => {

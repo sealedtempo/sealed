@@ -1,25 +1,64 @@
-// The deployment's shared daily spend budget (D-048). Fee settlement and sealed-mpp-payer draw on one
-// limit: the customer's access-key spending limit (config settlement.spendLimitPerDay, also written to
-// the payer as SPEND_LIMIT_PER_DAY). Fee settlement has priority: the payer may only reserve what is
-// left after everything spent in the window, its own open reservations and `reserved_for_fees`, the
-// agent's estimate of what the next settlement will pay (unpaid legs, the open period, app-hours until
-// the next settlement, network fees).
+// The deployment's shared spend budget (D-048). Fee settlement and sealed-mpp-payer draw on one limit. Fee
+// settlement has priority: the payer may only reserve what is left after everything already spent, its own
+// open reservations and `reserved_for_fees`, the agent's estimate of what settlement will still pay before the
+// window ends (unpaid legs, the open period, app-hours until the window end, network fees).
 //
-// The window is the access key's own period when the agent can read it onchain (Tempo periodic limits
-// roll from authorization time, not at midnight), else the UTC day. Reservations the payer does not
-// release within the TTL count as spent: a payer that crashed after paying must not free budget it
-// used. State lives in the agent's state file on the encrypted disk, so a restart does not reset it.
+// Where the limit comes from (review M4):
+// - access-key mode: the customer's onchain authorization. The agent reads the key's remaining FEE_TOKEN limit
+//   and period end (getRemainingLimit), and the payer's share is that remaining amount less what was spent since
+//   the read started, open reservations and reserved_for_fees. The config's spendLimitPerDay is not used, so a
+//   limit of any amount and a day, week or month period is followed as authorized. Until the first read, or for
+//   a key that is missing, revoked or expired, the payer gets nothing. A key without limits falls back to config.
+// - enclave-account mode: config settlement.spendLimitPerDay per UTC day.
+// The window is the onchain period when known (Tempo periodic limits roll from authorization time), else the UTC
+// day. It sets the fee-reservation horizon and the counters in the health report.
+//
+// Nothing that may have left the limit is dropped (review M4): open reservations survive the window roll and are
+// counted in the window they are released in; reservations the payer does not release within the TTL count as
+// spent; a settlement transaction whose outcome is unknown counts as its full amount plus its fee reserve until
+// its receipt shows, and a reverted one counts its network fee. The agent saves the state before it answers a
+// reservation, so a restart cannot forget one.
 import { randomBytes } from "node:crypto";
 
 export const DAY_SEC = 86_400;
 export const RESERVATION_TTL_SEC = 15 * 60;
 export const MAX_OPEN_RESERVATIONS = 64;
+/** Expired reservations are kept this long for a late release, then dropped (their amount stays counted). */
+export const EXPIRED_KEEP_SEC = 2 * DAY_SEC;
+export const MAX_KEPT_RESERVATIONS = 256;
+/** Onchain period ends further out than this are not followed (Tempo periods are at most a few months here). */
+export const MAX_PERIOD_SEC = 400 * DAY_SEC;
 
 export interface Reservation {
   amount: string;
   at: number;
   /** Not released within the TTL: its amount counts as spent until a late release corrects it. */
   expired?: boolean;
+  /** windowEnd of the window it was made in, or, once expired, the window its amount was counted in. */
+  window?: number;
+  /** `spent` right after the expiry counted it. */
+  mark?: string;
+}
+
+/** The access key's FEE_TOKEN limit as last read onchain. `remaining` absent: the key has no limits. */
+export interface OnchainLimit {
+  remaining?: string;
+  /** End of the key's current period (unix seconds); 0 for a one-time limit or a missing key. */
+  periodEnd: number;
+  readAt: number;
+  /** `spent` when the read started: anything counted after that is not in `remaining`. */
+  spentAtRead: string;
+}
+
+/** A settlement transaction whose receipt was not seen: counted in full until it is. */
+export interface PendingFee {
+  counted: string;
+  /** The fees the transaction pulls when it succeeds. */
+  owed: string;
+  at: number;
+  window: number;
+  /** `spent` right after counting it. */
+  mark: string;
 }
 
 export interface BudgetState {
@@ -32,6 +71,12 @@ export interface BudgetState {
   /** Spent by the payer in this window: released `used` amounts and expired reservations. */
   payer: string;
   reservations: Record<string, Reservation>;
+  /** Everything counted as spent so far, across windows (fees, payer debits, expired reservations, corrections). */
+  spent?: string;
+  onchain?: OnchainLimit;
+  /** Network fee of the last settlement transaction, the estimate for later ones. */
+  networkFeePerTx?: string;
+  pendingFees?: Record<string, PendingFee>;
 }
 
 export type ReserveResult =
@@ -42,16 +87,21 @@ export class SpendBudgetError extends Error {}
 export class UnknownReservationError extends Error {}
 
 const nextUtcMidnight = (now: number) => (Math.floor(now / DAY_SEC) + 1) * DAY_SEC;
+const big = (v: string | undefined) => BigInt(v ?? "0");
+const nonNeg = (v: bigint) => (v > 0n ? v : 0n);
 
 export function emptyBudgetState(now: number): BudgetState {
-  return { windowEnd: nextUtcMidnight(now), aligned: false, fees: "0", payer: "0", reservations: {} };
+  return { windowEnd: nextUtcMidnight(now), aligned: false, fees: "0", payer: "0", reservations: {}, spent: "0" };
 }
 
 export interface SpendBudgetOptions {
+  /** The config limit (spendLimitPerDay): used in enclave-account mode and for a key without onchain limits. */
   limit: bigint;
   state: BudgetState;
-  /** reserved_for_fees: what the next settlement is expected to pay, in fee-token base units. */
-  feeReserve: () => bigint;
+  /** Access-key mode: the onchain authorization sets the limit, and nothing is available before it is read. */
+  onchainLimit?: boolean;
+  /** reserved_for_fees: what settlement will still pay until `windowEnd`, in fee-token base units. */
+  feeReserve: (windowEnd: number, now: number) => bigint;
   ttlSec?: number;
   onChange?: () => void;
 }
@@ -62,29 +112,70 @@ export class SpendBudget {
   constructor(private readonly o: SpendBudgetOptions) {
     if (o.limit < 0n) throw new SpendBudgetError("negative spend limit");
     this.state = o.state;
+    this.state.spent ??= (big(this.state.fees) + big(this.state.payer)).toString();
+    for (const r of Object.values(this.state.reservations)) r.window ??= this.state.windowEnd;
   }
 
   private changed(): void {
     this.o.onChange?.();
   }
 
-  /** Starts a new window when the current one has ended, and expires stale reservations. */
+  /** Whether an amount counted when `spent` reached `mark` is still part of what the last onchain read does not cover. */
+  private countedSinceRead(mark: string | undefined): boolean {
+    const oc = this.state.onchain;
+    return !oc || mark === undefined || big(mark) > big(oc.spentAtRead);
+  }
+
+  private addSpent(delta: bigint): void {
+    this.state.spent = nonNeg(big(this.state.spent) + delta).toString();
+  }
+
+  /** The onchain period end when the last read is still current. */
+  private onchainPeriodEnd(now: number): number | undefined {
+    const oc = this.state.onchain;
+    if (!this.o.onchainLimit || !oc || oc.remaining === undefined) return undefined;
+    return oc.periodEnd > now && oc.periodEnd <= now + MAX_PERIOD_SEC ? oc.periodEnd : undefined;
+  }
+
+  /** Starts a new window when the current one has ended, expires stale reservations and prunes old ones. */
   private tick(now: number): void {
     const s = this.state;
     if (now >= s.windowEnd) {
-      s.windowEnd = s.aligned ? s.windowEnd + Math.ceil((now - s.windowEnd + 1) / DAY_SEC) * DAY_SEC : nextUtcMidnight(now);
+      const periodEnd = this.onchainPeriodEnd(now);
+      if (periodEnd !== undefined) {
+        s.windowEnd = periodEnd;
+        s.aligned = true;
+      } else if (s.aligned) {
+        // The onchain period ended and was not read again yet: assume a day until the next read.
+        s.windowEnd += Math.ceil((now - s.windowEnd + 1) / DAY_SEC) * DAY_SEC;
+      } else {
+        s.windowEnd = nextUtcMidnight(now);
+      }
       s.fees = "0";
       s.payer = "0";
-      s.reservations = {};
+      // Open reservations stay: what the payer spends on them counts in the window it releases them in.
       this.changed();
     }
     const ttl = this.o.ttlSec ?? RESERVATION_TTL_SEC;
-    for (const r of Object.values(s.reservations)) {
+    const kept: [string, Reservation][] = [];
+    for (const [id, r] of Object.entries(s.reservations)) {
       if (!r.expired && now - r.at >= ttl) {
         r.expired = true;
-        s.payer = (BigInt(s.payer) + BigInt(r.amount)).toString();
+        s.payer = (big(s.payer) + big(r.amount)).toString();
+        this.addSpent(big(r.amount));
+        r.mark = big(s.spent).toString();
+        r.window = s.windowEnd; // the window its amount is counted in
         this.changed();
       }
+      if (r.expired && now - r.at >= EXPIRED_KEEP_SEC) {
+        delete s.reservations[id];
+        this.changed();
+      } else if (r.expired) kept.push([id, r]);
+    }
+    if (kept.length > MAX_KEPT_RESERVATIONS) {
+      kept.sort((a, b) => a[1].at - b[1].at);
+      for (const [id] of kept.slice(0, kept.length - MAX_KEPT_RESERVATIONS)) delete s.reservations[id];
+      this.changed();
     }
   }
 
@@ -94,11 +185,27 @@ export class SpendBudget {
     return sum;
   }
 
+  /** End of the window fee priority covers: the onchain period end when current, else the local window. */
+  windowEnd(now: number): number {
+    this.tick(now);
+    return this.onchainPeriodEnd(now) ?? this.state.windowEnd;
+  }
+
+  /** What the shared limit still allows before reservations and reserved_for_fees. */
+  private headroom(now: number): bigint {
+    const oc = this.state.onchain;
+    if (this.o.onchainLimit && oc?.remaining !== undefined) {
+      return big(oc.remaining) - nonNeg(big(this.state.spent) - big(oc.spentAtRead));
+    }
+    if (this.o.onchainLimit && !oc) return 0n; // not read yet: fail closed
+    return this.o.limit - big(this.state.fees) - big(this.state.payer);
+  }
+
   /** What the payer may still reserve now. */
   available(now: number): bigint {
     this.tick(now);
-    const left = this.o.limit - BigInt(this.state.fees) - BigInt(this.state.payer) - this.outstanding() - this.o.feeReserve();
-    return left > 0n ? left : 0n;
+    const end = this.onchainPeriodEnd(now) ?? this.state.windowEnd;
+    return nonNeg(this.headroom(now) - this.outstanding() - this.o.feeReserve(end, now));
   }
 
   reserve(amount: bigint, now: number): ReserveResult {
@@ -108,54 +215,132 @@ export class SpendBudget {
     if (open >= MAX_OPEN_RESERVATIONS) return { ok: false, remaining: remaining.toString(), reason: "too_many_reservations" };
     if (amount > remaining) return { ok: false, remaining: remaining.toString(), reason: "budget" };
     const reservationId = `0x${randomBytes(16).toString("hex")}`;
-    this.state.reservations[reservationId] = { amount: amount.toString(), at: now };
+    this.state.reservations[reservationId] = { amount: amount.toString(), at: now, window: this.state.windowEnd };
     this.changed();
     return { ok: true, reservationId, remaining: (remaining - amount).toString() };
+  }
+
+  /** Undoes a reservation that was never handed out (the state could not be saved). */
+  cancel(reservationId: string): void {
+    if (delete this.state.reservations[reservationId]) this.changed();
   }
 
   /** The payer settles a reservation with what it actually spent (0 when the debit failed). */
   release(reservationId: string, used: bigint, now: number): { ok: true; remaining: string } {
     if (used < 0n) throw new SpendBudgetError("used must not be negative");
     this.tick(now);
-    const r = this.state.reservations[reservationId];
+    const s = this.state;
+    const r = s.reservations[reservationId];
     if (!r) throw new UnknownReservationError("unknown or already released reservation");
-    delete this.state.reservations[reservationId];
-    let payer = BigInt(this.state.payer) + used;
-    if (r.expired) payer -= BigInt(r.amount);
-    this.state.payer = (payer > 0n ? payer : 0n).toString();
+    delete s.reservations[reservationId];
+    let payer = big(s.payer) + used;
+    let spent = used;
+    if (r.expired) {
+      // Its amount was counted as spent when it expired. In the same window the release replaces that guess;
+      // after a roll the old window's count is gone, so `used` simply counts in this one. An onchain read that
+      // started after the expiry already holds the chain's own number, so the guess is not taken back there.
+      if (this.countedSinceRead(r.mark)) spent -= big(r.amount);
+      if ((r.window ?? s.windowEnd) === s.windowEnd) payer -= big(r.amount);
+    }
+    s.payer = nonNeg(payer).toString();
+    this.addSpent(spent);
     this.changed();
     return { ok: true, remaining: this.available(now).toString() };
   }
 
   /** Fee settlement spent `amount` (approved fees plus the network fee) at `now`. */
-  recordFees(amount: bigint, now: number): void {
-    if (amount <= 0n) return;
+  recordFees(amount: bigint, now: number, networkFee?: bigint): void {
     this.tick(now);
-    this.state.fees = (BigInt(this.state.fees) + amount).toString();
+    if (networkFee !== undefined && networkFee > 0n) this.state.networkFeePerTx = networkFee.toString();
+    if (amount <= 0n) {
+      if (networkFee !== undefined) this.changed();
+      return;
+    }
+    this.state.fees = (big(this.state.fees) + amount).toString();
+    this.addSpent(amount);
     this.changed();
   }
 
-  /** Follows the access key's onchain period end (Tempo periodic limits roll from authorization time). */
-  alignWindow(periodEnd: number, now: number): void {
-    this.tick(now);
-    if (!Number.isSafeInteger(periodEnd) || periodEnd <= now || periodEnd > now + DAY_SEC) return;
-    if (this.state.aligned && this.state.windowEnd === periodEnd) return;
-    this.state.windowEnd = periodEnd;
-    this.state.aligned = true;
+  /**
+   * A settlement transaction was broadcast but its outcome is unknown (receipt timeout, lost response): count
+   * `counted` (its fees plus the fee reserve) now, and correct it once the receipt shows (resolvePendingFee).
+   */
+  recordPendingFee(txHash: string, owed: bigint, counted: bigint, now: number): void {
+    this.recordFees(counted, now);
+    this.state.pendingFees ??= {};
+    this.state.pendingFees[txHash.toLowerCase()] = { counted: counted.toString(), owed: owed.toString(), at: now, window: this.state.windowEnd, mark: big(this.state.spent).toString() };
     this.changed();
+  }
+
+  pendingFees(): Array<{ txHash: string } & PendingFee> {
+    return Object.entries(this.state.pendingFees ?? {}).map(([txHash, p]) => ({ txHash, ...p }));
+  }
+
+  /** The receipt of a pending transaction showed what it really took (fees if it succeeded, plus its network fee). */
+  resolvePendingFee(txHash: string, actual: bigint, now: number): void {
+    this.tick(now);
+    const p = this.state.pendingFees?.[txHash.toLowerCase()];
+    if (!p) return;
+    delete this.state.pendingFees?.[txHash.toLowerCase()];
+    const delta = actual - big(p.counted);
+    if (delta > 0n) {
+      this.state.fees = (big(this.state.fees) + delta).toString();
+      this.addSpent(delta);
+    } else if (delta < 0n) {
+      // Give back the overcount only where it is still counted: this window's fees, and `spent` only if an
+      // onchain read that started after the count has not already replaced it with the chain's own number.
+      if (p.window === this.state.windowEnd) this.state.fees = nonNeg(big(this.state.fees) + delta).toString();
+      if (this.countedSinceRead(p.mark)) this.addSpent(delta);
+    }
+    this.changed();
+  }
+
+  /** Call before reading the onchain limit; pass the result to setOnchain with what was read. */
+  beginOnchainRead(): string {
+    return big(this.state.spent).toString();
+  }
+
+  /**
+   * The access key's limit as read onchain: `undefined` for a key without limits (config applies); a missing,
+   * revoked or expired key reads as remaining 0.
+   */
+  setOnchain(limit: { remaining: bigint; periodEnd: number } | undefined, spentAtRead: string, now: number): void {
+    if (!this.o.onchainLimit) return;
+    this.tick(now);
+    const s = this.state;
+    s.onchain = limit
+      ? { remaining: limit.remaining.toString(), periodEnd: Number.isSafeInteger(limit.periodEnd) ? limit.periodEnd : 0, readAt: now, spentAtRead }
+      : { periodEnd: 0, readAt: now, spentAtRead };
+    const periodEnd = this.onchainPeriodEnd(now);
+    if (periodEnd !== undefined && !(s.aligned && s.windowEnd === periodEnd)) {
+      s.windowEnd = periodEnd;
+      s.aligned = true;
+    }
+    this.changed();
+  }
+
+  /** Seconds since the onchain limit was last read (Infinity before the first read). */
+  onchainAge(now: number): number {
+    const oc = this.state.onchain;
+    return oc ? now - oc.readAt : Number.POSITIVE_INFINITY;
   }
 
   /** Content-free counters for the signed health report. */
   snapshot(now: number): Record<string, string> {
     const available = this.available(now);
+    const end = this.windowEnd(now);
+    const oc = this.state.onchain;
     return {
       budget_limit: this.o.limit.toString(),
+      budget_source: this.o.onchainLimit && oc?.remaining !== undefined ? "onchain" : this.o.onchainLimit && !oc ? "unread" : "config",
       budget_fees: this.state.fees,
       budget_payer: this.state.payer,
       budget_reserved: this.outstanding().toString(),
-      budget_reservedForFees: this.o.feeReserve().toString(),
+      budget_reservedForFees: this.o.feeReserve(end, now).toString(),
       budget_payerAvailable: available.toString(),
-      budget_windowEnd: String(this.state.windowEnd),
+      budget_windowEnd: String(end),
+      ...(oc?.remaining !== undefined ? { budget_onchainRemaining: oc.remaining, budget_onchainReadAt: String(oc.readAt) } : {}),
+      ...(this.state.pendingFees && Object.keys(this.state.pendingFees).length > 0 ? { budget_pendingTxs: String(Object.keys(this.state.pendingFees).length) } : {}),
     };
   }
 }

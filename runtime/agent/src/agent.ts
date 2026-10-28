@@ -91,6 +91,8 @@ const CADDY_TLS_PORT = 443;
  * against an access-key limit, so the payer must leave room for them.
  */
 export const NETWORK_FEE_ALLOWANCE = 10_000n;
+/** A reservation older than this since the last read of the access key's limit triggers a new read. */
+export const ONCHAIN_LIMIT_MAX_AGE_SEC = 60;
 
 export class Agent {
   readonly clock: Clock;
@@ -107,6 +109,7 @@ export class Agent {
   /** min(defaults cap, last onchain FeeSplitter perPaymentCap): reports are cut at it. */
   private perPaymentCap = 0n;
   private bcrypt?: BcryptWorker;
+  private limitRead?: Promise<void>;
   gate?: Gate;
   bootstrap?: BootstrapTracker;
   budget?: SpendBudget;
@@ -247,7 +250,7 @@ export class Agent {
         feeSplitter: ctx.config.contracts.feeSplitter as Address,
         deploymentRegistry: ctx.config.contracts.deploymentRegistry as Address,
         deploymentId: ctx.deploymentId,
-        // Local Tempo nodes (anvil 1.7.1, T4 rules) under-estimate these batches; mainnet uses the node's estimate.
+        // Headroom on local Tempo nodes in tests; mainnet uses the node's estimate and the per-line floors.
         minGas: ctx.config.chainId === 4217 ? 0n : 5_000_000n,
       });
     this.payer = payer;
@@ -283,12 +286,14 @@ export class Agent {
     store.state.budget ??= emptyBudgetState(this.clock.now());
     this.budget = new SpendBudget({
       limit: BigInt(ctx.config.settlement.spendLimitPerDay),
+      // access-key mode: the customer's onchain authorization sets the limit and period, not the config (review M4).
+      onchainLimit: ctx.config.settlement.mode === "access-key",
       state: store.state.budget,
-      feeReserve: () => this.feeReserve(),
+      feeReserve: (windowEnd, now) => this.feeReserve(windowEnd, now),
       onChange: scheduleSave,
     });
-    // In the background: a blocked RPC must not delay boot (every settlement aligns again).
-    void this.alignBudget(log);
+    // In the background: a blocked RPC must not delay boot (every settlement and stale reservation reads again).
+    void this.refreshSpendLimit(log);
     this.poller = new AppHealthPoller(ctx.apps, { ledger: this.ledger, log, intervalSec: s.pollIntervalSec, probe: this.deps.probe });
     this.settler = new Settler({
       ledger: this.ledger,
@@ -300,7 +305,7 @@ export class Agent {
       save: () => store.save(),
       log: log.child({ part: "settlement" }),
       onPerPaymentCap: setCap,
-      onSpent: (amount, now) => this.budget?.recordFees(amount, now),
+      spend: this.budget,
     });
   }
 
@@ -333,43 +338,61 @@ export class Agent {
   }
 
   /**
-   * reserved_for_fees (D-048): what the next settlement is expected to take from the spend limit. Unpaid
-   * legs, the open period so far, app-hours of heartbeat apps until the next settlement, and a network
-   * fee allowance per app transaction.
+   * reserved_for_fees (D-048): what settlement will still take from the spend limit before `windowEnd`, the end of
+   * the limit's period (review M5: the whole window, not only the next settlement). Unpaid legs, the open period so
+   * far, app-hours of heartbeat apps until the window ends, the network fee allowance per app transaction of the
+   * next settlement, and the later settlements' transactions at twice the last network fee seen.
    */
-  feeReserve(): bigint {
+  feeReserve(windowEnd?: number, now = this.clock.now()): bigint {
     const ctx = this.ctx;
     const ledger = this.ledger;
     if (!ctx || !ledger) return 0n;
-    const intervalSec = BigInt(ctx.config.settlement.intervalMinutes * 60);
+    const intervalSec = ctx.config.settlement.intervalMinutes * 60;
+    const end = windowEnd ?? this.budget?.windowEnd(now) ?? now + intervalSec;
+    const horizon = Math.max(0, end - now);
     const apps = new Set<string>();
     let total = 0n;
     for (const e of ledger.unpaid()) {
       total += e.fee;
       apps.add(e.app);
     }
+    let accruing = 0;
     for (const a of ctx.apps) {
       let fee = ledger.openFee(a.id);
       if (a.metering.source === "heartbeat") {
         const rule = priceRuleFor(ctx.schedule, a.id, "app_hour");
-        fee += (rule.price * intervalSec + rule.per - 1n) / rule.per;
+        if (rule.price > 0n) {
+          fee += (rule.price * BigInt(horizon) + rule.per - 1n) / rule.per;
+          accruing++;
+        }
       }
       if (fee > 0n) apps.add(a.id);
       total += fee;
     }
-    return total + NETWORK_FEE_ALLOWANCE * BigInt(apps.size);
+    const later = BigInt(Math.max(0, Math.ceil(horizon / intervalSec) - 1) * accruing);
+    const seen = this.budget?.state.networkFeePerTx;
+    const perTx = seen !== undefined ? 2n * BigInt(seen) : NETWORK_FEE_ALLOWANCE;
+    return total + NETWORK_FEE_ALLOWANCE * BigInt(apps.size) + later * perTx;
   }
 
-  /** Follows the access key's spending-limit period, when the chain reports one. */
-  private async alignBudget(log: Logger): Promise<void> {
+  /**
+   * Reads the access key's remaining limit and period end into the spend budget (access-key mode). One read at a
+   * time; a failed read keeps the last reading, which only gets more conservative as spends are counted.
+   */
+  private refreshSpendLimit(log: Logger = this.log): Promise<void> {
     const payer = this.payer;
-    if (!payer?.limitPeriodEnd || !this.budget) return;
-    try {
-      const end = await withTimeout(payer.limitPeriodEnd(), 15_000);
-      if (end !== undefined) this.budget.alignWindow(end, this.clock.now());
-    } catch (err) {
-      log.warn("could not read the access key's limit period; the spend budget keeps its window", errorFields(err));
-    }
+    const budget = this.budget;
+    if (!payer?.spendLimit || !budget) return Promise.resolve();
+    if (this.limitRead) return this.limitRead;
+    const mark = budget.beginOnchainRead();
+    const read = withTimeout(payer.spendLimit(), 15_000)
+      .then((limit) => budget.setOnchain(limit, mark, this.clock.now()))
+      .catch((err) => log.warn("could not read the access key's spending limit; the spend budget keeps the last reading", errorFields(err)))
+      .finally(() => {
+        if (this.limitRead === read) this.limitRead = undefined;
+      });
+    this.limitRead = read;
+    return read;
   }
 
   private platform(): PlatformClient {
@@ -426,7 +449,7 @@ export class Agent {
 
   async settle(now = this.clock.now()): Promise<SettlementResult> {
     const result = await (this.settler as Settler).tick(now);
-    await this.alignBudget(this.log);
+    await this.refreshSpendLimit(this.log);
     return result;
   }
 
@@ -506,22 +529,42 @@ export class Agent {
     this.spend = report.counters;
   }
 
-  /** POST /v1/spend/reserve {amount}: the payer's share of the daily budget, after fees (D-048). */
-  private reserveSpend(body: unknown, peer: string) {
+  /**
+   * POST /v1/spend/reserve {amount}: the payer's share of the shared budget, after fees (D-048). The reservation is
+   * on disk before the payer hears of it, so a restart cannot forget money the payer is about to spend.
+   */
+  private async reserveSpend(body: unknown, peer: string) {
     this.requirePayer(peer);
     const r = reserveRequestSchema.safeParse(body);
     if (!r.success) throw new UsageRejected(`invalid reservation: ${r.error.issues[0]?.message ?? "bad body"}`, 400);
     const feeToken = (this.ctx as DeploymentContext).config.feeToken.toLowerCase();
     if (r.data.currency && r.data.currency.toLowerCase() !== feeToken) throw new UsageRejected("the reservation's currency is not the deployment's fee token", 422);
-    return (this.budget as SpendBudget).reserve(r.data.amount, this.clock.now());
+    const budget = this.budget as SpendBudget;
+    const age = budget.onchainAge(this.clock.now());
+    if (age === Number.POSITIVE_INFINITY) await this.refreshSpendLimit();
+    else if (age >= ONCHAIN_LIMIT_MAX_AGE_SEC) void this.refreshSpendLimit();
+    const result = budget.reserve(r.data.amount, this.clock.now());
+    if (result.ok) {
+      try {
+        await (this.store as StateStore).save();
+      } catch (err) {
+        budget.cancel(result.reservationId);
+        this.log.error("could not save a spend reservation; refused", errorFields(err));
+        throw new UsageRejected("the reservation could not be recorded", 503);
+      }
+    }
+    return result;
   }
 
   /** POST /v1/spend/release {reservationId, used}. */
-  private releaseSpend(body: unknown, peer: string) {
+  private async releaseSpend(body: unknown, peer: string) {
     this.requirePayer(peer);
     const r = releaseRequestSchema.safeParse(body);
     if (!r.success) throw new UsageRejected(`invalid release: ${r.error.issues[0]?.message ?? "bad body"}`, 400);
-    return (this.budget as SpendBudget).release(r.data.reservationId, r.data.used, this.clock.now());
+    const result = (this.budget as SpendBudget).release(r.data.reservationId, r.data.used, this.clock.now());
+    // A lost release only makes the reservation expire and count as spent, so a failed save is logged, not refused.
+    await (this.store as StateStore).save().catch((err) => this.log.error("state save failed", errorFields(err)));
+    return result;
   }
 
   /** GET /v1/gate: only Caddy asks (fixed IP); everyone else gets 403 so the gate is no password oracle. */

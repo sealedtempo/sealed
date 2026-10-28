@@ -393,7 +393,14 @@ describe.runIf(haveGo)("sealed-agent on the real composer output for the catalog
 
   it("takes the payer's reservations from its fixed IP in the composed stack", async () => {
     const payerIp = stack.sidecars["sealed-mpp-payer"] as string;
-    const r = await localRequest(ep(), "/v1/spend/reserve", { body: { amount: "1000", currency: config.feeToken }, headers: fromPeer(payerIp) });
+    const reserve = () => localRequest(ep(), "/v1/spend/reserve", { body: { amount: "1000", currency: config.feeToken }, headers: fromPeer(payerIp) });
+    // 16 hours of crm, coding-agent and internal-tools app-hours until the window ends (2.40 USD) do not fit the
+    // 2 USD config limit: fee settlement keeps all of it (review M5).
+    expect(JSON.parse((await reserve()).body)).toEqual({ ok: false, remaining: "0", reason: "budget" });
+    // The customer's key allows 20 USD for the period onchain: the payer gets what the fees leave (review M4).
+    payer.limit = { remaining: 20_000_000n, periodEnd: now + 16 * 3600 };
+    await agent.settle(now);
+    const r = await reserve();
     expect(JSON.parse(r.body)).toMatchObject({ ok: true });
     const other = await localRequest(ep(), "/v1/spend/reserve", { body: { amount: "1000" }, headers: fromPeer(caddyIp) });
     expect(other.status).toBe(403);

@@ -17,8 +17,8 @@ export interface ApiHandlers {
   recordUsage(ev: UsageEvent, peer: string): Promise<"accepted" | "duplicate">;
   recordSpend(body: unknown, peer: string): void;
   /** POST /v1/spend/reserve and /release (D-048): the payer's share of the daily budget. */
-  reserveSpend(body: unknown, peer: string): unknown;
-  releaseSpend(body: unknown, peer: string): unknown;
+  reserveSpend(body: unknown, peer: string): unknown | Promise<unknown>;
+  releaseSpend(body: unknown, peer: string): unknown | Promise<unknown>;
   attest(nonce: string): Promise<unknown>;
   /** GET /v1/gate (Caddy forward_auth). `peer` is the socket peer, `req.client` the internet client. */
   gate(req: GateRequest, peer: string): Promise<GateDecision>;
@@ -30,7 +30,7 @@ export interface ApiHandlers {
 export class UsageRejected extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 403 | 422 | 429 = 422,
+    readonly status: 400 | 403 | 422 | 429 | 503 = 422,
   ) {
     super(message);
   }
@@ -154,11 +154,11 @@ export function createApiServer(h: ApiHandlers, log: Logger, opts: ApiServerOpti
         }
         case "POST /v1/spend/reserve": {
           if (!h.isReady()) return send(res, 503, { error: "not ready" });
-          return send(res, 200, h.reserveSpend(await readJson(req), peerOf(req)));
+          return send(res, 200, await h.reserveSpend(await readJson(req), peerOf(req)));
         }
         case "POST /v1/spend/release": {
           if (!h.isReady()) return send(res, 503, { error: "not ready" });
-          return send(res, 200, h.releaseSpend(await readJson(req), peerOf(req)));
+          return send(res, 200, await h.releaseSpend(await readJson(req), peerOf(req)));
         }
         case "POST /v1/bootstrap/done": {
           if (!h.isReady()) return send(res, 503, { error: "not ready" });
