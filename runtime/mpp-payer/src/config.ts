@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+/** pathUSD; local Tempo nodes fund it. Mainnet's FEE_TOKEN is USDC.e (D-035), read from config.feeToken. */
 export const PATHUSD = '0x20c0000000000000000000000000000000000000' as const
 export const ESCROW_PRECOMPILE = '0x4d50500000000000000000000000000000000000' as const
 export const DEFAULT_SECRETS_DIR = '/run/sealed/secrets/sealed-mpp-payer'
@@ -17,6 +18,7 @@ export type PayerConfig = {
   customer: `0x${string}`
   mode: SettlementMode
   enclaveKey: `0x${string}`
+  /** FEE_TOKEN from the public config (feeToken): the only token the payer pays the relay in. */
   currency: `0x${string}`
   spendLimitPerDay: bigint
   /** Cap on one channel's deposit and every voucher in it, in base units. */
@@ -84,9 +86,10 @@ function httpsUrl(value: unknown, name: string): URL {
 }
 
 /**
- * The relay's chat endpoint must be served on the attested origin: the live attestation binds
+ * The relay's chat endpoint is served on the attested origin (D-045): the live attestation binds
  * the TLS key of the relayAttest connection, and every relay request is pinned to that key, so
- * both endpoints must be one host and port (one certificate).
+ * endpoints.relay must be exactly the origin of endpoints.relayAttest (one host and port, one
+ * certificate). The relay route's path prefix (/v1/) is served there next to /attest.
  */
 export function relayEndpoints(relay: unknown, relayAttest: unknown): { relayUrl: string; relayAttestUrl: string } {
   const r = httpsUrl(relay, 'endpoints.relay')
@@ -95,7 +98,9 @@ export function relayEndpoints(relay: unknown, relayAttest: unknown): { relayUrl
     throw new Error(
       `endpoints.relay (${r.origin}) and endpoints.relayAttest (${a.origin}) must share one origin: relay requests are pinned to the attested TLS key`,
     )
-  return { relayUrl: `${r.origin}${r.pathname.replace(/\/+$/, '')}`, relayAttestUrl: a.toString() }
+  if (r.pathname.replace(/\/+$/, '') !== '' || r.search !== '' || r.hash !== '')
+    throw new Error(`endpoints.relay must be the relay's attest origin ${a.origin} without a path (its /v1/ route is served there)`)
+  return { relayUrl: r.origin, relayAttestUrl: a.toString() }
 }
 
 export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConfig {
@@ -121,6 +126,7 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
   const defaultDeposit = spendLimitPerDay / 4n > 500_000n ? 500_000n : spendLimitPerDay / 4n
   if (env.RELAY_SPEND_SHARE_BPS !== undefined && env.RELAY_SPEND_SHARE_BPS !== '')
     throw new Error('RELAY_SPEND_SHARE_BPS was removed: the payer draws from sealed-agent\'s shared daily budget (D-048)')
+  if (typeof pub.feeToken !== 'string') throw new Error('config feeToken missing: the payer pays the relay only in FEE_TOKEN')
   const { relayUrl, relayAttestUrl } = relayEndpoints(pub.endpoints?.relay, pub.endpoints?.relayAttest)
   return {
     port: intEnv(env, 'PORT', 8090),
@@ -129,7 +135,7 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
     customer: address(pub.customer, 'customer'),
     mode,
     enclaveKey: key as `0x${string}`,
-    currency: address(pub.feeToken ?? PATHUSD, 'feeToken'),
+    currency: address(pub.feeToken, 'feeToken'),
     spendLimitPerDay,
     maxDeposit: env.MAX_DEPOSIT ? baseUnits(env.MAX_DEPOSIT, 'MAX_DEPOSIT') : defaultDeposit,
     maxCharge: env.MAX_CHARGE ? baseUnits(env.MAX_CHARGE, 'MAX_CHARGE') : 50_000n,

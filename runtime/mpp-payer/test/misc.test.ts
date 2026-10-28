@@ -98,7 +98,8 @@ describe('payer configuration', () => {
     schema: 'sealed-config/v1',
     chainId: 4217,
     customer: '0x' + 'Cc'.repeat(20),
-    feeToken: '0x20c0000000000000000000000000000000000000',
+    // FEE_TOKEN on mainnet: USDC.e (D-035).
+    feeToken: '0x20C000000000000000000000b9537d11c60E8b50',
     endpoints: { relay: 'https://relay.example', relayAttest: 'https://relay.example/attest', tempoRpc: 'https://rpc.tempo.xyz' },
     settlement: { mode: 'access-key', spendLimitPerDay: '5000000' },
     relayOwner: '0x' + '0a'.repeat(20),
@@ -109,11 +110,16 @@ describe('payer configuration', () => {
   it('reads the enclave key and daily limit from the payer tmpfs and the rest from the public config', () => {
     const c = loadPayerConfig(env)
     expect(c).toMatchObject({ port: 8090, chainId: 4217, mode: 'access-key', customer: '0x' + 'cc'.repeat(20), spendLimitPerDay: 2_000_000n, maxDeposit: 500_000n, relayUrl: 'https://relay.example', relayAttestUrl: 'https://relay.example/attest', verifierdUrl: 'http://sealed-verifierd:8088', agentUrl: 'http://sealed-agent:7070', attestIntervalSeconds: 900, allowedCallers: ['llm-gateway'] })
+    // The currency is FEE_TOKEN from the public config, normalized to lowercase.
+    expect(c.currency).toBe('0x20c000000000000000000000b9537d11c60e8b50')
     expect(c).not.toHaveProperty('relaySpendShareBps')
   })
 
-  it('refuses the removed relay share setting', () => {
+  it('refuses the removed relay share setting and a config without feeToken', () => {
     expect(() => loadPayerConfig({ ...env, RELAY_SPEND_SHARE_BPS: '8000' })).toThrow(/shared daily budget/)
+    const { feeToken: _feeToken, ...withoutFeeToken } = config
+    writeFileSync(join(dir, 'nofee.json'), JSON.stringify(withoutFeeToken))
+    expect(() => loadPayerConfig({ ...env, SEALED_CONFIG_PATH: join(dir, 'nofee.json') })).toThrow(/feeToken missing/)
   })
 
   it('reads the environment names the composer sets on the payer sidecar', () => {
@@ -132,6 +138,11 @@ describe('payer configuration', () => {
     expect(() => loadPayerConfig({ ...env, SEALED_CONFIG_PATH: join(dir, 'split.json') })).toThrow(/must share one origin/)
     writeFileSync(join(dir, 'port.json'), JSON.stringify({ ...config, endpoints: { ...config.endpoints, relayAttest: 'https://relay.example:8443/attest' } }))
     expect(() => loadPayerConfig({ ...env, SEALED_CONFIG_PATH: join(dir, 'port.json') })).toThrow(/must share one origin/)
+    // endpoints.relay is the attest origin itself (D-045): the relay route's /v1/ prefix is served there.
+    writeFileSync(join(dir, 'path.json'), JSON.stringify({ ...config, endpoints: { ...config.endpoints, relay: 'https://relay.example/relay' } }))
+    expect(() => loadPayerConfig({ ...env, SEALED_CONFIG_PATH: join(dir, 'path.json') })).toThrow(/without a path/)
+    writeFileSync(join(dir, 'slash.json'), JSON.stringify({ ...config, endpoints: { ...config.endpoints, relay: 'https://relay.example/' } }))
+    expect(loadPayerConfig({ ...env, SEALED_CONFIG_PATH: join(dir, 'slash.json') }).relayUrl).toBe('https://relay.example')
   })
 
   it('refuses other chains, plain-http relays and missing keys', () => {
