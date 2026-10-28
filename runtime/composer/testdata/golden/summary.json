@@ -1,0 +1,35 @@
+{
+  "composerVersion": "1.0.0",
+  "stackHash": "0x2d61e972af2a7b623af73a6d96ada6d467e400e7d5dbfc7f1086ba5a146d6720",
+  "configHash": "0x80724c034d36176957731352e4487350153055668849e481a0d59bcf6a89b556",
+  "deploymentId": "0x90a80a2955829bacd1d3de0fda9d06267b7d38d15afd16bd4b3e0b7e288477f3",
+  "releases": [
+    {
+      "appId": "0x55fd8d795c5b9d2a906e1540ade043a6fb75de555aeb3800c4dd8cf3079b5dda",
+      "slug": "notes",
+      "version": "1.0.0-sealed.1",
+      "bundleHash": "0x215d8ff6d3f406d608094cddadf92a33368df448172d0ef15b24dff0e8ef3e17",
+      "egressPolicyHash": "0xdaccb7a5a0ac193235c46ae5bff84892fabcd355acdcab28eb751da2c350ade6",
+      "sbomHash": "0x99e03732e4f2d3bca79cf664d99680c5a28a817b279d411ca048f6fc6a07c19d",
+      "releaseId": "0x4ece5013487ed97981f7ee613bc1741bb68aa03ee7de4917d143692c53bbdfb6"
+    },
+    {
+      "appId": "0x75628f63cb267b5e13ef7a1e5091b3377e14d68e3d4e2d8a0cbfbe92de419ef9",
+      "slug": "llm-gateway",
+      "version": "2.3.4",
+      "bundleHash": "0x1eb93cdc73cc59bcf73a6b0802edcf7533460d396c6318dcd825068166319445",
+      "egressPolicyHash": "0x7a23ed44cbcd9bd471bee67100c25b1ac218862b61024b73ff9659c9938ec712",
+      "sbomHash": "0xc9993f9bd53f4220c4d46baac2610718a81158d4f55d3d1c3879875412c1572c",
+      "releaseId": "0x97fbdcf74cf1ab1f19220c47b19d8dda008a79878cf8ca5b54019b60167c3f79"
+    }
+  ],
+  "files": {
+    "Caddyfile": "0x84be9cacd7a0fc6c4298c011e52861ed908d880c6b2e61393540e37243d6c9fe",
+    "Caddyfile.payment-needed": "0x2cabfa38382597a99a67cce783cfe09b57d9701ee82d2cff9a6fee854fcc3e43",
+    "app-compose.json": "0x2d61e972af2a7b623af73a6d96ada6d467e400e7d5dbfc7f1086ba5a146d6720",
+    "config.json": "0x80724c034d36176957731352e4487350153055668849e481a0d59bcf6a89b556",
+    "egress.json": "0x32a0301f1c00e13aaaa2e19deb2ec682108f3673a067fcb413c64aed49890e13",
+    "pre-launch.sh": "0xe3fb3eebbbf014f91b77374c293973a744839e063af8860186c8c3c32c3e3b00",
+    "stack.json": "0xd8ba0d76c7a49c1a44cee33cb142e836bcbbb2af999c6abfb8f028e594b9109a"
+  }
+}

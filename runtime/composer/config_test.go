@@ -107,3 +107,26 @@ func TestCustomHostnames(t *testing.T) {
 		t.Fatal("unknown route accepted")
 	}
 }
+
+func TestGoBuiltConfigMatchesParsed(t *testing.T) {
+	c := testConfig()
+	c.Apps = []ConfigApp{{ID: "notes", ReleaseID: "0x" + strings.Repeat("ab", 32)}}
+	c.EgressAdditions, c.AllowedVpcRanges = nil, nil
+	a, err := c.CanonicalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseConfig(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := parsed.CanonicalJSON()
+	if string(a) != string(b) || !strings.Contains(string(a), `"egressAdditions":{}`) {
+		t.Fatalf("%s\n%s", a, b)
+	}
+	c.EgressAdditions = map[string][]string{"notes": nil}
+	d, _ := c.CanonicalJSON()
+	if !strings.Contains(string(d), `"notes":[]`) {
+		t.Fatalf("nil list must encode as []: %s", d)
+	}
+}

@@ -106,11 +106,22 @@ func ParseConfig(raw []byte) (*Config, error) {
 }
 
 // CanonicalJSON is CJSON of the normalized config; configHash is its sha256.
+// A Config built in Go and the same config parsed from JSON give the same
+// bytes: nil egressAdditions and allowedVpcRanges encode as {} and [].
 func (c *Config) CanonicalJSON() ([]byte, error) {
+	n := *c
+	n.EgressAdditions = map[string][]string{}
+	for app, list := range c.EgressAdditions {
+		n.EgressAdditions[app] = append([]string{}, list...)
+	}
+	if n.AllowedVpcRanges == nil {
+		n.AllowedVpcRanges = []string{}
+	}
+	n.Apps = append([]ConfigApp{}, c.Apps...)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(c); err != nil {
+	if err := enc.Encode(&n); err != nil {
 		return nil, err
 	}
 	return cjson.Canonicalize(bytes.TrimRight(buf.Bytes(), "\n"))
