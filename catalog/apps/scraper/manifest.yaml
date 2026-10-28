@@ -63,10 +63,12 @@ telemetry_off_env:
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 license_exclusions:
   # Playwright's Linux Chromium is Chrome for Testing (unclear license, D-022). Only Firefox ships.
-  - ms-playwright/chromium-*
-  - ms-playwright/chromium_headless_shell-*
-  - "**/node_modules/@playwright/browser-chromium"
-  - "**/node_modules/idcac-playwright"
+  # Literal patterns only (license audit F6): the lint matches an SBOM file path that contains the
+  # pattern and a package whose name is the pattern; ** and * are not expanded.
+  - ms-playwright/chromium-
+  - ms-playwright/chromium_headless_shell-
+  - "@playwright/browser-chromium"
+  - idcac-playwright
 notes: >-
   Metering: one usage event per batch of successful pages ({app: scraper, unit: pages,
   quantity: N, id}) to sealed-agent; a retried batch keeps its id. robots.txt is honoured by

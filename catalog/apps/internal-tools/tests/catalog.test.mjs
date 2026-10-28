@@ -18,6 +18,7 @@ import {
   composerLint,
   composeStack,
   envexecSecrets,
+  excludedPathHits,
   findComposer,
   secretMounts,
   unexpectedFindings,
@@ -268,6 +269,40 @@ describe("the real composer (runtime/composer)", { skip: composer.skip }, () => 
     // Until the runtime image workflow builds images/tooljet-ce and its digest is pinned, the
     // composer refuses the release. Any other error means this app drifted from its rules.
     assert.deepEqual(errors, unbuilt ? [`unbuilt-image images[${tooljet}].digest`] : []);
+  });
+
+  test("every license_exclusions entry is matched by the lint, and only where it should be (license audit F6, F7)", () => {
+    const caughtFiles = [
+      "/app/server/ee/index.js",
+      "/app/frontend/ee/main.js",
+      "/app/server/dist/ee/licensing.js",
+      "/app/frontend/build/ee/chunk.js",
+      "/app/server/dist/src/modules/ee/stub.js",
+      "/opt/oracle/instantclient_21_10/libclntsh.so.21.1",
+      "/usr/bin/redis-server",
+      "/usr/bin/redis-check-aof",
+      "/usr/bin/redis-check-rdb",
+      "/usr/bin/redis-benchmark",
+      "/usr/bin/redis-cli",
+      "/usr/lib/redis/modules/redisearch.so",
+      "/etc/redis/redis.conf",
+    ];
+    const cleanFiles = [
+      "/app/server/dist/src/main.js",
+      "/app/server/eeprom.txt",
+      "/app/frontend/build/assets/free/x.svg",
+      "/app/server/feeds/x.js",
+      "/usr/local/bin/valkey-server",
+      "/usr/lib/x86_64-linux-gnu/libssl.so.3",
+      "/app/server/node_modules/ioredis/built/index.js",
+    ];
+    const cleanPackages = ["ee-first", "ioredis", "@tooljet/plugins", "redis-parser"];
+    const hits = excludedPathHits(composer, appDir, "tooljet", { packages: cleanPackages, files: [...caughtFiles, ...cleanFiles] });
+    for (const path of caughtFiles) assert.ok(hits.has(path), path);
+    for (const entry of [...cleanFiles, ...cleanPackages.map((n) => `${n}@1.0.0`)]) assert.ok(!hits.has(entry), entry);
+    assert.ok(hits.get("/app/server/dist/src/modules/ee/stub.js").has("/ee/"));
+    const used = new Set([...hits.values()].flatMap((set) => [...set]));
+    for (const pattern of app.manifest.license_exclusions) assert.ok(used.has(pattern), `${pattern} matches nothing`);
   });
 
   describe("composed stack", async () => {

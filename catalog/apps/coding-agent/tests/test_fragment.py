@@ -453,6 +453,34 @@ class ComposerChecks:
         for name, svc in self.app["fragment"]["services"].items():
             self.assertEqual(envexec_secrets(self.composed[name]), set(svc.get("x-sealed-secrets") or []), name)
 
+    def test_license_exclusions_are_matched_by_the_lint(self):
+        """License audit F6: each exclusion catches what it names, in an SBOM, and nothing it should not."""
+        sp = "/usr/local/lib/python3.13/site-packages"
+        caught_files = [
+            "/usr/lib/node_modules/@anthropic-ai/claude-agent-sdk/cli.js",
+            "/opt/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",
+            f"{sp}/litellm_enterprise/__init__.py",
+        ]
+        if "/acp-node/" in self.app["manifest"]["license_exclusions"]:
+            caught_files.append("/acp-node/node_modules/@zed-industries/claude-code-acp/dist/index.js")
+        clean_files = [f"{sp}/litellm/__init__.py", f"{sp}/openhands/sdk/__init__.py", "/usr/local/bin/opencode",
+                       "/usr/lib/node_modules/npm/package.json", "/opt/acp-nodes.txt"]
+        caught_packages = ["@anthropic-ai/claude-agent-sdk", "litellm-enterprise"]
+        clean_packages = ["litellm", "openhands-sdk", "@anthropic-ai/sdk", "opencode-ai"]
+        image = self.app["manifest"]["images"][0]["name"]
+        findings = self.composer.lint_with_sbom(self.DIR, image, caught_packages + clean_packages,
+                                                caught_files + clean_files)
+        hits = sealed_compose.excluded_hits(findings)
+        for path in caught_files:
+            self.assertIn(path, hits)
+        for name in caught_packages:
+            self.assertIn(name + "@1.0.0", hits)
+        for entry in clean_files + [n + "@1.0.0" for n in clean_packages]:
+            self.assertNotIn(entry, hits)
+        used = set().union(*hits.values())
+        for pattern in sealed_compose.exclusion_patterns(self.app["manifest"]):
+            self.assertIn(pattern, used, f"license_exclusions entry {pattern!r} matches nothing")
+
     def test_services_run_as_their_fragment_users(self):
         for name, svc in self.app["fragment"]["services"].items():
             self.assertEqual(self.composed[name]["user"], svc["user"], name)

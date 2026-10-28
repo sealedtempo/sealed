@@ -133,6 +133,25 @@ class Composer:
         except ValueError:
             raise AssertionError(f"sealed-compose lint failed: {proc.stderr.strip()}") from None
 
+    def lint_with_sbom(self, app_dir: str, image: str, packages: list[str], files: list[str]) -> list[dict[str, Any]]:
+        """`sealed-compose lint --json` of a copy of the app carrying a made-up SPDX SBOM for one image
+        (sbom/<image>.spdx.json): the given package names (license MIT) and file paths."""
+        with tempfile.TemporaryDirectory() as scratch:
+            copy = brief_compatible_copy(app_dir, scratch, brief=not self.brief, share_with=not self.share_with)
+            os.makedirs(os.path.join(copy, "sbom"))
+            doc = {
+                "spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "name": image,
+                "packages": [{"name": n, "versionInfo": "1.0.0", "licenseConcluded": "MIT"} for n in packages],
+                "files": [{"fileName": f} for f in files],
+            }
+            with open(os.path.join(copy, "sbom", image + ".spdx.json"), "w", encoding="utf-8") as handle:
+                json.dump(doc, handle)
+            proc = self.run(["lint", "--json", "--app-dir", copy])
+        try:
+            return json.loads(proc.stdout)
+        except ValueError:
+            raise AssertionError(f"sealed-compose lint failed: {proc.stderr.strip()}") from None
+
     def compose(self, app_dirs: list[str], out_dir: str, expect_ok: bool = True) -> dict[str, Any]:
         """`sealed-compose compose` of the apps with a sample config; the artifacts, parsed."""
         os.makedirs(out_dir, exist_ok=True)
@@ -223,6 +242,21 @@ def unexpected(findings: list[dict[str, Any]], errors: tuple[str, ...] = ("unbui
     allowed = {"error": set(errors), "warning": set(warnings)}
     return [f"{f['severity']} {f.get('file', '')} {f.get('field', '')} [{f['code']}] {f['message']}"
             for f in findings if f["code"] not in allowed.get(f["severity"], set())]
+
+
+def excluded_hits(findings: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """excluded-path findings of `lint --json`: SBOM entry (package@version or file path) -> patterns."""
+    hits: dict[str, set[str]] = {}
+    for f in findings:
+        if f["code"] == "excluded-path":
+            m = re.search(r'excluded path "([^"]*)"', f["message"])
+            hits.setdefault(f.get("field", ""), set()).add(m.group(1) if m else "")
+    return hits
+
+
+def exclusion_patterns(manifest: dict[str, Any]) -> list[str]:
+    """The manifest's license_exclusions an SBOM can match: all but the "<owner>/<repo>:<path>" notes."""
+    return [p for p in manifest.get("license_exclusions") or [] if not re.match(r"^[\w.-]+/[\w.-]+:", p)]
 
 
 def unbuilt_images(manifest: dict[str, Any]) -> list[str]:

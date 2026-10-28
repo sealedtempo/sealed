@@ -302,6 +302,34 @@ class ComposerTest(unittest.TestCase):
         self.assertEqual(len(unbuilt), len(names), unbuilt)
         self.assertEqual(sorted(names), ["litellm", "local-model"])
 
+    def test_license_exclusions_are_matched_by_the_lint(self):
+        """License audit F6: each exclusion catches what it names, in an SBOM, and nothing it should not."""
+        sp = "/app/.venv/lib/python3.13/site-packages"
+        caught_files = [
+            "/app/enterprise/enterprise_hooks/banned_keywords.py",
+            f"{sp}/litellm_enterprise/__init__.py",
+            f"{sp}/litellm_enterprise-0.1.21.dist-info/RECORD",
+            "/usr/lib/ollama/cuda_v12/libggml-cuda.so",
+            "/usr/lib/ollama/cuda_v13/libcublas.so.13",
+            "/usr/lib/ollama/mlx_cuda_v13/libmlx.so",
+            "/usr/lib/ollama/vulkan/libggml-vulkan.so",
+        ]
+        clean_files = [f"{sp}/litellm/proxy/proxy_server.py", f"{sp}/litellm/__init__.py",
+                       "/usr/lib/ollama/libggml-cpu-x64.so", "/usr/lib/ollama/libggml-base.so", "/app/schema.prisma"]
+        caught_packages, clean_packages = ["litellm-enterprise", "litellm_enterprise"], ["litellm", "prisma", "ollama"]
+        findings = self.composer.lint_with_sbom(APP_DIR, "litellm", caught_packages + clean_packages,
+                                                caught_files + clean_files)
+        hits = sealed_compose.excluded_hits(findings)
+        for path in caught_files:
+            self.assertIn(path, hits)
+        for name in caught_packages:
+            self.assertIn(name + "@1.0.0", hits)
+        for entry in clean_files + [n + "@1.0.0" for n in clean_packages]:
+            self.assertNotIn(entry, hits)
+        used = set().union(*hits.values())
+        for pattern in sealed_compose.exclusion_patterns(self.app["manifest"]):
+            self.assertIn(pattern, used, f"license_exclusions entry {pattern!r} matches nothing")
+
     def test_composed_services(self):
         fragment = set(self.app["fragment"]["services"])
         self.assertTrue(fragment <= set(self.composed))
