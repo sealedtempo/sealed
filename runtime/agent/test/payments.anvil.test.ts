@@ -10,6 +10,7 @@ import { join } from "node:path";
 import {
   type Address,
   appId as computeAppId,
+  buildAccessKeyAuthorization,
   deploymentId as computeDeploymentId,
   deriveEnclavePrivateKey,
   enclaveSignerAddress,
@@ -44,7 +45,7 @@ import {
   startLocalTempo,
   tokenBalance,
 } from "@sealed/core/testing";
-import { http, parseEventLogs, toFunctionSelector } from "viem";
+import { http, parseEventLogs } from "viem";
 import { Abis, Account, Addresses, createClient as createTempoClient } from "viem/tempo";
 import { tempoChain } from "@sealed/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -193,35 +194,17 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
       expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "access_key_missing" }]);
     });
 
-    it("the customer authorizes the enclave key through AccountKeychain with a daily pathUSD limit and scopes", async () => {
+    it("the customer authorizes the enclave key through AccountKeychain with the D-054 limit and scopes", async () => {
       const c = customerClient();
+      const auth = buildAccessKeyAuthorization({ keyId, feeToken: PATH_USD, feeSplitter: d.feeSplitter, treasury: devAddress(DEV_KEYS.treasury), limit: KEY_LIMIT, period: "day" });
       const hash = await c.writeContract({
         account: root,
         address: Addresses.accountKeychain,
         abi: Abis.accountKeychain,
         functionName: "authorizeKey",
-        args: [
-          keyId,
-          0,
-          {
-            expiry: 2n ** 64n - 1n,
-            enforceLimits: true,
-            limits: [{ token: PATH_USD, amount: KEY_LIMIT, period: 86_400n }],
-            allowAnyCalls: false,
-            allowedCalls: [
-              { target: PATH_USD, selectorRules: [{ selector: toFunctionSelector("approve(address,uint256)"), recipients: [d.feeSplitter] }] },
-              {
-                target: d.feeSplitter,
-                selectorRules: [
-                  { selector: toFunctionSelector("payFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
-                  { selector: toFunctionSelector("topUpFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
-                ],
-              },
-            ],
-          },
-        ],
+        args: auth.args,
         feeToken: PATH_USD,
-        gas: 5_000_000n,
+        gas: 10_000_000n,
       } as never);
       expect((await c.waitForTransactionReceipt({ hash, timeout: 10_000 })).status).toBe("success");
       const meta = await c.accessKey.getMetadata({ account: CUSTOMER, accessKey: keyId });
