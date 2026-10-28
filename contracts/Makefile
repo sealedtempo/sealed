@@ -84,6 +84,8 @@ verify-mainnet:
 			--constructor-args $$args --retries 10 --delay 10 --watch; \
 	done
 
+# FeeSplitter's constructor reads appRegistry() from the DeploymentRegistry argument, so its estimate overrides the
+# placeholder registry address with a stub whose every call returns the placeholder AppRegistry address.
 estimate-mainnet: build
 	@set -e; o=0x1111111111111111111111111111111111111111; r2=0x2222222222222222222222222222222222222222; \
 	r3=0x3333333333333333333333333333333333333333; from=$${ESTIMATE_FROM:-0x9a044ae05e5e6290dcf56afd69548565e957a626}; \
@@ -96,7 +98,13 @@ estimate-mainnet: build
 			*) args=$$(cast abi-encode "f(address)" $$o);; \
 		esac; \
 		code=$$(jq -r '.bytecode.object' out/$$c.sol/$$c.json); \
-		g=$$(cast estimate --rpc-url $(RPC) --from $$from --create "$$code$${args#0x}"); total=$$((total + g)); \
+		if [ $$c = FeeSplitter ]; then \
+			stub="0x73$${r3#0x}60005260206000f3"; \
+			g=$$(cast to-dec $$(cast rpc --rpc-url $(RPC) eth_estimateGas \
+				"{\"from\":\"$$from\",\"data\":\"$$code$${args#0x}\"}" latest "{\"$$r2\":{\"code\":\"$$stub\"}}" | tr -d '"')); \
+		else \
+			g=$$(cast estimate --rpc-url $(RPC) --from $$from --create "$$code$${args#0x}"); \
+		fi; total=$$((total + g)); \
 		printf '%-24s %10s gas\n' $$c $$g; \
 	done; \
 	printf '%-24s %10s gas at %s attodollars/gas = $$%s (floor 6e8) .. $$%s (cap 1.2e10)\n' total $$total $$gp \

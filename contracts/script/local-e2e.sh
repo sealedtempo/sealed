@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end run on a local Tempo node (anvil --network tempo): deploy with script/Deploy.s.sol, then drive the
 # whole lifecycle with cast: add image, register app, publish release, approve stack as a customer, register a
-# deployment with an oracle signature, heartbeat, pay fees (customer and enclave signer), withdraw, close.
+# deployment with an oracle signature, heartbeat, pay fees (customer and enclave signer), withdraw, close, and the
+# contract-review fixes (fixed approval content, unique measurements and bundles, quote reuse, per-deployment usage).
 # Every step is checked; the script exits non-zero on the first mismatch.
 #
 #   script/local-e2e.sh            # from the contracts directory, or: make local-e2e
@@ -108,6 +109,10 @@ send $K_OWNER $PLATFORM "addImage(bytes32,string,string,bytes,bytes,bytes,bytes,
 expect_eq "$(call $PLATFORM 'isApprovedImage(bytes32)(bool)' $IMAGE_ID)" "true" "image approved"
 STORED_MH=$(call $PLATFORM 'getImage(bytes32)((bytes32,bool,uint8,uint64,string,string,string))' $IMAGE_ID | tr -d '(' | cut -d, -f1)
 expect_eq "$STORED_MH" "$MH" "onchain measurementsHash"
+expect_eq "$(call $PLATFORM 'imageByMeasurements(bytes32)(bytes32)' $MH)" "$IMAGE_ID" "image by measurements"
+# The same measurements cannot be registered again under another id (review fix logic-F5).
+send_fails $K_OWNER $PLATFORM "addImage(bytes32,string,string,bytes,bytes,bytes,bytes,bool,string)" \
+  $(cast keccak other-image-id) sealed-os 1.0.0-again $MRTD $R0 $R1 $R2 false ""
 
 step "register apps (owner, cast) and the example catalog (script/RegisterCatalog.s.sol)"
 APP_ID=$(cast keccak llm-gateway)
@@ -135,11 +140,18 @@ expect_eq "$(call $APPS 'latestRelease(bytes32)(bytes32)' $APP_ID)" "$RELEASE_ID
 expect_eq "$(call $APPS 'isApprovableRelease(bytes32)(bool)' $RELEASE2_ID)" "true" "release 2 approvable"
 send_fails $K_CUSTOMER $APPS "publishRelease(bytes32,string,bytes32,bytes32,bytes32,string,string)" \
   $APP_ID 9.9.9 $BUNDLE $BUNDLE $BUNDLE "" ""
+# A published bundle cannot come back as another version (review fix logic-F5).
+send_fails $K_OPS $APPS "publishRelease(bytes32,string,bytes32,bytes32,bytes32,string,string)" \
+  $APP_ID 1.0.1 $BUNDLE $(cast keccak egress) $(cast keccak sbom) "" ""
+expect_eq "$(call $APPS 'releaseByBundle(bytes32,bytes32)(bytes32)' $APP_ID $BUNDLE)" "$RELEASE_ID" "release by bundle"
 
 step "approve stack (customer)"
 STACK=$(cast keccak e2e-app-compose.json)
 send $K_CUSTOMER $REGISTRY "approveStack(bytes32,bytes32[],bytes32,uint64)" $STACK "[$RELEASE_ID,$RELEASE2_ID]" $IMAGE_ID 0
 expect_eq "$(call $REGISTRY 'isStackApproved(address,bytes32)(bool)' $CUSTOMER $STACK)" "true" "stack approved"
+# The release list and image are fixed by the first approval (review fix logic-F2); a re-approval repeats them.
+send_fails $K_CUSTOMER $REGISTRY "approveStack(bytes32,bytes32[],bytes32,uint64)" $STACK "[$RELEASE_ID]" $IMAGE_ID 0
+send $K_CUSTOMER $REGISTRY "approveStack(bytes32,bytes32[],bytes32,uint64)" $STACK "[$RELEASE_ID,$RELEASE2_ID]" $IMAGE_ID 0
 
 step "register deployment with an oracle signature (submitted by ops)"
 SALT=$(cast keccak e2e-salt)
@@ -165,6 +177,11 @@ HB_DIGEST=$(call $REGISTRY 'heartbeatDigest(bytes32,bytes32,uint64)(bytes32)' $D
 HB_EVIDENCE=$(cast abi-encode 'f(bytes)' "$(cast wallet sign --no-hash "$HB_DIGEST" --private-key $K_ORACLE)")
 send $K_OPS $REGISTRY "heartbeat(bytes32,bytes32,uint64,uint8,bytes)" $DEPLOYMENT_ID $QUOTE2 $HB_AT 1 "$HB_EVIDENCE"
 send_fails $K_OPS $REGISTRY "heartbeat(bytes32,bytes32,uint64,uint8,bytes)" $DEPLOYMENT_ID $QUOTE2 $HB_AT 1 "$HB_EVIDENCE"
+# A later heartbeat must carry a new quote (review fix crypto-SEAL-03).
+HB_REUSE_AT=$(( HB_AT + 1 ))
+HB_REUSE_DIGEST=$(call $REGISTRY 'heartbeatDigest(bytes32,bytes32,uint64)(bytes32)' $DEPLOYMENT_ID $QUOTE2 $HB_REUSE_AT)
+send_fails $K_OPS $REGISTRY "heartbeat(bytes32,bytes32,uint64,uint8,bytes)" $DEPLOYMENT_ID $QUOTE2 $HB_REUSE_AT 1 \
+  "$(cast abi-encode 'f(bytes)' "$(cast wallet sign --no-hash "$HB_REUSE_DIGEST" --private-key $K_ORACLE)")"
 
 step "pay fees in pathUSD (customer, then enclave signer)"
 # The enclave signer is a fresh key in production; here dev account 6, which already holds pathUSD.
@@ -179,6 +196,9 @@ send_fails $K_MAINTAINER $SPLITTER "payFees(bytes32,bytes32,address,uint256,byte
 expect_eq "$(echo "$(bal $SPLITTER) - $S0" | bc)" "3500000" "FeeSplitter received exactly 3.5 pathUSD"
 expect_eq "$(echo "$C0 - $(bal $CUSTOMER)" | bc)" "2500000" "customer paid 2.5 pathUSD"
 expect_eq "$(echo "$E0 - $(bal $ENCLAVE)" | bc)" "1000000" "enclave signer paid 1 pathUSD"
+expect_eq "$(call $SPLITTER 'usagePaid(bytes32,bytes32,bytes32)(uint256)' $DEPLOYMENT_ID $(cast keccak usage-1) $APP_ID | first)" \
+  "2500000" "usage paid amount per (deployment, usageHash, app)"
+send_fails $K_OWNER $SPLITTER "setTreasury(address)" $SPLITTER
 # llm-gateway 20% of 2.5 = 0.5; crm 50% of 1.0 = 0.5 -> maintainer 1.0, treasury 2.5
 expect_eq "$(call $SPLITTER 'credited(address,address)(uint256)' $PATH_USD $MAINTAINER | first)" "1000000" "maintainer credit"
 expect_eq "$(call $SPLITTER 'credited(address,address)(uint256)' $PATH_USD $TREASURY | first)" "2500000" "treasury credit"
@@ -197,8 +217,9 @@ expect_eq "$(call $SPLITTER 'totalCredited(address)(uint256)' $PATH_USD | first)
 step "pause blocks registrations but not closing; close (customer)"
 send $K_OWNER $REGISTRY "pause()"
 HB2_AT=$(( $(now) + 3 ))
-HB2_DIGEST=$(call $REGISTRY 'heartbeatDigest(bytes32,bytes32,uint64)(bytes32)' $DEPLOYMENT_ID $QUOTE2 $HB2_AT)
-send_fails $K_OPS $REGISTRY "heartbeat(bytes32,bytes32,uint64,uint8,bytes)" $DEPLOYMENT_ID $QUOTE2 $HB2_AT 1 \
+QUOTE3=$(cast keccak quote-3)
+HB2_DIGEST=$(call $REGISTRY 'heartbeatDigest(bytes32,bytes32,uint64)(bytes32)' $DEPLOYMENT_ID $QUOTE3 $HB2_AT)
+send_fails $K_OPS $REGISTRY "heartbeat(bytes32,bytes32,uint64,uint8,bytes)" $DEPLOYMENT_ID $QUOTE3 $HB2_AT 1 \
   "$(cast abi-encode 'f(bytes)' "$(cast wallet sign --no-hash "$HB2_DIGEST" --private-key $K_ORACLE)")"
 send_fails $K_ENCLAVE $REGISTRY "closeDeployment(bytes32)" $DEPLOYMENT_ID
 send $K_CUSTOMER $REGISTRY "closeDeployment(bytes32)" $DEPLOYMENT_ID
@@ -210,6 +231,10 @@ send_fails $K_CUSTOMER $SPLITTER "payFees(bytes32,bytes32,address,uint256,bytes3
 step "incident response: revoke a release"
 send $K_OWNER $APPS "revokeRelease(bytes32,string)" $RELEASE2_ID "e2e incident"
 expect_eq "$(call $REGISTRY 'isStackApproved(address,bytes32)(bool)' $CUSTOMER $STACK)" "false" "stack no longer approved"
+# The customer cannot undo the revocation by re-approving the same stackHash without (or with) the revoked release.
+send_fails $K_CUSTOMER $REGISTRY "approveStack(bytes32,bytes32[],bytes32,uint64)" $STACK "[$RELEASE_ID]" $IMAGE_ID 0
+send_fails $K_CUSTOMER $REGISTRY "approveStack(bytes32,bytes32[],bytes32,uint64)" $STACK "[$RELEASE_ID,$RELEASE2_ID]" $IMAGE_ID 0
+expect_eq "$(call $REGISTRY 'isStackApproved(address,bytes32)(bool)' $CUSTOMER $STACK)" "false" "revocation holds"
 
 GAS_PRICE=$(cast gas-price --rpc-url "$RPC")
 printf '\nPASS local e2e on anvil --network tempo --hardfork %s\n' "$HARDFORK"

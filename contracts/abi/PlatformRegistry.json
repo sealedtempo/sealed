@@ -207,6 +207,25 @@
   },
   {
     "type": "function",
+    "name": "imageByMeasurements",
+    "inputs": [
+      {
+        "name": "measurementsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "imageId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "imageCount",
     "inputs": [],
     "outputs": [
@@ -519,6 +538,22 @@
         "name": "length",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "MeasurementsAlreadyRegistered",
+    "inputs": [
+      {
+        "name": "measurementsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "imageId",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ]
   },

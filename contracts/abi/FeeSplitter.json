@@ -68,6 +68,19 @@
   },
   {
     "type": "function",
+    "name": "TIP20_ADDRESS_PREFIX",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes12",
+        "internalType": "bytes12"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "VERSION",
     "inputs": [],
     "outputs": [
@@ -493,6 +506,11 @@
     "name": "usagePaid",
     "inputs": [
       {
+        "name": "deploymentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
         "name": "usageHash",
         "type": "bytes32",
         "internalType": "bytes32"
@@ -505,9 +523,9 @@
     ],
     "outputs": [
       {
-        "name": "paid",
-        "type": "bool",
-        "internalType": "bool"
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -799,6 +817,22 @@
   },
   {
     "type": "error",
+    "name": "AppRegistryMismatch",
+    "inputs": [
+      {
+        "name": "deploymentRegistryApps",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "appRegistry",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "DailyCapExceeded",
     "inputs": [
       {
@@ -833,6 +867,17 @@
     "type": "error",
     "name": "ExpectedPause",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidTreasury",
+    "inputs": [
+      {
+        "name": "treasury",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
   },
   {
     "type": "error",
@@ -957,6 +1002,11 @@
     "type": "error",
     "name": "UsageAlreadyPaid",
     "inputs": [
+      {
+        "name": "deploymentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
       {
         "name": "usageHash",
         "type": "bytes32",
