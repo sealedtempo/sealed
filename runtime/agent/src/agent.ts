@@ -287,7 +287,8 @@ export class Agent {
       feeReserve: () => this.feeReserve(),
       onChange: scheduleSave,
     });
-    await this.alignBudget(log);
+    // In the background: a blocked RPC must not delay boot (every settlement aligns again).
+    void this.alignBudget(log);
     this.poller = new AppHealthPoller(ctx.apps, { ledger: this.ledger, log, intervalSec: s.pollIntervalSec, probe: this.deps.probe });
     this.settler = new Settler({
       ledger: this.ledger,
