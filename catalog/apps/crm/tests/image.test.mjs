@@ -239,10 +239,12 @@ describe("secrets stay out of argv", () => {
 
 describe("Dockerfile", () => {
   test("pins the base image by digest and the Debian packages by snapshot date", () => {
-    assert.match(dockerfile, /^ARG DEBIAN_IMAGE=docker\.io\/library\/debian:trixie-\d{8}-slim@sha256:[0-9a-f]{64}$/m);
     assert.match(dockerfile, /^ARG DEBIAN_SNAPSHOT=\d{8}T\d{6}Z$/m);
     const froms = dockerfile.split("\n").filter((l) => l.startsWith("FROM "));
-    assert.deepEqual(froms, ["FROM ${DEBIAN_IMAGE} AS fetch", "FROM ${DEBIAN_IMAGE}"]);
+    const base = /^FROM (docker\.io\/library\/debian:trixie-\d{8}-slim@sha256:[0-9a-f]{64})/.exec(froms[0])?.[1];
+    assert.ok(base, froms[0]);
+    assert.deepEqual(froms, [`FROM ${base} AS fetch`, `FROM ${base}`]);
+    assert.ok(dockerfile.includes(`org.opencontainers.image.base.digest="${base.split("@")[1]}"`));
     assert.equal(dockerfile.match(/snapshot\.debian\.org\/archive\/debian\/\$\{DEBIAN_SNAPSHOT\} trixie main/g).length, 2);
     assert.match(dockerfile, /rm -f \/etc\/apt\/sources\.list\.d\/debian\.sources/);
   });

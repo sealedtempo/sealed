@@ -14,13 +14,12 @@
 #
 # Apache runs as www-data on port 8080 and drops every Authorization header (apache-sealed.conf).
 
-ARG DEBIAN_IMAGE=docker.io/library/debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 ARG DEBIAN_SNAPSHOT=20261027T000000Z
 
 # ---------------------------------------------------------------------------------------------
 # fetch: download, verify and prune the EspoCRM release
 # ---------------------------------------------------------------------------------------------
-FROM ${DEBIAN_IMAGE} AS fetch
+FROM docker.io/library/debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS fetch
 ARG DEBIAN_SNAPSHOT
 ARG ESPOCRM_VERSION=10.0.11
 # From github.com/espocrm/espocrm-docker tag 10.0.11 (commit a2f3e9cba6edb596afdafca2b9ac6d639fd29c5c).
@@ -72,7 +71,7 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------------------------
-FROM ${DEBIAN_IMAGE}
+FROM docker.io/library/debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 ARG DEBIAN_SNAPSHOT
 ARG ESPOCRM_VERSION=10.0.11
 

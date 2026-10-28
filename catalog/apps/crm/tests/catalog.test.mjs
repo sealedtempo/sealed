@@ -301,7 +301,7 @@ describe("licenses and docs", () => {
     const readme = await readFile(join(appDir, "README.md"), "utf8");
     const dockerfile = await readFile(join(appDir, "images/espocrm/Dockerfile"), "utf8");
     assert.ok(readme.includes(app.manifest.images[1].digest), "postgres digest missing from README");
-    for (const pin of [/sha256:[0-9a-f]{64}(?=\n)/.exec(dockerfile.match(/^ARG DEBIAN_IMAGE=.*$/m)[0])?.[0], "cdd04f7efa52a59025ef824c75b06e0a84cf986724a8c5bc4b56fcd2ce8e0ab1", "20261027T000000Z"]) {
+    for (const pin of [/sha256:[0-9a-f]{64}/.exec(dockerfile.match(/^FROM .*$/m)[0])?.[0], "cdd04f7efa52a59025ef824c75b06e0a84cf986724a8c5bc4b56fcd2ce8e0ab1", "20261027T000000Z"]) {
       if (pin) assert.ok(readme.includes(pin.replace(/^sha256:/, "")), `${pin} missing from README`);
     }
     assert.match(readme, /## D-049a/);
