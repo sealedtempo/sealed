@@ -21,7 +21,7 @@ func runDeploy(ctx context.Context, args []string, e *Env) error {
 	fs.StringVar(&writeConfig, "write-config", "", "also write the public config (sealed-config/v1) to this file")
 	fs.StringVar(&platformAPI, "platform-api", "", "platform api URL when the stack file has no endpoints.platformApi (SEALED_PLATFORM_API)")
 	fs.BoolVar(&planOnly, "plan", false, "compose and check only; create nothing (the static IP must already be reserved)")
-	fs.BoolVar(&asDeployer, "as-deployer", false, "act as the bootstrap's deployer account (impersonation) instead of your own account")
+	fs.BoolVar(&asDeployer, "as-deployer", false, "act as the bootstrap's deployer account through impersonation (needs serviceAccountTokenCreator on it, which only the platform service account holds)")
 	fs.BoolVar(&skipSecrets, "skip-secrets-check", false, "do not check that every required secret has a value")
 	fs.DurationVar(&wait, "wait-approval", 0, "poll the chain this long for the wallet's approval instead of stopping")
 	fs.BoolVar(&devUnbuilt, "dev-allow-unbuilt", false, "DEV ONLY (SEALED_DEV_SIM=1): compose stacks whose images still have placeholder digests")

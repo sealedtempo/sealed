@@ -212,15 +212,7 @@ func (w *World) ReleaseIDs() [][32]byte {
 func (w *World) Evidence(t testing.TB) map[string]any {
 	t.Helper()
 	stack := w.Result.StackHash
-	p := attest.RuntimeParams{ComposeHash: stack}
-	copy(p.AppID[:], stack[:20])
-	inst := sha256.Sum256([]byte("instance"))
-	copy(p.InstanceID[:], inst[:20])
-	evs := attest.ExpectedRuntimeEvents(p)
-	rtmr3, err := attest.ReplayAll(evs)
-	if err != nil {
-		t.Fatal(err)
-	}
+	evs, rtmr3 := w.runtimeEvents(t)
 	rd := attest.EvidenceReportData(stack, w.Result.ConfigHash, w.EnclaveSigner, w.Nonce2)
 	quote := attest.NewSimQuote(attest.SimQuoteParams{RTMR3: rtmr3, ReportData: rd})
 	evJSON, _ := json.Marshal(evs)
@@ -246,6 +238,39 @@ func (w *World) Evidence(t testing.TB) map[string]any {
 		"enclaveSigner": lowerAddr(w.EnclaveSigner), "nonce2": "0x" + hex.EncodeToString(w.Nonce2[:]),
 		"attestedAt": w.AttestedAt, "quote": "0x" + hex.EncodeToString(quote), "quoteHash": "0x" + hex.EncodeToString(qh[:]),
 		"eventLog": json.RawMessage(evCanon), "eventLogHash": "0x" + hex.EncodeToString(eh[:]), "runtime": verify.RuntimeDstack,
+	}
+}
+
+// runtimeEvents is the RTMR3 event log of the stack and its replayed RTMR3.
+func (w *World) runtimeEvents(t testing.TB) ([]attest.Event, attest.Measurement) {
+	t.Helper()
+	stack := w.Result.StackHash
+	p := attest.RuntimeParams{ComposeHash: stack}
+	copy(p.AppID[:], stack[:20])
+	inst := sha256.Sum256([]byte("instance"))
+	copy(p.InstanceID[:], inst[:20])
+	evs := attest.ExpectedRuntimeEvents(p)
+	rtmr3, err := attest.ReplayAll(evs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs, rtmr3
+}
+
+// LiveAttest is the GET /attest answer for nonce on a connection whose certificate has SPKI hash spki.
+func (w *World) LiveAttest(t testing.TB, nonce, spki [32]byte) map[string]any {
+	t.Helper()
+	evs, rtmr3 := w.runtimeEvents(t)
+	rd := attest.LiveAttestReportData(nonce, spki, w.EnclaveSigner)
+	quote := attest.NewSimQuote(attest.SimQuoteParams{RTMR3: rtmr3, ReportData: rd})
+	var ids []string
+	for _, id := range w.ReleaseIDs() {
+		ids = append(ids, "0x"+hex.EncodeToString(id[:]))
+	}
+	return map[string]any{
+		"quote": "0x" + hex.EncodeToString(quote), "eventLog": evs, "config": json.RawMessage(w.Config), "releaseIds": ids,
+		"appCompose": string(w.Result.AppCompose), "enclaveSigner": lowerAddr(w.EnclaveSigner),
+		"tlsPubKeyHash": "0x" + hex.EncodeToString(spki[:]), "reportData": "0x" + hex.EncodeToString(rd[:]),
 	}
 }
 

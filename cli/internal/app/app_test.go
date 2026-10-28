@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -105,6 +106,10 @@ func (h *harness) run(args ...string) (int, string, string) {
 	switch args[0] {
 	case "verify", "catalog", "release", "deploy", "secrets":
 		full = append(full, "--release-asset-base", h.bundles.URL, "--bundle-cache", filepath.Join(h.dir, "cache"))
+	}
+	if args[0] == "verify" && !contains(args, "--collateral-cache") {
+		// Never touch the real user cache dir from tests.
+		full = append(full, "--collateral-cache", filepath.Join(h.dir, "pcs"))
 	}
 	code := Main(full, e)
 	return code, out.String(), errb.String()
@@ -351,6 +356,43 @@ func TestVerifyAliasAndEvidenceDownload(t *testing.T) {
 	if code, _, _ := h.run("verify", "--deployment", "nope"); code != ExitUsage {
 		t.Fatal("bad id")
 	}
+}
+
+func TestVerifyLive(t *testing.T) {
+	h := newHarness(t)
+	h.env["SEALED_DEV_SIM"] = "1"
+	w, ev, path := h.world(true)
+	var srv *httptest.Server
+	tamper := false
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		nonce, err := registry.ParseHash32(r.URL.Query().Get("nonce"))
+		if r.URL.Path != "/attest" || err != nil {
+			http.Error(rw, "bad request", 400)
+			return
+		}
+		spki := sha256.Sum256(srv.Certificate().RawSubjectPublicKeyInfo)
+		if tamper {
+			spki[0] ^= 1 // a key that is not the one serving this connection
+		}
+		json.NewEncoder(rw).Encode(w.LiveAttest(h.t, nonce, spki))
+	}))
+	defer srv.Close()
+	id := w.Result.DeploymentID.Hex()
+	dev := []string{"--dev-allow-simulated", "--dev-insecure-live-tls", "--dev-live-allow-private"}
+	code, out, errs := h.run(append([]string{"verify", "--deployment", id, "--live", srv.URL + "/attest", "--evidence", path}, dev...)...)
+	if code != ExitOK || !strings.Contains(out, "== live check") || !strings.Contains(out, "tls_binding") || !strings.Contains(out, "== evidence check") {
+		t.Fatalf("live: %d\n%s\n%s", code, out, errs)
+	}
+	tamper = true
+	code, _, errs = h.run(append([]string{"verify", "--deployment", id, "--live", srv.URL + "/attest"}, dev...)...)
+	if code != ExitFailed || !strings.Contains(errs, "live/tls_binding") {
+		t.Fatalf("tampered TLS key: %d %s", code, errs)
+	}
+	// Private addresses and self-signed certificates are refused without the dev flags.
+	if code, _, errs := h.run("verify", "--deployment", id, "--live", srv.URL+"/attest", "--dev-allow-simulated"); code != ExitFailed || !strings.Contains(errs, "live/live_fetch") {
+		t.Fatalf("private live target: %d %s", code, errs)
+	}
+	_ = ev
 }
 
 // --- catalog and release ---
@@ -671,4 +713,13 @@ func TestNoEmDashInCopy(t *testing.T) {
 			t.Errorf("%s contains an em-dash", f)
 		}
 	}
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }

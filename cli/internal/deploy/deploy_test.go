@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -219,7 +220,7 @@ func TestDeployStopsUntilApproved(t *testing.T) {
 			t.Errorf("instructions lack %q:\n%s", want, instr)
 		}
 	}
-	if strings.Contains(instr, "—") {
+	if strings.Contains(instr, "\u2014") {
 		t.Error("em-dash in copy")
 	}
 }
@@ -521,5 +522,15 @@ func TestGCESharedDisk(t *testing.T) {
 	}
 	if _, err := (&GCEShared{Images: &fakeImages{}, Storage: up}).Ensure(context.Background(), "x", files); err == nil {
 		t.Fatal("no bucket accepted")
+	}
+}
+
+func TestExampleStackFileParses(t *testing.T) {
+	s, err := LoadStackFile(filepath.Join("..", "..", "examples", "stack.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Name != "demo" || len(s.Apps) != 2 || s.Apps[0].Release != "latest" || s.Names().DataDisk != "sealed-demo-data" {
+		t.Fatalf("%+v", s)
 	}
 }

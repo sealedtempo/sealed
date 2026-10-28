@@ -1,0 +1,42 @@
+# sealed deploy --config stack.yaml
+# Every value here is public: it becomes the deployment's public config (sealed-config/v1), which is measured
+# into the stackHash your wallet approves. Secrets never go in this file (use sealed secrets set).
+schema: sealed-deploy/v1
+
+# Resource names: sealed-<name> (VM), sealed-<name>-data (encrypted data disk), sealed-<name>-ip (static IP).
+name: demo
+
+# The token sealed bootstrap printed. It sets project, region, keyBroker and customer; or set them below.
+# connection: sct_...
+project: example-prod-4417
+region: us-central1
+keyBroker: https://sealed-key-broker-example-uc.a.run.app
+customer: "0x00000000000000000000000000000000000000c1"
+
+# Optional: zone (default <region>-a), machineType (default c3-standard-8), dataDiskGb (default 50),
+# salt (default derived from project and name, so a redeploy keeps its deploymentId),
+# bootBucket (default <project>-sealed-boot, created by sealed bootstrap).
+zone: us-central1-a
+
+# The approved OS image: its PlatformRegistry imageId and the GCE images it boots from.
+image:
+  id: "0x0000000000000000000000000000000000000000000000000000000000000000"
+  boot: projects/example-images-1/global/images/sealed-os-0-6-1
+  systemDisk: projects/example-images-1/global/images/sealed-dstack-data-v1
+  vmConfig: '{"spec_version":2}'
+
+# Apps and releases: latest (default), a release version, or a 0x releaseId.
+apps:
+  - id: llm-gateway
+  - id: scraper
+    release: latest
+
+# Destinations you add to an app's egress allowlist (host:port). They are measured too.
+egressAdditions:
+  scraper: ["example.com:443"]
+
+endpoints:
+  platformApi: https://api.example.com
+  relay: https://relay.example.com
+  relayAttest: https://attest.relay.example.com/attest
+relayOwner: "0x00000000000000000000000000000000000000b1"
