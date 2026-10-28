@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -55,11 +56,12 @@ func newHarness(t *testing.T, composer verify.Composer) *harness {
 		t.Fatal(err)
 	}
 	srv := &httpapi.Server{
-		Deps:            verify.Deps{Quotes: q, Chain: m, Composer: composer, Now: func() time.Time { return time.Unix(int64(m.Now)+5, 0) }},
-		ChainID:         4217,
-		LiveInsecureTLS: true,
-		LiveTimeout:     5 * time.Second,
-		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Deps:             verify.Deps{Quotes: q, Chain: m, Composer: composer, Now: func() time.Time { return time.Unix(int64(m.Now)+5, 0) }},
+		ChainID:          4217,
+		LiveInsecureTLS:  true,
+		LiveAllowPrivate: true, // httptest serves on 127.0.0.1
+		LiveTimeout:      5 * time.Second,
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	api := httptest.NewServer(srv.Handler())
 	t.Cleanup(api.Close)
@@ -191,6 +193,138 @@ func TestVerifyLiveEndpoint(t *testing.T) {
 	if resp, _ := post(t, h.api.URL+"/v1/verify/live", map[string]any{}); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing url: %d", resp.StatusCode)
 	}
+	// options.deploymentId pins the deployment in live mode too.
+	_, raw = post(t, h.api.URL+"/v1/verify/live", map[string]any{"url": attestSrv.URL + "/attest", "options": map[string]any{"deploymentId": h.b.DeploymentID}})
+	if rep := decodeReport(t, raw); !rep.OK {
+		t.Fatalf("pinned to its own deployment: %v", rep.Failed())
+	}
+	other := "0x" + strings.Repeat("ab", 32)
+	_, raw = post(t, h.api.URL+"/v1/verify/live", map[string]any{"url": attestSrv.URL + "/attest", "options": map[string]any{"deploymentId": other}})
+	if rep := decodeReport(t, raw); rep.OK || len(rep.Failed()) != 1 || rep.Failed()[0] != verify.CheckDeploymentID {
+		t.Fatalf("another deployment's attestation accepted: %v", rep.Failed())
+	}
+	// Production servers refuse loopback and private destinations.
+	prod := h.variant(t, func(s *httpapi.Server) { s.LiveAllowPrivate = false })
+	_, raw = post(t, prod.URL+"/v1/verify/live", map[string]any{"url": attestSrv.URL + "/attest"})
+	if rep := decodeReport(t, raw); rep.OK || rep.Failed()[0] != verify.CheckLiveFetch || !strings.Contains(rep.Checks[0].Detail, "not a public address") {
+		t.Fatalf("loopback fetched: %+v", rep.Checks[0])
+	}
+	allow := h.variant(t, func(s *httpapi.Server) { s.LiveAllowedHosts = []string{"*.sslip.io"} })
+	_, raw = post(t, allow.URL+"/v1/verify/live", map[string]any{"url": attestSrv.URL + "/attest"})
+	if rep := decodeReport(t, raw); rep.OK || rep.Failed()[0] != verify.CheckLiveFetch {
+		t.Fatalf("host outside the allowlist fetched: %v", rep.Failed())
+	}
+}
+
+// variant serves a copy of the harness server with edit applied.
+func (h *harness) variant(t *testing.T, edit func(*httpapi.Server)) *httptest.Server {
+	t.Helper()
+	s := &httpapi.Server{Deps: h.srv.Deps, ChainID: h.srv.ChainID, LiveInsecureTLS: h.srv.LiveInsecureTLS, LiveAllowPrivate: h.srv.LiveAllowPrivate,
+		LiveTimeout: h.srv.LiveTimeout, Log: h.srv.Log}
+	edit(s)
+	api := httptest.NewServer(s.Handler())
+	t.Cleanup(api.Close)
+	return api
+}
+
+// TestVerifyLiveSubmittedEndpoint sends the body sealed-mpp-payer posts: it fetched /attest itself.
+func TestVerifyLiveSubmittedEndpoint(t *testing.T) {
+	h := newHarness(t, fixture.Composer{})
+	nonce := sha256.Sum256([]byte("payer nonce"))
+	observed := sha256.Sum256([]byte("relay certificate SPKI"))
+	doc, _ := json.Marshal(h.w.LiveResponse(nonce, observed))
+	body := map[string]any{
+		"attestUrl":             "https://attest.34-1-2-3.sslip.io/attest",
+		"nonce":                 hexb.Enc(nonce[:]),
+		"attest":                json.RawMessage(doc),
+		"observedTlsPubKeyHash": hexb.Enc(observed[:]),
+		"expectedCustomer":      h.b.Customer,
+		"expectedAppIds":        []string{h.w.Apps[0].Slug},
+	}
+	resp, raw := post(t, h.api.URL+"/v1/verify/live", body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d: %s", resp.StatusCode, raw)
+	}
+	rep := decodeReport(t, raw)
+	if !rep.OK || rep.Mode != verify.ModeLiveSubmitted || !rep.Simulated || rep.Check(verify.CheckExpectedApps) == nil {
+		t.Fatalf("submitted attestation: %v %+v", rep.Failed(), rep)
+	}
+	body["expectedAppIds"] = []string{"inference-relay"}
+	_, raw = post(t, h.api.URL+"/v1/verify/live", body)
+	if rep := decodeReport(t, raw); rep.OK || rep.Failed()[0] != verify.CheckExpectedApps {
+		t.Fatalf("missing app accepted: %v", rep.Failed())
+	}
+	body["expectedAppIds"] = nil
+	body["expectedCustomer"] = "0x000000000000000000000000000000000000dead"
+	_, raw = post(t, h.api.URL+"/v1/verify/live", body)
+	if rep := decodeReport(t, raw); rep.OK || rep.Failed()[0] != verify.CheckExpectedCustomer {
+		t.Fatalf("wrong owner accepted: %v", rep.Failed())
+	}
+	body["options"] = map[string]any{"expectedCustomer": h.b.Customer}
+	if resp, _ := post(t, h.api.URL+"/v1/verify/live", body); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("conflicting expectedCustomer: %d", resp.StatusCode)
+	}
+	delete(body, "options")
+	body["nonce"] = "0x12"
+	if resp, _ := post(t, h.api.URL+"/v1/verify/live", body); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad nonce: %d", resp.StatusCode)
+	}
+}
+
+// gatedComposer blocks every composition until release is closed.
+type gatedComposer struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (g gatedComposer) Compose(ctx context.Context, in verify.ComposeInput) (*verify.ComposeOutput, error) {
+	g.started <- struct{}{}
+	<-g.release
+	return fixture.Composer{}.Compose(ctx, in)
+}
+
+func TestInFlightLimit(t *testing.T) {
+	g := gatedComposer{started: make(chan struct{}, 1), release: make(chan struct{})}
+	h := newHarness(t, g)
+	api := h.variant(t, func(s *httpapi.Server) { s.MaxInFlight = 1 })
+	done := make(chan int, 1)
+	go func() {
+		resp, err := http.Post(api.URL+"/v1/verify/evidence", "application/json", bytes.NewReader(mustJSON(h.b)))
+		if err != nil {
+			done <- 0
+			return
+		}
+		resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+	<-g.started
+	resp, raw := post(t, api.URL+"/v1/verify/evidence", h.b)
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("second verification while one is in flight: %d %s", resp.StatusCode, raw)
+	}
+	if resp, _ := post(t, api.URL+"/v1/compose", json.RawMessage(h.w.ConfigJSON())); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("compose shares the limit: %d", resp.StatusCode)
+	}
+	if resp, err := http.Get(api.URL + "/healthz"); err != nil || resp.StatusCode != 200 {
+		t.Fatal("healthz must not be limited")
+	}
+	close(g.release)
+	if code := <-done; code != 200 {
+		t.Fatalf("first verification: %d", code)
+	}
+	// The slot is free again (the composer no longer blocks: release is closed and started is buffered).
+	go func() { <-g.started }()
+	if resp, _ := post(t, api.URL+"/v1/verify/evidence", h.b); resp.StatusCode != 200 {
+		t.Fatalf("after release: %d", resp.StatusCode)
+	}
+}
+
+func mustJSON(v any) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }
 
 func TestComposeEndpoint(t *testing.T) {

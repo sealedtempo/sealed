@@ -56,7 +56,8 @@ func run(args []string, getenv func(string) string, log *slog.Logger) error {
 	defer stop()
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
-	log.Info("listening", "addr", c.Listen, "chainId", c.ChainID, "allowSimulated", c.AllowSimulated, "composer", srv.Deps.Composer != nil)
+	log.Info("listening", "addr", c.Listen, "chainId", c.ChainID, "rpc", chain.RedactURL(c.RPCURL), "allowSimulated", c.AllowSimulated,
+		"composer", srv.Deps.Composer != nil, "liveAllowedHosts", c.LiveHosts, "maxInFlight", c.MaxInFlight)
 	select {
 	case err := <-errc:
 		return err
@@ -79,6 +80,9 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 	if c.AllowSimulated {
 		log.Warn("DEV MODE: simulated quotes are accepted; reports are flagged simulated", "env", devSimEnv)
 	}
+	if c.LivePrivate {
+		log.Warn("DEV MODE: live verification may fetch loopback and private addresses", "env", devSimEnv)
+	}
 	reader, err := chain.Dial(ctx, c.RPCURL, c.Addrs)
 	if err != nil {
 		return nil, err
@@ -89,7 +93,7 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 	case err != nil:
 		log.Warn("Tempo RPC not reachable at startup; verifications fail until it is", "err", err)
 	case id != c.ChainID:
-		return nil, fmt.Errorf("RPC %s is chain %d, expected %d", c.RPCURL, id, c.ChainID)
+		return nil, fmt.Errorf("RPC %s is chain %d, expected %d", chain.RedactURL(c.RPCURL), id, c.ChainID)
 	}
 	deps := verify.Deps{Quotes: quotes, Chain: reader}
 	if composerFactory != nil {
@@ -99,5 +103,8 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 	} else {
 		log.Warn("composer not wired: stack_recompute fails closed and /v1/compose returns 501")
 	}
-	return &httpapi.Server{Deps: deps, ChainID: c.ChainID, LiveInsecureTLS: c.InsecureLiveTLS, LiveTimeout: c.LiveTimeout, Log: log}, nil
+	return &httpapi.Server{
+		Deps: deps, ChainID: c.ChainID, LiveInsecureTLS: c.InsecureLiveTLS, LiveTimeout: c.LiveTimeout,
+		LiveAllowedHosts: c.LiveHosts, LiveAllowPrivate: c.LivePrivate, MaxInFlight: c.MaxInFlight, Log: log,
+	}, nil
 }

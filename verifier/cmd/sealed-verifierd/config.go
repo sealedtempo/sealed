@@ -6,12 +6,14 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/sealed-dev/sealed/verifier/attest"
 	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealed-dev/sealed/verifier/httpapi"
 )
 
 // config is the daemon configuration from flags, with defaults from the environment.
@@ -26,8 +28,11 @@ type config struct {
 	CacheDir        string
 	CacheTTL        time.Duration
 	LiveTimeout     time.Duration
+	LiveHosts       []string
+	MaxInFlight     int
 	AllowSimulated  bool
 	InsecureLiveTLS bool
+	LivePrivate     bool
 }
 
 // devSimEnv must be "1" for any dev flag to be accepted.
@@ -51,7 +56,7 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	fs := flag.NewFlagSet("sealed-verifierd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	c := &config{}
-	var platform, apps, deployments, chainID, ttl string
+	var platform, apps, deployments, chainID, ttl, liveHosts, maxInFlight string
 	fs.StringVar(&c.Listen, "listen", or(env("SEALED_VERIFIERD_LISTEN"), ":8088"), "listen address (SEALED_VERIFIERD_LISTEN)")
 	fs.StringVar(&c.RPCURL, "tempo-rpc", or(env("TEMPO_RPC_URL", "TEMPO_PUBLIC_RPC_URL"), "https://rpc.tempo.xyz"), "Tempo JSON-RPC URL (TEMPO_RPC_URL, TEMPO_PUBLIC_RPC_URL)")
 	fs.StringVar(&chainID, "chain-id", or(env("TEMPO_CHAIN_ID"), "4217"), "expected chain id (TEMPO_CHAIN_ID)")
@@ -63,8 +68,11 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	fs.StringVar(&c.CacheDir, "collateral-cache-dir", env("SEALED_COLLATERAL_CACHE_DIR"), "directory for cached Intel PCS collateral; memory only when unset (SEALED_COLLATERAL_CACHE_DIR)")
 	fs.StringVar(&ttl, "collateral-ttl", or(env("SEALED_COLLATERAL_TTL"), attest.DefaultCollateralTTL.String()), "collateral cache TTL (SEALED_COLLATERAL_TTL)")
 	fs.DurationVar(&c.LiveTimeout, "live-timeout", 30*time.Second, "timeout of a live /attest round trip")
+	fs.StringVar(&liveHosts, "live-allowed-hosts", env("SEALED_VERIFIERD_LIVE_HOSTS"), "comma-separated attest hosts live verification may fetch, exact or *.domain (for example *.sslip.io,relay.example.com); any public host when empty (SEALED_VERIFIERD_LIVE_HOSTS)")
+	fs.StringVar(&maxInFlight, "max-in-flight", or(env("SEALED_VERIFIERD_MAX_IN_FLIGHT"), strconv.Itoa(httpapi.DefaultMaxInFlight)), "concurrent verifications before answering 429 (SEALED_VERIFIERD_MAX_IN_FLIGHT)")
 	fs.BoolVar(&c.AllowSimulated, "dev-allow-simulated", false, "DEV ONLY: accept dev simulator quotes; requires SEALED_DEV_SIM=1")
 	fs.BoolVar(&c.InsecureLiveTLS, "dev-insecure-live-tls", false, "DEV ONLY: skip WebPKI checks of /attest certificates; requires SEALED_DEV_SIM=1")
+	fs.BoolVar(&c.LivePrivate, "dev-live-allow-private", false, "DEV ONLY: let live verification fetch loopback and private addresses; requires SEALED_DEV_SIM=1")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -72,8 +80,16 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 		return nil, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 
-	if (c.AllowSimulated || c.InsecureLiveTLS) && getenv(devSimEnv) != "1" {
-		return nil, fmt.Errorf("refusing to start: --dev-allow-simulated and --dev-insecure-live-tls need %s=1 (never set in production)", devSimEnv)
+	if (c.AllowSimulated || c.InsecureLiveTLS || c.LivePrivate) && getenv(devSimEnv) != "1" {
+		return nil, fmt.Errorf("refusing to start: --dev-allow-simulated, --dev-insecure-live-tls and --dev-live-allow-private need %s=1 (never set in production)", devSimEnv)
+	}
+	for _, h := range strings.Split(liveHosts, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			if strings.ContainsAny(h, "/:@ ") || strings.Count(h, "*") > 1 || (strings.Contains(h, "*") && !strings.HasPrefix(h, "*.")) {
+				return nil, fmt.Errorf("--live-allowed-hosts: invalid host pattern %q", h)
+			}
+			c.LiveHosts = append(c.LiveHosts, h)
+		}
 	}
 	var err error
 	if c.ChainID, err = strconv.ParseUint(chainID, 10, 64); err != nil || c.ChainID == 0 {
@@ -81,6 +97,9 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	}
 	if c.CacheTTL, err = time.ParseDuration(ttl); err != nil || c.CacheTTL <= 0 {
 		return nil, fmt.Errorf("invalid collateral TTL %q", ttl)
+	}
+	if c.MaxInFlight, err = strconv.Atoi(maxInFlight); err != nil || c.MaxInFlight <= 0 {
+		return nil, fmt.Errorf("invalid --max-in-flight %q", maxInFlight)
 	}
 
 	if c.DeploymentsFile != "" {

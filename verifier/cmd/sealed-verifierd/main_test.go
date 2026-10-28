@@ -30,7 +30,7 @@ var addrFlags = []string{
 }
 
 func TestDevFlagsNeedDevSimEnv(t *testing.T) {
-	for _, flag := range []string{"--dev-allow-simulated", "--dev-insecure-live-tls"} {
+	for _, flag := range []string{"--dev-allow-simulated", "--dev-insecure-live-tls", "--dev-live-allow-private"} {
 		args := append([]string{flag}, addrFlags...)
 		if _, err := loadConfig(args, envMap(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "SEALED_DEV_SIM=1") {
 			t.Fatalf("%s accepted without SEALED_DEV_SIM=1: %v", flag, err)
@@ -58,8 +58,16 @@ func TestConfigSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.RPCURL != "https://rpc.example" || c.Listen != ":9999" || c.ChainID != 4217 || len(c.TCBPolicy.AllowedStatuses) != 2 {
+	if c.RPCURL != "https://rpc.example" || c.Listen != ":9999" || c.ChainID != 4217 || len(c.TCBPolicy.AllowedStatuses) != 2 ||
+		c.MaxInFlight != 8 || c.LiveHosts != nil || c.LivePrivate {
 		t.Fatalf("%+v", c)
+	}
+	c, err = loadConfig(append([]string{"--live-allowed-hosts", " *.sslip.io, relay.example.com ,", "--max-in-flight", "3"}, addrFlags...), envMap(nil), io.Discard)
+	if err != nil || len(c.LiveHosts) != 2 || c.LiveHosts[0] != "*.sslip.io" || c.LiveHosts[1] != "relay.example.com" || c.MaxInFlight != 3 {
+		t.Fatalf("live hosts %v %v", c, err)
+	}
+	if c, err = loadConfig(addrFlags, envMap(map[string]string{"SEALED_VERIFIERD_LIVE_HOSTS": "*.sslip.io"}), io.Discard); err != nil || len(c.LiveHosts) != 1 {
+		t.Fatalf("live hosts from env: %v", err)
 	}
 	if _, err := loadConfig(nil, envMap(nil), io.Discard); err == nil {
 		t.Fatal("started without registry addresses")
@@ -89,11 +97,58 @@ func TestConfigSources(t *testing.T) {
 	if _, err := loadConfig(append([]string{"--defaults", repoDefaults}, addrFlags...), envMap(nil), io.Discard); err != nil {
 		t.Fatalf("repo defaults: %v", err)
 	}
-	for _, bad := range [][]string{{"--chain-id", "x"}, {"--collateral-ttl", "-1s"}, {"--platform-registry", "nope"}, {"extra"}} {
+	for _, bad := range [][]string{{"--chain-id", "x"}, {"--collateral-ttl", "-1s"}, {"--platform-registry", "nope"}, {"extra"},
+		{"--max-in-flight", "0"}, {"--live-allowed-hosts", "https://x.sslip.io"}, {"--live-allowed-hosts", "a.*.io"}} {
 		args := append(append([]string{}, addrFlags...), bad...)
 		if _, err := loadConfig(args, envMap(nil), io.Discard); err == nil {
 			t.Fatalf("accepted %v", bad)
 		}
+	}
+}
+
+// TestDaemonRedactsRPCURL: a provider key in TEMPO_RPC_URL never reaches reports, HTTP bodies or logs.
+func TestDaemonRedactsRPCURL(t *testing.T) {
+	const secret = "SECRET-API-KEY"
+	args := append([]string{"--tempo-rpc", "http://127.0.0.1:1/v2/" + secret + "?token=abc", "--dev-allow-simulated"}, addrFlags...)
+	c, err := loadConfig(args, envMap(map[string]string{"SEALED_DEV_SIM": "1"}), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	composerFactory = func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil }
+	t.Cleanup(func() { composerFactory = nil })
+	srv, err := newServer(context.Background(), c, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(srv.Handler())
+	defer api.Close()
+	w := fixture.NewWorld(4217, c.Addrs, common.HexToAddress("0x90F79bf6EB2c4f870365E785982E1f101E93b906"), common.HexToAddress("0x976EA74026E726554dB657fA54763abd0C3a0aa9"), fixture.SimImageID(false))
+	bundle, _ := json.Marshal(w.Bundle(1_793_000_000))
+	var bodies []string
+	for _, req := range []struct{ path, body string }{
+		{"/v1/verify/evidence", string(bundle)},
+		{"/v1/verify/evidence?format=text", string(bundle)},
+		{"/v1/compose", string(w.ConfigJSON())},
+	} {
+		resp, err := http.Post(api.URL+req.path, "application/json", strings.NewReader(req.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		bodies = append(bodies, string(raw))
+	}
+	for _, out := range append(bodies, logs.String()) {
+		for _, leak := range []string{secret, "token=abc", "/v2/"} {
+			if strings.Contains(out, leak) {
+				t.Fatalf("RPC URL secret %q leaked:\n%s", leak, out)
+			}
+		}
+	}
+	if !strings.Contains(bodies[0], "127.0.0.1:1") || !strings.Contains(bodies[2], "127.0.0.1:1") {
+		t.Fatalf("errors should still name the RPC host:\n%s\n%s", bodies[0], bodies[2])
 	}
 }
 
