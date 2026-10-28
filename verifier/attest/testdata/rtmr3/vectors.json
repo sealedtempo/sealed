@@ -1,0 +1,168 @@
+{
+  "appIdDeadbeefDigest": "67b4be4efed0893cfa2bb1d35dca209ad8348b4c97f980807bcde8b9a0f26398dd0923d6eccb5aa2096d98046da8740f",
+  "composeBytes": "{\"allowed_envs\":[],\"docker_compose_file\":\"services:\\n  web:\\n    image: nginx@sha256:0000000000000000000000000000000000000000000000000000000000000000\\n\",\"gateway_enabled\":false,\"key_provider\":\"none\",\"kms_enabled\":false,\"manifest_version\":2,\"name\":\"hello\",\"no_instance_id\":false,\"public_logs\":true,\"public_sysinfo\":true,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"ext4\"}",
+  "composeHash": "a06cf4774c792a56cdb756e773d0acf5d508332376982dc8a1e70811d33377e4",
+  "dstack": {
+    "events": [
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+        "event": "system-preparing",
+        "event_payload": ""
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "3f1fbb6cfe25e7f19bd48cfa9dc590cabaa946da04f9215402e7083550177292c1478402b258a90c649ccfcb5f408175",
+        "event": "app-id",
+        "event_payload": "1111111111111111111111111111111111111111"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "0e84b4549728aa2b88658066a602b6d711ce2db188aa80bf1e876a4d6403d2ca6602729f90657e44c033c53e7b96e92b",
+        "event": "compose-hash",
+        "event_payload": "a06cf4774c792a56cdb756e773d0acf5d508332376982dc8a1e70811d33377e4"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+        "event": "gpu-policy-hash",
+        "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "62b77adf88c404370047f0f5171d3c1f9e49534b429ab0328cb2179654d97715302fd34d82379b089114adc05b6a00a9",
+        "event": "instance-id",
+        "event_payload": "3333333333333333333333333333333333333333"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+        "event": "boot-mr-done",
+        "event_payload": ""
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "7f788209b6106d43ad4b0cef85797120c234f175a10b7cb609a73ec1f4285adfe7abca2e1e3d3bd2ba058c2b78d1771d",
+        "event": "key-provider",
+        "event_payload": "7b226e616d65223a226e6f6e65222c226964223a22227d"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+        "event": "storage-fs",
+        "event_payload": "65787434"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+        "event": "storage-encrypted",
+        "event_payload": "31"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+        "event": "system-ready",
+        "event_payload": ""
+      }
+    ],
+    "rtmr3": "30498094c86fca91569d7ea7dc79fcfd7dfbf7ac699a1fde8b673f659e1f0fcc08ee73fdccd5eb000694689b212822d1",
+    "rtmr3BootMrDone": "5087565e0705ebbd36500f414ef35cff648b28d342eb1b2ac370909e46e866c19b817bec801d0877960febdb4283b00d"
+  },
+  "sealed": {
+    "events": [
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+        "event": "system-preparing",
+        "event_payload": ""
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "3f1fbb6cfe25e7f19bd48cfa9dc590cabaa946da04f9215402e7083550177292c1478402b258a90c649ccfcb5f408175",
+        "event": "app-id",
+        "event_payload": "1111111111111111111111111111111111111111"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "0e84b4549728aa2b88658066a602b6d711ce2db188aa80bf1e876a4d6403d2ca6602729f90657e44c033c53e7b96e92b",
+        "event": "compose-hash",
+        "event_payload": "a06cf4774c792a56cdb756e773d0acf5d508332376982dc8a1e70811d33377e4"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+        "event": "gpu-policy-hash",
+        "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "62b77adf88c404370047f0f5171d3c1f9e49534b429ab0328cb2179654d97715302fd34d82379b089114adc05b6a00a9",
+        "event": "instance-id",
+        "event_payload": "3333333333333333333333333333333333333333"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+        "event": "boot-mr-done",
+        "event_payload": ""
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "67e185b2f6be40321584f4ee14d02bb84a899d83ac6d4ec23521267288f78b39ae70887a989c22c53990a58700682641",
+        "event": "key-provider",
+        "event_payload": "7b226e616d65223a2274706d222c226964223a22227d"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+        "event": "storage-fs",
+        "event_payload": "65787434"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+        "event": "storage-encrypted",
+        "event_payload": "31"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+        "event": "system-ready",
+        "event_payload": ""
+      }
+    ],
+    "rtmr3": "fb7365f4116a44de05c7afa299774164c0885af8551c2b68936683488d2ec4e0087264631599161b5a207071831e2af3"
+  },
+  "reportData": {
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "ephemeralPub": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "stackHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "enclaveSigner": "cccccccccccccccccccccccccccccccccccccccc",
+    "nonce2": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "tlsPubKeyHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "keyRelease": "f1075b862d6909c76e4ea8d081df997db247831a6808516ecb6cc415e65558ad0000000000000000000000000000000000000000000000000000000000000000",
+    "evidence": "6c40c5d9cd090499dc95c5047fcb8f0fe80f9da2ec15dc21dcbe1102c2d0c6800000000000000000000000000000000000000000000000000000000000000000",
+    "liveAttest": "134dbf7c1f77d2bd44e2ddb0fc475aa3daa7d687c1bac34ce10c715ab264b9400000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
