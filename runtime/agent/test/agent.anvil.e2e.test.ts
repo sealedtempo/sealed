@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   type Address,
   appId as computeAppId,
+  buildAccessKeyAuthorization,
   feeSplitterAbi,
   type Hex,
   imageId as computeImageId,
@@ -32,7 +33,7 @@ import {
   type SealedDeployment,
   startLocalTempo,
 } from "@sealed/core/testing";
-import { http, parseEventLogs, toFunctionSelector } from "viem";
+import { http, parseEventLogs } from "viem";
 import { Abis, Account, Addresses, createClient } from "viem/tempo";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type RunningSimulator, startSimulator } from "../sim/simulator.js";
@@ -144,33 +145,16 @@ describe.skipIf(!enabled)("sealed-agent end to end on a local Tempo node", () =>
     const keyId = ready.enclaveSigner as Address;
     const chain = tempoChain({ chainId: node.chainId, rpcUrl: node.rpcUrl, feeToken: LOCAL_TOKENS.pathUsd });
     const wallet = createClient({ chain: chain as never, transport: http(node.rpcUrl), pollingInterval: 100 });
+    // Exactly the console's authorization (D-054).
+    const auth = buildAccessKeyAuthorization({ keyId, feeToken: LOCAL_TOKENS.pathUsd, feeSplitter: d.feeSplitter, treasury: devAddress(DEV_KEYS.treasury), limit: 2_000_000n, period: "day" });
     const hash = await wallet.writeContract({
       account: Account.fromSecp256k1(customerKey),
       address: Addresses.accountKeychain,
       abi: Abis.accountKeychain,
       functionName: "authorizeKey",
-      args: [
-        keyId,
-        0,
-        {
-          expiry: 2n ** 64n - 1n,
-          enforceLimits: true,
-          limits: [{ token: LOCAL_TOKENS.pathUsd, amount: 2_000_000n, period: 86_400n }],
-          allowAnyCalls: false,
-          allowedCalls: [
-            { target: LOCAL_TOKENS.pathUsd, selectorRules: [{ selector: toFunctionSelector("approve(address,uint256)"), recipients: [d.feeSplitter] }] },
-            {
-              target: d.feeSplitter,
-              selectorRules: [
-                { selector: toFunctionSelector("payFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
-                { selector: toFunctionSelector("topUpFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
-              ],
-            },
-          ],
-        },
-      ],
+      args: auth.args,
       feeToken: LOCAL_TOKENS.pathUsd,
-      gas: 5_000_000n,
+      gas: 10_000_000n,
     } as never);
     expect((await wallet.waitForTransactionReceipt({ hash, timeout: 10_000 })).status).toBe("success");
 

@@ -10,7 +10,17 @@ import {
   type Hex,
   tempoChain,
 } from "@sealed/core";
-import { createClient, encodeFunctionData, http, publicActions, walletActions } from "viem";
+import {
+  BaseError,
+  createClient,
+  encodeFunctionData,
+  http,
+  keccak256,
+  publicActions,
+  RpcRequestError,
+  TransactionReceiptNotFoundError,
+  walletActions,
+} from "viem";
 import { Account, Actions, tempoActions } from "viem/tempo";
 
 export type SettlementMode = "access-key" | "enclave-account";
@@ -31,6 +41,36 @@ export interface Budget {
   problem?: "access_key_missing" | "access_key_revoked" | "access_key_expired" | "spend_limit" | "insufficient_balance";
   /** Which limit `spendable` comes from: the access key's remaining spending limit or the token balance. */
   binding?: "spend_limit" | "balance";
+}
+
+/** The access key's FEE_TOKEN limit as the chain reports it (getRemainingLimit); 0 for a missing, revoked or expired key. */
+export interface SpendLimit {
+  remaining: bigint;
+  /** End of the current period (unix seconds); 0 for a one-time limit or no key. */
+  periodEnd: number;
+}
+
+/** The receipt of a settlement transaction: what it paid in network fees, and whether its calls ran. */
+export interface PaymentReceipt {
+  status: "success" | "reverted";
+  networkFee: bigint;
+}
+
+/**
+ * A payment that did not complete. `not_sent`: the node refused it, nothing left the limit. `reverted`: it was
+ * mined and reverted, its network fee was paid. `unknown`: it may have been broadcast (lost response, receipt
+ * timeout); `txHash` is set so the caller can count it and look for the receipt later.
+ */
+export class PaymentError extends Error {
+  constructor(
+    message: string,
+    readonly outcome: "not_sent" | "reverted" | "unknown",
+    readonly txHash?: Hex,
+    readonly networkFee?: bigint,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
 }
 
 /** DeploymentRegistry status: None (not registered yet), Active, Closed (terminal). */
@@ -56,10 +96,15 @@ export interface FeePayer {
   /** Estimated network fee in token base units for exactly this batch; rejects when the node's estimate reverts. */
   feeReserve(lines: PaymentLine[]): Promise<bigint>;
   budget(reserve: bigint): Promise<Budget>;
-  /** `networkFee` is what the transaction paid in fee-token base units (it counts against an access-key limit). */
+  /**
+   * `networkFee` is what the transaction paid in fee-token base units (it counts against an access-key limit).
+   * Rejects with a PaymentError when the payment did not complete.
+   */
   pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint; networkFee?: bigint }>;
-  /** End of the access key's current spending-limit period (unix seconds); undefined without a periodic limit. */
-  limitPeriodEnd?(): Promise<number | undefined>;
+  /** The access key's limit onchain; undefined in enclave-account mode or for a key without limits. */
+  spendLimit?(): Promise<SpendLimit | undefined>;
+  /** The receipt of an earlier payment transaction, undefined while none is mined. */
+  paymentReceipt?(txHash: Hex): Promise<PaymentReceipt | undefined>;
 }
 
 const tip20Abi = [
@@ -78,14 +123,13 @@ export interface TempoFeePayerOptions {
   deploymentId: Hex;
   /** Extra gas on top of the node's estimate (keychain signatures are estimated low). */
   gasHeadroomPct?: number;
-  /** Lower bound for the gas limit. Local anvil 1.7.1 (Tempo T4 rules) under-estimates batches with new storage slots. */
+  /** Lower bound for the gas limit (local nodes in tests). */
   minGas?: bigint;
   receiptTimeoutMs?: number;
 }
 
 /**
- * Gas floor per batch: unvalidated against a real Tempo node (anvil 1.7.1 returns a constant estimate
- * for 0x76 batches). Each new storage slot costs 250k gas on Tempo (tempo-chain notes): a leg can
+ * Gas floor per batch. Each new storage slot costs 250k gas on Tempo (tempo-chain notes): a leg can
  * create usagePaid, usageToken, the day's dailyPaid and two credit slots; approve can create the
  * allowance slot and a fresh account pays 271k for its first transaction.
  */
@@ -249,24 +293,63 @@ export class TempoFeePayer implements FeePayer {
     return { spendable, binding };
   }
 
-  async limitPeriodEnd(): Promise<number | undefined> {
+  async spendLimit(): Promise<SpendLimit | undefined> {
     if (this.mode !== "access-key") return undefined;
-    const { periodEnd } = await this.client.accessKey.getRemainingLimit({ account: this.o.customer, accessKey: this.keyId, token: this.o.feeToken });
-    return periodEnd !== undefined && periodEnd > 0n ? Number(periodEnd) : undefined;
+    const meta = await this.client.accessKey.getMetadata({ account: this.o.customer, accessKey: this.keyId });
+    const active = meta.address.toLowerCase() === this.keyId && !meta.isRevoked && meta.expiry > BigInt(Math.floor(Date.now() / 1000));
+    if (!active) return { remaining: 0n, periodEnd: 0 };
+    if (meta.spendPolicy !== "limited") return undefined;
+    const { remaining, periodEnd } = await this.client.accessKey.getRemainingLimit({ account: this.o.customer, accessKey: this.keyId, token: this.o.feeToken });
+    return { remaining, periodEnd: periodEnd !== undefined && periodEnd > 0n && periodEnd <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(periodEnd) : 0 };
   }
 
+  async paymentReceipt(txHash: Hex): Promise<PaymentReceipt | undefined> {
+    try {
+      const r = await this.client.getTransactionReceipt({ hash: txHash });
+      return { status: r.status === "success" ? "success" : "reverted", networkFee: networkFeeOf(r) ?? 0n };
+    } catch (err) {
+      if (err instanceof TransactionReceiptNotFoundError) return undefined;
+      throw err;
+    }
+  }
+
+  /**
+   * Signs locally first, so the hash is known before anything is sent: a payment whose broadcast or receipt is
+   * lost is reported as `unknown` with its hash, and the settler counts it against the limit (review M4).
+   */
   async pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint; networkFee?: bigint }> {
     if (lines.length === 0) throw new Error("nothing to pay");
     if (lines.length > MAX_LINES_PER_TX) throw new Error(`at most ${MAX_LINES_PER_TX} legs per transaction`);
     const gas = await this.gasFor(lines);
-    const hash = await this.client.sendTransaction({ account: this.account, calls: this.calls(lines), feeToken: this.o.feeToken, gas } as never);
-    const receipt = await this.client.waitForTransactionReceipt({ hash, timeout: this.o.receiptTimeoutMs ?? 120_000 });
-    if (receipt.status !== "success") {
-      throw Object.assign(new Error(`payment transaction reverted (gas used ${receipt.gasUsed} of ${gas})`), { txHash: hash });
+    const request = await this.client.prepareTransactionRequest({ account: this.account, calls: this.calls(lines), feeToken: this.o.feeToken, gas } as never);
+    const serializer = this.client.chain.serializers?.transaction;
+    const signed = (await this.account.signTransaction(request as never, { serializer } as never)) as Hex;
+    let hash: Hex = keccak256(signed);
+    try {
+      hash = await this.client.sendRawTransaction({ serializedTransaction: signed });
+    } catch (err) {
+      // A JSON-RPC error answer means the node refused it; anything else (timeout, dropped connection) may have
+      // reached the node.
+      const refused = err instanceof BaseError && err.walk((e) => e instanceof RpcRequestError) !== null;
+      if (refused) throw new PaymentError("the node refused the payment transaction", "not_sent", undefined, undefined, { cause: err });
+      throw new PaymentError("the payment transaction may have been sent; no answer from the node", "unknown", hash, undefined, { cause: err });
     }
-    // Fee units = gas * attodollars-per-gas / 1e12, rounded up (as feeReserve).
-    const price = (receipt as { effectiveGasPrice?: bigint }).effectiveGasPrice;
-    const networkFee = price === undefined ? undefined : (receipt.gasUsed * price + 999_999_999_999n) / 1_000_000_000_000n;
+    let receipt;
+    try {
+      receipt = await this.client.waitForTransactionReceipt({ hash, timeout: this.o.receiptTimeoutMs ?? 120_000 });
+    } catch (err) {
+      throw new PaymentError("no receipt for the payment transaction", "unknown", hash, undefined, { cause: err });
+    }
+    const networkFee = networkFeeOf(receipt);
+    if (receipt.status !== "success") {
+      throw new PaymentError(`payment transaction reverted (gas used ${receipt.gasUsed} of ${gas})`, "reverted", hash, networkFee ?? 0n);
+    }
     return { txHash: hash, gasUsed: receipt.gasUsed, ...(networkFee !== undefined ? { networkFee } : {}) };
   }
+}
+
+/** Fee units = gas * attodollars-per-gas / 1e12, rounded up (as feeReserve). */
+function networkFeeOf(receipt: { gasUsed: bigint }): bigint | undefined {
+  const price = (receipt as { effectiveGasPrice?: bigint }).effectiveGasPrice;
+  return price === undefined ? undefined : (receipt.gasUsed * price + 999_999_999_999n) / 1_000_000_000_000n;
 }

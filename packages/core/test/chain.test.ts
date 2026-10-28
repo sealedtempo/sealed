@@ -22,6 +22,6 @@ describe("tempo chain helpers", () => {
     const c = tempoChain({ chainId: 31337, rpcUrl: "http://127.0.0.1:9" });
     expect(c.id).toBe(31337);
     expect(typeof c.serializers?.transaction).toBe("function");
-    expect((c as unknown as { hardfork: string }).hardfork).toBe("t4");
+    expect((c as unknown as { hardfork: string }).hardfork).toBe("t12");
   });
 });

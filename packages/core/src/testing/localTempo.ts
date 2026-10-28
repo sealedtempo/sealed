@@ -23,7 +23,7 @@ import {
   walletActions,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { tempoChain } from "../chain.js";
+import { LOCAL_HARDFORK, tempoChain } from "../chain.js";
 import { type DeploymentRecord, recordDigest, registryDomain } from "../eip712.js";
 import type { Address, Hex } from "../hex.js";
 import { measurementsHash as computeMeasurementsHash } from "../ids.js";
@@ -63,7 +63,7 @@ async function freePort(): Promise<number> {
 export type LocalClient = Client<HttpTransport, Chain, undefined, undefined, PublicActions<HttpTransport, Chain> & WalletActions<Chain, undefined>>;
 
 export function localClient(rpcUrl: string): LocalClient {
-  const chain = tempoChain({ chainId: LOCAL_CHAIN_ID, rpcUrl, hardfork: "t4" });
+  const chain = tempoChain({ chainId: LOCAL_CHAIN_ID, rpcUrl, hardfork: LOCAL_HARDFORK });
   return createClient({ chain, transport: http(rpcUrl), pollingInterval: 100 }).extend(publicActions).extend(walletActions);
 }
 
@@ -84,7 +84,7 @@ export interface StartOptions {
 /** Starts `anvil --network tempo` on a free port and waits until it answers. */
 export async function startLocalTempo(opts: StartOptions = {}): Promise<LocalTempo> {
   const port = opts.port ?? (await freePort());
-  const args = ["--network", "tempo", "--hardfork", opts.hardfork ?? "T4", "--port", String(port), "--gas-limit", "500000000", "--silent"];
+  const args = ["--network", "tempo", "--hardfork", opts.hardfork ?? LOCAL_HARDFORK.toUpperCase(), "--port", String(port), "--gas-limit", "500000000", "--silent"];
   const child: ChildProcess = spawn("anvil", args, { stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   child.stderr?.on("data", (d) => (stderr += String(d)));
@@ -236,7 +236,7 @@ export async function send(
 ): Promise<Hash> {
   const account = devAccount(key);
   const request = { account, address, abi, functionName, args, feeToken: LOCAL_TOKENS.alphaUsd } as const;
-  // anvil 1.7.1 (Tempo T4 rules) under-estimates storage-heavy calls, so leave wide headroom.
+  // Wide headroom over the estimate: these helpers set up tests and must not fail on a tight limit.
   const estimate = await client.estimateContractGas(request as never);
   const gas = [estimate * 3n + 1_000_000n, 3_000_000n].reduce((a, b) => (a > b ? a : b));
   const hash = await client.writeContract({ ...request, gas: gas > 25_000_000n ? 25_000_000n : gas } as never);

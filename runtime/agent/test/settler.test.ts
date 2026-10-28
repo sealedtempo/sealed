@@ -9,7 +9,8 @@ import type { PlatformClient } from "../src/evidence.js";
 import { parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
 import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
-import { Settler } from "../src/payments/settler.js";
+import { emptyBudgetState, SpendBudget } from "../src/payments/budget.js";
+import { PENDING_GIVE_UP_SEC, Settler } from "../src/payments/settler.js";
 import type { PaymentStatus } from "../src/state.js";
 import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
 import { FakePayer } from "./helpers/fakePayer.js";
@@ -401,5 +402,62 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect((await settler.tick(2000)).submitted).toBe(0);
     platformDown = false;
     expect((await settler.tick(3000)).submitted).toBe(1);
+  });
+
+  describe("what settlement takes from the shared spend limit (review M4)", () => {
+    let budget: SpendBudget;
+    beforeEach(() => {
+      budget = new SpendBudget({ limit: 2_000_000n, state: emptyBudgetState(1000), feeReserve: () => 0n });
+      settler = new Settler({ ledger, payer, platform: { postEvidence: async () => ({ deploymentId: "0x" }), postUsage: async () => undefined, postHealth: async () => undefined }, status, graceSec: GRACE, save: async () => {}, log: silentLogger, spend: budget });
+    });
+
+    it("a paid batch counts its fees and network fee, and teaches the network fee per transaction", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      await settler.tick(2000);
+      expect(budget.state.fees).toBe((50_000n + payer.networkFee).toString());
+      expect(budget.state.networkFeePerTx).toBe(payer.networkFee.toString());
+    });
+
+    it("a reverted batch counts the network fee it paid", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      payer.failNextAs = "reverted";
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "tx_failed" }]);
+      expect(budget.state.fees).toBe(payer.networkFee.toString());
+      expect(ledger.unpaid().length).toBe(1);
+    });
+
+    it("a batch whose receipt never came counts its fees plus the fee reserve until the receipt shows", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      payer.failNextAs = "unknown";
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "tx_unconfirmed" }]);
+      const [pending] = budget.pendingFees();
+      expect(pending).toMatchObject({ owed: "50000", counted: (50_000n + payer.reserve).toString() });
+      expect(budget.state.fees).toBe((50_000n + payer.reserve).toString());
+      // It landed after all: the next tick finds the receipt, corrects the count, and sees the leg paid onchain
+      // without paying it again (before the fix, nothing was ever counted for it).
+      const [leg] = ledger.unpaid();
+      payer.payDirectly(leg!.usageHash, leg!.appId, 50_000n);
+      payer.receipts.set(pending!.txHash, { status: "success", networkFee: 1_500n });
+      const r2 = await settler.tick(2100);
+      expect(r2).toMatchObject({ outcome: "settled", apps: [] });
+      expect(ledger.unpaid()).toEqual([]);
+      expect(budget.pendingFees()).toEqual([]);
+      expect(budget.state.fees).toBe("51500");
+      expect(payer.paid.length).toBe(0);
+    });
+
+    it("stops looking for a receipt after a while and keeps the count", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      payer.failNextAs = "unknown";
+      await settler.tick(2000);
+      await settler.tick(2000 + PENDING_GIVE_UP_SEC - 1);
+      expect(budget.pendingFees().length).toBe(1);
+      const counted = budget.state.fees;
+      await settler.tick(2000 + PENDING_GIVE_UP_SEC);
+      expect(budget.pendingFees()).toEqual([]);
+      expect(BigInt(budget.state.fees) >= BigInt(counted)).toBe(true);
+    });
   });
 });
