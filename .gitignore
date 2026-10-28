@@ -1,0 +1,24 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# build outputs
+node_modules/
+dist/
+.next/
+out/
+coverage/
+bin/
+*.test
+contracts/out/
+contracts/cache/
+contracts/broadcast/*/31337/
+contracts/broadcast/**/dry-run/
+.turbo/
+# local state
+.DS_Store
+*.log
+tmp/
+.scratch/

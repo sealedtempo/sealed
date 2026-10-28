@@ -1,0 +1,52 @@
+# Sealed platform defaults. Every component reads this file.
+# Values here are public. Secrets never belong in this file.
+codename: Sealed
+cloud: {provider: gcp, tee: intel-tdx, machine_family: c3, region: us-central1}
+fees_usd:
+  gateway_per_1m_tokens: 0.20
+  scraper_per_1k_pages: 0.20
+  app_hour: {crm: 0.05, coding-agent: 0.05, internal-tools: 0.05, llm-gateway: 0, scraper: 0}
+maintainer_share_bps: 2000
+relay_markup_bps: 500
+spend_limit_per_day_usd: 2
+grace_period_minutes: 1440
+settlement_interval_minutes: 60
+fee_splitter_caps_usd: {per_payment: 5, per_deployment_per_day: 20}
+test_overrides: {grace_period_minutes: 5, settlement_interval_minutes: 5}
+local_model: {max_params_b: 4, licenses: [Apache-2.0, MIT], runtime: ollama-cpu}
+coding_agent: {primary: openhands, fallback: opencode}
+app_login: password-gate
+code_license: {public_repo: Apache-2.0, private_repo: proprietary}
+default_machine_type: c3-standard-8
+data_disk_gb: 50
+
+# Chain settings shared by every component. Addresses are filled in by the
+# contracts deploy script (contracts/deployments/tempo-mainnet.json is the
+# source of truth; components load addresses from there).
+chain:
+  name: tempo-mainnet
+  chain_id: 4217
+  public_rpc_url: https://rpc.tempo.xyz
+  explorer_url: https://explore.mainnet.tempo.xyz
+  verifier_url: https://contracts.tempo.xyz
+  fee_token: "0x20c0000000000000000000000000000000000000"
+  fee_token_symbol: pathUSD
+  fee_token_decimals: 6
+  confirmations: 1
+  deployments_file: contracts/deployments/tempo-mainnet.json
+
+# Attestation method ids used by DeploymentRegistry.
+attestation_methods: {ORACLE_SIG_V1: 1, ZK_DCAP_V1: 2}
+
+# Key broker TCB policy (section 5.7).
+tcb_policy:
+  allowed_statuses: [UpToDate, SWHardeningNeeded]
+
+# Network layout inside a deployment VM (section 5.4).
+network:
+  apps_subnet: 172.30.0.0/24
+  edge_subnet: 172.31.0.0/24
+  egress_apps_ip: 172.30.0.2
+  egress_edge_ip: 172.31.0.2
+  dns_ip: 172.30.0.2
+  allowed_ports: [443, 80]
