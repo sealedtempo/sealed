@@ -286,3 +286,35 @@ func TestHTTPFetcherLimits(t *testing.T) {
 		t.Fatalf("500: %v", err)
 	}
 }
+
+// Redirects stay on https once a fetch starts there (GitHub's asset redirect is https to https), and loops end.
+func TestHTTPFetcherRedirects(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("clear text")) }))
+	defer plain.Close()
+	var tlsSrv *httptest.Server
+	tlsSrv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/downgrade":
+			http.Redirect(w, r, plain.URL+"/asset", http.StatusFound)
+		case "/asset-host":
+			http.Redirect(w, r, tlsSrv.URL+"/asset", http.StatusFound)
+		case "/loop":
+			http.Redirect(w, r, "/loop", http.StatusFound)
+		case "/asset":
+			w.Write([]byte("bundle"))
+		}
+	}))
+	defer tlsSrv.Close()
+	client := tlsSrv.Client()
+	client.CheckRedirect = bundles.CheckRedirect
+	f := bundles.HTTPFetcher{Client: client}
+	if b, err := f.Fetch(context.Background(), tlsSrv.URL+"/asset-host"); err != nil || string(b) != "bundle" {
+		t.Fatalf("https redirect: %q %v", b, err)
+	}
+	if _, err := f.Fetch(context.Background(), tlsSrv.URL+"/downgrade"); err == nil || !strings.Contains(err.Error(), "redirect from https to http") {
+		t.Fatalf("downgrade followed: %v", err)
+	}
+	if _, err := f.Fetch(context.Background(), tlsSrv.URL+"/loop"); err == nil || !strings.Contains(err.Error(), "10 redirects") {
+		t.Fatalf("loop: %v", err)
+	}
+}
