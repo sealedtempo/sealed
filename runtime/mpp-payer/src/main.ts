@@ -1,0 +1,111 @@
+import { serve } from '@hono/node-server'
+import { http, createClient, publicActions, walletActions } from 'viem'
+import { tempo as tempoChain } from 'viem/chains'
+import { Account, tempoActions } from 'viem/tempo'
+import { RelayAttestationGate } from './attestation-gate.js'
+import { CallerAllowlist } from './caller-allowlist.js'
+import { loadPayerConfig } from './config.js'
+import { paymentFirewall } from './payment-firewall.js'
+import { RelayClient } from './relay-client.js'
+import { createPayerApp } from './server.js'
+import { SpendGuard } from './spend-guard.js'
+import { SpendReporter } from './spend-reporter.js'
+
+const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), ...event }))
+
+function main(): void {
+  const config = loadPayerConfig()
+  // access-key mode: the enclave key signs for the customer's root account (D-026, INTERFACES 15)
+  const account =
+    config.mode === 'access-key'
+      ? Account.fromSecp256k1(config.enclaveKey, { access: config.customer })
+      : Account.fromSecp256k1(config.enclaveKey)
+  const chain = tempoChain.extend({ id: config.chainId, feeToken: config.currency })
+  const client = createClient({ chain, transport: http(config.rpcUrl) })
+    .extend(publicActions)
+    .extend(walletActions)
+    .extend(tempoActions())
+
+  const gate = new RelayAttestationGate({
+    attestUrl: config.relayAttestUrl,
+    verifierdUrl: config.verifierdUrl,
+    relayOwner: config.relayOwner,
+    intervalSeconds: config.attestIntervalSeconds,
+    payeeOverride: config.relayPayee,
+    allowSimulated: process.env.SEALED_DEV_SIM === '1',
+    log,
+  })
+  const guard = new SpendGuard(config.spendLimitPerDay)
+  const firewalled = paymentFirewall(
+    fetch,
+    {
+      payerAddress: account.address,
+      currency: config.currency,
+      allowedChainIds: [config.chainId],
+      maxCharge: config.maxCharge,
+      maxDeposit: config.maxDeposit,
+      expectedPayee: () => gate.payee(),
+    },
+    guard,
+  )
+  const relay = new RelayClient({
+    relayUrl: config.relayUrl,
+    account,
+    getClient: () => client,
+    currency: config.currency,
+    chainId: config.chainId,
+    decimals: 6,
+    maxDeposit: config.maxDeposit,
+    maxCharge: config.maxCharge,
+    expectedPayee: () => gate.payee(),
+    fetch: firewalled,
+    log,
+  })
+  const reporter = new SpendReporter({
+    agentUrl: config.agentUrl,
+    intervalSeconds: config.reportIntervalSeconds,
+    snapshot: () => ({
+      mode: config.mode,
+      currency: config.currency,
+      counters: guard.counters(),
+      relay: { attested: gate.isOpen(), checkedAt: gate.state().checkedAt, sessionsAvailable: relay.sessionsAvailable() },
+    }),
+    log,
+  })
+  const callers = new CallerAllowlist(config.allowedCallers)
+
+  const app = createPayerApp({
+    gate,
+    relay,
+    models: () => fetch(`${config.relayUrl}/v1/models`, { signal: AbortSignal.timeout(15_000) }),
+    callers,
+    remoteAddress: (c) => (c.env as { incoming?: { socket?: { remoteAddress?: string } } })?.incoming?.socket?.remoteAddress,
+    onPayment: () => reporter.poke(),
+    log,
+  })
+
+  gate.start()
+  callers.start()
+  reporter.start()
+  const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' })
+  log({ event: 'payer_started', port: config.port, mode: config.mode, payer: account.address.toLowerCase() })
+
+  const shutdown = async () => {
+    gate.stop()
+    callers.stop()
+    reporter.stop()
+    await relay.close()
+    await reporter.send()
+    server.close()
+    process.exit(0)
+  }
+  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', shutdown)
+}
+
+try {
+  main()
+} catch (error) {
+  console.error(JSON.stringify({ event: 'payer_fatal', message: (error as Error).message }))
+  process.exit(1)
+}
