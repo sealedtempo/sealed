@@ -282,6 +282,3 @@ func (m *MemorySecretStore) Access(_ context.Context, id string) ([]byte, error)
 	}
 	return append([]byte(nil), v...), nil
 }
-
-// validAppID reports whether s is an app id usable in a secret id.
-func validAppID(s string) bool { return appIDRe.MatchString(s) }
