@@ -1,0 +1,76 @@
+schema: sealed-manifest/v1
+id: coding-agent
+name: Coding agent (OpenCode)
+category: developer
+description: >-
+  Headless coding agent (OpenCode server, MIT) that edits files and runs commands in its own container
+  on the apps network, with its LLM wired to llm-gateway. Fallback for the OpenHands release; served on
+  the code route behind the password gate. Requires llm-gateway in the same stack.
+upstream:
+  repo: https://github.com/anomalyco/opencode
+  version: v1.19.5
+  license_spdx: MIT
+  source_url: https://github.com/anomalyco/opencode/tree/v1.19.5
+maintainer:
+  name: Sealed
+  payout_address: ${MAINTAINER_DEFAULT_ADDRESS}
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: coding-agent-server
+images:
+  # Built from images/opencode: ghcr.io/anomalyco/opencode:1.19.5@sha256:f4cfe16d91efbbfca01a51c44094fba4cf82e15c7fa17de5f11f9059699b1e6e
+  # plus bash, git, python3 and uid 10001. Digest pinned after the image workflow builds it.
+  - name: opencode
+    source: build:images/opencode
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    platform: linux/amd64
+    license_spdx: MIT
+resources:
+  cpu: 2
+  memory_gb: 4
+  disk_gb: 20
+routes:
+  - name: code
+    service: coding-agent-server
+    internal_port: 4096
+    path_or_host: code
+    auth: gate
+healthcheck:
+  service: coding-agent-server
+  http: /global/health
+  port: 4096
+  start_period_s: 60
+metering:
+  unit: app_hour
+  source: heartbeat
+secrets:
+  - name: OPENCODE_SERVER_PASSWORD
+    description: >-
+      OpenCode server password (HTTP basic auth, user sealed). Set it to the same value as the password
+      gate so one Authorization header passes both.
+    generate: none
+  - name: LITELLM_MASTER_KEY
+    description: >-
+      Must equal llm-gateway's LITELLM_MASTER_KEY. Used only by the bootstrap job to create this app's
+      gateway virtual key (alias coding-agent).
+    generate: none
+telemetry_off_env:
+  OPENCODE_DISABLE_AUTOUPDATE: "1"
+  OPENCODE_DISABLE_MODELS_FETCH: "1"
+  OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
+  OPENCODE_DISABLE_DEFAULT_PLUGINS: "1"
+  OPENCODE_DISABLE_CLAUDE_CODE: "1"
+  DO_NOT_TRACK: "1"
+license_exclusions:
+  - "anomalyco/opencode:packages/enterprise/"
+  - "**/@anthropic-ai/claude-agent-sdk*/**"
+  - "**/litellm_enterprise/**"
+bootstrap:
+  service: coding-agent-bootstrap
+  done_file: /workspace/.sealed/bootstrap.done
+notes: >-
+  OpenCode fallback for coding-agent (spec 6.5). The bootstrap job creates a LiteLLM virtual key (alias
+  coding-agent) and writes it to the workspace volume; the server reads it at start. Default model
+  litellm/relay-default (gateway relay/default), small model litellm/local-qwen3-4b. Autoupdate, the
+  models.dev fetch, LSP downloads and default plugins are off. Egress is closed by default.

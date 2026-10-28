@@ -1,0 +1,94 @@
+# coding-agent compose fragment (INTERFACES section 14): OpenHands agent-server, local runtime.
+# The composer adds networks, fixed IPs, DNS, proxy env (NO_PROXY covers llm-gateway),
+# telemetry_off_env, envexec, secret mounts, restart and logging.
+#
+# coding-agent-server starts as root only to hand the workspace volume to uid 10001
+# (bootstrap/dropuid.py, embedded below), then runs agent-server as 10001.
+# coding-agent-bootstrap (manifest bootstrap job) creates the gateway virtual key and seeds the
+# agent's LLM settings (bootstrap/seed.py, embedded below), then idles.
+services:
+  coding-agent-server:
+    image: "{{image:openhands-agent-server}}"
+    user: "0:0"
+    entrypoint:
+      - python3
+      - -I
+      - -c
+      - |
+        @@include bootstrap/dropuid.py@@
+    command: ["tini", "--", "/usr/local/bin/openhands-agent-server", "--host", "0.0.0.0", "--port", "8000"]
+    x-sealed-secrets:
+      - OH_SESSION_API_KEYS_0
+      - OH_SECRET_KEY
+    environment:
+      SEALED_RUN_AS: "10001:10001"
+      SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/conversations,/workspace/bash_events,/workspace/.openhands,/workspace/.sealed
+      OH_CONVERSATION_RUNTIME: local
+      OH_CONVERSATION_RUNTIME_SELECTABLE: "false"
+      OH_ENABLE_VSCODE: "false"
+      OH_ENABLE_BROWSER: "false"
+      OH_PRELOAD_TOOLS: "false"
+      OH_WORKSPACE_PATH: /workspace/project
+      OH_CONVERSATIONS_PATH: /workspace/conversations
+      OH_BASH_EVENTS_DIR: /workspace/bash_events
+      OH_PERSISTENCE_DIR: /workspace/.openhands
+      OH_MAX_CONCURRENT_RUNS: "4"
+      LOG_JSON: "true"
+      LOG_LEVEL: INFO
+      TMUX_TMPDIR: /tmp/oh-tmux
+    volumes:
+      - coding-agent-workspace:/workspace
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -I
+        - -c
+        - "import sys, urllib.request as u; o = u.build_opener(u.ProxyHandler({})); sys.exit(0 if o.open('http://127.0.0.1:8000/ready', timeout=3).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    mem_limit: 4g
+    stop_grace_period: 30s
+
+  coding-agent-bootstrap:
+    image: "{{image:openhands-agent-server}}"
+    user: "10001:10001"
+    entrypoint:
+      - python3
+      - -I
+      - -c
+      - |
+        @@include bootstrap/seed.py@@
+    x-sealed-secrets:
+      - LITELLM_MASTER_KEY
+      - OH_SESSION_API_KEYS_0
+    environment:
+      SEALED_BOOTSTRAP_MODE: openhands
+      SEALED_GATEWAY_URL: http://llm-gateway:4000
+      SEALED_AGENT_SERVER_URL: http://coding-agent-server:8000
+      SEALED_LLM_KEY_ALIAS: coding-agent
+      SEALED_LLM_KEY_MODELS: relay/*,local/*
+      SEALED_MODEL_PRIMARY: relay/default
+      SEALED_MODEL_FALLBACK: local/qwen3-4b
+      SEALED_DONE_FILE: /workspace/.sealed/bootstrap.done
+      SEALED_WAIT_TIMEOUT_S: "900"
+    depends_on:
+      coding-agent-server:
+        condition: service_healthy
+    volumes:
+      - coding-agent-workspace:/workspace
+    healthcheck:
+      test: ["CMD", "python3", "-I", "-c", "import os, sys; sys.exit(0 if os.path.exists('/workspace/.sealed/bootstrap.done') else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 90
+      start_period: 900s
+    mem_limit: 256m
+    stop_grace_period: 5s
+
+volumes:
+  coding-agent-workspace: {}

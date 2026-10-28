@@ -1,0 +1,8 @@
+# Egress policy for coding-agent (OpenCode fallback) (INTERFACES section 7). Hashed as sha256(CJSON(parsed)).
+version: 1
+default_allow: []
+customer_additions_allowed: true
+notes: >-
+  No egress by default. The LLM is reached inside the VM at http://llm-gateway:4000, which is not
+  egress. Git hosts and package registries the agent should reach (for example github.com:443 or
+  pypi.org:443 and files.pythonhosted.org:443) are customer additions for coding-agent.
