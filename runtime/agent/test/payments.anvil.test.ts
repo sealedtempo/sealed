@@ -1,7 +1,8 @@
 // Fee payments against a local Tempo node (anvil --network tempo, hardfork T4) with the Sealed
 // contracts deployed: access-key authorization through the AccountKeychain precompile, one
 // approve + payFees batch per app, FeeSplitter caps, the grace period with the payment-needed
-// switch (fake Caddy admin) and recovery, and the enclave-account fallback.
+// switch (fake Caddy admin) and recovery, a leg the customer paid short topped up to its fee,
+// and the enclave-account fallback.
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -212,7 +213,13 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
             allowAnyCalls: false,
             allowedCalls: [
               { target: PATH_USD, selectorRules: [{ selector: toFunctionSelector("approve(address,uint256)"), recipients: [d.feeSplitter] }] },
-              { target: d.feeSplitter, selectorRules: [{ selector: toFunctionSelector("payFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] }] },
+              {
+                target: d.feeSplitter,
+                selectorRules: [
+                  { selector: toFunctionSelector("payFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
+                  { selector: toFunctionSelector("topUpFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
+                ],
+              },
             ],
           },
         ],
@@ -298,6 +305,39 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
       expect(r3.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 50_000n })]);
       expect(r3.paymentNeeded).toBe(false);
       expect(caddy.config).toEqual(sampleCaddyConfig("34-1-2-3"));
+    });
+
+    // Verification finding on the contract review (logic-F1 b / funds-F-02): the customer pays a leg
+    // itself with 1 base unit before the agent does. The agent must not count it as paid.
+    it("tops up a leg the customer paid short from its own wallet to the report's fee", async () => {
+      await h.ledger.record("crm", "app_hour", 3600n, 6001);
+      await h.ledger.closePeriod(6002);
+      const [entry] = h.ledger.unpaid();
+      expect(entry?.fee).toBe(50_000n);
+      const c = customerClient();
+      const send = async (address: Address, abi: unknown, functionName: string, args: unknown[]) => {
+        const hash = await c.writeContract({ account: root, address, abi, functionName, args, feeToken: PATH_USD, gas: 2_000_000n } as never);
+        expect((await c.waitForTransactionReceipt({ hash, timeout: 10_000 })).status).toBe("success");
+      };
+      await send(PATH_USD, Abis.tip20, "approve", [d.feeSplitter, 1n]);
+      await send(d.feeSplitter, feeSplitterAbi, "payFees", [deploymentId, entry!.appId, PATH_USD, 1n, entry!.usageHash]);
+      const usagePaid = () =>
+        node.client.readContract({ address: d.feeSplitter, abi: feeSplitterAbi, functionName: "usagePaid", args: [deploymentId, entry!.usageHash, entry!.appId] });
+      expect(await usagePaid()).toBe(1n);
+      const maintainerBefore = await credited(devAddress(DEV_KEYS.maintainer));
+
+      const r = await h.settler.tick(6100);
+      expect(r.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 49_999n, reports: 1 })]);
+      expect(await usagePaid()).toBe(50_000n);
+      const paid = r.apps[0] as Extract<(typeof r.apps)[number], { result: "paid" }>;
+      const events = await feesPaidEvents(paid.txHash);
+      expect(events.map((e) => [e.args.usageHash, e.args.amount, e.args.payer.toLowerCase()])).toEqual([[entry!.usageHash, 49_999n, CUSTOMER]]);
+      // crm 50%: 0 of the 1-unit payment (rounded down), 24_999 of the top-up
+      expect((await credited(devAddress(DEV_KEYS.maintainer))) - maintainerBefore).toBe(24_999n);
+      const allowance = await node.client.readContract({ address: PATH_USD, abi: Abis.tip20, functionName: "allowance", args: [CUSTOMER, d.feeSplitter] });
+      expect(allowance).toBe(0n);
+      expect(h.ledger.unpaid()).toEqual([]);
+      expect(h.status.failingSince).toBeNull();
     });
   });
 

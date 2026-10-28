@@ -133,10 +133,108 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect(status.failingSince).toBeNull();
     payer.active = true;
     const [entry] = ledger.unpaid();
-    payer.paid.push([{ appId: entry!.appId, amount: entry!.fee, usageHash: entry!.usageHash }]);
+    payer.payDirectly(entry!.usageHash, entry!.appId, entry!.fee);
     const r = await settler.tick(3000);
     expect(r.apps).toEqual([]);
     expect(ledger.unpaid()).toEqual([]);
+  });
+
+  // Verification finding on the contract review (logic-F1 b / funds-F-02): FeeSplitter cannot see the
+  // report, so the deployment's own customer can open a leg first with 1 base unit. Before the fix the
+  // settler took any non-zero usagePaid as paid and the real fee was never collected.
+  it("a leg the customer paid short is not settled: the agent tops it up to the report's fee", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.closePeriod(1500);
+    const [entry] = ledger.unpaid();
+    const fee = entry!.fee;
+    expect(fee).toBe(50_000n);
+    payer.payDirectly(entry!.usageHash, entry!.appId, 1n);
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: fee - 1n, reports: 1 })]);
+    expect(payer.paid).toEqual([[{ appId: entry!.appId, usageHash: entry!.usageHash, amount: fee - 1n, paid: 1n }]]);
+    expect(await payer.paidAmount(entry!.usageHash, entry!.appId)).toBe(fee);
+    expect(ledger.unpaid()).toEqual([]);
+  });
+
+  it("a leg paid at or above its fee onchain is settled without paying again", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.record("llm-gateway", "tokens", 1_000_000n, 1002);
+    await ledger.closePeriod(1500);
+    const [crm, llm] = ledger.unpaid();
+    payer.payDirectly(crm!.usageHash, crm!.appId, crm!.fee);
+    payer.payDirectly(llm!.usageHash, llm!.appId, llm!.fee + 1n);
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([]);
+    expect(payer.paid).toEqual([]);
+    expect(ledger.unpaid()).toEqual([]);
+  });
+
+  it("1-unit payments after a withheld tick keep failing until the shortfall is paid, then switch to payment-needed", async () => {
+    // The exploit: the customer makes one settlement fail by withholding funds, pays 1 base unit for
+    // every leg itself, and expects the next tick to see usagePaid > 0 and clear failingSince.
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.record("llm-gateway", "tokens", 1_000_000n, 1001);
+    await ledger.closePeriod(1500);
+    const legs = ledger.unpaid();
+    expect(legs.length).toBe(2);
+    payer.budgetResult = { spendable: 0n, problem: "insufficient_balance" };
+    const t0 = 10_000;
+    expect((await settler.tick(t0)).outcome).toBe("failed");
+    for (const l of legs) payer.payDirectly(l.usageHash, l.appId, 1n);
+    const r2 = await settler.tick(t0 + 60);
+    expect(r2.outcome).toBe("failed");
+    expect(r2.apps.map((a) => a.result)).toEqual(["failed", "failed"]);
+    expect(status.failingSince).toBe(t0);
+    expect(ledger.unpaid().length).toBe(2);
+    const r3 = await settler.tick(t0 + GRACE);
+    expect(r3.paymentNeeded).toBe(true);
+    expect(isPaymentNeededConfig(caddy.config)).toBe(true);
+    // Funds back: the agent pulls each leg's shortfall and the routes come back.
+    payer.budgetResult = { spendable: 1_000_000_000n };
+    const r4 = await settler.tick(t0 + GRACE + 60);
+    expect(r4.outcome).toBe("settled");
+    expect(r4.apps.map((a) => a.result === "paid" && a.amount)).toEqual(legs.map((l) => l.fee - 1n));
+    for (const l of legs) expect(await payer.paidAmount(l.usageHash, l.appId)).toBe(l.fee);
+    expect(r4.paymentNeeded).toBe(false);
+    expect(status.failingSince).toBeNull();
+    expect(caddy.config).toEqual(sampleCaddyConfig("34-1-2-3"));
+  });
+
+  it("budgets and the daily cap count only the shortfall of a short leg", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001); // 50_000
+    await ledger.closePeriod(1500);
+    const [entry] = ledger.unpaid();
+    payer.payDirectly(entry!.usageHash, entry!.appId, 40_000n);
+    payer.daily = 10_000n;
+    payer.budgetResult = { spendable: 10_000n };
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 10_000n })]);
+    expect(payer.daily).toBe(0n);
+  });
+
+  it("a top-up that races the customer's own top-up to the fee fails one tick; the next sees the leg settled", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.closePeriod(1500);
+    const [entry] = ledger.unpaid();
+    payer.payDirectly(entry!.usageHash, entry!.appId, 1n);
+    // The customer completes the leg between the agent's read and its transaction: topUpFees reverts
+    // NothingToTopUp instead of paying twice.
+    const read = payer.paidAmount.bind(payer);
+    let raced = false;
+    payer.paidAmount = async (h, a) => {
+      const v = await read(h, a);
+      if (!raced) {
+        raced = true;
+        payer.payDirectly(h, a, entry!.fee - 1n);
+      }
+      return v;
+    };
+    const r1 = await settler.tick(2000);
+    expect(r1.apps).toEqual([{ app: "crm", result: "failed", reason: "tx_failed" }]);
+    const r2 = await settler.tick(2060);
+    expect(r2.apps).toEqual([]);
+    expect(ledger.unpaid()).toEqual([]);
+    expect(status.failingSince).toBeNull();
   });
 
   it("keeps reports for later submission when the platform is down", async () => {

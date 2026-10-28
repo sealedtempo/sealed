@@ -185,7 +185,13 @@ describe.skipIf(!enabled)("sealed-agent end to end on a local Tempo node", () =>
           allowAnyCalls: false,
           allowedCalls: [
             { target: LOCAL_TOKENS.pathUsd, selectorRules: [{ selector: toFunctionSelector("approve(address,uint256)"), recipients: [d.feeSplitter] }] },
-            { target: d.feeSplitter, selectorRules: [{ selector: toFunctionSelector("payFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] }] },
+            {
+              target: d.feeSplitter,
+              selectorRules: [
+                { selector: toFunctionSelector("payFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
+                { selector: toFunctionSelector("topUpFees(bytes32,bytes32,address,uint256,bytes32)"), recipients: [] },
+              ],
+            },
           ],
         },
       ],

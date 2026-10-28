@@ -20,6 +20,8 @@ The in-VM agent of a Sealed deployment (spec 5.6, INTERFACES 9-15). It releases 
 
 Usage is priced as it arrives (`@sealed/core` pricing, remainders carried per app and unit). When an app's fee in the open period would pass the FeeSplitter per-payment cap the period is cut, so every (report, app) fits one `payFees` call. Each settlement closes the period, signs the EIP-712 `UsageReport`, posts it to `POST /v1/usage` and pays every unpaid report of an app in one Tempo transaction: `approve(FeeSplitter, exact total)` plus one `payFees` per report, within the FeeSplitter daily cap and the payer's balance and access-key limit.
 
+A (report, app) leg is settled only when `usagePaid(deploymentId, usageHash, appId)` is at least the report's fee. FeeSplitter cannot see the report, so the customer can pay a leg first with any amount (contract review logic-F1 b / funds-F-02); a leg paid short stays unpaid and the batch carries `topUpFees(..., total = fee, usageHash)` for it, which pulls only the shortfall, and ends with `approve(FeeSplitter, 0)`. Budgets and the daily cap count the shortfall. A shortfall that cannot be paid is a payment failure like any other, so it leads to the payment-needed page after the grace period. A leg someone else paid in full is marked paid without a transaction. The access key the customer authorizes must allow both `payFees` and `topUpFees` on FeeSplitter (and `approve` to FeeSplitter on pathUSD).
+
 - `access-key` mode signs with `Account.fromSecp256k1(enclaveKey, { access: customer })`, so FeeSplitter sees the customer as `msg.sender`.
 - `enclave-account` mode pays from the enclave signer's own pathUSD balance.
 

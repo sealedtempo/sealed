@@ -1,7 +1,9 @@
 // Settlement (spec 5.6 steps 6-8, 7.3): every interval, close the usage period, submit signed
 // reports, and pay each app's unpaid reports in one transaction within the FeeSplitter daily cap
-// and the payer's budget. Failures that last beyond the grace period switch Caddy to the
-// payment-needed page; the next successful settlement restores it.
+// and the payer's budget. A (report, app) leg is settled only when FeeSplitter's usagePaid reaches
+// the report's fee: a leg paid short (the customer can pay first with any amount) is topped up with
+// the shortfall, so it is never settled for less. Failures that last beyond the grace period switch
+// Caddy to the payment-needed page; the next successful settlement restores it.
 import type { Hex } from "@sealed/core";
 import type { PaymentGate } from "../caddy.js";
 import type { PlatformClient } from "../evidence.js";
@@ -23,6 +25,9 @@ export interface SettlementResult {
   apps: AppOutcome[];
   paymentNeeded: boolean;
 }
+
+/** An unpaid leg with what FeeSplitter already recorded for it and what is still owed (fee - paid). */
+type Due = UnpaidEntry & { paid: bigint; owed: bigint };
 
 export interface SettlerDeps {
   ledger: Ledger;
@@ -65,30 +70,36 @@ export class Settler {
     const outcomes: AppOutcome[] = [];
     let daily = await payer.dailyRemaining();
     for (const [app, all] of this.byApp(ledger.unpaid())) {
-      const due: UnpaidEntry[] = [];
+      const due: Due[] = [];
       for (const e of all) {
-        if (await payer.isPaid(e.usageHash, e.appId)) ledger.markPaid(e.usageHash, app, undefined, now);
-        else due.push(e);
+        const paid = await payer.paidAmount(e.usageHash, e.appId);
+        if (paid >= e.fee) {
+          ledger.markPaid(e.usageHash, app, undefined, now);
+          continue;
+        }
+        if (paid > 0n) log.warn("usage paid short onchain, topping up to the report's fee", { app, usageHash: e.usageHash, paid: paid.toString(), fee: e.fee.toString() });
+        due.push({ ...e, paid, owed: e.fee - paid });
       }
       if (due.length === 0) continue;
-      if (!(await payer.appInDeployment((due[0] as UnpaidEntry).appId))) {
+      if (!(await payer.appInDeployment((due[0] as Due).appId))) {
         outcomes.push({ app, result: "deferred", reason: "not_in_deployment" });
         continue;
       }
       try {
-        const asLines = (es: UnpaidEntry[]): PaymentLine[] => es.map((e) => ({ appId: e.appId, amount: e.fee, usageHash: e.usageHash }));
+        const asLines = (es: Due[]): PaymentLine[] => es.map((e) => ({ appId: e.appId, amount: e.owed, usageHash: e.usageHash, paid: e.paid }));
         const reserve = await payer.feeReserve(asLines(due));
         const budget = await payer.budget(reserve);
         const limit = budget.spendable < daily ? budget.spendable : daily;
-        const chosen: UnpaidEntry[] = [];
+        const chosen: Due[] = [];
         let sum = 0n;
         for (const e of due) {
-          if (sum + e.fee > limit) break;
+          if (sum + e.owed > limit) break;
           chosen.push(e);
-          sum += e.fee;
+          sum += e.owed;
         }
         if (chosen.length === 0) {
-          if (daily < (due[0] as UnpaidEntry).fee && budget.spendable >= (due[0] as UnpaidEntry).fee) {
+          const first = (due[0] as Due).owed;
+          if (daily < first && budget.spendable >= first) {
             outcomes.push({ app, result: "deferred", reason: "daily_cap" });
           } else {
             outcomes.push({ app, result: "failed", reason: budget.problem ?? "insufficient_balance" });
@@ -98,7 +109,8 @@ export class Settler {
         const { txHash, gasUsed } = await payer.pay(asLines(chosen));
         for (const e of chosen) ledger.markPaid(e.usageHash, app, txHash, now);
         daily -= sum;
-        log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, txHash, gasUsed, mode: payer.mode });
+        const topUps = chosen.filter((e) => e.paid > 0n).length;
+        log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, topUps, txHash, gasUsed, mode: payer.mode });
         outcomes.push({ app, result: "paid", txHash, amount: sum, reports: chosen.length });
       } catch (err) {
         log.warn("fee payment failed", { app, ...errorFields(err) });

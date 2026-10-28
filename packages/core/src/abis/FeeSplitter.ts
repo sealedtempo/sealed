@@ -452,6 +452,39 @@ export const feeSplitterAbi = [
   },
   {
     "type": "function",
+    "name": "topUpFees",
+    "inputs": [
+      {
+        "name": "deploymentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "appId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "usageHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "totalCredited",
     "inputs": [
       {
@@ -893,6 +926,32 @@ export const feeSplitterAbi = [
   },
   {
     "type": "error",
+    "name": "NothingToTopUp",
+    "inputs": [
+      {
+        "name": "deploymentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "usageHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "appId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "paid",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "NothingToWithdraw",
     "inputs": [
       {
@@ -1002,6 +1061,27 @@ export const feeSplitterAbi = [
   {
     "type": "error",
     "name": "UsageAlreadyPaid",
+    "inputs": [
+      {
+        "name": "deploymentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "usageHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "appId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UsageNotPaid",
     "inputs": [
       {
         "name": "deploymentId",

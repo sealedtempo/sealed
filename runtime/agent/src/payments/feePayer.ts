@@ -1,5 +1,6 @@
 // Fee payments on Tempo (spec 7.2-7.3, D-026). One Tempo transaction per app batches
-// TIP-20 approve(FeeSplitter, exact) and one FeeSplitter.payFees per unpaid report.
+// TIP-20 approve(FeeSplitter, exact) and one FeeSplitter call per unpaid report: payFees for a leg
+// nobody paid yet, topUpFees(total = the report's fee) for a leg someone paid short.
 // access-key mode: the enclave key signs as an access key of the customer account, so
 // msg.sender is the customer. enclave-account mode: the enclave signer pays from its own balance.
 import {
@@ -16,8 +17,11 @@ export type SettlementMode = "access-key" | "enclave-account";
 
 export interface PaymentLine {
   appId: Hex;
+  /** What this line pulls: the report's fee minus `paid`. */
   amount: bigint;
   usageHash: Hex;
+  /** usagePaid already recorded onchain for (deploymentId, usageHash, appId); > 0 makes the line a top-up. */
+  paid: bigint;
 }
 
 export interface Budget {
@@ -35,22 +39,13 @@ export interface FeePayer {
   appInDeployment(appId: Hex): Promise<boolean>;
   perPaymentCap(): Promise<bigint>;
   dailyRemaining(): Promise<bigint>;
-  isPaid(usageHash: Hex, appId: Hex): Promise<boolean>;
+  /** usagePaid(deploymentId, usageHash, appId): the amount paid onchain for this leg, 0 when unpaid. */
+  paidAmount(usageHash: Hex, appId: Hex): Promise<bigint>;
   /** Estimated network fee in token base units for a batch of `lines`. */
   feeReserve(lines: PaymentLine[]): Promise<bigint>;
   budget(reserve: bigint): Promise<Budget>;
   pay(lines: PaymentLine[]): Promise<{ txHash: Hex; gasUsed: bigint }>;
 }
-
-const legacyUsagePaidAbi = [
-  {
-    type: "function",
-    name: "usagePaid",
-    stateMutability: "view",
-    inputs: [{ name: "usageHash", type: "bytes32" }, { name: "appId", type: "bytes32" }],
-    outputs: [{ type: "bool" }],
-  },
-] as const;
 
 const tip20Abi = [
   { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "a", type: "address" }], outputs: [{ type: "uint256" }] },
@@ -136,39 +131,43 @@ export class TempoFeePayer implements FeePayer {
   }
 
   /**
-   * usagePaid(deploymentId, usageHash, appId) returns the amount paid (0 = unpaid). Contracts built
-   * before review fix D-029 expose usagePaid(usageHash, appId) returning bool; both are accepted.
+   * usagePaid(deploymentId, usageHash, appId): the amount paid for the leg (0 = unpaid). FeeSplitter does not
+   * see the signed report, so the deployment's own payer can pay a leg with less than its fee; the settler
+   * compares this with the fee and tops a short leg up (contract review logic-F1 b / funds-F-02).
    */
-  async isPaid(usageHash: Hex, appId: Hex): Promise<boolean> {
-    try {
-      const amount = await this.client.readContract({
-        address: this.o.feeSplitter,
-        abi: feeSplitterAbi,
-        functionName: "usagePaid",
-        args: [this.o.deploymentId, usageHash, appId],
-      });
-      return amount > 0n;
-    } catch (err) {
-      try {
-        return await this.client.readContract({ address: this.o.feeSplitter, abi: legacyUsagePaidAbi, functionName: "usagePaid", args: [usageHash, appId] });
-      } catch {
-        throw err;
-      }
-    }
+  async paidAmount(usageHash: Hex, appId: Hex): Promise<bigint> {
+    return this.client.readContract({
+      address: this.o.feeSplitter,
+      abi: feeSplitterAbi,
+      functionName: "usagePaid",
+      args: [this.o.deploymentId, usageHash, appId],
+    });
   }
 
   private calls(lines: PaymentLine[]) {
     const total = lines.reduce((s, l) => s + l.amount, 0n);
+    const approve = (amount: bigint) => Actions.token.approve.call({ token: this.o.feeToken, spender: this.o.feeSplitter, amount });
+    const topUps = lines.some((l) => l.paid > 0n);
     return [
-      Actions.token.approve.call({ token: this.o.feeToken, spender: this.o.feeSplitter, amount: total }),
+      approve(total),
       ...lines.map((l) => ({
         to: this.o.feeSplitter,
-        data: encodeFunctionData({
-          abi: feeSplitterAbi,
-          functionName: "payFees",
-          args: [this.o.deploymentId, l.appId, this.o.feeToken, l.amount, l.usageHash],
-        }),
+        data:
+          l.paid > 0n
+            ? encodeFunctionData({
+                abi: feeSplitterAbi,
+                functionName: "topUpFees",
+                args: [this.o.deploymentId, l.appId, this.o.feeToken, l.paid + l.amount, l.usageHash],
+              })
+            : encodeFunctionData({
+                abi: feeSplitterAbi,
+                functionName: "payFees",
+                args: [this.o.deploymentId, l.appId, this.o.feeToken, l.amount, l.usageHash],
+              }),
       })),
+      // topUpFees pulls total - usagePaid at execution time, which is less than `amount` if the payer topped the
+      // leg up in between: reset what is left of the approval (D-026).
+      ...(topUps ? [approve(0n)] : []),
     ];
   }
 
