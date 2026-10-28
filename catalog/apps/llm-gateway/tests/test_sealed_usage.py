@@ -73,6 +73,10 @@ def slo(**overrides):
     return payload
 
 
+CONNECT_FAIL = -1   # httpx.ConnectError: the request never reached the agent
+READ_TIMEOUT = -2   # httpx.ReadTimeout: the agent may have recorded the event
+
+
 class Recorder:
     def __init__(self, statuses=None):
         self.requests: list[httpx.Request] = []
@@ -81,22 +85,49 @@ class Recorder:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
-        if status == -1:
+        if status == CONNECT_FAIL:
             raise httpx.ConnectError("agent down", request=request)
+        if status == READ_TIMEOUT:
+            raise httpx.ReadTimeout("no response", request=request)
         return httpx.Response(status)
+
+    def bodies(self):
+        return [json.loads(r.content) for r in self.requests]
+
+
+class DedupAgent:
+    """sealed-agent's dedup on id: the first request is recorded and then times out."""
+
+    def __init__(self, timeouts_after_record=1):
+        self.recorded: dict[str, dict] = {}
+        self.requests = 0
+        self.timeouts_after_record = timeouts_after_record
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests += 1
+        event = json.loads(request.content)
+        key = event.get("id")
+        duplicate = key in self.recorded
+        if not duplicate:
+            self.recorded[key] = event
+        if self.timeouts_after_record > 0:
+            self.timeouts_after_record -= 1
+            raise httpx.ReadTimeout("agent slow", request=request)
+        return httpx.Response(202, json={"status": "duplicate" if duplicate else "accepted"})
 
 
 async def no_sleep(_seconds):
-    return None
+    await asyncio.sleep(0)  # yield, like a real sleep, so queued work can run
 
 
-def make_logger(recorder: Recorder, attempts: int = 3):
+def make_logger(recorder, attempts: int = 3, **kwargs):
     return sealed_usage.SealedUsageLogger(
         url="http://sealed-agent:7070/v1/usage-events",
         timeout_s=1.0,
         attempts=attempts,
         transport=httpx.MockTransport(recorder.handler),
         sleep=no_sleep,
+        **kwargs,
     )
 
 
@@ -111,6 +142,7 @@ class BuildEventTest(unittest.TestCase):
             "app": "llm-gateway",
             "unit": "tokens",
             "quantity": 87,
+            "id": "chatcmpl-1",
             "meta": {
                 "model": "local/qwen3-4b",
                 "prompt_tokens": 23,
@@ -136,6 +168,15 @@ class BuildEventTest(unittest.TestCase):
 
     def test_metadata_not_a_dict(self):
         self.assertEqual(sealed_usage.build_event(slo(metadata="junk"))["meta"]["key_alias"], "")
+
+    def test_id_falls_back_to_litellm_call_id(self):
+        self.assertEqual(sealed_usage.build_event(slo(id=None))["id"], "call-1")
+        self.assertEqual(sealed_usage.build_event(slo(id=""))["id"], "call-1")
+
+    def test_unusable_id_is_omitted(self):
+        for bad in ("x" * 201, " padded ", 42):
+            self.assertNotIn("id", sealed_usage.build_event(slo(id=bad, litellm_call_id=None)), bad)
+        self.assertEqual(len(sealed_usage.build_event(slo(id="y" * 200))["id"]), 200)
 
 
 class LoggerTest(unittest.TestCase):
@@ -165,20 +206,107 @@ class LoggerTest(unittest.TestCase):
         self.assertEqual(recorder.requests, [])
 
     def test_retries_server_errors_then_succeeds(self):
-        recorder = Recorder([503, -1, 204])
-        self.assertTrue(run(make_logger(recorder).send({"x": 1})))
+        recorder = Recorder([503, CONNECT_FAIL, 204])
+        self.assertTrue(run(make_logger(recorder).send({"id": "c1", "x": 1})))
+        self.assertEqual(len(recorder.requests), 3)
+
+    def test_same_id_on_every_retry(self):
+        recorder = Recorder([500, READ_TIMEOUT, CONNECT_FAIL, 202])
+        logger = make_logger(recorder, attempts=4)
+        run(logger.async_log_success_event({"standard_logging_object": slo()}, None, 0, 1))
+        self.assertEqual([b["id"] for b in recorder.bodies()], ["chatcmpl-1"] * 4)
+        self.assertEqual(logger.pending, 0)
+
+    def test_read_timeout_after_record_is_billed_once(self):
+        agent = DedupAgent(timeouts_after_record=1)
+        logger = make_logger(agent)
+        self.assertTrue(run(logger.send(sealed_usage.build_event(slo()))))
+        self.assertEqual(agent.requests, 2)
+        self.assertEqual(list(agent.recorded), ["chatcmpl-1"])
+
+    def test_ambiguous_failure_without_id_is_not_retried(self):
+        for status in (READ_TIMEOUT, 500):
+            recorder = Recorder([status])
+            logger = make_logger(recorder)
+            self.assertFalse(run(logger.send({"app": "llm-gateway", "quantity": 1})))
+            self.assertEqual(len(recorder.requests), 1, status)
+            self.assertEqual((logger.pending, logger.dropped), (0, 1))
+
+    def test_unsent_failure_without_id_is_retried(self):
+        recorder = Recorder([CONNECT_FAIL, 503, 202])
+        self.assertTrue(run(make_logger(recorder).send({"app": "llm-gateway", "quantity": 1})))
         self.assertEqual(len(recorder.requests), 3)
 
     def test_does_not_retry_client_errors(self):
         recorder = Recorder([400])
-        self.assertFalse(run(make_logger(recorder).send({"x": 1})))
+        logger = make_logger(recorder)
+        self.assertFalse(run(logger.send({"id": "c1", "x": 1})))
         self.assertEqual(len(recorder.requests), 1)
+        self.assertEqual((logger.pending, logger.dropped), (0, 1))
 
     def test_never_raises_when_agent_is_down(self):
-        recorder = Recorder([-1])
+        recorder = Recorder([CONNECT_FAIL])
         logger = make_logger(recorder, attempts=2)
-        run(logger.async_log_success_event({"standard_logging_object": slo()}, None, 0, 1))
-        self.assertEqual(len(recorder.requests), 2)
+
+        async def go():
+            await logger.async_log_success_event({"standard_logging_object": slo()}, None, 0, 1)
+            self.assertEqual(len(recorder.requests), 2)
+            self.assertEqual(logger.pending, 1)
+            logger._drain_task.cancel()
+
+        run(go())
+
+    def test_queue_delivers_after_agent_recovers(self):
+        recorder = Recorder([CONNECT_FAIL] * 6 + [READ_TIMEOUT, 202])
+        logger = make_logger(recorder, attempts=2)
+
+        async def go():
+            await logger.async_log_success_event({"standard_logging_object": slo()}, None, 0, 1)
+            self.assertEqual(logger.pending, 1)
+            await logger.flush()
+
+        run(go())
+        self.assertEqual(logger.pending, 0)
+        self.assertEqual(logger.dropped, 0)
+        self.assertEqual(len(recorder.requests), 8)
+        self.assertEqual({b["id"] for b in recorder.bodies()}, {"chatcmpl-1"})
+
+    def test_queue_is_bounded(self):
+        recorder = Recorder([CONNECT_FAIL])
+        logger = make_logger(recorder, attempts=1, queue_max=2)
+
+        async def go():
+            for n in range(3):
+                await logger.send({"id": f"c{n}", "quantity": 1})
+            self.assertEqual(logger.pending, 2)
+            self.assertEqual(logger.dropped, 1)
+            self.assertEqual([e["id"] for e, _ in logger._pending], ["c1", "c2"])
+            logger._drain_task.cancel()
+
+        run(go())
+
+    def test_queue_drops_expired_events(self):
+        now = [0.0]
+        recorder = Recorder([CONNECT_FAIL])
+        logger = make_logger(recorder, attempts=1, queue_ttl_s=10, clock=lambda: now[0])
+
+        async def go():
+            await logger.send({"id": "old", "quantity": 1})
+            now[0] = 11.0
+            await logger.flush()
+
+        run(go())
+        self.assertEqual((logger.pending, logger.dropped), (0, 1))
+        self.assertEqual(len(recorder.requests), 1)
+
+    def test_call_id_from_kwargs_when_payload_has_none(self):
+        recorder = Recorder([202])
+        payload = slo()
+        del payload["id"]
+        payload["litellm_call_id"] = None
+        run(make_logger(recorder).async_log_success_event(
+            {"standard_logging_object": payload, "litellm_call_id": "kw-call"}, None, 0, 1))
+        self.assertEqual(recorder.bodies()[0]["id"], "kw-call")
 
     def test_client_is_created_without_env_proxies(self):
         logger = make_logger(Recorder())
@@ -232,6 +360,7 @@ class RealHttpTest(unittest.TestCase):
         path, body = _Handler.received[0]
         self.assertEqual(path, "/v1/usage-events")
         self.assertEqual(body["meta"]["key_alias"], "coding-agent")
+        self.assertEqual(body["id"], "chatcmpl-1")
 
 
 if __name__ == "__main__":
