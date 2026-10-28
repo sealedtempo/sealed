@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	verify "github.com/sealed-dev/sealed/verifier"
 	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealed-dev/sealed/verifier/bundles"
 	"github.com/sealed-dev/sealed/verifier/chain"
 	"github.com/sealed-dev/sealed/verifier/httpapi"
 	"github.com/sealed-dev/sealed/verifier/internal/fixture"
@@ -383,4 +385,49 @@ func mustID(t *testing.T, s string) [32]byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// stubComposer wraps the fixture composer with a fixed error or unbuilt list.
+type stubComposer struct {
+	err     error
+	unbuilt []string
+}
+
+func (s stubComposer) Compose(ctx context.Context, in verify.ComposeInput) (*verify.ComposeOutput, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out, err := fixture.Composer{}.Compose(ctx, in)
+	if err == nil {
+		out.Unbuilt = s.unbuilt
+	}
+	return out, err
+}
+
+func TestComposeEndpointErrorsAndUnbuilt(t *testing.T) {
+	cfg := func(h *harness) map[string]any { return map[string]any{"config": json.RawMessage(h.w.ConfigJSON())} }
+
+	h := newHarness(t, stubComposer{err: fmt.Errorf("bundle notes 1.0.0: %w: GET ...: HTTP 503", bundles.ErrUnavailable)})
+	resp, raw := post(t, h.api.URL+"/v1/compose", cfg(h))
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" || !strings.Contains(string(raw), "unavailable") {
+		t.Fatalf("unavailable bundle: HTTP %d %s", resp.StatusCode, raw)
+	}
+	h = newHarness(t, stubComposer{err: fmt.Errorf("%w: release of another app", bundles.ErrReleaseMismatch)})
+	if resp, raw = post(t, h.api.URL+"/v1/compose", cfg(h)); resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("release mismatch: HTTP %d %s", resp.StatusCode, raw)
+	}
+
+	h = newHarness(t, stubComposer{unbuilt: []string{"runtime/sealed-agent", "notes/notes-web"}})
+	resp, raw = post(t, h.api.URL+"/v1/compose", cfg(h))
+	var out struct {
+		StackHash string   `json:"stackHash"`
+		Unbuilt   []string `json:"unbuilt"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || resp.StatusCode != http.StatusOK || len(out.Unbuilt) != 2 || out.Unbuilt[1] != "notes/notes-web" {
+		t.Fatalf("unbuilt: HTTP %d %s", resp.StatusCode, raw)
+	}
+	h = newHarness(t, stubComposer{})
+	if _, raw = post(t, h.api.URL+"/v1/compose", cfg(h)); strings.Contains(string(raw), "unbuilt") {
+		t.Fatalf("empty unbuilt list not omitted: %s", raw)
+	}
 }
