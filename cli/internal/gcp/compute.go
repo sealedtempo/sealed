@@ -153,9 +153,10 @@ func (c *Compute) EnsureDisk(ctx context.Context, zone string, d Disk) (*Disk, b
 	op := &Operation{}
 	u := fmt.Sprintf("%s/zones/%s/disks", c.base(), url.PathEscape(zone))
 	if err := c.C.Do(ctx, "POST", u, d, op); err != nil {
-		return nil, false, err
-	}
-	if err := c.wait(ctx, "zones/"+zone, op); err != nil {
+		if !IsConflict(err) { // a retried insert that already went through
+			return nil, false, err
+		}
+	} else if err := c.wait(ctx, "zones/"+zone, op); err != nil {
 		return nil, false, err
 	}
 	got, err := c.GetDisk(ctx, zone, d.Name)
