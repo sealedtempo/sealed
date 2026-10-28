@@ -201,6 +201,17 @@ export class SpendBudget {
     return this.o.limit - big(this.state.fees) - big(this.state.payer);
   }
 
+  /**
+   * What fee settlement may still take from the config limit in this window when the agent enforces it (enclave-account
+   * mode, review I6): the limit less what was spent and the payer's open reservations. Undefined in access-key mode,
+   * where the chain enforces the key's limit and the payer reads it.
+   */
+  feeHeadroom(now: number): bigint | undefined {
+    if (this.o.onchainLimit) return undefined;
+    this.tick(now);
+    return nonNeg(this.headroom() - this.outstanding());
+  }
+
   /** What the payer may still reserve now. */
   available(now: number): bigint {
     this.tick(now);

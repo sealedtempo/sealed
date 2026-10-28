@@ -2,6 +2,17 @@
 // ever exceeds the FeeSplitter per-payment cap: when an app would cross it, the period is cut and
 // the rest of the usage goes into the next one. Each closed period becomes one EIP-712 UsageReport
 // signed by the enclave signer; its digest is the usageHash for every app's payment.
+//
+// D-062: the host can roll the data disk (and so this state) back to an older copy. FeeSplitter dedupes
+// per usageHash only, so usage the rolled-back state still holds as open, cut again into a report with
+// another period, would be paid twice. Therefore:
+// - `signedThrough` is the end of the latest period signed for this deployment that the agent knows of,
+//   and no report is ever signed for a period that starts before it (consecutive periods share a boundary);
+// - at boot the agent holds the usage it read from disk (`holdForRebuild`) and cuts nothing until it has
+//   adopted the reports the platform stores that verify against its own signer (`adopt`). Usage held from a
+//   period that a signed report already passes is covered by that report and is dropped; the rest is kept;
+// - a report the platform refuses as overlapping a stored one is void and never paid (`voidReport`).
+// Adopted reports carry their payment state from onchain usagePaid, which the settler reads.
 import {
   appId as computeAppId,
   type Eip712Domain,
@@ -37,16 +48,34 @@ export interface StoredReport {
   createdAt: number;
   submitted: boolean;
   payments: Record<string, AppPayment>;
+  /** Read back from the platform's stored reports (D-062), not cut by this copy of the state. */
+  adopted?: boolean;
+  /** The platform refused it as overlapping a stored report: never paid (D-062). */
+  void?: boolean;
+}
+
+type OpenUsage = Record<string, Partial<Record<UsageUnitName, string>>>;
+
+/** Usage read from disk at boot, held until a rebuild shows whether a signed report already covers it. */
+export interface HeldUsage {
+  periodStart: number;
+  open: OpenUsage;
 }
 
 export interface LedgerState {
   periodStart: number;
   /** app -> unit -> quantity (decimal string) in the open period */
-  open: Record<string, Partial<Record<UsageUnitName, string>>>;
+  open: OpenUsage;
   /** "app:unit" -> pricing remainder carried into the open period */
   carry: Record<string, string>;
   reports: StoredReport[];
   recentEventIds: string[];
+  /** End of the latest period signed for this deployment that the agent knows of (D-062). */
+  signedThrough?: number;
+  /** The platform listing's `after` cursor past the last stored report checked (D-062). */
+  platformCursor?: string;
+  /** Usage from disk waiting for this boot's rebuild (D-062). */
+  held?: HeldUsage[];
 }
 
 export function emptyLedgerState(now: number): LedgerState {
@@ -70,6 +99,28 @@ export interface UnpaidEntry {
   appId: Hex;
   fee: bigint;
   createdAt: number;
+  /** The platform accepted the report: only then may it be paid (D-062). */
+  submitted: boolean;
+}
+
+/** A stored report from the platform whose signature recovers to this enclave signer. */
+export interface VerifiedReport {
+  report: UsageReport;
+  signature: Hex;
+  usageHash: Hex;
+  receivedAt: number;
+}
+
+export interface AdoptResult {
+  /** Reports the local state did not know. */
+  adopted: number;
+  /** Local reports the platform turned out to hold already (now submitted). */
+  confirmed: number;
+  /** Held usage entries dropped because a signed report already covers their period. */
+  droppedUsage: number;
+  /** Held usage entries kept (their period starts at or after every signed report). */
+  keptUsage: number;
+  signedThrough: number;
 }
 
 const MAX_EVENT_IDS = 5000;
@@ -77,15 +128,124 @@ const MAX_EVENT_IDS = 5000;
 export const MAX_CUTS_PER_EVENT = 8;
 
 export class TooManyReportsError extends Error {}
+/** A report would have to be cut before this boot's ledger rebuild (D-062): try again later. */
+export class LedgerUnverifiedError extends Error {}
 const KEEP_SETTLED_REPORTS = 50;
 
 export class Ledger {
   private readonly appIds: Map<string, Hex>;
+  private readonly slugs: Map<string, string>;
+  /** False from holdForRebuild until adopt: nothing is cut or signed (D-062). */
+  private rebuilt = true;
   constructor(
     readonly state: LedgerState,
     private readonly deps: LedgerDeps,
   ) {
     this.appIds = new Map(deps.apps.map((a) => [a, computeAppId(a)]));
+    this.slugs = new Map(deps.apps.map((a) => [computeAppId(a), a]));
+  }
+
+  /** Whether reports may be cut: true unless a boot is still waiting for its ledger rebuild. */
+  get verified(): boolean {
+    return this.rebuilt;
+  }
+
+  /** The end of the latest period known to be signed, from the state and its reports. */
+  private knownSignedThrough(): number {
+    let end = this.state.signedThrough ?? 0;
+    for (const r of this.state.reports) end = Math.max(end, r.report.periodEnd);
+    return end;
+  }
+
+  /**
+   * Boot (D-062): the state just came from a disk the host may have rolled back. The open usage is held, and no
+   * report is cut until `adopt` has merged the platform's stored reports. Usage recorded from `now` on is new, so
+   * it starts its own period at `now`: a rebuild that drops the held usage keeps it.
+   */
+  holdForRebuild(now?: number): void {
+    this.rebuilt = false;
+    if (!this.isOpenEmpty()) {
+      this.state.held = [...(this.state.held ?? []), { periodStart: this.state.periodStart, open: this.state.open }];
+      this.state.open = {};
+      if (now !== undefined) this.state.periodStart = Math.max(this.state.periodStart, now);
+    }
+    this.deps.onChange?.();
+  }
+
+  /**
+   * Merges stored reports that verify against this enclave signer (D-062). Unknown ones join the ledger as
+   * submitted, unpaid until the settler finds usagePaid onchain; known ones are marked submitted. Then held
+   * usage from a period a signed report already passes is dropped, the rest goes back into the open period,
+   * and the open period starts no earlier than the last signed period ends.
+   */
+  adopt(reports: VerifiedReport[], cursor?: string): AdoptResult {
+    const result: AdoptResult = { adopted: 0, confirmed: 0, droppedUsage: 0, keptUsage: 0, signedThrough: 0 };
+    const known = new Map(this.state.reports.map((r) => [r.usageHash.toLowerCase(), r]));
+    for (const v of reports) {
+      if (v.report.deploymentId.toLowerCase() !== this.deps.deploymentId.toLowerCase()) continue;
+      const hash = v.usageHash.toLowerCase() as Hex;
+      const local = known.get(hash);
+      if (local) {
+        if (!local.submitted) {
+          local.submitted = true;
+          result.confirmed++;
+        }
+        continue;
+      }
+      const payments: Record<string, AppPayment> = {};
+      for (const item of v.report.items) {
+        const app = this.slugs.get(item.appId.toLowerCase());
+        if (!app || item.fee === 0n) continue;
+        const prev = payments[app];
+        payments[app] = { appId: item.appId.toLowerCase() as Hex, fee: ((prev ? BigInt(prev.fee) : 0n) + item.fee).toString(), status: "unpaid" };
+      }
+      const stored: StoredReport = {
+        report: usageReportToJson(v.report),
+        signature: v.signature,
+        usageHash: hash,
+        createdAt: Number(v.report.periodEnd),
+        submitted: true,
+        payments,
+        adopted: true,
+      };
+      this.state.reports.push(stored);
+      known.set(hash, stored);
+      result.adopted++;
+    }
+    this.state.reports.sort((a, b) => a.report.periodEnd - b.report.periodEnd || a.createdAt - b.createdAt);
+    const through = this.knownSignedThrough();
+    this.state.signedThrough = through;
+    result.signedThrough = through;
+    if (cursor !== undefined) this.state.platformCursor = cursor;
+    for (const h of this.state.held ?? []) {
+      if (h.periodStart < through) {
+        result.droppedUsage += Object.values(h.open).reduce((n, units) => n + Object.keys(units).length, 0);
+        continue;
+      }
+      for (const [app, units] of Object.entries(h.open)) {
+        if (!this.hasApp(app)) continue;
+        for (const [unit, q] of Object.entries(units)) {
+          this.setQty(app, unit as UsageUnitName, this.qty(app, unit as UsageUnitName) + BigInt(q ?? "0"));
+          result.keptUsage++;
+        }
+      }
+      this.state.periodStart = Math.min(this.state.periodStart, h.periodStart);
+    }
+    delete this.state.held;
+    this.state.periodStart = Math.max(this.state.periodStart, through);
+    this.rebuilt = true;
+    this.prune();
+    this.deps.onChange?.();
+    return result;
+  }
+
+  /** The platform refused this report as overlapping a stored one (D-062): it is never paid. */
+  voidReport(usageHash: Hex): void {
+    const r = this.state.reports.find((x) => x.usageHash.toLowerCase() === usageHash.toLowerCase());
+    if (!r || r.void) return;
+    r.void = true;
+    this.prune();
+    this.deps.onChange?.();
   }
 
   hasApp(app: string): boolean {
@@ -144,6 +304,9 @@ export class Ledger {
         remaining = 0n;
         break;
       }
+      // No cut before the rebuild, so this is the event's first round and nothing of it was recorded: the
+      // caller may send it again once the ledger rebuild is done (D-062).
+      if (!this.rebuilt) throw new LedgerUnverifiedError("the usage ledger is being rebuilt; retry shortly");
       if (room > 0n) {
         this.setQty(app, unit, current + room);
         remaining -= room;
@@ -170,9 +333,11 @@ export class Ledger {
    * signature is computed lands in the next period instead of being lost.
    */
   async closePeriod(now: number): Promise<StoredReport | undefined> {
+    if (!this.rebuilt) throw new LedgerUnverifiedError("no report is cut before the ledger rebuild (D-062)");
     const open = this.state.open;
     if (this.isOpenEmpty(open)) return undefined;
-    const periodStart = this.state.periodStart;
+    // Never a period that starts before one already signed (D-062).
+    const periodStart = Math.max(this.state.periodStart, this.state.signedThrough ?? 0);
     const periodEnd = Math.max(now, periodStart + 1);
     const items: UsageItem[] = [];
     const payments: Record<string, AppPayment> = {};
@@ -210,6 +375,7 @@ export class Ledger {
       this.state.periodStart = Math.min(this.state.periodStart, periodStart);
       throw err;
     }
+    this.state.signedThrough = Math.max(this.state.signedThrough ?? 0, periodEnd);
     const stored: StoredReport = {
       report: usageReportToJson(report),
       signature,
@@ -224,12 +390,13 @@ export class Ledger {
     return stored;
   }
 
-  /** Unpaid (report, app) pairs, oldest first. */
+  /** Unpaid (report, app) pairs of reports that are not void, oldest first. */
   unpaid(): UnpaidEntry[] {
     const out: UnpaidEntry[] = [];
     for (const r of this.state.reports) {
+      if (r.void) continue;
       for (const [app, p] of Object.entries(r.payments)) {
-        if (p.status === "unpaid") out.push({ usageHash: r.usageHash, app, appId: p.appId, fee: BigInt(p.fee), createdAt: r.createdAt });
+        if (p.status === "unpaid") out.push({ usageHash: r.usageHash, app, appId: p.appId, fee: BigInt(p.fee), createdAt: r.createdAt, submitted: r.submitted });
       }
     }
     return out.sort((a, b) => a.createdAt - b.createdAt);
@@ -247,7 +414,7 @@ export class Ledger {
   }
 
   unsubmitted(): StoredReport[] {
-    return this.state.reports.filter((r) => !r.submitted);
+    return this.state.reports.filter((r) => !r.submitted && !r.void);
   }
 
   markSubmitted(usageHash: Hex): void {
@@ -261,6 +428,7 @@ export class Ledger {
     let metered = 0n;
     let unpaid = 0n;
     for (const r of this.state.reports) {
+      if (r.void) continue;
       for (const p of Object.values(r.payments)) {
         metered += BigInt(p.fee);
         if (p.status === "unpaid") unpaid += BigInt(p.fee);
@@ -269,9 +437,10 @@ export class Ledger {
     return { metered, unpaid };
   }
 
-  /** Drops old reports that are submitted and fully paid. */
+  /** Drops old reports that are submitted and fully paid, or void. `signedThrough` keeps what they signed. */
   private prune(): void {
-    const settled = (r: StoredReport) => r.submitted && Object.values(r.payments).every((p) => p.status === "paid");
+    this.state.signedThrough = this.knownSignedThrough();
+    const settled = (r: StoredReport) => r.void === true || (r.submitted && Object.values(r.payments).every((p) => p.status === "paid"));
     const excess = this.state.reports.filter(settled).length - KEEP_SETTLED_REPORTS;
     if (excess <= 0) return;
     let dropped = 0;

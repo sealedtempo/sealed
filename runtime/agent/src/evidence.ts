@@ -67,6 +67,11 @@ export interface PlatformClient {
   postEvidence(bundle: EvidenceBundle): Promise<EvidenceResult>;
   postUsage(body: unknown): Promise<unknown>;
   postHealth(body: unknown): Promise<unknown>;
+  /**
+   * GET /v1/deployments/:id/usage-reports with a signed read (D-062, API_CONTRACT 7): one page of the reports the
+   * platform stores, in period order, after `after`. Test fakes may leave it out (no stored reports).
+   */
+  usageReports?(deploymentId: Hex, read: Record<string, string>, after?: string): Promise<unknown>;
 }
 
 export class HttpPlatformClient implements PlatformClient {
@@ -83,7 +88,14 @@ export class HttpPlatformClient implements PlatformClient {
   postHealth(body: unknown) {
     return fetchJson(`${this.base}/v1/health`, { body });
   }
+  usageReports(deploymentId: Hex, read: Record<string, string>, after?: string) {
+    const q = new URLSearchParams({ limit: String(USAGE_REPORTS_PAGE_LIMIT), ...(after ? { after } : {}) });
+    return fetchJson(`${this.base}/v1/deployments/${deploymentId}/usage-reports?${q}`, { headers: read, timeoutMs: 60_000 });
+  }
 }
+
+/** Reports per page the agent asks for (the api allows 1 to 500). */
+export const USAGE_REPORTS_PAGE_LIMIT = 500;
 
 /** Builds and submits evidence, retrying with backoff; a fresh quote for every attempt after a 4xx. */
 export async function attestAndSubmit(
