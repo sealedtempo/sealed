@@ -1,6 +1,9 @@
 package attest
 
-import "crypto/sha256"
+import (
+	"crypto/sha256"
+	"encoding/binary"
+)
 
 // Domain-separation tags of the three report_data constructions (INTERFACES.md section 3, D-010).
 const (
@@ -28,10 +31,11 @@ func KeyReleaseReportData(nonce, ephemeralPub [32]byte) ReportData {
 	return tagged(TagKeyRelease, nonce[:], ephemeralPub[:])
 }
 
-// EvidenceReportData is sha256("sealed/evidence/v1" || stackHash || configHash || enclaveSigner || nonce2) ||
-// 32 zero bytes.
-func EvidenceReportData(stackHash, configHash [32]byte, enclaveSigner [20]byte, nonce2 [32]byte) ReportData {
-	return tagged(TagEvidence, stackHash[:], configHash[:], enclaveSigner[:], nonce2[:])
+// EvidenceReportData is sha256("sealed/evidence/v1" || stackHash || configHash || enclaveSigner || nonce2 ||
+// uint64be(attestedAt)) || 32 zero bytes. attestedAt is bound since D-047, so the quote itself fixes when the
+// evidence was produced and freshness holds before the deployment is registered.
+func EvidenceReportData(stackHash, configHash [32]byte, enclaveSigner [20]byte, nonce2 [32]byte, attestedAt uint64) ReportData {
+	return tagged(TagEvidence, stackHash[:], configHash[:], enclaveSigner[:], nonce2[:], binary.BigEndian.AppendUint64(nil, attestedAt))
 }
 
 // LiveAttestReportData is sha256("sealed/attest/v1" || nonce || tlsPubKeyHash || enclaveSigner) || 32 zero

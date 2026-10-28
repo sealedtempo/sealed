@@ -24,7 +24,7 @@ type rtmrVectors struct {
 		Events []Event `json:"events"`
 		RTMR3  string  `json:"rtmr3"`
 	} `json:"sealed"`
-	ReportData map[string]string `json:"reportData"`
+	ReportData map[string]any `json:"reportData"`
 }
 
 func loadVectors(t *testing.T) rtmrVectors {

@@ -20,7 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-//go:generate sh -c "cp ../../contracts/abi/PlatformRegistry.json ../../contracts/abi/AppRegistry.json ../../contracts/abi/DeploymentRegistry.json abi/"
+//go:generate sh -c "cp ../../contracts/abi/PlatformRegistry.json ../../contracts/abi/AppRegistry.json ../../contracts/abi/DeploymentRegistry.json abi/ && cp ../../contracts/deployments/tempo-mainnet.json deployments/"
 
 //go:embed abi/*.json
 var abiFiles embed.FS

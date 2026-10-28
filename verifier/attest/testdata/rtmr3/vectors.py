@@ -1,7 +1,8 @@
 # Generates vectors.json: dstack v1 RTMR3 golden vectors.
 # Part "dstack" reproduces docs/notes/dstack.md section 6.3 (key provider "none", as in the upstream note).
 # Part "sealed" is the exact Sealed sequence of INTERFACES.md section 6 (key provider "tpm").
-# Part "reportData" covers the three tagged report_data constructions of INTERFACES.md section 3.
+# Part "reportData" covers the three tagged report_data constructions of INTERFACES.md section 3, with the
+# evidence construction binding attestedAt as uint64 big-endian (D-047).
 # Run: python3 -I vectors.py > vectors.json
 import hashlib, json, struct
 
@@ -55,6 +56,7 @@ cfg = bytes([0xbb]*32)
 signer = bytes([0xcc]*20)
 nonce2 = bytes([0xdd]*32)
 tlsh = bytes([0xee]*32)
+attested_at = 1793000000
 
 print(json.dumps({
     "appIdDeadbeefDigest": hashlib.sha384(v1_pre("app-id", bytes.fromhex("deadbeef"))).hexdigest(),
@@ -71,9 +73,9 @@ print(json.dumps({
     },
     "reportData": {
         "nonce": nonce.hex(), "ephemeralPub": pub.hex(), "stackHash": stack.hex(), "configHash": cfg.hex(),
-        "enclaveSigner": signer.hex(), "nonce2": nonce2.hex(), "tlsPubKeyHash": tlsh.hex(),
+        "enclaveSigner": signer.hex(), "nonce2": nonce2.hex(), "tlsPubKeyHash": tlsh.hex(), "attestedAt": attested_at,
         "keyRelease": rd("sealed/kb-release/v1", nonce, pub),
-        "evidence": rd("sealed/evidence/v1", stack, cfg, signer, nonce2),
+        "evidence": rd("sealed/evidence/v1", stack, cfg, signer, nonce2, struct.pack(">Q", attested_at)),
         "liveAttest": rd("sealed/attest/v1", nonce, tlsh, signer),
     },
 }, indent=2))

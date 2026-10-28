@@ -20,9 +20,9 @@ import (
 	"github.com/sealed-dev/sealed/verifier/httpapi"
 )
 
-// composerFactory wires runtime/composer once it is merged (see composer.go). Until then it is nil: stack
-// recomputation fails closed and POST /v1/compose answers 501.
-var composerFactory func(c *config, reader verify.ChainReader) (verify.Composer, error)
+// composerFactory builds the stack composer (composer.go). Tests replace it; nil leaves the daemon without a
+// composer, so stack recomputation fails closed and POST /v1/compose answers 501.
+var composerFactory = newComposer
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -57,7 +57,9 @@ func run(args []string, getenv func(string) string, log *slog.Logger) error {
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
 	log.Info("listening", "addr", c.Listen, "chainId", c.ChainID, "rpc", chain.RedactURL(c.RPCURL), "allowSimulated", c.AllowSimulated,
-		"composer", srv.Deps.Composer != nil, "liveAllowedHosts", c.LiveHosts, "maxInFlight", c.MaxInFlight)
+		"addresses", c.AddrSource, "deploymentRegistry", c.Addrs.DeploymentRegistry.Hex(),
+		"composer", srv.Deps.Composer != nil, "releaseAssetBases", c.ReleaseAssetBases, "bundleCache", orMemory(c.BundleCacheDir),
+		"liveAllowedHosts", c.LiveHosts, "maxInFlight", c.MaxInFlight)
 	select {
 	case err := <-errc:
 		return err
@@ -101,10 +103,17 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 			return nil, err
 		}
 	} else {
-		log.Warn("composer not wired: stack_recompute fails closed and /v1/compose returns 501")
+		log.Warn("no composer: stack_recompute fails closed and /v1/compose returns 501")
 	}
 	return &httpapi.Server{
 		Deps: deps, ChainID: c.ChainID, LiveInsecureTLS: c.InsecureLiveTLS, LiveTimeout: c.LiveTimeout,
 		LiveAllowedHosts: c.LiveHosts, LiveAllowPrivate: c.LivePrivate, MaxInFlight: c.MaxInFlight, Log: log,
 	}, nil
+}
+
+func orMemory(dir string) string {
+	if dir == "" {
+		return "memory"
+	}
+	return dir
 }

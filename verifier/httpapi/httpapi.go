@@ -4,7 +4,7 @@
 //	POST /v1/verify/live      {"url": "https://attest.../attest", "options": {...}}  -> Report
 //	                          or a caller-fetched attestation: {"attestUrl", "nonce", "attest": {...},
 //	                          "observedTlsPubKeyHash", "expectedCustomer", "expectedAppIds", "options"}
-//	POST /v1/compose          {"config": {...}} or a bare config -> {appCompose, stackHash, configHash, deploymentId}
+//	POST /v1/compose          {"config": {...}} or a bare config -> {appCompose, stackHash, configHash, deploymentId, unbuilt?}
 //	GET  /healthz
 //
 // Verification results are always HTTP 200 with the report (check "ok"); 400 means the request itself was
@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	verify "github.com/sealed-dev/sealed/verifier"
+	"github.com/sealed-dev/sealed/verifier/bundles"
 	"github.com/sealed-dev/sealed/verifier/internal/hexb"
 )
 
@@ -278,11 +279,14 @@ type composeResponse struct {
 	StackHash    string `json:"stackHash"`
 	ConfigHash   string `json:"configHash"`
 	DeploymentID string `json:"deploymentId"`
+	// Unbuilt lists images still at the all-zero placeholder digest; such a stack cannot boot and must not be
+	// approved. Omitted when every image is built.
+	Unbuilt []string `json:"unbuilt,omitempty"`
 }
 
 func (s *Server) compose(w http.ResponseWriter, r *http.Request) {
 	if s.Deps.Composer == nil {
-		writeError(w, http.StatusNotImplemented, "composer not wired into this build (runtime/composer)")
+		writeError(w, http.StatusNotImplemented, "composer not configured on this server")
 		return
 	}
 	body, ok := readBody(w, r)
@@ -303,13 +307,19 @@ func (s *Server) compose(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)
 	defer cancel()
 	out, err := verify.ComposeFromChain(ctx, s.Deps, cfg)
+	if errors.Is(err, bundles.ErrUnavailable) {
+		// The release assets could not be fetched (catalog host down): retryable, unlike a bad config.
+		w.Header().Set("Retry-After", "30")
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, composeResponse{
 		AppCompose: string(out.AppCompose), StackHash: hexb.Enc(out.StackHash[:]),
-		ConfigHash: hexb.Enc(out.ConfigHash[:]), DeploymentID: hexb.Enc(out.DeploymentID[:]),
+		ConfigHash: hexb.Enc(out.ConfigHash[:]), DeploymentID: hexb.Enc(out.DeploymentID[:]), Unbuilt: out.Unbuilt,
 	})
 }
 

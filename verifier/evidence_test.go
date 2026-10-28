@@ -279,6 +279,17 @@ func TestTamperMatrix(t *testing.T) {
 			fail:   []string{verify.CheckChain},
 		},
 		{
+			name:   "config names another FeeSplitter than the verifier's",
+			mutate: func(t *testing.T, e *env) { e.m.Addrs.FeeSplitter = stranger },
+			fail:   []string{verify.CheckChain},
+		},
+		{
+			name: "config names the verifier's FeeSplitter",
+			mutate: func(t *testing.T, e *env) {
+				e.m.Addrs.FeeSplitter = common.HexToAddress("0x0000000000000000000000000000000000000fee")
+			},
+		},
+		{
 			name:   "deploymentId not derived from the stack",
 			mutate: func(t *testing.T, e *env) { e.b.DeploymentID = otherHash(e.b.DeploymentID) },
 			fail:   []string{verify.CheckDeploymentID, verify.CheckOnchainRecord},
@@ -358,14 +369,38 @@ func TestTamperMatrix(t *testing.T) {
 			fail:   []string{verify.CheckExpectedCustomer},
 		},
 		{
-			// attestedAt is not in report_data: an old quote resent with a new attestedAt must not pass as fresh.
+			// attestedAt is in report_data (D-047): an old quote resent with a new attestedAt fails the quote binding
+			// and the record.
 			name: "old quote resent with a new attestedAt",
 			mutate: func(t *testing.T, e *env) {
 				e.opts.MaxEvidenceAge = 15 * time.Minute
 				e.b.AttestedAt += 3600
 				e.deps.Now = func() time.Time { return time.Unix(int64(e.b.AttestedAt)+5, 0) }
 			},
-			fail: []string{verify.CheckOnchainRecord},
+			fail: []string{verify.CheckReportData, verify.CheckOnchainRecord},
+		},
+		{
+			// The oracle's first verification runs before registration, so no record vouches for attestedAt. The
+			// quote does (D-047): a stale quote relabelled as fresh fails report_data alone.
+			name: "unregistered evidence relabelled as fresh (oracle pre-registration)",
+			mutate: func(t *testing.T, e *env) {
+				delete(e.m.Deployments, mustID(e.b.DeploymentID))
+				e.opts.RequireOnchainRecord = false
+				e.opts.MaxEvidenceAge = 15 * time.Minute
+				e.b.AttestedAt += 3600
+				e.deps.Now = func() time.Time { return time.Unix(int64(e.b.AttestedAt)+5, 0) }
+			},
+			fail: []string{verify.CheckReportData},
+		},
+		{
+			name: "unregistered stale evidence (oracle pre-registration)",
+			mutate: func(t *testing.T, e *env) {
+				delete(e.m.Deployments, mustID(e.b.DeploymentID))
+				e.opts.RequireOnchainRecord = false
+				e.opts.MaxEvidenceAge = 15 * time.Minute
+				e.deps.Now = func() time.Time { return time.Unix(int64(e.b.AttestedAt), 0).Add(time.Hour) }
+			},
+			fail: []string{verify.CheckFreshness},
 		},
 		{
 			name:   "expected apps present",
