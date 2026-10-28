@@ -123,5 +123,8 @@ notes: >-
   (1 + relay_markup_bps/10000), in pathUSD base units per 1M tokens) plus "default". A provider is
   enabled only when its API key secret exists, and the front refuses to forward (503, before any
   payment) unless that provider's latest attestation verified. GET /v1/attest-status shows the
-  evidence. Session vouchers live in the relay's own Postgres. TREASURY_ADDRESS in the fragment is
-  filled in at release build time.
+  evidence. Phala and NEAR AI stay off until their reviewed compose (and, for NEAR AI, OS image)
+  hashes are pinned in the fragment. Session vouchers live in the relay's own Postgres.
+  TREASURY_ADDRESS in the fragment is a literal; the zero-address placeholder blocks the release
+  until a PR pins the operator treasury. Payers pin the relay's attested TLS key, so the relay's
+  chat route must be served on its attested origin (README.md, "Payer trust").

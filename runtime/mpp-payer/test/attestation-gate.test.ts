@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { RelayAttestationGate, checkRelayConfig, payeeFromAppCompose } from '../src/attestation-gate.js'
 import { OWNER, TLS_HASH, TREASURY, fakeAttest, fakeVerifierd, relayAppCompose, relayConfig } from './helpers/fake-relay-attest.js'
@@ -182,5 +184,20 @@ describe('relay attestation gate', () => {
     expect(low.gate.nextDelaySeconds()).toBe(648)
     expect(high.gate.nextDelaySeconds()).toBeGreaterThan(790)
     expect(high.gate.nextDelaySeconds()).toBeLessThanOrEqual(792)
+  })
+})
+
+describe('payee from the real composer output', () => {
+  // test/fixtures/relay-app-compose.json: `sealed-compose compose --print app-compose` (ws/composer
+  // 75f1c57) over this branch's catalog/apps/inference-relay, an OWNER config with only that app.
+  const composed = readFileSync(join(import.meta.dirname, 'fixtures/relay-app-compose.json'), 'utf8')
+
+  it('refuses the zero-address placeholder the unreleased fragment carries', () => {
+    expect(() => payeeFromAppCompose(composed)).toThrow(/zero address/)
+  })
+
+  it('reads TREASURY_ADDRESS of inference-relay-front once the release pins it', () => {
+    const pinned = composed.replaceAll('0x0000000000000000000000000000000000000000', TREASURY)
+    expect(payeeFromAppCompose(pinned)).toBe(TREASURY)
   })
 })

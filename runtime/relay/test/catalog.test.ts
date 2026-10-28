@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -14,7 +15,8 @@ const repo = join(import.meta.dirname, '../../..')
 const app = join(repo, 'catalog/apps/inference-relay')
 const read = (p: string) => readFileSync(join(app, p), 'utf8')
 const manifest = YAML.parse(read('manifest.yaml'))
-const fragment = YAML.parse(read('compose.fragment.yaml'))
+const fragmentText = read('compose.fragment.yaml')
+const fragment = YAML.parse(fragmentText)
 const egress = YAML.parse(read('egress.yaml'))
 const litellm = YAML.parse(read('images/litellm-relay/config.yaml'))
 
@@ -50,17 +52,54 @@ describe('catalog/apps/inference-relay', () => {
       for (const s of service['x-sealed-secrets'] ?? []) expect(secrets.has(s), `${name} secret ${s}`).toBe(true)
       for (const v of service.volumes ?? []) expect(String(v).split(':')[0]).toMatch(/^inference-relay-/)
       for (const dep of Object.keys(service.depends_on ?? {})) expect(dep in fragment.services).toBe(true)
-      for (const value of Object.values(service.environment ?? {})) {
-        expect(String(value)).not.toMatch(/sk-[0-9a-f]{8}|PRIVATE|BEGIN /)
-        if (String(value).includes('$')) expect(value).toBe('${TREASURY_ADDRESS}')
-      }
+      for (const value of Object.values(service.environment ?? {})) expect(String(value)).not.toMatch(/sk-[0-9a-f]{8}|PRIVATE KEY|BEGIN /)
     }
     for (const image of manifest.images) {
       if (String(image.source).startsWith('build:')) expect(image.digest).toBe(`sha256:${'0'.repeat(64)}`)
       else expect(image.digest).not.toBe(`sha256:${'0'.repeat(64)}`)
     }
-    expect(Object.keys(fragment.volumes)).toEqual(['inference-relay-pgdata'])
+    expect(Object.keys(fragment.volumes)).toEqual(['inference-relay-pgdata', 'inference-relay-privatemode-ws'])
     expect(manifest.primary_service in fragment.services).toBe(true)
+  })
+
+  it('has no variable interpolation: the composer rejects any $ that is not $$ (the host env is not measured)', () => {
+    const lines = fragmentText.split('\n').filter((line) => !line.trimStart().startsWith('#'))
+    for (const line of lines) expect(line.replaceAll('$$', ''), line).not.toContain('$')
+  })
+
+  it('pins the payee as a literal and the markup to config/defaults.yaml', () => {
+    const env = fragment.services['inference-relay-front'].environment
+    expect(env.TREASURY_ADDRESS).toMatch(/^0x[0-9a-f]{40}$/)
+    const defaults = YAML.parse(readFileSync(join(repo, 'config/defaults.yaml'), 'utf8'))
+    expect(Number(env.RELAY_MARKUP_BPS)).toBe(defaults.relay_markup_bps)
+  })
+
+  it('keeps provider code identity fail-closed: per-provider allowlists, never the development flag', () => {
+    expect(fragmentText).not.toContain('ALLOW_UNPINNED_PROVIDER_CODE')
+    expect(fragmentText).not.toMatch(/^\s+ACCEPTED_COMPOSE_HASHES:/m)
+    const env = (name: string) => fragment.services[name].environment
+    expect(env('inference-relay-phala')).toHaveProperty('PHALA_ACCEPTED_COMPOSE_HASHES')
+    expect(env('inference-relay-nearai')).toHaveProperty('NEARAI_ACCEPTED_COMPOSE_HASHES')
+    expect(env('inference-relay-nearai')).toHaveProperty('NEARAI_ACCEPTED_OS_MEASUREMENTS')
+  })
+
+  it('shares the Privatemode proxy workspace read-only with the front for manifest evidence', () => {
+    const front = fragment.services['inference-relay-front']
+    expect(front.volumes).toContain(`inference-relay-privatemode-ws:${front.environment.PRIVATEMODE_WORKSPACE}:ro`)
+    expect(front['x-sealed-secrets']).toContain('PRIVATEMODE_API_KEY')
+    expect(fragment.services['inference-relay-privatemode'].volumes).toEqual(['inference-relay-privatemode-ws:/workspace'])
+  })
+
+  // Runs the real composer lint once runtime/composer is in this tree (after ws/composer merges).
+  const composerCli = join(repo, 'runtime/composer/cmd/sealed-compose')
+  const haveGo = spawnSync('go', ['version']).status === 0
+  it.skipIf(!existsSync(composerCli) || !haveGo)('passes the composer catalog lint except for release-time digests and SBOMs', () => {
+    const run = spawnSync('go', ['run', './runtime/composer/cmd/sealed-compose', 'lint', '--app-dir', 'catalog/apps/inference-relay'], {
+      cwd: repo,
+      encoding: 'utf8',
+    })
+    const errors = `${run.stdout}\n${run.stderr}`.split('\n').filter((l) => l.startsWith('error:'))
+    expect(errors.filter((l) => !l.includes('[unbuilt-image]'))).toEqual([])
   })
 
   it('LiteLLM routes every priced model to its attested upstream with the right key', () => {
