@@ -1,0 +1,221 @@
+# Plan-only tests with a mocked google provider: no credentials, no API calls,
+# nothing is created. Run with `terraform init && terraform test`.
+
+mock_provider "google" {
+  mock_data "google_project" {
+    defaults = {
+      number = "123456789012"
+    }
+  }
+
+  mock_resource "google_kms_crypto_key" {
+    override_during = plan
+    defaults = {
+      id = "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac"
+    }
+  }
+
+}
+
+override_resource {
+  target          = google_service_account.deployer
+  override_during = plan
+  values = {
+    name  = "projects/sealed-test-1234/serviceAccounts/sealed-deployer@sealed-test-1234.iam.gserviceaccount.com"
+    email = "sealed-deployer@sealed-test-1234.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target          = google_service_account.key_broker
+  override_during = plan
+  values = {
+    name  = "projects/sealed-test-1234/serviceAccounts/sealed-key-broker@sealed-test-1234.iam.gserviceaccount.com"
+    email = "sealed-key-broker@sealed-test-1234.iam.gserviceaccount.com"
+  }
+}
+
+variables {
+  project_id               = "sealed-test-1234"
+  region                   = "us-central1"
+  customer_address         = "0x00000000000000000000000000000000000000C1"
+  platform_service_account = "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com"
+  key_broker_image         = "ghcr.io/sealedtempo/key-broker@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  platform_registry        = "0x18AB956ea44757587896dfD25632FB3e89F7002d"
+  app_registry             = "0x88C91CAcB74cCeC3b8A1823977EEC42aE3b93b43"
+  deployment_registry      = "0x254eFB9d1809A95Ec6d233cC57b3a10849bd2C8E"
+}
+
+run "network_and_firewall" {
+  command = plan
+
+  assert {
+    condition     = google_compute_network.sealed.auto_create_subnetworks == false
+    error_message = "the VPC must not auto-create subnets"
+  }
+
+  assert {
+    condition     = google_compute_subnetwork.sealed.name == "sealed-subnet" && google_compute_subnetwork.sealed.region == "us-central1"
+    error_message = "subnet name and region"
+  }
+
+  assert {
+    condition     = google_compute_firewall.allow_web_ingress.direction == "INGRESS" && google_compute_firewall.allow_web_ingress.target_tags == toset(["sealed-vm"])
+    error_message = "web ingress must target tagged VMs only"
+  }
+
+  assert {
+    condition     = length(google_compute_firewall.allow_web_ingress.allow) == 1 && toset(tolist(google_compute_firewall.allow_web_ingress.allow)[0].ports) == toset(["80", "443"]) && tolist(google_compute_firewall.allow_web_ingress.allow)[0].protocol == "tcp"
+    error_message = "ingress allows exactly tcp 80 and 443"
+  }
+
+  assert {
+    condition     = google_compute_firewall.deny_ingress.priority > google_compute_firewall.allow_web_ingress.priority && tolist(google_compute_firewall.deny_ingress.deny)[0].protocol == "all"
+    error_message = "everything else inbound is denied"
+  }
+
+  assert {
+    condition = (
+      google_compute_firewall.allow_egress.direction == "EGRESS" &&
+      length(google_compute_firewall.allow_egress.allow) == 2 &&
+      alltrue([for a in google_compute_firewall.allow_egress.allow : (a.protocol == "tcp" && toset(a.ports) == toset(["443", "53"])) || (a.protocol == "udp" && toset(a.ports) == toset(["53"]))])
+    )
+    error_message = "egress allows only tcp 443 and 53 and udp 53"
+  }
+
+  assert {
+    condition     = google_compute_firewall.deny_egress.direction == "EGRESS" && google_compute_firewall.deny_egress.priority > google_compute_firewall.allow_egress.priority && tolist(google_compute_firewall.deny_egress.deny)[0].protocol == "all"
+    error_message = "everything else outbound is denied"
+  }
+}
+
+run "kms_key" {
+  command = plan
+
+  assert {
+    condition     = google_kms_crypto_key.hmac.purpose == "MAC" && google_kms_crypto_key.hmac.version_template[0].algorithm == "HMAC_SHA256"
+    error_message = "the key broker key is an HMAC-SHA256 key"
+  }
+
+  assert {
+    condition     = google_kms_crypto_key.hmac.deletion_policy == "PREVENT"
+    error_message = "the HMAC key is protected from deletion"
+  }
+
+  assert {
+    condition     = jsondecode(google_kms_crypto_key_iam_policy.hmac.policy_data) == { bindings = [{ role = "roles/cloudkms.signer", members = ["serviceAccount:sealed-key-broker@sealed-test-1234.iam.gserviceaccount.com"] }] }
+    error_message = "only the key broker may use the HMAC key"
+  }
+}
+
+run "key_broker" {
+  command = plan
+
+  assert {
+    condition     = google_cloud_run_v2_service.key_broker.template[0].containers[0].image == "us-central1-docker.pkg.dev/sealed-test-1234/sealed-ghcr/sealedtempo/key-broker@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    error_message = "ghcr.io images are pulled through the remote repository with the same digest"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.key_broker.ssh_enabled == false && google_cloud_run_v2_service.key_broker.invoker_iam_disabled == true
+    error_message = "no SSH into the key broker; callers are gated by attestation"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.key_broker.template[0].scaling[0].max_instance_count == 1
+    error_message = "one key broker instance by default (single-use nonces)"
+  }
+
+  assert {
+    condition = (
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_CUSTOMER_ADDRESS"] == "0x00000000000000000000000000000000000000c1" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["TEMPO_RPC_URL"] == "https://rpc.tempo.xyz" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_KMS_KEY_VERSION"] == "projects/sealed-test-1234/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1" &&
+      { for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.name => e.value }["SEALED_DEPLOYMENT_REGISTRY"] == "0x254efb9d1809a95ec6d233cc57b3a10849bd2c8e"
+    )
+    error_message = "the customer, not the platform, sets the broker's address, RPC, key and registries"
+  }
+
+  assert {
+    condition     = google_project_iam_member.key_broker_secrets.role == "roles/secretmanager.secretAccessor" && google_project_iam_member.key_broker_secrets.member == "serviceAccount:sealed-key-broker@sealed-test-1234.iam.gserviceaccount.com"
+    error_message = "the broker gets secretAccessor"
+  }
+
+  assert {
+    condition     = strcontains(google_project_iam_member.key_broker_secrets.condition[0].expression, "resource.name.startsWith(\"projects/123456789012/secrets/sealed-\")")
+    error_message = "secretAccessor is limited to sealed-* secrets by project number"
+  }
+
+  assert {
+    condition     = jsondecode(google_service_account_iam_policy.key_broker.policy_data) == { bindings = [] }
+    error_message = "nobody holds a role on the key broker identity"
+  }
+}
+
+run "deployer" {
+  command = plan
+
+  assert {
+    condition     = toset(google_project_iam_custom_role.deployer_named.permissions) == toset(module.iam.deployer_named_permissions)
+    error_message = "the named role carries the module's permission list"
+  }
+
+  assert {
+    condition     = google_project_iam_member.deployer_named.condition[0].expression == module.iam.deployer_named_condition
+    error_message = "the named role is granted only with the name condition"
+  }
+
+  assert {
+    condition     = google_project_iam_member.deployer_named.member == "serviceAccount:sealed-deployer@sealed-test-1234.iam.gserviceaccount.com"
+    error_message = "granted to the deployer"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in setunion(google_project_iam_custom_role.deployer_named.permissions, google_project_iam_custom_role.deployer_project.permissions, google_project_iam_custom_role.subnet_user.permissions) :
+      !contains(["iam.serviceAccounts.actAs", "compute.instances.setServiceAccount", "compute.instances.osLogin", "compute.instances.osAdminLogin", "compute.projects.setCommonInstanceMetadata", "compute.instances.getSerialPortOutput"], p) &&
+      !startswith(p, "secretmanager.") && !startswith(p, "run.") && !startswith(p, "cloudkms.") && !startswith(p, "iam.") && !startswith(p, "resourcemanager.") && !startswith(p, "iap.")
+    ])
+    error_message = "the deployer can never act as a service account, read secrets, touch the key broker or open a shell"
+  }
+
+  assert {
+    condition     = google_compute_subnetwork_iam_member.deployer.subnetwork == "sealed-subnet" && toset(google_project_iam_custom_role.subnet_user.permissions) == toset(["compute.subnetworks.use", "compute.subnetworks.useExternalIp"])
+    error_message = "subnet use is granted on the sealed subnet only"
+  }
+
+  assert {
+    condition     = jsondecode(google_service_account_iam_policy.deployer.policy_data) == { bindings = [{ role = "roles/iam.serviceAccountTokenCreator", members = ["serviceAccount:sealed-platform@sealed-platform-1234.iam.gserviceaccount.com"] }] }
+    error_message = "only the platform service account may mint deployer tokens"
+  }
+}
+
+run "rejects_tag_pinned_key_broker" {
+  command = plan
+
+  variables {
+    key_broker_image = "ghcr.io/sealedtempo/key-broker:latest"
+  }
+
+  expect_failures = [var.key_broker_image]
+}
+
+run "rejects_placeholder_digest" {
+  command = plan
+
+  variables {
+    key_broker_image = "ghcr.io/sealedtempo/key-broker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  }
+
+  expect_failures = [var.key_broker_image]
+}
+
+run "rejects_bad_customer_address" {
+  command = plan
+
+  variables {
+    customer_address = "0x1234"
+  }
+
+  expect_failures = [var.customer_address]
+}
