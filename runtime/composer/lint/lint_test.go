@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sealed-dev/sealed/runtime/composer"
 )
@@ -155,9 +156,42 @@ func TestLintFindsProblems(t *testing.T) {
 		{"source-available app package", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"LicenseRef-BSL"`)
 		}, CodeSBOMLicense, Error},
-		{"non-OSI OS package license", func(t *testing.T, d string) {
-			edit(t, filepath.Join(d, "sbom", "postgres.spdx.json"), `"licenseDeclared":"GPL-2.0-only"`, `"licenseDeclared":"GPL-2.0-only AND curl"`)
+		{"unknown OS package license", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "postgres.spdx.json"), `"licenseDeclared":"GPL-2.0-only"`, `"licenseDeclared":"GPL-2.0-only AND LicenseRef-Distro-Odd"`)
 		}, CodeSBOMLicense, Warning},
+		{"distro license on an app package", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"curl"`)
+		}, CodeSBOMLicense, Error},
+		{"data license on a code package", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"CC-BY-4.0"`)
+		}, CodeSBOMLicense, Error},
+		{"data license for the app", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_spdx: PostgreSQL", "license_spdx: CC-BY-4.0")
+		}, CodeLicense, Error},
+		{"license exception without an accepted decision", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_exclusions: []", "license_exclusions: []\nlicense_exceptions:\n  - decision: D-019\n    paths: [\"packages/twenty-server/src/engine/core-modules/enterprise\"]\n    reason: Twenty enterprise files in the official image.")
+		}, CodeLicenseException, Error},
+		{"version with a build suffix", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "release_version: 1.0.0-sealed.1", "release_version: 1.0.0+sealed.1")
+		}, CodeReleaseVersion, Error},
+		{"absolute done file", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "license_exclusions: []", "license_exclusions: []\nbootstrap: {service: notes-web, done_file: /var/lib/notes/uploads/.done}")
+		}, CodeBootstrap, Warning},
+		{"expired waiver", func(t *testing.T, d string) {
+			writeFile(t, filepath.Join(d, "waivers.yaml"), "version: 1\nwaivers:\n  - {id: CVE-2026-12345, image: postgres, package: libx, reason: not reachable from the app, expires: 2026-01-31}\n")
+		}, CodeWaivers, Error},
+		{"waiver for an unknown image", func(t *testing.T, d string) {
+			writeFile(t, filepath.Join(d, "waivers.yaml"), "- {id: CVE-2026-12345, image: nope, package: libx, reason: not reachable from the app, expires: 2099-01-31}\n")
+		}, CodeWaivers, Error},
+		{"waiver without a reason", func(t *testing.T, d string) {
+			writeFile(t, filepath.Join(d, "waivers.yaml"), "- {id: GHSA-2345-6789-cfgh, image: postgres, package: libx, expires: 2099-01-31}\n")
+		}, CodeWaivers, Error},
+		{"waiver with a bad id", func(t *testing.T, d string) {
+			writeFile(t, filepath.Join(d, "waivers.yaml"), "- {id: BUG-1, image: postgres, package: libx, reason: not reachable from the app, expires: 2099-01-31}\n")
+		}, CodeWaivers, Error},
+		{"waivers with an unknown key", func(t *testing.T, d string) {
+			writeFile(t, filepath.Join(d, "waivers.yaml"), "version: 1\nwaivers: []\nextra: 1\n")
+		}, CodeWaivers, Error},
 		{"gpl2 app package", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "sbom", "notes-web.spdx.json"), `"licenseConcluded":"MIT"`, `"licenseConcluded":"GPL-2.0-only"`)
 		}, CodeSBOMLicense, Error},
@@ -180,6 +214,102 @@ func TestLintFindsProblems(t *testing.T) {
 				t.Fatalf("want %s %s, got %v", c.sev, c.code, fs)
 			}
 		})
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDistroAndDataLicenses covers D-050 in SBOMs: free distro licenses on
+// OS packages (also apk/apt packages added in our own layers, which carry
+// apk/deb purls), CC-BY-4.0 on the reviewed data-only packages.
+func TestDistroAndDataLicenses(t *testing.T) {
+	dir := copyApp(t, "notes")
+	sbom := `{"spdxVersion":"SPDX-2.3","packages":[` +
+		`{"name":"notes","versionInfo":"1.0.0","licenseConcluded":"MIT"},` +
+		`{"name":"git","versionInfo":"2.47.3","licenseDeclared":"GPL-2.0-only","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:apk/alpine/git@2.47.3"}]},` +
+		`{"name":"curl","versionInfo":"8.14.1","licenseDeclared":"curl","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:deb/debian/curl@8.14.1"}]},` +
+		`{"name":"libjpeg","versionInfo":"9f","licenseDeclared":"IJG AND Libpng","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:deb/debian/libjpeg@9f"}]},` +
+		`{"name":"caniuse-lite","versionInfo":"1.0.30001700","licenseDeclared":"CC-BY-4.0","externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:npm/caniuse-lite@1.0.30001700"}]},` +
+		`{"name":"blueoak-thing","versionInfo":"1.0.0","licenseDeclared":"BlueOak-1.0.0"}]}`
+	writeFile(t, filepath.Join(dir, "sbom", "notes-web.spdx.json"), sbom)
+	fs := LintApp(dir, Options{RequireSBOM: true})
+	for _, f := range fs {
+		if f.Code == CodeSBOMLicense {
+			t.Errorf("unexpected finding %v", f)
+		}
+	}
+}
+
+func TestLicenseExceptions(t *testing.T) {
+	dir := copyApp(t, "notes")
+	edit(t, filepath.Join(dir, "sbom", "notes-web.spdx.json"), `"name":"notes"`, `"name":"vendor/enterprise/billing"`)
+	edit(t, filepath.Join(dir, "manifest.yaml"), "license_exclusions: []",
+		"license_exclusions: []\nlicense_exceptions:\n  - decision: D-999\n    paths: [vendor/enterprise/billing, never/matches]\n    reason: A recorded decision allows shipping this path.")
+	// Not accepted: the exception is an error and the package still fails.
+	fs := LintApp(dir, Options{RequireSBOM: true})
+	if codes(fs, Error)[CodeLicenseException] != 1 || codes(fs, Error)[CodeExcludedPath] == 0 {
+		t.Fatalf("unaccepted exception: %v", fs)
+	}
+	if len(AcceptedExceptionDecisions()) != 0 {
+		t.Fatalf("the exception allowlist must start empty: %v", AcceptedExceptionDecisions())
+	}
+	// Accepted (as a decision would add it): the path is exempt, with a
+	// warning, and an unused path is reported.
+	acceptedExceptionDecisions["D-999"] = true
+	defer delete(acceptedExceptionDecisions, "D-999")
+	fs = LintApp(dir, Options{RequireSBOM: true})
+	if HasErrors(fs) || codes(fs, Warning)[CodeExempt] != 1 || codes(fs, Warning)[CodeLicenseException] != 1 {
+		t.Fatalf("accepted exception: %v", fs)
+	}
+	// The schema rejects malformed entries.
+	edit(t, filepath.Join(dir, "manifest.yaml"), "decision: D-999", "decision: 19")
+	if fs := LintApp(dir, Options{}); codes(fs, Error)[CodeManifest] == 0 {
+		t.Fatalf("bad decision id: %v", fs)
+	}
+}
+
+func TestWaivers(t *testing.T) {
+	dir := copyApp(t, "notes")
+	now := func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }
+	for _, ok := range []string{
+		"[]\n",
+		"version: 1\nwaivers: []\n",
+		"# comments only\n",
+		"version: 1\nwaivers:\n  - id: CVE-2026-12345\n    image: postgres\n    package: libx\n    reason: not reachable from the app\n    expires: 2026-10-28\n",
+		"- {id: GHSA-2345-6789-cfgh, image: notes-web, package: liby, reason: fixed upstream next release, expires: \"2027-01-01\"}\n",
+	} {
+		writeFile(t, filepath.Join(dir, "waivers.yaml"), ok)
+		if fs := LintApp(dir, Options{RequireSBOM: true, Now: now}); codes(fs, Error)[CodeWaivers] != 0 {
+			t.Errorf("%q: %v", ok, fs)
+		}
+	}
+}
+
+func TestLintCatalogSameAs(t *testing.T) {
+	root := t.TempDir()
+	for _, app := range []string{"notes", "llm-gateway"} {
+		if err := os.Rename(copyApp(t, app), filepath.Join(root, app)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes := filepath.Join(root, "notes")
+	edit(t, filepath.Join(notes, "manifest.yaml"), "telemetry_off_env:", "  - name: LLM_KEY\n    description: x\n    generate: none\n    same_as: llm-gateway/MASTER_KEY\ntelemetry_off_env:")
+	edit(t, filepath.Join(notes, "compose.fragment.yaml"), "x-sealed-secrets: [DB_PASSWORD]", "x-sealed-secrets: [DB_PASSWORD, LLM_KEY]")
+	if fs, err := LintCatalog(root, Options{}); err != nil || HasErrors(fs) {
+		t.Fatalf("valid same_as: %v %v", fs, err)
+	}
+	edit(t, filepath.Join(notes, "manifest.yaml"), "same_as: llm-gateway/MASTER_KEY", "same_as: llm-gateway/NOPE")
+	if fs, _ := LintCatalog(root, Options{}); codes(fs, Error)[CodeSameAs] != 1 {
+		t.Fatalf("missing secret: %v", fs)
+	}
+	edit(t, filepath.Join(notes, "manifest.yaml"), "same_as: llm-gateway/NOPE", "same_as: crm/APP_SECRET")
+	if fs, _ := LintCatalog(root, Options{}); codes(fs, Error)[CodeSameAs] != 1 {
+		t.Fatalf("missing app: %v", fs)
 	}
 }
 

@@ -14,8 +14,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sealed-dev/sealed/runtime/composer"
+	"go.yaml.in/yaml/v3"
 )
 
 // Severity of a finding. Errors block a release; warnings need a look.
@@ -69,7 +71,17 @@ const (
 	CodeMissingFile  = "missing-file"
 	CodeDuplicateApp = "duplicate-app"
 	CodeSharedRoute  = "shared-route"
+	// Added with composer 1.2.0.
+	CodeLicenseException = "license-exception"
+	CodeExempt           = "license-exempt"
+	CodeWaivers          = "waivers"
+	CodeBootstrap        = "bootstrap"
+	CodeReleaseVersion   = "release-version"
+	CodeSameAs           = "same-as"
 )
+
+// WaiversFile is the per-app Grype waiver list (spec 6.8).
+const WaiversFile = "waivers.yaml"
 
 // Options tune the policy. The zero value uses the defaults.
 type Options struct {
@@ -87,6 +99,8 @@ type Options struct {
 	// RequireSBOM turns a missing SBOM into an error and an unrecognized
 	// SBOM package license into an error (release builds).
 	RequireSBOM bool
+	// Now is the clock for waiver expiry; nil means time.Now.
+	Now func() time.Time
 }
 
 // DefaultOpenCoreRepos lists upstreams with enterprise-licensed code.
@@ -112,6 +126,9 @@ func (o Options) withDefaults() Options {
 		if ri, err := composer.LoadRuntimeImages(); err == nil {
 			o.Registry = ri.Registry
 		}
+	}
+	if o.Now == nil {
+		o.Now = time.Now
 	}
 	return o
 }
@@ -171,6 +188,10 @@ func LintApp(dir string, opts Options) []Finding {
 		}
 	}
 	lintFiles(c, files, sboms, false, opts)
+	if raw, err := os.ReadFile(filepath.Join(dir, WaiversFile)); err == nil {
+		lintWaivers(c, raw, files[composer.ManifestFile], opts.Now())
+	}
+	sortFindings(c.out)
 	return c.out
 }
 
@@ -202,6 +223,7 @@ func LintCatalog(root string, opts Options) ([]Finding, error) {
 	var out []Finding
 	routes := map[string][]string{}
 	ids := map[string]string{}
+	manifests := map[string]*composer.Manifest{}
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
@@ -224,6 +246,7 @@ func LintCatalog(root string, opts Options) ([]Finding, error) {
 			out = append(out, Finding{Severity: Error, App: m.ID, Code: CodeDuplicateApp, Message: "id also used by " + prev})
 		}
 		ids[m.ID] = e.Name()
+		manifests[m.ID] = m
 		seen := map[string]bool{}
 		for _, r := range m.Routes {
 			if !seen[r.Name] {
@@ -238,7 +261,42 @@ func LintCatalog(root string, opts Options) ([]Finding, error) {
 				Message: fmt.Sprintf("route %q is used by %s; they cannot be deployed in the same stack", name, strings.Join(apps, " and "))})
 		}
 	}
+	out = append(out, lintSameAs(manifests)...)
 	return out, nil
+}
+
+// lintSameAs checks cross-app secret references (D-043) against the
+// catalog: the referenced app exists and declares the secret, which is not
+// itself a reference. Compose repeats the check for each stack.
+func lintSameAs(manifests map[string]*composer.Manifest) []Finding {
+	var out []Finding
+	for _, id := range sortedKeys(manifests) {
+		for i, s := range manifests[id].Secrets {
+			app, name, ok := s.SameAsRef()
+			if !ok {
+				continue
+			}
+			add := func(format string, args ...any) {
+				out = append(out, Finding{Severity: Error, App: id, File: composer.ManifestFile, Field: fmt.Sprintf("secrets[%d].same_as", i),
+					Code: CodeSameAs, Message: fmt.Sprintf(format, args...)})
+			}
+			target, ok := manifests[app]
+			if !ok {
+				add("%q: no catalog app %q", s.SameAs, app)
+				continue
+			}
+			ref, ok := target.Secret(name)
+			switch {
+			case !ok:
+				add("%q: app %q declares no secret %q", s.SameAs, app, name)
+			case ref.SameAs != "":
+				add("%q is itself a reference (same_as %q)", s.SameAs, ref.SameAs)
+			case ref.Optional && !s.Optional:
+				add("%q is optional in %s, but %s is required", s.SameAs, app, s.Name)
+			}
+		}
+	}
+	return out
 }
 
 func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, isBundle bool, opts Options) {
@@ -280,6 +338,25 @@ func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, i
 		}
 	}
 
+	if err := composer.CheckReleaseVersion(m.Version()); err != nil {
+		field := "release_version"
+		if m.ReleaseVersion == "" {
+			field = "upstream.version"
+		}
+		c.add(Error, composer.ManifestFile, field, CodeReleaseVersion, "%v (D-046 release assets)", err)
+	}
+	if m.Bootstrap != nil && strings.HasPrefix(m.Bootstrap.DoneFile, "/") {
+		hint := ""
+		if frag != nil {
+			if p, err := composer.ResolveDoneFile(m, frag); err == nil {
+				hint = fmt.Sprintf(" (here %q)", strings.TrimPrefix(p, composer.DataRoot+"/"+m.ID+"/"))
+			}
+		}
+		c.add(Warning, composer.ManifestFile, "bootstrap.done_file", CodeBootstrap,
+			"write done_file as <volume>/<path> relative to %s/%s/%s; the in-container absolute form is deprecated", composer.DataRoot, m.ID, hint)
+	}
+	exempt := checkExceptions(c, m)
+
 	checkLicense(c, composer.ManifestFile, "upstream.license_spdx", m.Upstream.LicenseSPDX)
 	used := map[string]bool{}
 	if frag != nil {
@@ -311,7 +388,7 @@ func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, i
 		case !ok:
 			c.add(Warning, "sbom/"+img.Name+".spdx.json", "", CodeSBOMMissing, "image %q has no SBOM yet (CI generates it with syft)", img.Name)
 		default:
-			lintSBOM(c, img.Name, sbom, append(append([]string{}, m.LicenseExclusions...), opts.EnterprisePatterns...), isBundle || opts.RequireSBOM)
+			lintSBOM(c, img.Name, sbom, append(append([]string{}, m.LicenseExclusions...), opts.EnterprisePatterns...), exempt, isBundle || opts.RequireSBOM)
 		}
 	}
 
@@ -352,8 +429,148 @@ func lintFiles(c *collector, files map[string][]byte, sboms map[string][]byte, i
 			}
 		}
 	}
-	sort.SliceStable(c.out, func(i, j int) bool { return c.out[i].Severity == Error && c.out[j].Severity != Error })
+	for _, e := range exempt {
+		if !e.used {
+			c.add(Warning, composer.ManifestFile, "license_exceptions", CodeLicenseException,
+				"path %q (%s) matched no SBOM package or file; remove it", e.path, e.decision)
+		}
+	}
+	sortFindings(c.out)
 }
+
+func sortFindings(fs []Finding) {
+	sort.SliceStable(fs, func(i, j int) bool { return fs[i].Severity == Error && fs[j].Severity != Error })
+}
+
+// exemption is one accepted license_exceptions path.
+type exemption struct {
+	decision, path string
+	used           bool
+}
+
+// checkExceptions validates license_exceptions (integration brief item 17)
+// and returns the paths lint honours: only entries whose decision is in
+// acceptedExceptionDecisions (empty today), every other entry is an error.
+func checkExceptions(c *collector, m *composer.Manifest) []*exemption {
+	var out []*exemption
+	for i, e := range m.LicenseExceptions {
+		field := fmt.Sprintf("license_exceptions[%d]", i)
+		if !acceptedExceptionDecisions[e.Decision] {
+			accepted := "none"
+			if ids := AcceptedExceptionDecisions(); len(ids) > 0 {
+				accepted = strings.Join(ids, ", ")
+			}
+			c.add(Error, composer.ManifestFile, field+".decision", CodeLicenseException,
+				"%s is not an accepted license exception (runtime/composer/lint/exceptions.go accepts: %s)", e.Decision, accepted)
+			continue
+		}
+		for _, p := range e.Paths {
+			out = append(out, &exemption{decision: e.Decision, path: p})
+		}
+	}
+	return out
+}
+
+// exempted returns the exemption that covers a package name or file path.
+func exempted(exempt []*exemption, name string, isFile bool) *exemption {
+	for _, e := range exempt {
+		if (isFile && strings.Contains(name, e.path)) || (!isFile && matchesExclusion(name, e.path)) {
+			e.used = true
+			return e
+		}
+	}
+	return nil
+}
+
+// lintWaivers checks waivers.yaml (spec 6.8): either a list of waivers or
+// {version: 1, waivers: [...]}; each waiver names a vulnerability id, a
+// manifest image, a package, a reason and an expiry date that has not passed.
+func lintWaivers(c *collector, raw, manifest []byte, now time.Time) {
+	var doc any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		c.add(Error, WaiversFile, "", CodeWaivers, "not valid YAML: %v", err)
+		return
+	}
+	var list []any
+	switch t := doc.(type) {
+	case nil:
+	case []any:
+		list = t
+	case map[string]any:
+		for k := range t {
+			if k != "version" && k != "waivers" {
+				c.add(Error, WaiversFile, k, CodeWaivers, "unknown key %q", k)
+			}
+		}
+		if v, ok := t["version"].(int); !ok || v != 1 {
+			c.add(Error, WaiversFile, "version", CodeWaivers, "version must be 1")
+		}
+		l, ok := t["waivers"].([]any)
+		if !ok && t["waivers"] != nil {
+			c.add(Error, WaiversFile, "waivers", CodeWaivers, "waivers must be a list")
+			return
+		}
+		list = l
+	default:
+		c.add(Error, WaiversFile, "", CodeWaivers, "must be a list of waivers or {version: 1, waivers: [...]}")
+		return
+	}
+	images := map[string]bool{}
+	if m, err := composer.ParseManifest(manifest); err == nil {
+		for _, img := range m.Images {
+			images[img.Name] = true
+		}
+	}
+	today := now.UTC().Format("2006-01-02")
+	for i, e := range list {
+		field := fmt.Sprintf("waivers[%d]", i)
+		w, ok := e.(map[string]any)
+		if !ok {
+			c.add(Error, WaiversFile, field, CodeWaivers, "must be a mapping")
+			continue
+		}
+		for _, k := range sortedKeys(w) {
+			switch k {
+			case "id", "image", "package", "reason", "expires":
+			default:
+				c.add(Error, WaiversFile, field+"."+k, CodeWaivers, "unknown key %q", k)
+			}
+		}
+		str := func(k string) string {
+			s, _ := w[k].(string)
+			return strings.TrimSpace(s)
+		}
+		if !vulnIDRe.MatchString(str("id")) {
+			c.add(Error, WaiversFile, field+".id", CodeWaivers, "id %q must be a CVE or GHSA id", str("id"))
+		}
+		if img := str("image"); !images[img] {
+			c.add(Error, WaiversFile, field+".image", CodeWaivers, "image %q is not a manifest image", img)
+		}
+		if str("package") == "" {
+			c.add(Error, WaiversFile, field+".package", CodeWaivers, "package is required")
+		}
+		if len(str("reason")) < 10 {
+			c.add(Error, WaiversFile, field+".reason", CodeWaivers, "say why the finding does not apply or what blocks the fix")
+		}
+		var expires string
+		switch v := w["expires"].(type) {
+		case time.Time:
+			expires = v.UTC().Format("2006-01-02")
+		case string:
+			if d, err := time.Parse("2006-01-02", v); err == nil {
+				expires = d.Format("2006-01-02")
+			}
+		}
+		switch {
+		case expires == "":
+			c.add(Error, WaiversFile, field+".expires", CodeWaivers, "expires must be a date (YYYY-MM-DD)")
+		case expires < today:
+			c.add(Error, WaiversFile, field+".expires", CodeWaivers, "waiver for %s expired on %s", str("id"), expires)
+		}
+	}
+}
+
+var vulnIDRe = regexp.MustCompile(`^(CVE-[0-9]{4}-[0-9]{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})$`)
 
 var (
 	imageSourceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9][a-z0-9._-]*)+(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})(@sha256:[0-9a-f]{64})?$`)
@@ -382,6 +599,8 @@ func checkLicense(c *collector, file, field, expr string) {
 		}
 	case SystemOnly:
 		c.add(Error, file, field, CodeLicense, "%q is only acceptable for OS base-image packages, not for app code (rule 9, D-021)", expr)
+	case DataOnly:
+		c.add(Error, file, field, CodeLicense, "%q is only acceptable for data-only packages, not for app code (D-050)", expr)
 	case Unknown:
 		c.add(Error, file, field, CodeLicense, "%q is not on the license allowlist (rule 9, D-021)", expr)
 	case Banned:
@@ -414,7 +633,7 @@ var osPackageTypes = []string{"pkg:deb/", "pkg:apk/", "pkg:rpm/", "pkg:alpm/"}
 // unrecognized license (not on the allowlist, not an OSI-approved system
 // license, for example CC-BY-NC-4.0 or a LicenseRef) fails a release for
 // non-OS packages; OS packages get a warning until a decision covers them.
-func lintSBOM(c *collector, image string, raw []byte, exclusions []string, release bool) {
+func lintSBOM(c *collector, image string, raw []byte, exclusions []string, exempt []*exemption, release bool) {
 	file := "sbom/" + image + ".spdx.json"
 	var doc spdxDoc
 	if err := json.Unmarshal(raw, &doc); err != nil || !strings.HasPrefix(doc.SPDXVersion, "SPDX-") {
@@ -425,6 +644,10 @@ func lintSBOM(c *collector, image string, raw []byte, exclusions []string, relea
 		pkg := p.Name
 		if p.VersionInfo != "" {
 			pkg += "@" + p.VersionInfo
+		}
+		if e := exempted(exempt, p.Name, false); e != nil {
+			c.add(Warning, file, pkg, CodeExempt, "exempt from license and excluded-path checks under %s (license_exceptions %q)", e.decision, e.path)
+			continue
 		}
 		for _, ex := range exclusions {
 			if matchesExclusion(p.Name, ex) {
@@ -452,6 +675,8 @@ func lintSBOM(c *collector, image string, raw []byte, exclusions []string, relea
 			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is banned", expr)
 		case r.Status == SystemOnly && !isOS:
 			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is only acceptable for OS packages", expr)
+		case r.Status == DataOnly && !isDataOnlyPackage(p.Name):
+			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is only acceptable for the data-only packages %s (D-050)", expr, strings.Join(DataOnlyPackages, ", "))
 		case r.Status == Unknown && !isOS && release:
 			c.add(Error, file, pkg, CodeSBOMLicense, "license %q is not on the allowlist (rule 9, D-021)", expr)
 		case r.Status == Unknown && isOS:
@@ -461,12 +686,25 @@ func lintSBOM(c *collector, image string, raw []byte, exclusions []string, relea
 		}
 	}
 	for _, f := range doc.Files {
+		if e := exempted(exempt, f.FileName, true); e != nil {
+			continue
+		}
 		for _, ex := range exclusions {
 			if strings.Contains(f.FileName, ex) {
 				c.add(Error, file, f.FileName, CodeExcludedPath, "file matches excluded path %q", ex)
 			}
 		}
 	}
+}
+
+// isDataOnlyPackage reports whether a package is on the reviewed data-only list.
+func isDataOnlyPackage(name string) bool {
+	for _, p := range DataOnlyPackages {
+		if name == p {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesExclusion compares a package name with an excluded path, treating

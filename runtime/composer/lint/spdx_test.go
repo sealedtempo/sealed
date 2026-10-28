@@ -50,13 +50,33 @@ func TestEvaluateLicense(t *testing.T) {
 		{"MIT;rm", Unknown, "", 0},
 		// D-021: OS packages only under OSI-approved licenses.
 		{"MIT-0", SystemOnly, "MIT-0", 0},
-		{"X11", Unknown, "X11", 0},
-		{"curl", Unknown, "curl", 0},
-		{"OpenSSL", Unknown, "OpenSSL", 0},
-		{"BSD-4-Clause", Unknown, "BSD-4-Clause", 0},
-		{"GFDL-1.3-or-later", Unknown, "GFDL-1.3-or-later", 0},
+		// D-050: free distro licenses that are not OSI-approved, OS packages only.
+		{"X11", SystemOnly, "X11", 0},
+		{"curl", SystemOnly, "curl", 0},
+		{"OpenSSL", SystemOnly, "OpenSSL", 0},
+		{"BSD-4-Clause", SystemOnly, "BSD-4-Clause", 0},
+		{"IJG", SystemOnly, "IJG", 0},
+		{"Libpng", SystemOnly, "Libpng", 0},
+		{"libtiff", SystemOnly, "libtiff", 0},
+		{"FTL", SystemOnly, "FTL", 0},
+		{"bzip2-1.0.6", SystemOnly, "bzip2-1.0.6", 0},
+		{"Ruby", SystemOnly, "Ruby", 0},
+		{"Vim", SystemOnly, "Vim", 0},
+		{"GFDL-1.3-or-later", SystemOnly, "GFDL-1.3-or-later", 0},
+		{"GFDL-1.2-no-invariants-only", SystemOnly, "GFDL-1.2-no-invariants-only", 0},
+		{"GFDL-2.0", Unknown, "GFDL-2.0", 0},
 		{"FTL OR GPL-2.0-or-later", Allowed, "GPL-2.0-or-later", 0},
 		{"CC-BY-NC-4.0", Unknown, "CC-BY-NC-4.0", 0},
+		// D-050: OSI-approved permissive additions.
+		{"BlueOak-1.0.0", Allowed, "BlueOak-1.0.0", 0},
+		{"ZPL-2.1", Allowed, "ZPL-2.1", 0},
+		{"CNRI-Python", Allowed, "CNRI-Python", 0},
+		{"CNRI-Python AND PSF-2.0", Allowed, "CNRI-Python AND PSF-2.0", 0},
+		// D-050: CC-BY-4.0 for data-only packages.
+		{"CC-BY-4.0", DataOnly, "CC-BY-4.0", 0},
+		{"MIT AND CC-BY-4.0", DataOnly, "MIT AND CC-BY-4.0", 0},
+		{"CC-BY-4.0 OR MIT", Allowed, "MIT", 0},
+		{"CC-BY-SA-4.0", Unknown, "CC-BY-SA-4.0", 0},
 	}
 	for _, c := range cases {
 		r := EvaluateLicense(c.expr)
