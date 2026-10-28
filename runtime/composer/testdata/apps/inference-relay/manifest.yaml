@@ -1,0 +1,42 @@
+# Fixture app for composer tests. Not the real inference-relay package.
+schema: sealed-manifest/v1
+id: inference-relay
+name: Fixture relay
+category: ai
+description: Fake paid relay that exercises a public route served on the attest host.
+upstream:
+  repo: https://github.com/example/relay
+  version: 0.1.0
+  license_spdx: Apache-2.0
+  source_url: https://github.com/example/relay/tree/v0.1.0
+maintainer:
+  name: Sealed fixtures
+  payout_address: ${MAINTAINER_DEFAULT_ADDRESS}
+maintainer_share_bps: 2000
+compose_fragment: compose.fragment.yaml
+egress_policy: egress.yaml
+primary_service: inference-relay-front
+images:
+  - name: relay
+    source: build:images/relay
+    digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+    license_spdx: Apache-2.0
+resources: {cpu: 1, memory_gb: 1, disk_gb: 5}
+routes:
+  - name: relay
+    service: inference-relay-front
+    internal_port: 8080
+    path_or_host: /v1
+    auth: public
+    on_attest_host: true
+healthcheck:
+  service: inference-relay-front
+  http: /healthz
+metering: {unit: tokens, source: callback}
+secrets:
+  - name: MPP_SECRET_KEY
+    description: Challenge HMAC key
+    generate: password
+telemetry_off_env:
+  RELAY_TELEMETRY: "0"
+license_exclusions: []

@@ -163,7 +163,7 @@ func TestFragmentTopLevelAndNames(t *testing.T) {
 	_, err = ParseFragment(m, []byte("services:\n  notes-web:\n    image: \"{{image:nope}}\"\n    entrypoint: [x]\n"))
 	wantFragmentError(t, err, "notes-web", "image")
 	_, err = ParseFragment(m, []byte("services:\n  notes-web:\n    image: \"{{image:notes-web}}\"\n    entrypoint: [x]\nvolumes:\n  data: {driver: local}\n"))
-	wantFragmentError(t, err, "", "volumes.data")
+	wantFragmentError(t, err, "", "volumes.data.driver")
 	// The manifest's primary service must exist in the fragment.
 	_, err = ParseFragment(m, []byte("services:\n  notes-other:\n    image: \"{{image:notes-web}}\"\n    entrypoint: [x]\n"))
 	var me *ManifestError
@@ -368,6 +368,9 @@ func TestBootstrapDoneFile(t *testing.T) {
 		{"other/done", "notes-web"},
 		{"pgdata/x y", "notes-web"},
 		{"/var/lib/postgresql/data/done", ""},
+		// On the bootstrap container's own tmpfs: sealed-agent cannot see it.
+		{"/tmp/sealed/done", "notes-web"},
+		{"/run/bootstrap/done", "notes-db"},
 	} {
 		if _, err := parse(bad.file, bad.service); err == nil {
 			t.Errorf("done_file %q accepted", bad.file)
@@ -376,10 +379,8 @@ func TestBootstrapDoneFile(t *testing.T) {
 	for _, good := range []struct{ file, service, want string }{
 		{"pgdata/bootstrap/done.json", "notes-web", "/mnt/sealed-data/notes/pgdata/bootstrap/done.json"},
 		{"uploads/.sealed/done", "", "/mnt/sealed-data/notes/uploads/.sealed/done"},
+		// The older absolute form still resolves when it is on a volume.
 		{"/var/lib/postgresql/data/sealed.done", "notes-db", "/mnt/sealed-data/notes/pgdata/sealed.done"},
-		// On the bootstrap container's own tmpfs: not on the data disk.
-		{"/tmp/sealed/done", "notes-web", ""},
-		{"/run/bootstrap/done", "notes-db", ""},
 	} {
 		m, err := parse(good.file, good.service)
 		if err != nil {

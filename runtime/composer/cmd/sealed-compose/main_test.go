@@ -91,3 +91,10 @@ func TestLintCommand(t *testing.T) {
 		t.Fatal("unknown command accepted")
 	}
 }
+
+func TestVersionCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"version"}, &stdout, &stderr); err != nil || stdout.String() != composer.Version+"\n" {
+		t.Fatalf("version: %q %v", stdout.String(), err)
+	}
+}

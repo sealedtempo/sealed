@@ -31,17 +31,35 @@ const (
 
 // Defaults used by the composer.
 const (
-	DefaultGateUser    = "sealed"
-	DefaultGateEnv     = "GATE_PASSWORD_BCRYPT"
-	DefaultAdminSocket = "/run/sealed/caddy-admin/admin.sock"
-	DefaultPageDir     = "/srv/sealed"
-	DefaultPageFile    = "payment-needed.html"
-	PaymentMessage     = "Payment needed: this deployment's usage fees are unpaid. The owner can raise the spending limit in the Sealed console."
+	// DefaultGateUser is the Basic auth user sealed-agent's gate accepts.
+	DefaultGateUser = "sealed"
+	// DefaultGatePath is sealed-agent's forward_auth endpoint (D-044).
+	// Caddy calls <GatePath>?route=<route name> for every gated request.
+	DefaultGatePath = "/v1/gate"
+	// DefaultGateCookie is the session cookie sealed-agent sets on a Basic
+	// success; Caddy passes it to the agent and never inspects it.
+	DefaultGateCookie = "sealed_gate"
+	// DefaultAdminSocket is Caddy's admin API, on a tmpfs owned by the
+	// agent's uid; DefaultAdminSocketMode lets that uid connect.
+	DefaultAdminSocket     = "/run/sealed/caddy-admin/admin.sock"
+	DefaultAdminSocketMode = "0660"
+	DefaultPageDir         = "/srv/sealed"
+	DefaultPageFile        = "payment-needed.html"
+	PaymentMessage         = "Payment needed: this deployment's usage fees are unpaid. The owner can raise the spending limit in the Sealed console."
 )
 
+// gateBasicPrefix is base64("sealed:") without its last, partial character
+// group: every "Authorization: Basic" header whose user is sealed starts
+// with it. Caddy strips such headers before proxying, so the gate password
+// never reaches an app, while an app's own Authorization header (for
+// example a Bearer token) passes through untouched.
+const gateBasicPrefix = "c2VhbGVkO"
+
 // Route is one upstream on a site. Path is "" for the whole host or a
-// prefix such as /api (matching /api and /api/*).
+// prefix such as /api (matching /api and /api/*). Name is the manifest
+// route name, passed to the gate as ?route=<name>.
 type Route struct {
+	Name     string
 	Path     string
 	Upstream string // service:port
 	Auth     string
@@ -57,27 +75,42 @@ type Site struct {
 type Input struct {
 	ComposerVersion string
 	AdminSocket     string
-	GateUser        string
-	GateEnv         string
-	PageDir         string
-	PageFile        string
-	AttestHost      string
-	AttestUpstream  string
-	Sites           []Site
+	AdminSocketMode string
+	// GateUpstream is sealed-agent's host:port; GatePath its gate endpoint.
+	GateUpstream string
+	GatePath     string
+	PageDir      string
+	PageFile     string
+	AttestHost   string
+	// AttestUpstream serves /attest (sealed-agent).
+	AttestUpstream string
+	// AttestRoutes are routes served on the attest host next to /attest
+	// (manifest on_attest_host, D-045). Each needs a path prefix.
+	AttestRoutes []Route
+	Sites        []Site
+}
+
+type routeView struct {
+	Route
+	ID string // matcher id, unique per site
 }
 
 type siteView struct {
 	Host          string
-	Routes        []Route
+	Attest        bool
+	Routes        []routeView
 	HasBearer     bool
+	HasGate       bool
 	NeedsFallback bool
 }
 
 type view struct {
 	Input
-	Sites          []siteView
-	PaymentNeeded  bool
-	PaymentMessage string
+	Sites           []siteView
+	PaymentNeeded   bool
+	PaymentMessage  string
+	GateBasicRegexp string
+	GateCookie      string
 }
 
 var (
@@ -85,40 +118,25 @@ var (
 	upstreamRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?:[0-9]{1,5}$`)
 	pathRe     = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-]$`)
 	sockRe     = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
-	envRe      = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
-	userRe     = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+	modeRe     = regexp.MustCompile(`^0[0-7]{3}$`)
+	routeRe    = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 )
 
 var tmpl = template.Must(template.New("Caddyfile").Option("missingkey=error").Parse(caddyfileTemplate))
 
 // Render returns the Caddyfile. With paymentNeeded every app route serves the
-// payment-needed page (status 402) and bearer API calls get a plain 402;
-// the attest site is identical in both variants.
+// payment-needed page (status 402), bearer API calls and attest-host routes
+// get a plain 402; /attest is identical in both variants.
 func Render(in Input, paymentNeeded bool) ([]byte, error) {
 	if err := validate(in); err != nil {
 		return nil, err
 	}
-	v := view{Input: in, PaymentNeeded: paymentNeeded, PaymentMessage: PaymentMessage}
+	v := view{Input: in, PaymentNeeded: paymentNeeded, PaymentMessage: PaymentMessage,
+		GateBasicRegexp: "^[Bb][Aa][Ss][Ii][Cc] +" + gateBasicPrefix, GateCookie: DefaultGateCookie}
 	for _, s := range in.Sites {
-		sv := siteView{Host: s.Host, Routes: append([]Route(nil), s.Routes...), NeedsFallback: true}
-		// Longest path first; the whole-host route (empty path) last.
-		sort.SliceStable(sv.Routes, func(i, j int) bool {
-			a, b := sv.Routes[i].Path, sv.Routes[j].Path
-			if len(a) != len(b) {
-				return len(a) > len(b)
-			}
-			return a < b
-		})
-		for _, r := range sv.Routes {
-			if r.Auth == AuthBearerPassthrough {
-				sv.HasBearer = true
-			}
-			if r.Path == "" {
-				sv.NeedsFallback = false
-			}
-		}
-		v.Sites = append(v.Sites, sv)
+		v.Sites = append(v.Sites, newSiteView(s.Host, s.Routes, false))
 	}
+	v.Sites = append(v.Sites, newSiteView(in.AttestHost, in.AttestRoutes, true))
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, v); err != nil {
 		return nil, fmt.Errorf("caddyfile: %w", err)
@@ -130,14 +148,42 @@ func Render(in Input, paymentNeeded bool) ([]byte, error) {
 	return out, nil
 }
 
+func newSiteView(host string, routes []Route, attest bool) siteView {
+	sorted := append([]Route(nil), routes...)
+	// Longest path first; the whole-host route (empty path) last.
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := sorted[i].Path, sorted[j].Path
+		if len(a) != len(b) {
+			return len(a) > len(b)
+		}
+		return a < b
+	})
+	sv := siteView{Host: host, Attest: attest, NeedsFallback: true}
+	for i, r := range sorted {
+		sv.Routes = append(sv.Routes, routeView{Route: r, ID: fmt.Sprintf("r%d", i)})
+		switch r.Auth {
+		case AuthBearerPassthrough:
+			sv.HasBearer = true
+			sv.HasGate = true
+		case AuthGate:
+			sv.HasGate = true
+		}
+		if r.Path == "" {
+			sv.NeedsFallback = false
+		}
+	}
+	return sv
+}
+
 func validate(in Input) error {
 	checks := []struct {
 		name, val string
 		re        *regexp.Regexp
 	}{
 		{"admin socket", in.AdminSocket, sockRe},
-		{"gate user", in.GateUser, userRe},
-		{"gate env", in.GateEnv, envRe},
+		{"admin socket mode", in.AdminSocketMode, modeRe},
+		{"gate upstream", in.GateUpstream, upstreamRe},
+		{"gate path", in.GatePath, pathRe},
 		{"page dir", in.PageDir, sockRe},
 		{"attest host", in.AttestHost, hostRe},
 		{"attest upstream", in.AttestUpstream, upstreamRe},
@@ -165,23 +211,36 @@ func validate(in Input) error {
 		if len(s.Routes) == 0 {
 			return fmt.Errorf("caddyfile: site %q has no routes", s.Host)
 		}
-		paths := map[string]bool{}
-		for _, r := range s.Routes {
-			if r.Path != "" && !pathRe.MatchString(r.Path) {
-				return fmt.Errorf("caddyfile: site %q: invalid path %q", s.Host, r.Path)
-			}
-			if paths[r.Path] {
-				return fmt.Errorf("caddyfile: site %q: duplicate path %q", s.Host, r.Path)
-			}
-			paths[r.Path] = true
-			if !upstreamRe.MatchString(r.Upstream) {
-				return fmt.Errorf("caddyfile: site %q: invalid upstream %q", s.Host, r.Upstream)
-			}
-			switch r.Auth {
-			case AuthGate, AuthBearerPassthrough, AuthPublic:
-			default:
-				return fmt.Errorf("caddyfile: site %q: unknown auth %q", s.Host, r.Auth)
-			}
+		if err := validateRoutes(s.Host, s.Routes, false); err != nil {
+			return err
+		}
+	}
+	return validateRoutes(in.AttestHost, in.AttestRoutes, true)
+}
+
+func validateRoutes(host string, routes []Route, attest bool) error {
+	paths := map[string]bool{}
+	for _, r := range routes {
+		if !routeRe.MatchString(r.Name) {
+			return fmt.Errorf("caddyfile: site %q: invalid route name %q", host, r.Name)
+		}
+		if r.Path != "" && !pathRe.MatchString(r.Path) {
+			return fmt.Errorf("caddyfile: site %q: invalid path %q", host, r.Path)
+		}
+		if attest && (r.Path == "" || r.Path == "/attest" || strings.HasPrefix(r.Path, "/attest/")) {
+			return fmt.Errorf("caddyfile: attest host route %q needs a path prefix other than /attest", r.Name)
+		}
+		if paths[r.Path] {
+			return fmt.Errorf("caddyfile: site %q: duplicate path %q", host, r.Path)
+		}
+		paths[r.Path] = true
+		if !upstreamRe.MatchString(r.Upstream) {
+			return fmt.Errorf("caddyfile: site %q: invalid upstream %q", host, r.Upstream)
+		}
+		switch r.Auth {
+		case AuthGate, AuthBearerPassthrough, AuthPublic:
+		default:
+			return fmt.Errorf("caddyfile: site %q: unknown auth %q", host, r.Auth)
 		}
 	}
 	return nil

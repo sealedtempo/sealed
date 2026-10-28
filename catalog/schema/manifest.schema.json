@@ -82,6 +82,10 @@
           "auth": {
             "enum": ["gate", "bearer-passthrough", "public"],
             "description": "gate (password gate) for every app UI. Only llm-gateway route gateway may use bearer-passthrough and only inference-relay route relay may use public; the composer rejects anything else."
+          },
+          "on_attest_host": {
+            "type": "boolean",
+            "description": "Serve this route's path prefix on the attest host (same origin and TLS certificate as /attest, D-045) instead of its own host. Allowed only for the route named relay, which must then use a path prefix such as /v1."
           }
         }
       }
@@ -115,8 +119,13 @@
         "properties": {
           "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
           "description": { "type": "string" },
-          "generate": { "enum": ["none", "hex32", "base64-32", "sk-hex32"], "description": "how sealed secrets set --generate creates a value when the customer does not supply one" },
-          "optional": { "type": "boolean" }
+          "generate": { "enum": ["none", "hex32", "base64-32", "sk-hex32", "password"], "description": "how sealed secrets set --generate creates a value when the customer does not supply one: hex32 is 32 random bytes as 64 lowercase hex characters, base64-32 is 32 random bytes in standard base64 with padding, sk-hex32 is sk- followed by hex32, password is 24 characters drawn uniformly from [A-Za-z0-9]. Must be none when same_as is set." },
+          "optional": { "type": "boolean" },
+          "same_as": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]/[A-Z][A-Z0-9_]*$",
+            "description": "<appId>/<NAME>: this secret has the value of another app's secret (D-043). The composer requires that app to be in the stack and to declare that secret; the key broker returns the value under this app's name, and sealed secrets never asks for it twice."
+          }
         }
       }
     },
@@ -135,15 +144,29 @@
       "items": { "type": "string" },
       "description": "Paths that are never shipped (enterprise directories, proprietary packages). CI fails if an SBOM or image layer contains them."
     },
+    "license_exceptions": {
+      "type": "array",
+      "description": "Paths exempt from SBOM license and excluded-path findings, each under a recorded decision. Catalog lint accepts only the decision ids listed in runtime/composer/lint/exceptions.go (empty today), so every entry is a lint error until a decision adds its id there.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision", "paths", "reason"],
+        "properties": {
+          "decision": { "type": "string", "pattern": "^D-[0-9]{3}[a-z]?$" },
+          "paths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "reason": { "type": "string", "minLength": 20 }
+        }
+      }
+    },
     "bootstrap": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional one-shot job run inside the VM before the app's routes open (first admin, closing sign-up)",
+      "description": "Optional one-shot job run inside the VM before the app's routes open (first admin, closing sign-up). The bootstrap service restarts on failure.",
       "properties": {
         "service": { "type": "string" },
         "done_file": {
           "type": "string",
-          "description": "File the bootstrap job writes when it is done: <volume>/<path> relative to the app's data directory, or an absolute path in bootstrap.service under one of its named-volume mounts. Clean path without . or .. segments."
+          "description": "File the bootstrap job writes when it is done: <volume>/<path> relative to /mnt/sealed-data/<appId>/ (D-044: sealed-agent keeps the app's routes closed until it exists). Clean path without . or .. segments. The older form, an absolute path in bootstrap.service under one of its named-volume mounts, is still accepted and lint warns; a tmpfs path is rejected because the agent cannot see it."
         }
       }
     },

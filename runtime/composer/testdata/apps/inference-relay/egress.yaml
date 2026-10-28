@@ -1,0 +1,4 @@
+version: 1
+default_allow: ["rpc.tempo.xyz:443"]
+customer_additions_allowed: false
+notes: "The relay settles payments on Tempo"

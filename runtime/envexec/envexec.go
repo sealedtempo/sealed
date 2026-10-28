@@ -139,6 +139,11 @@ func waitReady(ready string, timeout time.Duration, log io.Writer) error {
 }
 
 // loadSecrets reads the declared secrets. Values are the exact file bytes.
+// The composer bind-mounts exactly the declared files (D-042), and
+// sealed-agent writes every one of them, an empty file for an optional
+// secret the customer did not set (a missing bind source would stop the
+// container). So an optional secret that is missing or empty is not
+// exported, and a required secret must be present and non-empty.
 func loadSecrets(o *runOptions) (map[string]string, error) {
 	dir := filepath.Join(o.SecretsDir, o.App)
 	out := map[string]string{}
@@ -149,6 +154,12 @@ func loadSecrets(o *runOptions) (map[string]string, error) {
 		}
 		if err != nil {
 			return fmt.Errorf("secret %s: %w", name, err)
+		}
+		if len(b) == 0 {
+			if required {
+				return fmt.Errorf("secret %s is empty", name)
+			}
+			return nil
 		}
 		if strings.ContainsRune(string(b), 0) {
 			return fmt.Errorf("secret %s contains a NUL byte", name)

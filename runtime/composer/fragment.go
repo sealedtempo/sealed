@@ -39,6 +39,9 @@ type Fragment struct {
 	App      string
 	Services []*ServiceSpec // sorted by name
 	Volumes  []string       // sorted
+	// VolumeOwners maps a volume to its x-sealed-owner "<uid>:<gid>". The
+	// agent creates the data-disk directory with that owner (D-041 item 11).
+	VolumeOwners map[string]string
 }
 
 // Service returns the named service.
@@ -97,6 +100,26 @@ var reservedEnv = map[string]bool{
 	"NO_PROXY": true, "no_proxy": true, "NODE_USE_ENV_PROXY": true, "ALL_PROXY": true, "all_proxy": true,
 }
 
+// PublicURLEnvPrefix starts the SEALED_PUBLIC_URL_<ROUTE> variables the
+// composer sets on every service of the app that owns the route.
+const PublicURLEnvPrefix = "SEALED_PUBLIC_URL_"
+
+// isReservedEnv reports whether the composer owns an environment variable.
+func isReservedEnv(k string) bool {
+	return reservedEnv[k] || strings.HasPrefix(k, PublicURLEnvPrefix)
+}
+
+// MaxServiceNameLen keeps "<service>--apps", the egress caller name of a
+// primary service's address on the shared apps network, a valid caller name
+// (at most 63 characters).
+const MaxServiceNameLen = 57
+
+// ownerRe is x-sealed-owner: numeric "<uid>:<gid>".
+var ownerRe = regexp.MustCompile(`^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$`)
+
+// maxOwnerID is the largest uid or gid accepted in x-sealed-owner.
+const maxOwnerID = 1<<31 - 1
+
 var (
 	imagePlaceholderRe = regexp.MustCompile(`^\{\{image:([a-z][a-z0-9-]*)\}\}$`)
 	digestRefRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9][a-z0-9._-]*)+@sha256:[0-9a-f]{64}$`)
@@ -138,8 +161,22 @@ func ParseFragment(m *Manifest, data []byte) (*Fragment, error) {
 				return nil, &FragmentError{App: app, Key: "volumes." + name, Msg: "invalid volume name"}
 			}
 			if spec := vols[name]; spec != nil {
-				if mm, ok := spec.(map[string]any); !ok || len(mm) > 0 {
-					return nil, &FragmentError{App: app, Key: "volumes." + name, Msg: "volume options (driver, external, ...) are not allowed; every volume is a directory on the encrypted data disk"}
+				mm, ok := spec.(map[string]any)
+				if !ok {
+					return nil, &FragmentError{App: app, Key: "volumes." + name, Msg: "must be empty or a mapping with x-sealed-owner"}
+				}
+				for _, k := range sortedKeys(mm) {
+					if k != "x-sealed-owner" {
+						return nil, &FragmentError{App: app, Key: "volumes." + name + "." + k, Msg: "volume options (driver, external, ...) are not allowed; every volume is a directory on the encrypted data disk (only x-sealed-owner may be set)"}
+					}
+					owner, err := parseOwner(mm[k])
+					if err != nil {
+						return nil, &FragmentError{App: app, Key: "volumes." + name + ".x-sealed-owner", Msg: err.Error()}
+					}
+					if f.VolumeOwners == nil {
+						f.VolumeOwners = map[string]string{}
+					}
+					f.VolumeOwners[name] = owner
 				}
 			}
 			f.Volumes = append(f.Volumes, name)
@@ -156,6 +193,9 @@ func ParseFragment(m *Manifest, data []byte) (*Fragment, error) {
 	for _, name := range sortedKeys(svcs) {
 		if !serviceNameRe.MatchString(name) || !strings.HasPrefix(name, app+"-") {
 			return nil, &FragmentError{App: app, Service: name, Msg: fmt.Sprintf("service names must start with %q and be lowercase DNS labels", app+"-")}
+		}
+		if len(name) > MaxServiceNameLen || strings.Contains(name, "--") {
+			return nil, &FragmentError{App: app, Service: name, Msg: fmt.Sprintf("service names have at most %d characters and no \"--\" (the composer derives egress caller names from them)", MaxServiceNameLen)}
 		}
 		body, ok := svcs[name].(map[string]any)
 		if !ok {
@@ -226,12 +266,13 @@ func (f *Fragment) checkReferences(m *Manifest) error {
 func DataPath(app, volume string) string { return DataRoot + "/" + app + "/" + volume }
 
 // ResolveDoneFile maps bootstrap.done_file to its path on the data disk.
-// "<volume>/<path>" is relative to the app's data directory. An absolute
-// path is a path inside bootstrap.service and must lie under one of its
-// mounts: under a named volume it resolves to the data disk; under a tmpfs
-// (a marker the app's other services cannot forge) it stays inside the
-// container and ResolveDoneFile returns "", so sealed-agent relies on the
-// service's healthcheck instead. The result is always under DataRoot or "".
+// The rule (integration brief item 10) is "<volume>/<path>", relative to
+// /mnt/sealed-data/<appId>/. The older absolute form, a path inside
+// bootstrap.service, is still accepted when it lies under one of the
+// service's named-volume mounts (it resolves to the same data-disk path;
+// lint warns). A tmpfs path is rejected: sealed-agent keeps the app's routes
+// closed until the done file exists, so it must be on the data disk. The
+// result is always under DataRoot.
 func ResolveDoneFile(m *Manifest, f *Fragment) (string, error) {
 	fail := func(format string, args ...any) error {
 		return &ManifestError{App: m.ID, Field: "bootstrap.done_file", Msg: fmt.Sprintf(format, args...)}
@@ -271,13 +312,32 @@ func ResolveDoneFile(m *Manifest, f *Fragment) (string, error) {
 	}
 	switch {
 	case best.Target == "":
-		return "", fail("%q is not under a volume or tmpfs mount of %s", p, svc.Name)
+		return "", fail("%q is not under a volume mount of %s; write it as <volume>/<path>", p, svc.Name)
 	case best.ReadOnly:
 		return "", fail("%q is on a read-only mount of %s", p, svc.Name)
 	case best.Type == "tmpfs":
-		return "", nil
+		return "", fail("%q is on a tmpfs of %s, which sealed-agent cannot see; the agent keeps the app's routes closed until the done file exists under %s/%s/, so write it on a volume as <volume>/<path>", p, svc.Name, DataRoot, m.ID)
 	}
 	return DataPath(m.ID, best.Source) + strings.TrimPrefix(p, best.Target), nil
+}
+
+// parseOwner validates x-sealed-owner: "<uid>:<gid>", decimal, each at most 2^31-1.
+func parseOwner(v any) (string, error) {
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("must be a quoted \"<uid>:<gid>\" string")
+	}
+	m := ownerRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", fmt.Errorf("%q must be \"<uid>:<gid>\" with decimal ids", s)
+	}
+	for _, id := range m[1:] {
+		n, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || n > maxOwnerID {
+			return "", fmt.Errorf("%q: ids must be at most %d", s, maxOwnerID)
+		}
+	}
+	return s, nil
 }
 
 func checkDependencyCycles(app string, svcs []*ServiceSpec) error {
@@ -695,7 +755,7 @@ func parseEnvironment(m *Manifest, v any) (map[string]string, error) {
 		return nil, err
 	}
 	for k := range env {
-		if reservedEnv[k] {
+		if isReservedEnv(k) {
 			return nil, fmt.Errorf("%q is set by the composer", k)
 		}
 		if _, ok := m.Secret(k); ok {

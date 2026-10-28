@@ -1,15 +1,17 @@
 package policy
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/sealed-dev/sealed/runtime/composer/cjson"
 )
 
 // The shared CJSON vectors (INTERFACES section 1) are owned by the composer.
-// Egress keeps its own checker, so it must agree with them exactly:
-// otherwise egress would refuse configs the composer considers canonical.
+// Egress checks configs with the composer's cjson package; this test keeps
+// CheckCanonical in step with the vectors, so egress never refuses a config
+// the composer considers canonical, and never accepts one it does not.
 const sharedVectors = "../../composer/testdata/cjson/vectors.json"
 
 type cjsonVector struct {
@@ -45,14 +47,29 @@ func TestSharedCJSONVectors(t *testing.T) {
 				t.Errorf("vector %d: non-canonical input %q accepted", i, v.In)
 			}
 		}
-		tree, err := decodeTree([]byte(v.In))
-		if err != nil {
-			t.Errorf("vector %d: decode %q: %v", i, v.In, err)
-			continue
+		got, err := cjson.Canonicalize([]byte(v.In))
+		if err != nil || string(got) != v.Out {
+			t.Errorf("vector %d: canonicalize %q = %q, %v; want %q", i, v.In, got, err, v.Out)
 		}
-		var buf bytes.Buffer
-		if err := encodeCanonical(&buf, tree); err != nil || buf.String() != v.Out {
-			t.Errorf("vector %d: encode %q = %q, %v; want %q", i, v.In, buf.String(), err, v.Out)
-		}
+	}
+}
+
+// TestEncodeCanonicalIsComposerCJSON pins that egress tooling produces the
+// composer's bytes for the same value.
+func TestEncodeCanonicalIsComposerCJSON(t *testing.T) {
+	cfg := sampleConfig()
+	a, err := EncodeCanonical(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := cjson.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Fatalf("EncodeCanonical %s differs from cjson.Marshal %s", a, b)
+	}
+	if err := CheckCanonical(a); err != nil {
+		t.Fatal(err)
 	}
 }

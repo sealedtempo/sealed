@@ -6,7 +6,7 @@ Static Go entrypoint wrapper for every Sealed app container (INTERFACES section 
 /sealed/bin/envexec --app <appId> [--secret NAME]... [--optional-secret NAME]... -- <original entrypoint...>
 ```
 
-envexec waits until `/run/sealed/ready` is open (a regular file, or the shared tmpfs directory containing `ok`), exports each declared secret from `/run/sealed/secrets/<appId>/<NAME>` as an environment variable with its exact bytes, and `exec`s the original command with the container's environment. A missing required secret is an error; a missing optional one is skipped. The filter applies to the environment only: the app's whole secrets directory is mounted read-only into every service that declares secrets, so secrets are scoped per app, not per service. Services without secrets still wait for the gate. It never logs secret values.
+envexec waits until `/run/sealed/ready` is open (a regular file, or the shared tmpfs directory containing `ok`), exports each declared secret from `/run/sealed/secrets/<appId>/<NAME>` as an environment variable with its exact bytes, and `exec`s the original command with the container's environment. The composer bind-mounts exactly the secret files a service lists in `x-sealed-secrets` (read-only, D-042), never the whole directory, so a service can neither read nor export another service's secrets. sealed-agent writes every mounted file before the gate opens, an empty one for an optional secret the customer did not set, because a missing bind source would stop the container. A missing or empty required secret is an error; a missing or empty optional one is not exported. Services without secrets still wait for the gate. It never logs secret values.
 
 Other modes:
 

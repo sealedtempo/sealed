@@ -142,6 +142,7 @@ func TestOneByteChangesStackHash(t *testing.T) {
 	}
 	mutateFile(FragmentFile)
 	mutateFile(EgressFile)
+	mutateFile(ManifestFile)
 
 	raw, err := cfg.CanonicalJSON()
 	if err != nil {
@@ -184,11 +185,13 @@ func TestComposePassesDockerComposeConfig(t *testing.T) {
 		t.Skip("docker compose plugin not installed")
 	}
 	_, bundles := fixtureStack(t)
-	for _, stack := range [][]*Bundle{bundles, bundles[:1]} {
+	relay := buildFixture(t, "inference-relay")
+	for i, stack := range [][]*Bundle{bundles, bundles[:1], {relay}, append(append([]*Bundle{}, bundles...), relay)} {
 		c := testConfig(stack...)
 		if stack[0].Manifest.ID == "notes" {
 			c.EgressAdditions = map[string][]string{"notes": {"smtp.example.com:587"}}
 		}
+		c.Debug = i%2 == 1
 		// Literal dollars in measured content must survive interpolation.
 		c.Endpoints.KeyBroker = "https://sealed-key-broker-xyz.a.run.app/v1/$release${x}$$"
 		r := mustCompose(t, c, stack...)
@@ -254,17 +257,33 @@ func TestComposeServices(t *testing.T) {
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("services %v", names)
 	}
-	ip := func(name string) string {
+	ip := func(name, network string) string {
 		nets := svc(doc, name)["networks"].(map[string]any)
-		return nets["apps"].(map[string]any)["ipv4_address"].(string)
+		n, _ := nets[network].(map[string]any)
+		s, _ := n["ipv4_address"].(string)
+		return s
 	}
 	for name, wantIP := range map[string]string{
 		"sealed-egress": "172.30.0.2", "sealed-agent": "172.30.0.3", "caddy": "172.30.0.4",
 		"sealed-mpp-payer": "172.30.0.5", "sealed-verifierd": "172.30.0.6",
-		"llm-gateway-proxy": "172.30.0.16", "notes-web": "172.30.0.17", "notes-db": "172.30.0.18",
+		"llm-gateway-proxy": "172.30.0.16", "notes-web": "172.30.0.17", "notes-db": "",
 	} {
-		if got := ip(name); got != wantIP {
-			t.Errorf("%s ip %s, want %s", name, got, wantIP)
+		if got := ip(name, "apps"); got != wantIP {
+			t.Errorf("%s apps ip %q, want %q", name, got, wantIP)
+		}
+	}
+	// App networks: llm-gateway is app 1, notes app 2 (sorted app order).
+	for _, c := range []struct{ name, network, ip string }{
+		{"llm-gateway-proxy", "app-llm-gateway", "172.30.1.16"},
+		{"notes-web", "app-notes", "172.30.2.16"},
+		{"notes-db", "app-notes", "172.30.2.17"},
+		{"sealed-egress", "app-llm-gateway", "172.30.1.2"},
+		{"sealed-egress", "app-notes", "172.30.2.2"},
+		{"sealed-agent", "app-llm-gateway", "172.30.1.3"},
+		{"sealed-agent", "app-notes", "172.30.2.3"},
+	} {
+		if got := ip(c.name, c.network); got != c.ip {
+			t.Errorf("%s on %s: %q, want %q", c.name, c.network, got, c.ip)
 		}
 	}
 	edge := svc(doc, "sealed-egress")["networks"].(map[string]any)["edge"].(map[string]any)["ipv4_address"]
@@ -280,9 +299,9 @@ func TestComposeServices(t *testing.T) {
 	}
 	env := web["environment"].(map[string]any)
 	for k, v := range map[string]string{
-		"HTTP_PROXY": "http://172.30.0.2:3128", "HTTPS_PROXY": "http://172.30.0.2:3128", "http_proxy": "http://172.30.0.2:3128",
-		"https_proxy": "http://172.30.0.2:3128", "NODE_USE_ENV_PROXY": "1", "NOTES_TELEMETRY": "0", "DO_NOT_TRACK": "1",
-		"NOTES_WORKERS": "2", "NOTES_PRICE_LABEL": "costs $$5",
+		"HTTP_PROXY": "http://172.30.2.2:3128", "HTTPS_PROXY": "http://172.30.2.2:3128", "http_proxy": "http://172.30.2.2:3128",
+		"https_proxy": "http://172.30.2.2:3128", "NODE_USE_ENV_PROXY": "1", "NOTES_TELEMETRY": "0", "DO_NOT_TRACK": "1",
+		"NOTES_WORKERS": "2", "NOTES_PRICE_LABEL": "costs $$5", "SEALED_PUBLIC_URL_TOOLS": "https://tools.34-1-2-3.sslip.io",
 	} {
 		if env[k] != v {
 			t.Errorf("env %s = %v, want %s", k, env[k], v)
@@ -297,15 +316,15 @@ func TestComposeServices(t *testing.T) {
 	if env["no_proxy"] != env["NO_PROXY"] {
 		t.Error("no_proxy differs")
 	}
-	if !jsonEqual(web["dns"], []any{"172.30.0.2"}) || web["restart"] != "unless-stopped" || !jsonEqual(web["logging"], map[string]any{"driver": "none"}) {
+	if !jsonEqual(web["dns"], []any{"172.30.2.2"}) || web["restart"] != "unless-stopped" || !jsonEqual(web["logging"], map[string]any{"driver": "none"}) {
 		t.Errorf("sidecar plumbing: dns %v restart %v logging %v", web["dns"], web["restart"], web["logging"])
 	}
 	aliases := web["networks"].(map[string]any)["apps"].(map[string]any)["aliases"]
 	if !jsonEqual(aliases, []any{"notes"}) {
 		t.Errorf("primary alias %v", aliases)
 	}
-	if _, ok := svc(doc, "notes-db")["networks"].(map[string]any)["apps"].(map[string]any)["aliases"]; ok {
-		t.Error("non-primary service must not get the app alias")
+	if _, ok := svc(doc, "notes-db")["networks"].(map[string]any)["apps"]; ok {
+		t.Error("a non-primary service must not join the shared apps network")
 	}
 	deps := web["depends_on"].(map[string]any)
 	for dep, cond := range map[string]string{"sealed-agent": "service_healthy", "sealed-init": "service_completed_successfully", "notes-db": "service_healthy"} {
@@ -319,7 +338,10 @@ func TestComposeServices(t *testing.T) {
 		sources = append(sources, m["type"].(string)+":"+str(m["source"])+":"+m["target"].(string))
 	}
 	wantVols := []string{
-		"volume:sealed-bin:/sealed/bin", "volume:sealed-ready:/run/sealed/ready", "volume:sealed-secrets-notes:/run/sealed/secrets/notes",
+		"volume:sealed-bin:/sealed/bin", "volume:sealed-ready:/run/sealed/ready",
+		"bind:/run/sealed/secrets/notes/APP_SECRET:/run/sealed/secrets/notes/APP_SECRET",
+		"bind:/run/sealed/secrets/notes/DB_PASSWORD:/run/sealed/secrets/notes/DB_PASSWORD",
+		"bind:/run/sealed/secrets/notes/SMTP_PASSWORD:/run/sealed/secrets/notes/SMTP_PASSWORD",
 		"bind:/mnt/sealed-data/notes/uploads:/var/lib/notes/uploads", "tmpfs::/tmp",
 	}
 	if strings.Join(sources, " ") != strings.Join(wantVols, " ") {
@@ -355,6 +377,16 @@ func TestComposeServices(t *testing.T) {
 	nets := doc["networks"].(map[string]any)
 	if nets["apps"].(map[string]any)["internal"] != true || nets["edge"].(map[string]any)["internal"] != nil {
 		t.Error("apps must be internal, edge not")
+	}
+	if strings.Join(sortedKeys(nets), ",") != "app-llm-gateway,app-notes,apps,edge" {
+		t.Errorf("networks %v", sortedKeys(nets))
+	}
+	for name, subnet := range map[string]string{"app-llm-gateway": "172.30.1.0/24", "app-notes": "172.30.2.0/24"} {
+		n := nets[name].(map[string]any)
+		cfg := n["ipam"].(map[string]any)["config"].([]any)[0].(map[string]any)
+		if n["internal"] != true || cfg["subnet"] != subnet {
+			t.Errorf("%s: internal %v subnet %v", name, n["internal"], cfg["subnet"])
+		}
 	}
 	for name, content := range map[string][]byte{
 		"sealed-config": r.ConfigJSON, "sealed-egress": r.EgressConfig, "sealed-caddyfile": r.Caddyfile,
@@ -415,6 +447,22 @@ func TestComposeHardensEveryService(t *testing.T) {
 			create := m["bind"].(map[string]any)["create_host_path"]
 			if wantCreate := name == "sealed-agent" && src == DataRoot; create != wantCreate {
 				t.Errorf("%s: bind %s create_host_path %v", name, src, create)
+			}
+		}
+		// Secret files are never created by Docker either; only the
+		// agent's secrets root on the host tmpfs may be.
+		for _, v := range vols {
+			m := v.(map[string]any)
+			src, _ := m["source"].(string)
+			if m["type"] != "bind" || !strings.HasPrefix(src, SecretsRoot) {
+				continue
+			}
+			create := m["bind"].(map[string]any)["create_host_path"]
+			if wantCreate := name == "sealed-agent" && src == SecretsRoot; create != wantCreate {
+				t.Errorf("%s: secret bind %s create_host_path %v", name, src, create)
+			}
+			if name != "sealed-agent" && m["read_only"] != true {
+				t.Errorf("%s: secret bind %s is writable", name, src)
 			}
 		}
 	}
@@ -578,14 +626,22 @@ func TestEgressConfigCallers(t *testing.T) {
 	for _, c := range ec.Callers {
 		allow[c.Name+"@"+c.IP] = strings.Join(c.Allow, " ")
 	}
+	// One caller per source address: every address a service owns maps to
+	// its allowlist (D-041).
+	agent := "api.sealed.example:443 rpc.tempo.xyz:443 sealed-key-broker-xyz.a.run.app:443"
+	notes := "api.example.com:443 smtp.example.com:587"
 	want := map[string]string{
-		"sealed-agent@172.30.0.3":       "api.sealed.example:443 rpc.tempo.xyz:443 sealed-key-broker-xyz.a.run.app:443",
-		"caddy@172.30.0.4":              "acme-v02.api.letsencrypt.org:443",
-		"sealed-mpp-payer@172.30.0.5":   "relay.sealed.example:443 rpc.tempo.xyz:443",
-		"sealed-verifierd@172.30.0.6":   "api.trustedservices.intel.com:443 attest.relay.sealed.example:443 certificates.trustedservices.intel.com:443 rpc.tempo.xyz:443",
-		"llm-gateway-proxy@172.30.0.16": "",
-		"notes-web@172.30.0.17":         "api.example.com:443 smtp.example.com:587",
-		"notes-db@172.30.0.18":          "api.example.com:443 smtp.example.com:587",
+		"sealed-agent@172.30.0.3":                  agent,
+		"sealed-agent--app-llm-gateway@172.30.1.3": agent,
+		"sealed-agent--app-notes@172.30.2.3":       agent,
+		"caddy@172.30.0.4":                         "acme-v02.api.letsencrypt.org:443",
+		"sealed-mpp-payer@172.30.0.5":              "attest.relay.sealed.example:443 rpc.tempo.xyz:443",
+		"sealed-verifierd@172.30.0.6":              "api.trustedservices.intel.com:443 attest.relay.sealed.example:443 certificates.trustedservices.intel.com:443 rpc.tempo.xyz:443",
+		"llm-gateway-proxy--apps@172.30.0.16":      "",
+		"llm-gateway-proxy@172.30.1.16":            "",
+		"notes-web--apps@172.30.0.17":              notes,
+		"notes-web@172.30.2.16":                    notes,
+		"notes-db@172.30.2.17":                     notes,
 	}
 	if len(allow) != len(want) {
 		t.Fatalf("callers %v", allow)
@@ -650,12 +706,14 @@ func TestComposeRoutesAndCaddyfile(t *testing.T) {
 	r := mustCompose(t, cfg, bundles...)
 	cf := string(r.Caddyfile)
 	for _, want := range []string{
-		"admin unix//run/sealed/caddy-admin/admin.sock",
+		"admin unix//run/sealed/caddy-admin/admin.sock|0660",
 		"\ngateway.34-1-2-3.sslip.io {",
 		"\ntools.34-1-2-3.sslip.io {",
 		"\nattest.34-1-2-3.sslip.io {",
 		"reverse_proxy sealed-agent:7070",
-		"sealed {env.GATE_PASSWORD_BCRYPT}",
+		"forward_auth sealed-agent:7070 {",
+		"uri /v1/gate?route=tools",
+		"uri /v1/gate?route=gateway",
 		`header Authorization "Bearer *"`,
 		"reverse_proxy notes-web:8080",
 		"@r0 path /admin /admin/*",
@@ -665,7 +723,10 @@ func TestComposeRoutesAndCaddyfile(t *testing.T) {
 		}
 	}
 	pn := string(r.CaddyfilePaymentNeeded)
-	if strings.Contains(pn, "reverse_proxy notes-web") || strings.Contains(pn, "basic_auth") {
+	if strings.Contains(cf, "basic_auth") || strings.Contains(cf, "GATE_PASSWORD_BCRYPT") {
+		t.Error("Caddy must not gate with basic_auth any more (D-044)")
+	}
+	if strings.Contains(pn, "reverse_proxy notes-web") || strings.Contains(pn, "forward_auth") {
 		t.Error("payment-needed variant still proxies apps")
 	}
 	if !strings.Contains(pn, "status 402") || !strings.Contains(pn, "reverse_proxy sealed-agent:7070") {
@@ -691,6 +752,18 @@ type stackInfoDoc struct {
 		ID        string `json:"id"`
 		AppID     string `json:"appId"`
 		ReleaseID string `json:"releaseId"`
+		Network   struct {
+			Name, Subnet, Egress, Agent string
+		} `json:"network"`
+		Services []struct {
+			Name     string            `json:"name"`
+			IP       string            `json:"ip"`
+			IPs      []string          `json:"ips"`
+			Networks map[string]string `json:"networks"`
+			Primary  bool              `json:"primary"`
+			Secrets  []string          `json:"secrets"`
+		} `json:"services"`
+		Routes    []any `json:"routes"`
 		Metering  struct{ Unit, Source string }
 		Volumes   []struct{ Name, Path string } `json:"volumes"`
 		Bootstrap *struct {

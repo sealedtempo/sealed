@@ -3,6 +3,7 @@ package composer
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,7 +64,13 @@ const (
 	PayerPort            = 8090
 	VerifierdPort        = 8088
 	GateApp              = "_gate"
-	ACMEHost             = "acme-v02.api.letsencrypt.org:443"
+	// GateCookieMaxAge is the sealed_gate cookie lifetime (12 h, D-044).
+	GateCookieMaxAge = 12 * 3600
+	// AgentRunAs is the uid:gid sealed-agent drops to. Caddy's admin socket
+	// lives on a tmpfs it owns, so it needs no root helper.
+	AgentRunAs = "10001:10001"
+	agentUID   = "10001"
+	ACMEHost   = "acme-v02.api.letsencrypt.org:443"
 	// MaxAppComposeBytes is dstack v0.6.1's cap on app-compose.json (the
 	// guest refuses larger files at boot), so a larger stack could be
 	// approved but never start.
@@ -102,16 +109,50 @@ func Compose(cfg *Config, bundles []*Bundle) (*Result, error) {
 
 type plannedApp struct {
 	id        string
+	n         int // app number: network app-<id>, subnet 172.30.<n>.0/24
 	bundle    *Bundle
-	services  []*plannedService
+	services  []*plannedService // sorted by name
 	additions []string
 }
+
+// network is the app's own compose network.
+func (a *plannedApp) network() string { return AppNetwork(a.id) }
+
+// egressIP and agentIP are the sidecars' addresses on the app network; the
+// app's services use egressIP for DNS and the HTTP(S) proxy.
+func (a *plannedApp) egressIP() string { return appNetIP(a.n, appNetEgressHost) }
+func (a *plannedApp) agentIP() string  { return appNetIP(a.n, appNetAgentHost) }
+func (a *plannedApp) proxyURL() string { return "http://" + a.egressIP() + ":3128" }
 
 type plannedService struct {
 	app     *plannedApp
 	spec    *ServiceSpec
-	ip      string
+	netIP   string // address on the app network
+	appsIP  string // address on the shared apps network; primary only
 	primary bool
+}
+
+// networks maps each network the service joins to its address.
+func (s *plannedService) networks() map[string]string {
+	m := map[string]string{s.app.network(): s.netIP}
+	if s.appsIP != "" {
+		m["apps"] = s.appsIP
+	}
+	return m
+}
+
+// ips are every address the service owns, sorted.
+func (s *plannedService) ips() []string {
+	out := []string{s.netIP}
+	if s.appsIP != "" {
+		out = append(out, s.appsIP)
+	}
+	sortIPs(out)
+	return out
+}
+
+func sortIPs(ips []string) {
+	sort.Slice(ips, func(i, j int) bool { return netip.MustParseAddr(ips[i]).Less(netip.MustParseAddr(ips[j])) })
 }
 
 // ComposeWith is Compose with an explicit runtime image set.
@@ -126,6 +167,9 @@ func ComposeWith(cfg *Config, bundles []*Bundle, ri *RuntimeImages) (*Result, er
 	if err := checkImageRefs(apps, ri); err != nil {
 		return nil, err
 	}
+	if err := checkSameAs(apps); err != nil {
+		return nil, err
+	}
 	hasGateway := false
 	for _, a := range apps {
 		if a.id == gatewayApp {
@@ -135,6 +179,9 @@ func ComposeWith(cfg *Config, bundles []*Bundle, ri *RuntimeImages) (*Result, er
 	if hasGateway {
 		if cfg.Endpoints.Relay == "" || cfg.Endpoints.RelayAttest == "" || cfg.RelayOwner == "" {
 			return nil, fmt.Errorf("config: endpoints.relay, endpoints.relayAttest and relayOwner are required when %s is in the stack", gatewayApp)
+		}
+		if err := checkRelayOrigin(cfg.Endpoints.Relay, cfg.Endpoints.RelayAttest); err != nil {
+			return nil, err
 		}
 	}
 	routes, err := planRoutes(cfg, apps)
@@ -164,7 +211,7 @@ func ComposeWith(cfg *Config, bundles []*Bundle, ri *RuntimeImages) (*Result, er
 	if res.StackInfo, err = buildStackInfo(cfg, apps, routes, hasGateway); err != nil {
 		return nil, err
 	}
-	doc, err := buildComposeDoc(cfg, apps, ri, hasGateway, res)
+	doc, err := buildComposeDoc(cfg, apps, routes, ri, hasGateway, res)
 	if err != nil {
 		return nil, err
 	}
@@ -259,26 +306,27 @@ func planApps(cfg *Config, bundles []*Bundle) ([]*plannedApp, error) {
 	if len(byID) > 0 {
 		return nil, fmt.Errorf("compose: bundles for apps not in the config: %s", strings.Join(sortedKeys(byID), ", "))
 	}
-	// Primary services get .16, .17, ... in app order, then every other
-	// service in app order and name order.
-	host := firstAppHost
-	next := func() (string, error) {
-		if host > lastAppHost {
-			return "", fmt.Errorf("compose: more than %d app services", lastAppHost-firstAppHost+1)
-		}
-		ip := "172.30.0." + strconv.Itoa(host)
-		host++
-		return ip, nil
-	}
-	for _, a := range apps {
+	// Primary services get .16, .17, ... on the shared apps network in app
+	// order. On its own network (app number n = position + 1) each app's
+	// primary gets .16 and the other services .17, ... in name order.
+	for i, a := range apps {
+		a.n = i + 1
 		primary := a.bundle.Fragment.Service(a.bundle.Manifest.PrimaryService)
-		ip, err := next()
+		host := firstAppHost
+		next := func() (string, error) {
+			if host > lastAppHost {
+				return "", fmt.Errorf("compose: app %q has more than %d services", a.id, lastAppHost-firstAppHost+1)
+			}
+			ip := appNetIP(a.n, host)
+			host++
+			return ip, nil
+		}
+		netIP, err := next()
 		if err != nil {
 			return nil, err
 		}
-		a.services = append(a.services, &plannedService{app: a, spec: primary, ip: ip, primary: true})
-	}
-	for _, a := range apps {
+		a.services = append(a.services, &plannedService{app: a, spec: primary, primary: true, netIP: netIP,
+			appsIP: "172.30.0." + strconv.Itoa(firstAppHost+i)})
 		for _, s := range a.bundle.Fragment.Services {
 			if s.Name == a.bundle.Manifest.PrimaryService {
 				continue
@@ -287,7 +335,7 @@ func planApps(cfg *Config, bundles []*Bundle) ([]*plannedApp, error) {
 			if err != nil {
 				return nil, err
 			}
-			a.services = append(a.services, &plannedService{app: a, spec: s, ip: ip})
+			a.services = append(a.services, &plannedService{app: a, spec: s, netIP: ip})
 		}
 		sort.Slice(a.services, func(i, j int) bool { return a.services[i].spec.Name < a.services[j].spec.Name })
 	}
@@ -332,6 +380,64 @@ func checkImageRefs(apps []*plannedApp, ri *RuntimeImages) error {
 	return nil
 }
 
+// checkSameAs validates cross-app secret references (D-043): the referenced
+// app is in the stack and declares the secret, which is not itself a
+// reference, and a required secret does not depend on an optional one.
+func checkSameAs(apps []*plannedApp) error {
+	byID := map[string]*plannedApp{}
+	for _, a := range apps {
+		byID[a.id] = a
+	}
+	for _, a := range apps {
+		for i, sec := range a.bundle.Manifest.Secrets {
+			refApp, refName, ok := sec.SameAsRef()
+			if !ok {
+				continue
+			}
+			field := fmt.Sprintf("secrets[%d].same_as", i)
+			fail := func(format string, args ...any) error {
+				return &ManifestError{App: a.id, Field: field, Msg: fmt.Sprintf(format, args...)}
+			}
+			target, ok := byID[refApp]
+			if !ok {
+				return fail("%q: app %q is not in this stack; deploy it together with %s", sec.SameAs, refApp, a.id)
+			}
+			ref, ok := target.bundle.Manifest.Secret(refName)
+			if !ok {
+				return fail("%q: app %q declares no secret %q", sec.SameAs, refApp, refName)
+			}
+			if ref.SameAs != "" {
+				return fail("%q is itself a reference (same_as %q); point at the original secret", sec.SameAs, ref.SameAs)
+			}
+			if ref.Optional && !sec.Optional {
+				return fail("%q is optional in %s, so the required secret %s could be missing", sec.SameAs, refApp, sec.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// checkRelayOrigin requires endpoints.relay to be exactly the origin of
+// endpoints.relayAttest (D-045): the relay is served on its deployment's
+// attest host, and the payer pins relay requests to the attested TLS key.
+func checkRelayOrigin(relay, relayAttest string) error {
+	r, err := url.Parse(relay)
+	if err != nil {
+		return fmt.Errorf("config: endpoints.relay: %v", err)
+	}
+	a, err := url.Parse(relayAttest)
+	if err != nil {
+		return fmt.Errorf("config: endpoints.relayAttest: %v", err)
+	}
+	if r.Path != "" || r.RawQuery != "" || r.Fragment != "" || r.Opaque != "" {
+		return fmt.Errorf("config: endpoints.relay: %q must be an origin (scheme and host, no path or trailing slash)", relay)
+	}
+	if r.Scheme != a.Scheme || r.Host != a.Host {
+		return fmt.Errorf("config: endpoints.relay: %q must equal the origin of endpoints.relayAttest (%s://%s): the relay is served on its deployment's attest host", relay, a.Scheme, a.Host)
+	}
+	return nil
+}
+
 type plannedRoute struct {
 	name    string
 	host    string
@@ -340,8 +446,22 @@ type plannedRoute struct {
 	service string
 }
 
+// publicURL is the route's public origin, SEALED_PUBLIC_URL_<ROUTE>.
+func (r plannedRoute) publicURL() string { return "https://" + r.host }
+
+// PublicURLEnv is the environment variable that carries a route's public
+// origin: SEALED_PUBLIC_URL_ plus the route name upper-cased, "-" as "_".
+func PublicURLEnv(route string) string {
+	return PublicURLEnvPrefix + strings.ToUpper(strings.ReplaceAll(route, "-", "_"))
+}
+
 func planRoutes(cfg *Config, apps []*plannedApp) ([]plannedRoute, error) {
+	attestHost, err := cfg.Hostname("attest")
+	if err != nil {
+		return nil, err
+	}
 	owner := map[string]string{}
+	onAttest := map[string]bool{}
 	var out []plannedRoute
 	for _, a := range apps {
 		for _, r := range a.bundle.Manifest.Routes {
@@ -349,20 +469,30 @@ func planRoutes(cfg *Config, apps []*plannedApp) ([]plannedRoute, error) {
 				return nil, fmt.Errorf("compose: route %q is claimed by both %s and %s", r.Name, prev, a.id)
 			}
 			owner[r.Name] = a.id
-			host, err := cfg.Hostname(r.Name)
-			if err != nil {
+			host := attestHost
+			if r.OnAttestHost {
+				onAttest[r.Name] = true
+			} else if host, err = cfg.Hostname(r.Name); err != nil {
 				return nil, err
 			}
 			out = append(out, plannedRoute{name: r.Name, host: host, app: a.id, route: r, service: r.Service})
 		}
 	}
-	if _, err := cfg.Hostname("attest"); err != nil {
-		return nil, err
+	for _, r := range out {
+		if onAttest[r.name] != r.route.OnAttestHost {
+			return nil, fmt.Errorf("compose: route %q: either every entry or none sets on_attest_host", r.name)
+		}
 	}
 	if cfg.Hostnames.Scheme == SchemeCustom {
 		for _, route := range sortedKeys(cfg.Hostnames.Domains) {
-			if _, used := owner[route]; !used && route != "attest" {
+			if route == "attest" {
+				continue
+			}
+			if _, used := owner[route]; !used {
 				return nil, fmt.Errorf("config: hostnames.domains.%s: no app in this stack has that route", route)
+			}
+			if onAttest[route] {
+				return nil, fmt.Errorf("config: hostnames.domains.%s: route %s is served on the attest host and has no domain of its own", route, route)
 			}
 		}
 	}
@@ -376,35 +506,50 @@ func caddyInput(cfg *Config, routes []plannedRoute) (caddy.Input, error) {
 	}
 	sitesByHost := map[string]*caddy.Site{}
 	var order []string
+	var attestRoutes []caddy.Route
 	for _, r := range routes {
+		cr := caddy.Route{
+			Name:     r.name,
+			Path:     r.route.PathPrefix(),
+			Upstream: r.service + ":" + strconv.Itoa(r.route.InternalPort),
+			Auth:     r.route.Auth,
+		}
+		if r.route.OnAttestHost {
+			attestRoutes = append(attestRoutes, cr)
+			continue
+		}
 		s, ok := sitesByHost[r.host]
 		if !ok {
 			s = &caddy.Site{Host: r.host}
 			sitesByHost[r.host] = s
 			order = append(order, r.host)
 		}
-		s.Routes = append(s.Routes, caddy.Route{
-			Path:     r.route.PathPrefix(),
-			Upstream: r.service + ":" + strconv.Itoa(r.route.InternalPort),
-			Auth:     r.route.Auth,
-		})
+		s.Routes = append(s.Routes, cr)
 	}
 	sort.Strings(order)
 	in := caddy.Input{
 		ComposerVersion: Version,
 		AdminSocket:     caddy.DefaultAdminSocket,
-		GateUser:        caddy.DefaultGateUser,
-		GateEnv:         caddy.DefaultGateEnv,
+		AdminSocketMode: caddy.DefaultAdminSocketMode,
+		GateUpstream:    svcAgent + ":" + strconv.Itoa(AgentPort),
+		GatePath:        caddy.DefaultGatePath,
 		PageDir:         caddy.DefaultPageDir,
 		PageFile:        caddy.DefaultPageFile,
 		AttestHost:      attestHost,
 		AttestUpstream:  svcAgent + ":" + strconv.Itoa(AgentPort),
+		AttestRoutes:    attestRoutes,
 	}
 	for _, h := range order {
 		in.Sites = append(in.Sites, *sitesByHost[h])
 	}
 	return in, nil
 }
+
+// Egress caller-name suffixes. A caller is one source address: a service's
+// address on its app network keeps the service name, a primary's address on
+// the shared apps network adds callerAppsSuffix, and sealed-agent's address
+// on an app network adds "--" plus the network name.
+const callerAppsSuffix = "--apps"
 
 func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte, error) {
 	hp := endpointHostPort
@@ -425,9 +570,13 @@ func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte
 		ip    string
 		allow []string
 	}
+	agentAllow := []string{keyBroker, platformAPI, tempoRPC}
 	callers := []caller{
-		{svcAgent, AgentIP, []string{keyBroker, platformAPI, tempoRPC}},
+		{svcAgent, AgentIP, agentAllow},
 		{svcCaddy, CaddyIP, []string{ACMEHost}},
+	}
+	for _, a := range apps {
+		callers = append(callers, caller{svcAgent + "--" + a.network(), a.agentIP(), agentAllow})
 	}
 	if hasGateway {
 		relay, err := hp("endpoints.relay", cfg.Endpoints.Relay)
@@ -445,7 +594,10 @@ func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte
 	for _, a := range apps {
 		allow := append(append([]string{}, a.bundle.Egress.DefaultAllow...), a.additions...)
 		for _, s := range a.services {
-			callers = append(callers, caller{s.spec.Name, s.ip, allow})
+			callers = append(callers, caller{s.spec.Name, s.netIP, allow})
+			if s.appsIP != "" {
+				callers = append(callers, caller{s.spec.Name + callerAppsSuffix, s.appsIP, allow})
+			}
 		}
 	}
 	sort.Slice(callers, func(i, j int) bool {
@@ -464,20 +616,63 @@ func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte
 	})
 }
 
+// secretFile is the in-VM path of one secret file; the same path on the
+// host (a tmpfs written by sealed-agent) and in the container.
+func secretFile(owner, name string) string { return SecretsRoot + "/" + owner + "/" + name }
+
+// payerSecrets are the files sealed-agent writes for sealed-mpp-payer
+// (INTERFACES section 15).
+var payerSecrets = []string{"ENCLAVE_KEY", "SPEND_LIMIT_PER_DAY"}
+
+// secretFiles lists every secret file bind-mounted into the stack, sorted:
+// sealed-agent writes each one (empty for an optional secret the customer
+// did not set) before it opens the ready gate.
+func secretFiles(apps []*plannedApp, hasGateway bool) []string {
+	var out []string
+	for _, a := range apps {
+		for _, s := range a.services {
+			for _, n := range s.spec.Secrets {
+				out = append(out, secretFile(a.id, n))
+			}
+		}
+	}
+	if hasGateway {
+		for _, n := range payerSecrets {
+			out = append(out, secretFile(svcPayer, n))
+		}
+	}
+	return sortedStrings(out)
+}
+
 func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasGateway bool) ([]byte, error) {
 	var appList []any
 	for _, a := range apps {
 		m := a.bundle.Manifest
 		var svcs, secrets, rts []any
 		for _, s := range a.services {
-			svcs = append(svcs, map[string]any{"name": s.spec.Name, "ip": s.ip, "primary": s.primary})
+			nets := map[string]any{}
+			for k, v := range s.networks() {
+				nets[k] = v
+			}
+			svcs = append(svcs, map[string]any{
+				"name": s.spec.Name, "ip": s.netIP, "ips": toAny(s.ips()), "networks": nets,
+				"primary": s.primary, "secrets": toAny(nonNilStrings(s.spec.Secrets)),
+			})
 		}
 		for _, s := range m.Secrets {
-			secrets = append(secrets, map[string]any{"name": s.Name, "optional": s.Optional})
+			e := map[string]any{"name": s.Name, "optional": s.Optional}
+			if s.SameAs != "" {
+				e["sameAs"] = s.SameAs
+			}
+			secrets = append(secrets, e)
 		}
 		var vols []any
 		for _, v := range a.bundle.Fragment.Volumes {
-			vols = append(vols, map[string]any{"name": v, "path": DataPath(a.id, v)})
+			e := map[string]any{"name": v, "path": DataPath(a.id, v)}
+			if o, ok := a.bundle.Fragment.VolumeOwners[v]; ok {
+				e["owner"] = o
+			}
+			vols = append(vols, e)
 		}
 		for _, r := range routes {
 			if r.app != a.id {
@@ -485,7 +680,8 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 			}
 			rts = append(rts, map[string]any{
 				"name": r.name, "host": r.host, "path": r.route.PathPrefix(), "service": r.service,
-				"port": r.route.InternalPort, "auth": r.route.Auth,
+				"port": r.route.InternalPort, "auth": r.route.Auth, "onAttestHost": r.route.OnAttestHost,
+				"publicUrl": r.publicURL(),
 			})
 		}
 		hcPort := m.Healthcheck.Port
@@ -498,16 +694,20 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 			"releaseId":      a.bundle.ReleaseID.Hex(),
 			"version":        a.bundle.Version(),
 			"primaryService": m.PrimaryService,
-			"services":       nonNil(svcs),
-			"secrets":        nonNil(secrets),
-			"metering":       map[string]any{"unit": m.Metering.Unit, "source": m.Metering.Source},
-			"healthcheck":    map[string]any{"service": m.Healthcheck.Service, "port": hcPort, "path": m.Healthcheck.HTTP},
-			"routes":         nonNil(rts),
-			"volumes":        nonNil(vols),
+			"network": map[string]any{
+				"name": a.network(), "subnet": AppSubnet(a.n), "egress": a.egressIP(), "agent": a.agentIP(),
+			},
+			"services":    nonNil(svcs),
+			"secrets":     nonNil(secrets),
+			"metering":    map[string]any{"unit": m.Metering.Unit, "source": m.Metering.Source},
+			"healthcheck": map[string]any{"service": m.Healthcheck.Service, "port": hcPort, "path": m.Healthcheck.HTTP},
+			"routes":      nonNil(rts),
+			"volumes":     nonNil(vols),
 		}
 		if m.Bootstrap != nil && m.Bootstrap.Service != "" {
-			// donePath is the data-disk path of the done file, or "" when
-			// the file lives inside the bootstrap container.
+			// donePath is the data-disk path of the done file; "" only when
+			// the manifest names no done file (the agent then waits for the
+			// bootstrap service to exit 0).
 			bs := map[string]any{"service": m.Bootstrap.Service, "doneFile": m.Bootstrap.DoneFile, "donePath": ""}
 			if m.Bootstrap.DoneFile != "" {
 				p, err := ResolveDoneFile(m, a.bundle.Fragment)
@@ -541,11 +741,18 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 		"apps":            appList,
 		"dataRoot":        DataRoot,
 		"dataDirs":        toAny(sortedStrings(dataDirs)),
+		"secretsRoot":     SecretsRoot,
+		"secretFiles":     toAny(nonNilStrings(secretFiles(apps, hasGateway))),
 		"sidecars":        sidecars,
 		"attestHost":      attestHost,
-		"gate":            map[string]any{"username": caddy.DefaultGateUser, "secretApp": GateApp, "secret": gateSecret},
+		"gate": map[string]any{
+			"username": caddy.DefaultGateUser, "secretApp": GateApp, "secret": gateSecret,
+			"path": caddy.DefaultGatePath, "cookie": caddy.DefaultGateCookie, "cookieMaxAgeSeconds": GateCookieMaxAge,
+		},
 		"caddy": map[string]any{
 			"adminSocket":            caddy.DefaultAdminSocket,
+			"adminSocketMode":        caddy.DefaultAdminSocketMode,
+			"adminSocketOwner":       AgentRunAs,
 			"caddyfile":              AgentCaddyfilePath,
 			"caddyfilePaymentNeeded": AgentCaddyfilePNPath,
 		},
@@ -555,6 +762,13 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 func nonNil(v []any) []any {
 	if v == nil {
 		return []any{}
+	}
+	return v
+}
+
+func nonNilStrings(v []string) []string {
+	if v == nil {
+		return []string{}
 	}
 	return v
 }
