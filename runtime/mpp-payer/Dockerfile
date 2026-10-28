@@ -21,6 +21,8 @@ ENV NODE_ENV=production \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     DO_NOT_TRACK=1
 COPY --from=build --chown=root:root /out /app
+# Spend state (the day's debits) lives in the container's writable layer, so a restart keeps it.
+RUN install -d -o node -g node -m 0700 /var/lib/sealed-mpp-payer
 WORKDIR /app
 USER node
 EXPOSE 8090
