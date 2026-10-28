@@ -1,0 +1,4 @@
+{
+  "comment": "Waivers for check_image.py findings. Each entry needs a decision id from docs/DECISIONS.md, a regular expression matched against '<kind>:<subject>' and a reason. Empty on purpose: no NVIDIA, ZFS or CDDL content is waived.",
+  "exceptions": []
+}
