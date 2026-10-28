@@ -1,0 +1,1504 @@
+{
+  "recordedFrom": "ws/verifier 91022b1: the real verifier/httpapi handler (simulated quotes, fixture chain with OWNER approval of an inference-relay stack); the payer side is RelayAttestationGate from this branch",
+  "recordedAt": "2026-10-28",
+  "verifierd": {
+    "requestFields": [
+      "url",
+      "options",
+      "attestUrl",
+      "nonce",
+      "attest",
+      "observedTlsPubKeyHash",
+      "expectedCustomer",
+      "expectedAppIds"
+    ],
+    "optionFields": [
+      "requireRecord",
+      "maxEvidenceAgeSeconds",
+      "deploymentId",
+      "expectedCustomer",
+      "expectedAppIds",
+      "heartbeat"
+    ],
+    "reportFields": [
+      "ok",
+      "simulated",
+      "mode",
+      "deploymentId",
+      "stackHash",
+      "recordDigest",
+      "blockNumber",
+      "verifiedAt",
+      "checks"
+    ],
+    "checkFields": [
+      "name",
+      "ok",
+      "detail",
+      "data"
+    ]
+  },
+  "cases": [
+    {
+      "name": "verified",
+      "nonce": "0xf01e4304cdd723be818f2c1ff54e7d2eb520bad52c906f2d787767fcd472992e",
+      "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+      "relayOwner": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+      "attest": {
+        "appCompose": "{\"allowed_envs\":[],\"docker_compose_file\":\"{\\\"configs\\\":{\\\"sealed-config\\\":{\\\"content\\\":\\\"{\\\\\\\"allowedVpcRanges\\\\\\\":[],\\\\\\\"apps\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"inference-relay\\\\\\\",\\\\\\\"releaseId\\\\\\\":\\\\\\\"0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313\\\\\\\"}],\\\\\\\"chainId\\\\\\\":4217,\\\\\\\"composerVersion\\\\\\\":\\\\\\\"1.0.0\\\\\\\",\\\\\\\"contracts\\\\\\\":{\\\\\\\"appRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a2\\\\\\\",\\\\\\\"deploymentRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a3\\\\\\\",\\\\\\\"feeSplitter\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000fee\\\\\\\",\\\\\\\"platformRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a1\\\\\\\"},\\\\\\\"customer\\\\\\\":\\\\\\\"0x90f79bf6eb2c4f870365e785982e1f101e93b906\\\\\\\",\\\\\\\"egressAdditions\\\\\\\":{},\\\\\\\"endpoints\\\\\\\":{\\\\\\\"keyBroker\\\\\\\":\\\\\\\"https://kb.example\\\\\\\",\\\\\\\"platformApi\\\\\\\":\\\\\\\"https://api.example\\\\\\\",\\\\\\\"relay\\\\\\\":\\\\\\\"https://relay.example\\\\\\\",\\\\\\\"relayAttest\\\\\\\":\\\\\\\"https://attest.relay.example/attest\\\\\\\",\\\\\\\"tempoRpc\\\\\\\":\\\\\\\"https://rpc.tempo.xyz\\\\\\\"},\\\\\\\"feeToken\\\\\\\":\\\\\\\"0x20c0000000000000000000000000000000000000\\\\\\\",\\\\\\\"hostnames\\\\\\\":{\\\\\\\"ip\\\\\\\":\\\\\\\"34.1.2.3\\\\\\\",\\\\\\\"scheme\\\\\\\":\\\\\\\"sslip\\\\\\\"},\\\\\\\"imageId\\\\\\\":\\\\\\\"0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e\\\\\\\",\\\\\\\"relayOwner\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000001\\\\\\\",\\\\\\\"salt\\\\\\\":\\\\\\\"0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97\\\\\\\",\\\\\\\"schema\\\\\\\":\\\\\\\"sealed-config/v1\\\\\\\",\\\\\\\"settlement\\\\\\\":{\\\\\\\"gracePeriodMinutes\\\\\\\":1440,\\\\\\\"intervalMinutes\\\\\\\":60,\\\\\\\"mode\\\\\\\":\\\\\\\"access-key\\\\\\\",\\\\\\\"spendLimitPerDay\\\\\\\":\\\\\\\"2000000\\\\\\\"}}\\\"}},\\\"services\\\":{\\\"inference-relay\\\":{\\\"image\\\":\\\"ghcr.io/sealed-dev/inference-relay@sha256:8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db\\\"}}}\",\"gateway_enabled\":false,\"key_provider\":\"tpm\",\"key_provider_id\":\"\",\"kms_enabled\":false,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"sealed-c54e22ae\",\"no_instance_id\":false,\"public_logs\":false,\"public_sysinfo\":false,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"ext4\"}",
+        "config": {
+          "allowedVpcRanges": [],
+          "apps": [
+            {
+              "id": "inference-relay",
+              "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+            }
+          ],
+          "chainId": 4217,
+          "composerVersion": "1.0.0",
+          "contracts": {
+            "appRegistry": "0x00000000000000000000000000000000000000a2",
+            "deploymentRegistry": "0x00000000000000000000000000000000000000a3",
+            "feeSplitter": "0x0000000000000000000000000000000000000fee",
+            "platformRegistry": "0x00000000000000000000000000000000000000a1"
+          },
+          "customer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+          "egressAdditions": {},
+          "endpoints": {
+            "keyBroker": "https://kb.example",
+            "platformApi": "https://api.example",
+            "relay": "https://relay.example",
+            "relayAttest": "https://attest.relay.example/attest",
+            "tempoRpc": "https://rpc.tempo.xyz"
+          },
+          "feeToken": "0x20c0000000000000000000000000000000000000",
+          "hostnames": {
+            "ip": "34.1.2.3",
+            "scheme": "sslip"
+          },
+          "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+          "relayOwner": "0x0000000000000000000000000000000000000001",
+          "salt": "0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97",
+          "schema": "sealed-config/v1",
+          "settlement": {
+            "gracePeriodMinutes": 1440,
+            "intervalMinutes": 60,
+            "mode": "access-key",
+            "spendLimitPerDay": "2000000"
+          }
+        },
+        "enclaveSigner": "0x976ea74026e726554db657fa54763abd0c3a0aa9",
+        "eventLog": [
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+            "event": "system-preparing",
+            "event_payload": ""
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "f1d395fd1051a51aaa3bcf7e140935d13bd812725742441dcf2ce8e7d2cbfbeaa8606878de35e05c3755c3fb314278ea",
+            "event": "app-id",
+            "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea6987396"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "2180db03ca2434c79b75bb4d050dd497772eafd14cf1499fbc43e54b19666a961400356dd8b3c1524926f21ba79b9b81",
+            "event": "compose-hash",
+            "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+            "event": "gpu-policy-hash",
+            "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "3dc66a24efbd7f1eed8a065dab62537b18b557e974bdb295fe5d76d3fafb8f160174b768f8ad3bc3404952666c9a4ddf",
+            "event": "instance-id",
+            "event_payload": "5e8c03a94c7835b87dd82c690f9f85c08592ef74"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+            "event": "boot-mr-done",
+            "event_payload": ""
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "67e185b2f6be40321584f4ee14d02bb84a899d83ac6d4ec23521267288f78b39ae70887a989c22c53990a58700682641",
+            "event": "key-provider",
+            "event_payload": "7b226e616d65223a2274706d222c226964223a22227d"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+            "event": "storage-fs",
+            "event_payload": "65787434"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+            "event": "storage-encrypted",
+            "event_payload": "31"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+            "event": "system-ready",
+            "event_payload": ""
+          }
+        ],
+        "quote": "0x5345414c454453494d317b226465627567223a66616c73652c226d727464223a22313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c227265706f727444617461223a223237646430343365323066303462396539653662356130623833343335303565326632656564363331653364633262613431373536333034666336333061623630303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c2272746d7230223a22323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c2272746d7231223a22333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c2272746d7232223a22343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c2272746d7233223a22653035353638666566313466393535666430303062653333383263353362623931643834363733323030643238313930666239303932396330333364386437663031663535376132646332626664626533323737363937343163306663666263222c22736368656d61223a227365616c65642d73696d2d71756f74652f7631227d",
+        "releaseIds": [
+          "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+        ],
+        "reportData": "0x27dd043e20f04b9e9e6b5a0b8343505e2f2eed631e3dc2ba41756304fc630ab60000000000000000000000000000000000000000000000000000000000000000",
+        "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+      },
+      "request": {
+        "attestUrl": "https://relay.34-1-2-3.sslip.io/attest",
+        "nonce": "0xf01e4304cdd723be818f2c1ff54e7d2eb520bad52c906f2d787767fcd472992e",
+        "attest": {
+          "appCompose": "{\"allowed_envs\":[],\"docker_compose_file\":\"{\\\"configs\\\":{\\\"sealed-config\\\":{\\\"content\\\":\\\"{\\\\\\\"allowedVpcRanges\\\\\\\":[],\\\\\\\"apps\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"inference-relay\\\\\\\",\\\\\\\"releaseId\\\\\\\":\\\\\\\"0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313\\\\\\\"}],\\\\\\\"chainId\\\\\\\":4217,\\\\\\\"composerVersion\\\\\\\":\\\\\\\"1.0.0\\\\\\\",\\\\\\\"contracts\\\\\\\":{\\\\\\\"appRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a2\\\\\\\",\\\\\\\"deploymentRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a3\\\\\\\",\\\\\\\"feeSplitter\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000fee\\\\\\\",\\\\\\\"platformRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a1\\\\\\\"},\\\\\\\"customer\\\\\\\":\\\\\\\"0x90f79bf6eb2c4f870365e785982e1f101e93b906\\\\\\\",\\\\\\\"egressAdditions\\\\\\\":{},\\\\\\\"endpoints\\\\\\\":{\\\\\\\"keyBroker\\\\\\\":\\\\\\\"https://kb.example\\\\\\\",\\\\\\\"platformApi\\\\\\\":\\\\\\\"https://api.example\\\\\\\",\\\\\\\"relay\\\\\\\":\\\\\\\"https://relay.example\\\\\\\",\\\\\\\"relayAttest\\\\\\\":\\\\\\\"https://attest.relay.example/attest\\\\\\\",\\\\\\\"tempoRpc\\\\\\\":\\\\\\\"https://rpc.tempo.xyz\\\\\\\"},\\\\\\\"feeToken\\\\\\\":\\\\\\\"0x20c0000000000000000000000000000000000000\\\\\\\",\\\\\\\"hostnames\\\\\\\":{\\\\\\\"ip\\\\\\\":\\\\\\\"34.1.2.3\\\\\\\",\\\\\\\"scheme\\\\\\\":\\\\\\\"sslip\\\\\\\"},\\\\\\\"imageId\\\\\\\":\\\\\\\"0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e\\\\\\\",\\\\\\\"relayOwner\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000001\\\\\\\",\\\\\\\"salt\\\\\\\":\\\\\\\"0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97\\\\\\\",\\\\\\\"schema\\\\\\\":\\\\\\\"sealed-config/v1\\\\\\\",\\\\\\\"settlement\\\\\\\":{\\\\\\\"gracePeriodMinutes\\\\\\\":1440,\\\\\\\"intervalMinutes\\\\\\\":60,\\\\\\\"mode\\\\\\\":\\\\\\\"access-key\\\\\\\",\\\\\\\"spendLimitPerDay\\\\\\\":\\\\\\\"2000000\\\\\\\"}}\\\"}},\\\"services\\\":{\\\"inference-relay\\\":{\\\"image\\\":\\\"ghcr.io/sealed-dev/inference-relay@sha256:8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db\\\"}}}\",\"gateway_enabled\":false,\"key_provider\":\"tpm\",\"key_provider_id\":\"\",\"kms_enabled\":false,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"sealed-c54e22ae\",\"no_instance_id\":false,\"public_logs\":false,\"public_sysinfo\":false,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"ext4\"}",
+          "config": {
+            "allowedVpcRanges": [],
+            "apps": [
+              {
+                "id": "inference-relay",
+                "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+              }
+            ],
+            "chainId": 4217,
+            "composerVersion": "1.0.0",
+            "contracts": {
+              "appRegistry": "0x00000000000000000000000000000000000000a2",
+              "deploymentRegistry": "0x00000000000000000000000000000000000000a3",
+              "feeSplitter": "0x0000000000000000000000000000000000000fee",
+              "platformRegistry": "0x00000000000000000000000000000000000000a1"
+            },
+            "customer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+            "egressAdditions": {},
+            "endpoints": {
+              "keyBroker": "https://kb.example",
+              "platformApi": "https://api.example",
+              "relay": "https://relay.example",
+              "relayAttest": "https://attest.relay.example/attest",
+              "tempoRpc": "https://rpc.tempo.xyz"
+            },
+            "feeToken": "0x20c0000000000000000000000000000000000000",
+            "hostnames": {
+              "ip": "34.1.2.3",
+              "scheme": "sslip"
+            },
+            "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+            "relayOwner": "0x0000000000000000000000000000000000000001",
+            "salt": "0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97",
+            "schema": "sealed-config/v1",
+            "settlement": {
+              "gracePeriodMinutes": 1440,
+              "intervalMinutes": 60,
+              "mode": "access-key",
+              "spendLimitPerDay": "2000000"
+            }
+          },
+          "enclaveSigner": "0x976ea74026e726554db657fa54763abd0c3a0aa9",
+          "eventLog": [
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+              "event": "system-preparing",
+              "event_payload": ""
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "f1d395fd1051a51aaa3bcf7e140935d13bd812725742441dcf2ce8e7d2cbfbeaa8606878de35e05c3755c3fb314278ea",
+              "event": "app-id",
+              "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea6987396"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "2180db03ca2434c79b75bb4d050dd497772eafd14cf1499fbc43e54b19666a961400356dd8b3c1524926f21ba79b9b81",
+              "event": "compose-hash",
+              "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+              "event": "gpu-policy-hash",
+              "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "3dc66a24efbd7f1eed8a065dab62537b18b557e974bdb295fe5d76d3fafb8f160174b768f8ad3bc3404952666c9a4ddf",
+              "event": "instance-id",
+              "event_payload": "5e8c03a94c7835b87dd82c690f9f85c08592ef74"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+              "event": "boot-mr-done",
+              "event_payload": ""
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "67e185b2f6be40321584f4ee14d02bb84a899d83ac6d4ec23521267288f78b39ae70887a989c22c53990a58700682641",
+              "event": "key-provider",
+              "event_payload": "7b226e616d65223a2274706d222c226964223a22227d"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+              "event": "storage-fs",
+              "event_payload": "65787434"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+              "event": "storage-encrypted",
+              "event_payload": "31"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+              "event": "system-ready",
+              "event_payload": ""
+            }
+          ],
+          "quote": "0x5345414c454453494d317b226465627567223a66616c73652c226d727464223a22313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c227265706f727444617461223a223237646430343365323066303462396539653662356130623833343335303565326632656564363331653364633262613431373536333034666336333061623630303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c2272746d7230223a22323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c2272746d7231223a22333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c2272746d7232223a22343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c2272746d7233223a22653035353638666566313466393535666430303062653333383263353362623931643834363733323030643238313930666239303932396330333364386437663031663535376132646332626664626533323737363937343163306663666263222c22736368656d61223a227365616c65642d73696d2d71756f74652f7631227d",
+          "releaseIds": [
+            "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+          ],
+          "reportData": "0x27dd043e20f04b9e9e6b5a0b8343505e2f2eed631e3dc2ba41756304fc630ab60000000000000000000000000000000000000000000000000000000000000000",
+          "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+        },
+        "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+        "options": {
+          "expectedCustomer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+          "expectedAppIds": [
+            "inference-relay"
+          ]
+        }
+      },
+      "status": 200,
+      "response": {
+        "ok": true,
+        "simulated": true,
+        "mode": "live_submitted",
+        "deploymentId": "0xa3f8fd8ac6618f0e86da91e264718b1e07ed23242ddcc4d6b4a64c2ea216d519",
+        "stackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa",
+        "blockNumber": 100,
+        "verifiedAt": 1793000005,
+        "checks": [
+          {
+            "name": "live_fetch",
+            "ok": true,
+            "detail": "attestation submitted by the caller; nonce and TLS key are as the caller observed them",
+            "data": {
+              "nonce": "0xf01e4304cdd723be818f2c1ff54e7d2eb520bad52c906f2d787767fcd472992e",
+              "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+              "url": "https://relay.34-1-2-3.sslip.io/attest"
+            }
+          },
+          {
+            "name": "bundle",
+            "ok": true,
+            "detail": "/attest response with 1 releases"
+          },
+          {
+            "name": "tls_binding",
+            "ok": true,
+            "detail": "tlsPubKeyHash = sha256(SPKI of the served certificate)",
+            "data": {
+              "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+            }
+          },
+          {
+            "name": "chain",
+            "ok": true,
+            "detail": "chain 4217, registries match, reads at block 100",
+            "data": {
+              "blockNumber": 100,
+              "deploymentRegistry": "0x00000000000000000000000000000000000000A3",
+              "rpcChainId": 4217
+            }
+          },
+          {
+            "name": "quote",
+            "ok": true,
+            "detail": "simulated quote accepted by a dev verifier (AllowSimulated); no hardware attestation",
+            "data": {
+              "qeTcbStatus": "Simulated",
+              "simulated": true,
+              "tcbStatus": "Simulated"
+            }
+          },
+          {
+            "name": "td_attributes",
+            "ok": true,
+            "detail": "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits",
+            "data": {
+              "tdAttributes": "0x0000001000000000",
+              "xfam": "0x0000000000000000"
+            }
+          },
+          {
+            "name": "freshness",
+            "ok": true,
+            "detail": "the caller's nonce is bound (freshness as observed by the caller)",
+            "data": {
+              "nonce": "0xf01e4304cdd723be818f2c1ff54e7d2eb520bad52c906f2d787767fcd472992e"
+            }
+          },
+          {
+            "name": "report_data",
+            "ok": true,
+            "detail": "report_data = sha256(\"sealed/attest/v1\" || nonce || sha256(served SPKI) || enclaveSigner)",
+            "data": {
+              "expected": "0x27dd043e20f04b9e9e6b5a0b8343505e2f2eed631e3dc2ba41756304fc630ab60000000000000000000000000000000000000000000000000000000000000000",
+              "quote": "0x27dd043e20f04b9e9e6b5a0b8343505e2f2eed631e3dc2ba41756304fc630ab60000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "name": "image_measurements",
+            "ok": true,
+            "detail": "measurements match image sealed-sim 1.0.0",
+            "data": {
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "name": "sealed-sim",
+              "onchain": "0xea88d19f83c91226f30db083cc8c6b4c6e15feb4f9217fbe5775724c0c9cfbfe",
+              "version": "1.0.0"
+            }
+          },
+          {
+            "name": "image_approved",
+            "ok": true,
+            "detail": "isApprovedImage: active, not debug",
+            "data": {
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "isDebug": false,
+              "status": 1
+            }
+          },
+          {
+            "name": "rtmr3",
+            "ok": true,
+            "detail": "event log replays to the quote's RTMR3 with the exact Sealed event sequence",
+            "data": {
+              "composeHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa",
+              "keyProvider": "{\"name\":\"tpm\",\"id\":\"\"}",
+              "rtmr3": "0xe05568fef14f955fd000be3382c53bb91d84673200d28190fb90929c033d8d7f01f557a2dc2bfdbe327769741c0fcfbc",
+              "storageEncrypted": true,
+              "storageFs": "ext4"
+            }
+          },
+          {
+            "name": "compose_hash",
+            "ok": true,
+            "detail": "compose-hash = sha256(appCompose) = stackHash",
+            "data": {
+              "sha256(appCompose)": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "config_hash",
+            "ok": true,
+            "detail": "configHash = sha256(CJSON(config)) computed",
+            "data": {
+              "configHash": "0xc54e22ae76b34a8e419e1cb9029bc764baba31606e974fccef90d8a8f3b326c3"
+            }
+          },
+          {
+            "name": "config_binding",
+            "ok": true,
+            "detail": "releaseIds agree with the config"
+          },
+          {
+            "name": "deployment_id",
+            "ok": true,
+            "detail": "deploymentId = keccak256(abi.encode(customer, stackHash, salt)) derived",
+            "data": {
+              "derived": "0xa3f8fd8ac6618f0e86da91e264718b1e07ed23242ddcc4d6b4a64c2ea216d519"
+            }
+          },
+          {
+            "name": "releases_active",
+            "ok": true,
+            "detail": "1 releases active",
+            "data": {
+              "releases": [
+                {
+                  "active": true,
+                  "app": "inference-relay",
+                  "bundleHash": "0x8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db",
+                  "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313",
+                  "status": 1,
+                  "version": "0.1.0"
+                }
+              ]
+            }
+          },
+          {
+            "name": "stack_recompute",
+            "ok": true,
+            "detail": "app-compose.json recomputed byte for byte from config and onchain releases",
+            "data": {
+              "recomputedStackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "stack_approved",
+            "ok": true,
+            "detail": "isStackApproved(customer, stackHash)",
+            "data": {
+              "customer": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+              "stackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "approval_releases",
+            "ok": true,
+            "detail": "approval names exactly the config's releases and image",
+            "data": {
+              "approvedAt": 1793000000,
+              "expiry": 0,
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "revoked": false
+            }
+          },
+          {
+            "name": "expected_customer",
+            "ok": true,
+            "detail": "customer is 0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+          },
+          {
+            "name": "expected_apps",
+            "ok": true,
+            "detail": "stack runs the expected apps",
+            "data": {
+              "apps": [
+                "inference-relay"
+              ],
+              "expected": [
+                "inference-relay"
+              ]
+            }
+          },
+          {
+            "name": "onchain_record",
+            "ok": true,
+            "detail": "DeploymentRegistry record matches",
+            "data": {
+              "attestedAt": 1793000000,
+              "eventLogMatchesRecord": true,
+              "lastAttestedAt": 1793000000,
+              "method": 1,
+              "registered": true,
+              "registeredAt": 1793000000,
+              "status": 1
+            }
+          }
+        ]
+      },
+      "gate": {
+        "ok": false,
+        "detail": "attested relay compose has no inference-relay-front service"
+      }
+    },
+    {
+      "name": "wrong relay owner",
+      "nonce": "0xe73544222019181c080cae77e7cd5951047480cba3f321a5a2eba1846c432ee0",
+      "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+      "relayOwner": "0x000000000000000000000000000000000000dead",
+      "attest": {
+        "appCompose": "{\"allowed_envs\":[],\"docker_compose_file\":\"{\\\"configs\\\":{\\\"sealed-config\\\":{\\\"content\\\":\\\"{\\\\\\\"allowedVpcRanges\\\\\\\":[],\\\\\\\"apps\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"inference-relay\\\\\\\",\\\\\\\"releaseId\\\\\\\":\\\\\\\"0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313\\\\\\\"}],\\\\\\\"chainId\\\\\\\":4217,\\\\\\\"composerVersion\\\\\\\":\\\\\\\"1.0.0\\\\\\\",\\\\\\\"contracts\\\\\\\":{\\\\\\\"appRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a2\\\\\\\",\\\\\\\"deploymentRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a3\\\\\\\",\\\\\\\"feeSplitter\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000fee\\\\\\\",\\\\\\\"platformRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a1\\\\\\\"},\\\\\\\"customer\\\\\\\":\\\\\\\"0x90f79bf6eb2c4f870365e785982e1f101e93b906\\\\\\\",\\\\\\\"egressAdditions\\\\\\\":{},\\\\\\\"endpoints\\\\\\\":{\\\\\\\"keyBroker\\\\\\\":\\\\\\\"https://kb.example\\\\\\\",\\\\\\\"platformApi\\\\\\\":\\\\\\\"https://api.example\\\\\\\",\\\\\\\"relay\\\\\\\":\\\\\\\"https://relay.example\\\\\\\",\\\\\\\"relayAttest\\\\\\\":\\\\\\\"https://attest.relay.example/attest\\\\\\\",\\\\\\\"tempoRpc\\\\\\\":\\\\\\\"https://rpc.tempo.xyz\\\\\\\"},\\\\\\\"feeToken\\\\\\\":\\\\\\\"0x20c0000000000000000000000000000000000000\\\\\\\",\\\\\\\"hostnames\\\\\\\":{\\\\\\\"ip\\\\\\\":\\\\\\\"34.1.2.3\\\\\\\",\\\\\\\"scheme\\\\\\\":\\\\\\\"sslip\\\\\\\"},\\\\\\\"imageId\\\\\\\":\\\\\\\"0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e\\\\\\\",\\\\\\\"relayOwner\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000001\\\\\\\",\\\\\\\"salt\\\\\\\":\\\\\\\"0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97\\\\\\\",\\\\\\\"schema\\\\\\\":\\\\\\\"sealed-config/v1\\\\\\\",\\\\\\\"settlement\\\\\\\":{\\\\\\\"gracePeriodMinutes\\\\\\\":1440,\\\\\\\"intervalMinutes\\\\\\\":60,\\\\\\\"mode\\\\\\\":\\\\\\\"access-key\\\\\\\",\\\\\\\"spendLimitPerDay\\\\\\\":\\\\\\\"2000000\\\\\\\"}}\\\"}},\\\"services\\\":{\\\"inference-relay\\\":{\\\"image\\\":\\\"ghcr.io/sealed-dev/inference-relay@sha256:8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db\\\"}}}\",\"gateway_enabled\":false,\"key_provider\":\"tpm\",\"key_provider_id\":\"\",\"kms_enabled\":false,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"sealed-c54e22ae\",\"no_instance_id\":false,\"public_logs\":false,\"public_sysinfo\":false,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"ext4\"}",
+        "config": {
+          "allowedVpcRanges": [],
+          "apps": [
+            {
+              "id": "inference-relay",
+              "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+            }
+          ],
+          "chainId": 4217,
+          "composerVersion": "1.0.0",
+          "contracts": {
+            "appRegistry": "0x00000000000000000000000000000000000000a2",
+            "deploymentRegistry": "0x00000000000000000000000000000000000000a3",
+            "feeSplitter": "0x0000000000000000000000000000000000000fee",
+            "platformRegistry": "0x00000000000000000000000000000000000000a1"
+          },
+          "customer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+          "egressAdditions": {},
+          "endpoints": {
+            "keyBroker": "https://kb.example",
+            "platformApi": "https://api.example",
+            "relay": "https://relay.example",
+            "relayAttest": "https://attest.relay.example/attest",
+            "tempoRpc": "https://rpc.tempo.xyz"
+          },
+          "feeToken": "0x20c0000000000000000000000000000000000000",
+          "hostnames": {
+            "ip": "34.1.2.3",
+            "scheme": "sslip"
+          },
+          "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+          "relayOwner": "0x0000000000000000000000000000000000000001",
+          "salt": "0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97",
+          "schema": "sealed-config/v1",
+          "settlement": {
+            "gracePeriodMinutes": 1440,
+            "intervalMinutes": 60,
+            "mode": "access-key",
+            "spendLimitPerDay": "2000000"
+          }
+        },
+        "enclaveSigner": "0x976ea74026e726554db657fa54763abd0c3a0aa9",
+        "eventLog": [
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+            "event": "system-preparing",
+            "event_payload": ""
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "f1d395fd1051a51aaa3bcf7e140935d13bd812725742441dcf2ce8e7d2cbfbeaa8606878de35e05c3755c3fb314278ea",
+            "event": "app-id",
+            "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea6987396"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "2180db03ca2434c79b75bb4d050dd497772eafd14cf1499fbc43e54b19666a961400356dd8b3c1524926f21ba79b9b81",
+            "event": "compose-hash",
+            "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+            "event": "gpu-policy-hash",
+            "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "3dc66a24efbd7f1eed8a065dab62537b18b557e974bdb295fe5d76d3fafb8f160174b768f8ad3bc3404952666c9a4ddf",
+            "event": "instance-id",
+            "event_payload": "5e8c03a94c7835b87dd82c690f9f85c08592ef74"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+            "event": "boot-mr-done",
+            "event_payload": ""
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "67e185b2f6be40321584f4ee14d02bb84a899d83ac6d4ec23521267288f78b39ae70887a989c22c53990a58700682641",
+            "event": "key-provider",
+            "event_payload": "7b226e616d65223a2274706d222c226964223a22227d"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+            "event": "storage-fs",
+            "event_payload": "65787434"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+            "event": "storage-encrypted",
+            "event_payload": "31"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+            "event": "system-ready",
+            "event_payload": ""
+          }
+        ],
+        "quote": "0x5345414c454453494d317b226465627567223a66616c73652c226d727464223a22313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c227265706f727444617461223a223937656138303263303134373438383737623233626432313033323362316162646632323239373361636632366536343032343965373532363161386561386230303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c2272746d7230223a22323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c2272746d7231223a22333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c2272746d7232223a22343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c2272746d7233223a22653035353638666566313466393535666430303062653333383263353362623931643834363733323030643238313930666239303932396330333364386437663031663535376132646332626664626533323737363937343163306663666263222c22736368656d61223a227365616c65642d73696d2d71756f74652f7631227d",
+        "releaseIds": [
+          "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+        ],
+        "reportData": "0x97ea802c014748877b23bd210323b1abdf222973acf26e640249e75261a8ea8b0000000000000000000000000000000000000000000000000000000000000000",
+        "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+      },
+      "request": {
+        "attestUrl": "https://relay.34-1-2-3.sslip.io/attest",
+        "nonce": "0xe73544222019181c080cae77e7cd5951047480cba3f321a5a2eba1846c432ee0",
+        "attest": {
+          "appCompose": "{\"allowed_envs\":[],\"docker_compose_file\":\"{\\\"configs\\\":{\\\"sealed-config\\\":{\\\"content\\\":\\\"{\\\\\\\"allowedVpcRanges\\\\\\\":[],\\\\\\\"apps\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"inference-relay\\\\\\\",\\\\\\\"releaseId\\\\\\\":\\\\\\\"0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313\\\\\\\"}],\\\\\\\"chainId\\\\\\\":4217,\\\\\\\"composerVersion\\\\\\\":\\\\\\\"1.0.0\\\\\\\",\\\\\\\"contracts\\\\\\\":{\\\\\\\"appRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a2\\\\\\\",\\\\\\\"deploymentRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a3\\\\\\\",\\\\\\\"feeSplitter\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000fee\\\\\\\",\\\\\\\"platformRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a1\\\\\\\"},\\\\\\\"customer\\\\\\\":\\\\\\\"0x90f79bf6eb2c4f870365e785982e1f101e93b906\\\\\\\",\\\\\\\"egressAdditions\\\\\\\":{},\\\\\\\"endpoints\\\\\\\":{\\\\\\\"keyBroker\\\\\\\":\\\\\\\"https://kb.example\\\\\\\",\\\\\\\"platformApi\\\\\\\":\\\\\\\"https://api.example\\\\\\\",\\\\\\\"relay\\\\\\\":\\\\\\\"https://relay.example\\\\\\\",\\\\\\\"relayAttest\\\\\\\":\\\\\\\"https://attest.relay.example/attest\\\\\\\",\\\\\\\"tempoRpc\\\\\\\":\\\\\\\"https://rpc.tempo.xyz\\\\\\\"},\\\\\\\"feeToken\\\\\\\":\\\\\\\"0x20c0000000000000000000000000000000000000\\\\\\\",\\\\\\\"hostnames\\\\\\\":{\\\\\\\"ip\\\\\\\":\\\\\\\"34.1.2.3\\\\\\\",\\\\\\\"scheme\\\\\\\":\\\\\\\"sslip\\\\\\\"},\\\\\\\"imageId\\\\\\\":\\\\\\\"0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e\\\\\\\",\\\\\\\"relayOwner\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000001\\\\\\\",\\\\\\\"salt\\\\\\\":\\\\\\\"0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97\\\\\\\",\\\\\\\"schema\\\\\\\":\\\\\\\"sealed-config/v1\\\\\\\",\\\\\\\"settlement\\\\\\\":{\\\\\\\"gracePeriodMinutes\\\\\\\":1440,\\\\\\\"intervalMinutes\\\\\\\":60,\\\\\\\"mode\\\\\\\":\\\\\\\"access-key\\\\\\\",\\\\\\\"spendLimitPerDay\\\\\\\":\\\\\\\"2000000\\\\\\\"}}\\\"}},\\\"services\\\":{\\\"inference-relay\\\":{\\\"image\\\":\\\"ghcr.io/sealed-dev/inference-relay@sha256:8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db\\\"}}}\",\"gateway_enabled\":false,\"key_provider\":\"tpm\",\"key_provider_id\":\"\",\"kms_enabled\":false,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"sealed-c54e22ae\",\"no_instance_id\":false,\"public_logs\":false,\"public_sysinfo\":false,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"ext4\"}",
+          "config": {
+            "allowedVpcRanges": [],
+            "apps": [
+              {
+                "id": "inference-relay",
+                "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+              }
+            ],
+            "chainId": 4217,
+            "composerVersion": "1.0.0",
+            "contracts": {
+              "appRegistry": "0x00000000000000000000000000000000000000a2",
+              "deploymentRegistry": "0x00000000000000000000000000000000000000a3",
+              "feeSplitter": "0x0000000000000000000000000000000000000fee",
+              "platformRegistry": "0x00000000000000000000000000000000000000a1"
+            },
+            "customer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+            "egressAdditions": {},
+            "endpoints": {
+              "keyBroker": "https://kb.example",
+              "platformApi": "https://api.example",
+              "relay": "https://relay.example",
+              "relayAttest": "https://attest.relay.example/attest",
+              "tempoRpc": "https://rpc.tempo.xyz"
+            },
+            "feeToken": "0x20c0000000000000000000000000000000000000",
+            "hostnames": {
+              "ip": "34.1.2.3",
+              "scheme": "sslip"
+            },
+            "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+            "relayOwner": "0x0000000000000000000000000000000000000001",
+            "salt": "0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97",
+            "schema": "sealed-config/v1",
+            "settlement": {
+              "gracePeriodMinutes": 1440,
+              "intervalMinutes": 60,
+              "mode": "access-key",
+              "spendLimitPerDay": "2000000"
+            }
+          },
+          "enclaveSigner": "0x976ea74026e726554db657fa54763abd0c3a0aa9",
+          "eventLog": [
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+              "event": "system-preparing",
+              "event_payload": ""
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "f1d395fd1051a51aaa3bcf7e140935d13bd812725742441dcf2ce8e7d2cbfbeaa8606878de35e05c3755c3fb314278ea",
+              "event": "app-id",
+              "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea6987396"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "2180db03ca2434c79b75bb4d050dd497772eafd14cf1499fbc43e54b19666a961400356dd8b3c1524926f21ba79b9b81",
+              "event": "compose-hash",
+              "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+              "event": "gpu-policy-hash",
+              "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "3dc66a24efbd7f1eed8a065dab62537b18b557e974bdb295fe5d76d3fafb8f160174b768f8ad3bc3404952666c9a4ddf",
+              "event": "instance-id",
+              "event_payload": "5e8c03a94c7835b87dd82c690f9f85c08592ef74"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+              "event": "boot-mr-done",
+              "event_payload": ""
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "67e185b2f6be40321584f4ee14d02bb84a899d83ac6d4ec23521267288f78b39ae70887a989c22c53990a58700682641",
+              "event": "key-provider",
+              "event_payload": "7b226e616d65223a2274706d222c226964223a22227d"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+              "event": "storage-fs",
+              "event_payload": "65787434"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+              "event": "storage-encrypted",
+              "event_payload": "31"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+              "event": "system-ready",
+              "event_payload": ""
+            }
+          ],
+          "quote": "0x5345414c454453494d317b226465627567223a66616c73652c226d727464223a22313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c227265706f727444617461223a223937656138303263303134373438383737623233626432313033323362316162646632323239373361636632366536343032343965373532363161386561386230303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c2272746d7230223a22323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c2272746d7231223a22333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c2272746d7232223a22343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c2272746d7233223a22653035353638666566313466393535666430303062653333383263353362623931643834363733323030643238313930666239303932396330333364386437663031663535376132646332626664626533323737363937343163306663666263222c22736368656d61223a227365616c65642d73696d2d71756f74652f7631227d",
+          "releaseIds": [
+            "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+          ],
+          "reportData": "0x97ea802c014748877b23bd210323b1abdf222973acf26e640249e75261a8ea8b0000000000000000000000000000000000000000000000000000000000000000",
+          "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+        },
+        "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+        "options": {
+          "expectedCustomer": "0x000000000000000000000000000000000000dead",
+          "expectedAppIds": [
+            "inference-relay"
+          ]
+        }
+      },
+      "status": 200,
+      "response": {
+        "ok": false,
+        "simulated": true,
+        "mode": "live_submitted",
+        "deploymentId": "0xa3f8fd8ac6618f0e86da91e264718b1e07ed23242ddcc4d6b4a64c2ea216d519",
+        "stackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa",
+        "blockNumber": 100,
+        "verifiedAt": 1793000005,
+        "checks": [
+          {
+            "name": "live_fetch",
+            "ok": true,
+            "detail": "attestation submitted by the caller; nonce and TLS key are as the caller observed them",
+            "data": {
+              "nonce": "0xe73544222019181c080cae77e7cd5951047480cba3f321a5a2eba1846c432ee0",
+              "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+              "url": "https://relay.34-1-2-3.sslip.io/attest"
+            }
+          },
+          {
+            "name": "bundle",
+            "ok": true,
+            "detail": "/attest response with 1 releases"
+          },
+          {
+            "name": "tls_binding",
+            "ok": true,
+            "detail": "tlsPubKeyHash = sha256(SPKI of the served certificate)",
+            "data": {
+              "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+            }
+          },
+          {
+            "name": "chain",
+            "ok": true,
+            "detail": "chain 4217, registries match, reads at block 100",
+            "data": {
+              "blockNumber": 100,
+              "deploymentRegistry": "0x00000000000000000000000000000000000000A3",
+              "rpcChainId": 4217
+            }
+          },
+          {
+            "name": "quote",
+            "ok": true,
+            "detail": "simulated quote accepted by a dev verifier (AllowSimulated); no hardware attestation",
+            "data": {
+              "qeTcbStatus": "Simulated",
+              "simulated": true,
+              "tcbStatus": "Simulated"
+            }
+          },
+          {
+            "name": "td_attributes",
+            "ok": true,
+            "detail": "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits",
+            "data": {
+              "tdAttributes": "0x0000001000000000",
+              "xfam": "0x0000000000000000"
+            }
+          },
+          {
+            "name": "freshness",
+            "ok": true,
+            "detail": "the caller's nonce is bound (freshness as observed by the caller)",
+            "data": {
+              "nonce": "0xe73544222019181c080cae77e7cd5951047480cba3f321a5a2eba1846c432ee0"
+            }
+          },
+          {
+            "name": "report_data",
+            "ok": true,
+            "detail": "report_data = sha256(\"sealed/attest/v1\" || nonce || sha256(served SPKI) || enclaveSigner)",
+            "data": {
+              "expected": "0x97ea802c014748877b23bd210323b1abdf222973acf26e640249e75261a8ea8b0000000000000000000000000000000000000000000000000000000000000000",
+              "quote": "0x97ea802c014748877b23bd210323b1abdf222973acf26e640249e75261a8ea8b0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "name": "image_measurements",
+            "ok": true,
+            "detail": "measurements match image sealed-sim 1.0.0",
+            "data": {
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "name": "sealed-sim",
+              "onchain": "0xea88d19f83c91226f30db083cc8c6b4c6e15feb4f9217fbe5775724c0c9cfbfe",
+              "version": "1.0.0"
+            }
+          },
+          {
+            "name": "image_approved",
+            "ok": true,
+            "detail": "isApprovedImage: active, not debug",
+            "data": {
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "isDebug": false,
+              "status": 1
+            }
+          },
+          {
+            "name": "rtmr3",
+            "ok": true,
+            "detail": "event log replays to the quote's RTMR3 with the exact Sealed event sequence",
+            "data": {
+              "composeHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa",
+              "keyProvider": "{\"name\":\"tpm\",\"id\":\"\"}",
+              "rtmr3": "0xe05568fef14f955fd000be3382c53bb91d84673200d28190fb90929c033d8d7f01f557a2dc2bfdbe327769741c0fcfbc",
+              "storageEncrypted": true,
+              "storageFs": "ext4"
+            }
+          },
+          {
+            "name": "compose_hash",
+            "ok": true,
+            "detail": "compose-hash = sha256(appCompose) = stackHash",
+            "data": {
+              "sha256(appCompose)": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "config_hash",
+            "ok": true,
+            "detail": "configHash = sha256(CJSON(config)) computed",
+            "data": {
+              "configHash": "0xc54e22ae76b34a8e419e1cb9029bc764baba31606e974fccef90d8a8f3b326c3"
+            }
+          },
+          {
+            "name": "config_binding",
+            "ok": true,
+            "detail": "releaseIds agree with the config"
+          },
+          {
+            "name": "deployment_id",
+            "ok": true,
+            "detail": "deploymentId = keccak256(abi.encode(customer, stackHash, salt)) derived",
+            "data": {
+              "derived": "0xa3f8fd8ac6618f0e86da91e264718b1e07ed23242ddcc4d6b4a64c2ea216d519"
+            }
+          },
+          {
+            "name": "releases_active",
+            "ok": true,
+            "detail": "1 releases active",
+            "data": {
+              "releases": [
+                {
+                  "active": true,
+                  "app": "inference-relay",
+                  "bundleHash": "0x8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db",
+                  "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313",
+                  "status": 1,
+                  "version": "0.1.0"
+                }
+              ]
+            }
+          },
+          {
+            "name": "stack_recompute",
+            "ok": true,
+            "detail": "app-compose.json recomputed byte for byte from config and onchain releases",
+            "data": {
+              "recomputedStackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "stack_approved",
+            "ok": true,
+            "detail": "isStackApproved(customer, stackHash)",
+            "data": {
+              "customer": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+              "stackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "approval_releases",
+            "ok": true,
+            "detail": "approval names exactly the config's releases and image",
+            "data": {
+              "approvedAt": 1793000000,
+              "expiry": 0,
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "revoked": false
+            }
+          },
+          {
+            "name": "expected_customer",
+            "ok": false,
+            "detail": "stack belongs to 0x90F79bf6EB2c4f870365E785982E1f101E93b906, expected 0x000000000000000000000000000000000000dEaD"
+          },
+          {
+            "name": "expected_apps",
+            "ok": true,
+            "detail": "stack runs the expected apps",
+            "data": {
+              "apps": [
+                "inference-relay"
+              ],
+              "expected": [
+                "inference-relay"
+              ]
+            }
+          },
+          {
+            "name": "onchain_record",
+            "ok": true,
+            "detail": "DeploymentRegistry record matches",
+            "data": {
+              "attestedAt": 1793000000,
+              "eventLogMatchesRecord": true,
+              "lastAttestedAt": 1793000000,
+              "method": 1,
+              "registered": true,
+              "registeredAt": 1793000000,
+              "status": 1
+            }
+          }
+        ]
+      },
+      "gate": {
+        "ok": false,
+        "detail": "relay attestation rejected (expected_customer: stack belongs to 0x90F79bf6EB2c4f870365E785982E1f101E93b906, expected 0x000000000000000000000000000000000000dEaD)"
+      }
+    },
+    {
+      "name": "replayed attestation",
+      "nonce": "0xba83a22e4c433f446ca6d166840dae3213bf7e99fb1ef0e222f2584d88810ccd",
+      "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+      "relayOwner": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+      "attest": {
+        "appCompose": "{\"allowed_envs\":[],\"docker_compose_file\":\"{\\\"configs\\\":{\\\"sealed-config\\\":{\\\"content\\\":\\\"{\\\\\\\"allowedVpcRanges\\\\\\\":[],\\\\\\\"apps\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"inference-relay\\\\\\\",\\\\\\\"releaseId\\\\\\\":\\\\\\\"0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313\\\\\\\"}],\\\\\\\"chainId\\\\\\\":4217,\\\\\\\"composerVersion\\\\\\\":\\\\\\\"1.0.0\\\\\\\",\\\\\\\"contracts\\\\\\\":{\\\\\\\"appRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a2\\\\\\\",\\\\\\\"deploymentRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a3\\\\\\\",\\\\\\\"feeSplitter\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000fee\\\\\\\",\\\\\\\"platformRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a1\\\\\\\"},\\\\\\\"customer\\\\\\\":\\\\\\\"0x90f79bf6eb2c4f870365e785982e1f101e93b906\\\\\\\",\\\\\\\"egressAdditions\\\\\\\":{},\\\\\\\"endpoints\\\\\\\":{\\\\\\\"keyBroker\\\\\\\":\\\\\\\"https://kb.example\\\\\\\",\\\\\\\"platformApi\\\\\\\":\\\\\\\"https://api.example\\\\\\\",\\\\\\\"relay\\\\\\\":\\\\\\\"https://relay.example\\\\\\\",\\\\\\\"relayAttest\\\\\\\":\\\\\\\"https://attest.relay.example/attest\\\\\\\",\\\\\\\"tempoRpc\\\\\\\":\\\\\\\"https://rpc.tempo.xyz\\\\\\\"},\\\\\\\"feeToken\\\\\\\":\\\\\\\"0x20c0000000000000000000000000000000000000\\\\\\\",\\\\\\\"hostnames\\\\\\\":{\\\\\\\"ip\\\\\\\":\\\\\\\"34.1.2.3\\\\\\\",\\\\\\\"scheme\\\\\\\":\\\\\\\"sslip\\\\\\\"},\\\\\\\"imageId\\\\\\\":\\\\\\\"0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e\\\\\\\",\\\\\\\"relayOwner\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000001\\\\\\\",\\\\\\\"salt\\\\\\\":\\\\\\\"0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97\\\\\\\",\\\\\\\"schema\\\\\\\":\\\\\\\"sealed-config/v1\\\\\\\",\\\\\\\"settlement\\\\\\\":{\\\\\\\"gracePeriodMinutes\\\\\\\":1440,\\\\\\\"intervalMinutes\\\\\\\":60,\\\\\\\"mode\\\\\\\":\\\\\\\"access-key\\\\\\\",\\\\\\\"spendLimitPerDay\\\\\\\":\\\\\\\"2000000\\\\\\\"}}\\\"}},\\\"services\\\":{\\\"inference-relay\\\":{\\\"image\\\":\\\"ghcr.io/sealed-dev/inference-relay@sha256:8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db\\\"}}}\",\"gateway_enabled\":false,\"key_provider\":\"tpm\",\"key_provider_id\":\"\",\"kms_enabled\":false,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"sealed-c54e22ae\",\"no_instance_id\":false,\"public_logs\":false,\"public_sysinfo\":false,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"ext4\"}",
+        "config": {
+          "allowedVpcRanges": [],
+          "apps": [
+            {
+              "id": "inference-relay",
+              "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+            }
+          ],
+          "chainId": 4217,
+          "composerVersion": "1.0.0",
+          "contracts": {
+            "appRegistry": "0x00000000000000000000000000000000000000a2",
+            "deploymentRegistry": "0x00000000000000000000000000000000000000a3",
+            "feeSplitter": "0x0000000000000000000000000000000000000fee",
+            "platformRegistry": "0x00000000000000000000000000000000000000a1"
+          },
+          "customer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+          "egressAdditions": {},
+          "endpoints": {
+            "keyBroker": "https://kb.example",
+            "platformApi": "https://api.example",
+            "relay": "https://relay.example",
+            "relayAttest": "https://attest.relay.example/attest",
+            "tempoRpc": "https://rpc.tempo.xyz"
+          },
+          "feeToken": "0x20c0000000000000000000000000000000000000",
+          "hostnames": {
+            "ip": "34.1.2.3",
+            "scheme": "sslip"
+          },
+          "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+          "relayOwner": "0x0000000000000000000000000000000000000001",
+          "salt": "0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97",
+          "schema": "sealed-config/v1",
+          "settlement": {
+            "gracePeriodMinutes": 1440,
+            "intervalMinutes": 60,
+            "mode": "access-key",
+            "spendLimitPerDay": "2000000"
+          }
+        },
+        "enclaveSigner": "0x976ea74026e726554db657fa54763abd0c3a0aa9",
+        "eventLog": [
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+            "event": "system-preparing",
+            "event_payload": ""
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "f1d395fd1051a51aaa3bcf7e140935d13bd812725742441dcf2ce8e7d2cbfbeaa8606878de35e05c3755c3fb314278ea",
+            "event": "app-id",
+            "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea6987396"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "2180db03ca2434c79b75bb4d050dd497772eafd14cf1499fbc43e54b19666a961400356dd8b3c1524926f21ba79b9b81",
+            "event": "compose-hash",
+            "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+            "event": "gpu-policy-hash",
+            "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "3dc66a24efbd7f1eed8a065dab62537b18b557e974bdb295fe5d76d3fafb8f160174b768f8ad3bc3404952666c9a4ddf",
+            "event": "instance-id",
+            "event_payload": "5e8c03a94c7835b87dd82c690f9f85c08592ef74"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+            "event": "boot-mr-done",
+            "event_payload": ""
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "67e185b2f6be40321584f4ee14d02bb84a899d83ac6d4ec23521267288f78b39ae70887a989c22c53990a58700682641",
+            "event": "key-provider",
+            "event_payload": "7b226e616d65223a2274706d222c226964223a22227d"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+            "event": "storage-fs",
+            "event_payload": "65787434"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+            "event": "storage-encrypted",
+            "event_payload": "31"
+          },
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+            "event": "system-ready",
+            "event_payload": ""
+          }
+        ],
+        "quote": "0x5345414c454453494d317b226465627567223a66616c73652c226d727464223a22313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c227265706f727444617461223a226139663137353339343936323931616433306431383831383661383864393166316234646630336334396131656435633233353036613531363239373538353130303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c2272746d7230223a22323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c2272746d7231223a22333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c2272746d7232223a22343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c2272746d7233223a22653035353638666566313466393535666430303062653333383263353362623931643834363733323030643238313930666239303932396330333364386437663031663535376132646332626664626533323737363937343163306663666263222c22736368656d61223a227365616c65642d73696d2d71756f74652f7631227d",
+        "releaseIds": [
+          "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+        ],
+        "reportData": "0xa9f17539496291ad30d188186a88d91f1b4df03c49a1ed5c23506a51629758510000000000000000000000000000000000000000000000000000000000000000",
+        "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+      },
+      "request": {
+        "attestUrl": "https://relay.34-1-2-3.sslip.io/attest",
+        "nonce": "0xba83a22e4c433f446ca6d166840dae3213bf7e99fb1ef0e222f2584d88810ccd",
+        "attest": {
+          "appCompose": "{\"allowed_envs\":[],\"docker_compose_file\":\"{\\\"configs\\\":{\\\"sealed-config\\\":{\\\"content\\\":\\\"{\\\\\\\"allowedVpcRanges\\\\\\\":[],\\\\\\\"apps\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"inference-relay\\\\\\\",\\\\\\\"releaseId\\\\\\\":\\\\\\\"0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313\\\\\\\"}],\\\\\\\"chainId\\\\\\\":4217,\\\\\\\"composerVersion\\\\\\\":\\\\\\\"1.0.0\\\\\\\",\\\\\\\"contracts\\\\\\\":{\\\\\\\"appRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a2\\\\\\\",\\\\\\\"deploymentRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a3\\\\\\\",\\\\\\\"feeSplitter\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000fee\\\\\\\",\\\\\\\"platformRegistry\\\\\\\":\\\\\\\"0x00000000000000000000000000000000000000a1\\\\\\\"},\\\\\\\"customer\\\\\\\":\\\\\\\"0x90f79bf6eb2c4f870365e785982e1f101e93b906\\\\\\\",\\\\\\\"egressAdditions\\\\\\\":{},\\\\\\\"endpoints\\\\\\\":{\\\\\\\"keyBroker\\\\\\\":\\\\\\\"https://kb.example\\\\\\\",\\\\\\\"platformApi\\\\\\\":\\\\\\\"https://api.example\\\\\\\",\\\\\\\"relay\\\\\\\":\\\\\\\"https://relay.example\\\\\\\",\\\\\\\"relayAttest\\\\\\\":\\\\\\\"https://attest.relay.example/attest\\\\\\\",\\\\\\\"tempoRpc\\\\\\\":\\\\\\\"https://rpc.tempo.xyz\\\\\\\"},\\\\\\\"feeToken\\\\\\\":\\\\\\\"0x20c0000000000000000000000000000000000000\\\\\\\",\\\\\\\"hostnames\\\\\\\":{\\\\\\\"ip\\\\\\\":\\\\\\\"34.1.2.3\\\\\\\",\\\\\\\"scheme\\\\\\\":\\\\\\\"sslip\\\\\\\"},\\\\\\\"imageId\\\\\\\":\\\\\\\"0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e\\\\\\\",\\\\\\\"relayOwner\\\\\\\":\\\\\\\"0x0000000000000000000000000000000000000001\\\\\\\",\\\\\\\"salt\\\\\\\":\\\\\\\"0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97\\\\\\\",\\\\\\\"schema\\\\\\\":\\\\\\\"sealed-config/v1\\\\\\\",\\\\\\\"settlement\\\\\\\":{\\\\\\\"gracePeriodMinutes\\\\\\\":1440,\\\\\\\"intervalMinutes\\\\\\\":60,\\\\\\\"mode\\\\\\\":\\\\\\\"access-key\\\\\\\",\\\\\\\"spendLimitPerDay\\\\\\\":\\\\\\\"2000000\\\\\\\"}}\\\"}},\\\"services\\\":{\\\"inference-relay\\\":{\\\"image\\\":\\\"ghcr.io/sealed-dev/inference-relay@sha256:8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db\\\"}}}\",\"gateway_enabled\":false,\"key_provider\":\"tpm\",\"key_provider_id\":\"\",\"kms_enabled\":false,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"sealed-c54e22ae\",\"no_instance_id\":false,\"public_logs\":false,\"public_sysinfo\":false,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"ext4\"}",
+          "config": {
+            "allowedVpcRanges": [],
+            "apps": [
+              {
+                "id": "inference-relay",
+                "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+              }
+            ],
+            "chainId": 4217,
+            "composerVersion": "1.0.0",
+            "contracts": {
+              "appRegistry": "0x00000000000000000000000000000000000000a2",
+              "deploymentRegistry": "0x00000000000000000000000000000000000000a3",
+              "feeSplitter": "0x0000000000000000000000000000000000000fee",
+              "platformRegistry": "0x00000000000000000000000000000000000000a1"
+            },
+            "customer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+            "egressAdditions": {},
+            "endpoints": {
+              "keyBroker": "https://kb.example",
+              "platformApi": "https://api.example",
+              "relay": "https://relay.example",
+              "relayAttest": "https://attest.relay.example/attest",
+              "tempoRpc": "https://rpc.tempo.xyz"
+            },
+            "feeToken": "0x20c0000000000000000000000000000000000000",
+            "hostnames": {
+              "ip": "34.1.2.3",
+              "scheme": "sslip"
+            },
+            "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+            "relayOwner": "0x0000000000000000000000000000000000000001",
+            "salt": "0x63479ad69a090b258277ec8fba6f99419a2ffb248981510657c944ccd1148e97",
+            "schema": "sealed-config/v1",
+            "settlement": {
+              "gracePeriodMinutes": 1440,
+              "intervalMinutes": 60,
+              "mode": "access-key",
+              "spendLimitPerDay": "2000000"
+            }
+          },
+          "enclaveSigner": "0x976ea74026e726554db657fa54763abd0c3a0aa9",
+          "eventLog": [
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+              "event": "system-preparing",
+              "event_payload": ""
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "f1d395fd1051a51aaa3bcf7e140935d13bd812725742441dcf2ce8e7d2cbfbeaa8606878de35e05c3755c3fb314278ea",
+              "event": "app-id",
+              "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea6987396"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "2180db03ca2434c79b75bb4d050dd497772eafd14cf1499fbc43e54b19666a961400356dd8b3c1524926f21ba79b9b81",
+              "event": "compose-hash",
+              "event_payload": "6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "aa25b837d81098d56e726cdfd4664eae9a1269362479753d04bdfd239a45388a056f245841910931ea09ff8278b9d482",
+              "event": "gpu-policy-hash",
+              "event_payload": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "3dc66a24efbd7f1eed8a065dab62537b18b557e974bdb295fe5d76d3fafb8f160174b768f8ad3bc3404952666c9a4ddf",
+              "event": "instance-id",
+              "event_payload": "5e8c03a94c7835b87dd82c690f9f85c08592ef74"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+              "event": "boot-mr-done",
+              "event_payload": ""
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "67e185b2f6be40321584f4ee14d02bb84a899d83ac6d4ec23521267288f78b39ae70887a989c22c53990a58700682641",
+              "event": "key-provider",
+              "event_payload": "7b226e616d65223a2274706d222c226964223a22227d"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "94eb1c817c35f570ca895b48b46e656e696d1a126581e70022f6f93a8c64d026ece224c6bffbe3bfdfe00bb3447adcd0",
+              "event": "storage-fs",
+              "event_payload": "65787434"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "3b1e7da22d75034156e6e6b01e33651b3cbd38ed875ab01da05f033e0b4b043004c0b6692abbef7e2dc366fffb0e5e5e",
+              "event": "storage-encrypted",
+              "event_payload": "31"
+            },
+            {
+              "imr": 3,
+              "event_type": 134217729,
+              "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+              "event": "system-ready",
+              "event_payload": ""
+            }
+          ],
+          "quote": "0x5345414c454453494d317b226465627567223a66616c73652c226d727464223a22313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c227265706f727444617461223a226139663137353339343936323931616433306431383831383661383864393166316234646630336334396131656435633233353036613531363239373538353130303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c2272746d7230223a22323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c2272746d7231223a22333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c2272746d7232223a22343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c2272746d7233223a22653035353638666566313466393535666430303062653333383263353362623931643834363733323030643238313930666239303932396330333364386437663031663535376132646332626664626533323737363937343163306663666263222c22736368656d61223a227365616c65642d73696d2d71756f74652f7631227d",
+          "releaseIds": [
+            "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313"
+          ],
+          "reportData": "0xa9f17539496291ad30d188186a88d91f1b4df03c49a1ed5c23506a51629758510000000000000000000000000000000000000000000000000000000000000000",
+          "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+        },
+        "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+        "options": {
+          "expectedCustomer": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+          "expectedAppIds": [
+            "inference-relay"
+          ]
+        }
+      },
+      "status": 200,
+      "response": {
+        "ok": false,
+        "simulated": true,
+        "mode": "live_submitted",
+        "deploymentId": "0xa3f8fd8ac6618f0e86da91e264718b1e07ed23242ddcc4d6b4a64c2ea216d519",
+        "stackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa",
+        "blockNumber": 100,
+        "verifiedAt": 1793000005,
+        "checks": [
+          {
+            "name": "live_fetch",
+            "ok": true,
+            "detail": "attestation submitted by the caller; nonce and TLS key are as the caller observed them",
+            "data": {
+              "nonce": "0xba83a22e4c433f446ca6d166840dae3213bf7e99fb1ef0e222f2584d88810ccd",
+              "observedTlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664",
+              "url": "https://relay.34-1-2-3.sslip.io/attest"
+            }
+          },
+          {
+            "name": "bundle",
+            "ok": true,
+            "detail": "/attest response with 1 releases"
+          },
+          {
+            "name": "tls_binding",
+            "ok": true,
+            "detail": "tlsPubKeyHash = sha256(SPKI of the served certificate)",
+            "data": {
+              "tlsPubKeyHash": "0xc8e1956cd318175004f3a1aa7b5fa8f56d1c5af636081dfd426127a5f7086664"
+            }
+          },
+          {
+            "name": "chain",
+            "ok": true,
+            "detail": "chain 4217, registries match, reads at block 100",
+            "data": {
+              "blockNumber": 100,
+              "deploymentRegistry": "0x00000000000000000000000000000000000000A3",
+              "rpcChainId": 4217
+            }
+          },
+          {
+            "name": "quote",
+            "ok": true,
+            "detail": "simulated quote accepted by a dev verifier (AllowSimulated); no hardware attestation",
+            "data": {
+              "qeTcbStatus": "Simulated",
+              "simulated": true,
+              "tcbStatus": "Simulated"
+            }
+          },
+          {
+            "name": "td_attributes",
+            "ok": true,
+            "detail": "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits",
+            "data": {
+              "tdAttributes": "0x0000001000000000",
+              "xfam": "0x0000000000000000"
+            }
+          },
+          {
+            "name": "freshness",
+            "ok": false,
+            "detail": "reportData does not bind our nonce, the served TLS key and the enclave signer",
+            "data": {
+              "nonce": "0xba83a22e4c433f446ca6d166840dae3213bf7e99fb1ef0e222f2584d88810ccd"
+            }
+          },
+          {
+            "name": "report_data",
+            "ok": false,
+            "detail": "quote report_data does not equal sha256(\"sealed/attest/v1\" || nonce || sha256(served SPKI) || enclaveSigner)",
+            "data": {
+              "expected": "0x2b9cbdb626256615c6356c68fc4bc50ecd530e94e7e81fbe0b811dded81aa3700000000000000000000000000000000000000000000000000000000000000000",
+              "quote": "0xa9f17539496291ad30d188186a88d91f1b4df03c49a1ed5c23506a51629758510000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "name": "image_measurements",
+            "ok": true,
+            "detail": "measurements match image sealed-sim 1.0.0",
+            "data": {
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "name": "sealed-sim",
+              "onchain": "0xea88d19f83c91226f30db083cc8c6b4c6e15feb4f9217fbe5775724c0c9cfbfe",
+              "version": "1.0.0"
+            }
+          },
+          {
+            "name": "image_approved",
+            "ok": true,
+            "detail": "isApprovedImage: active, not debug",
+            "data": {
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "isDebug": false,
+              "status": 1
+            }
+          },
+          {
+            "name": "rtmr3",
+            "ok": true,
+            "detail": "event log replays to the quote's RTMR3 with the exact Sealed event sequence",
+            "data": {
+              "composeHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa",
+              "keyProvider": "{\"name\":\"tpm\",\"id\":\"\"}",
+              "rtmr3": "0xe05568fef14f955fd000be3382c53bb91d84673200d28190fb90929c033d8d7f01f557a2dc2bfdbe327769741c0fcfbc",
+              "storageEncrypted": true,
+              "storageFs": "ext4"
+            }
+          },
+          {
+            "name": "compose_hash",
+            "ok": true,
+            "detail": "compose-hash = sha256(appCompose) = stackHash",
+            "data": {
+              "sha256(appCompose)": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "config_hash",
+            "ok": true,
+            "detail": "configHash = sha256(CJSON(config)) computed",
+            "data": {
+              "configHash": "0xc54e22ae76b34a8e419e1cb9029bc764baba31606e974fccef90d8a8f3b326c3"
+            }
+          },
+          {
+            "name": "config_binding",
+            "ok": true,
+            "detail": "releaseIds agree with the config"
+          },
+          {
+            "name": "deployment_id",
+            "ok": true,
+            "detail": "deploymentId = keccak256(abi.encode(customer, stackHash, salt)) derived",
+            "data": {
+              "derived": "0xa3f8fd8ac6618f0e86da91e264718b1e07ed23242ddcc4d6b4a64c2ea216d519"
+            }
+          },
+          {
+            "name": "releases_active",
+            "ok": true,
+            "detail": "1 releases active",
+            "data": {
+              "releases": [
+                {
+                  "active": true,
+                  "app": "inference-relay",
+                  "bundleHash": "0x8a0761969539e8cddadf040993380ea579c11e09ec076dc0c1dcec7b9f10c6db",
+                  "releaseId": "0x5eaac08b67c627242b33b50c7d859acef0f5ed498809bd3f78918f33d92e0313",
+                  "status": 1,
+                  "version": "0.1.0"
+                }
+              ]
+            }
+          },
+          {
+            "name": "stack_recompute",
+            "ok": true,
+            "detail": "app-compose.json recomputed byte for byte from config and onchain releases",
+            "data": {
+              "recomputedStackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "stack_approved",
+            "ok": true,
+            "detail": "isStackApproved(customer, stackHash)",
+            "data": {
+              "customer": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+              "stackHash": "0x6147c5e42cb41a662232da43f0ccaa4ea698739633b9c1b5db2a02de6e9251aa"
+            }
+          },
+          {
+            "name": "approval_releases",
+            "ok": true,
+            "detail": "approval names exactly the config's releases and image",
+            "data": {
+              "approvedAt": 1793000000,
+              "expiry": 0,
+              "imageId": "0x6ce92e5b466878701bd8ebf7f10aaf334e287c7bd846f473c32ebd3f8adf437e",
+              "revoked": false
+            }
+          },
+          {
+            "name": "expected_customer",
+            "ok": true,
+            "detail": "customer is 0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+          },
+          {
+            "name": "expected_apps",
+            "ok": true,
+            "detail": "stack runs the expected apps",
+            "data": {
+              "apps": [
+                "inference-relay"
+              ],
+              "expected": [
+                "inference-relay"
+              ]
+            }
+          },
+          {
+            "name": "onchain_record",
+            "ok": true,
+            "detail": "DeploymentRegistry record matches",
+            "data": {
+              "attestedAt": 1793000000,
+              "eventLogMatchesRecord": true,
+              "lastAttestedAt": 1793000000,
+              "method": 1,
+              "registered": true,
+              "registeredAt": 1793000000,
+              "status": 1
+            }
+          }
+        ]
+      },
+      "gate": {
+        "ok": false,
+        "detail": "relay attestation rejected (freshness: reportData does not bind our nonce, the served TLS key and the enclave signer; report_data: quote report_data does not equal sha256(\"sealed/attest/v1\" || nonce || sha256(served SPKI) || enclaveSigner))"
+      }
+    }
+  ]
+}
