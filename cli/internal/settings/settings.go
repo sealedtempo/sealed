@@ -75,9 +75,9 @@ func (o Options) FromEnv(getenv func(string) string) Options {
 }
 
 type deploymentsFile struct {
-	ChainID   uint64 `json:"chainId"`
-	Network   string `json:"network"`
-	Config    struct {
+	ChainID uint64 `json:"chainId"`
+	Network string `json:"network"`
+	Config  struct {
 		Treasury common.Address `json:"treasury"`
 	} `json:"config"`
 	Contracts map[string]struct {
