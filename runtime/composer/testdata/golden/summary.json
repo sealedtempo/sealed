@@ -1,8 +1,8 @@
 {
-  "composerVersion": "1.2.0",
-  "stackHash": "0xb31a58ae19594fd537c6bbb154ee50fac64b1d4b53acad375ad42a10d912727d",
-  "configHash": "0x0e39d2181f11cab8c4eb266e53b9f27b6d04216bf9415dd49aa15d000de51e44",
-  "deploymentId": "0xe6cefe896804ea7d2a845763ee218d221142c9d0b4b726bfb955be164daadb34",
+  "composerVersion": "1.3.0",
+  "stackHash": "0xe3ba8478f8eafad2578a3e818d7a09efb012c863c10a5ff7ebed08434e5cd2c0",
+  "configHash": "0x628629031a489236510d81c28329111991183707a7746af855a9fd58b9538b29",
+  "deploymentId": "0xc6aa3c294d671060c44584d4a73024d2f4ab9a5b65616d30c6cc925fe83091ce",
   "releases": [
     {
       "appId": "0x55fd8d795c5b9d2a906e1540ade043a6fb75de555aeb3800c4dd8cf3079b5dda",
@@ -17,19 +17,19 @@
       "appId": "0x75628f63cb267b5e13ef7a1e5091b3377e14d68e3d4e2d8a0cbfbe92de419ef9",
       "slug": "llm-gateway",
       "version": "2.3.4",
-      "bundleHash": "0x42e48ac27aee80248dc3d353f804f022df895f2922e6bd5aa3c9666fa5f22fba",
+      "bundleHash": "0x7d2b867630af3ded12a3e86d32a94018a38dec9c263208adafe9dc43e032315e",
       "egressPolicyHash": "0x7a23ed44cbcd9bd471bee67100c25b1ac218862b61024b73ff9659c9938ec712",
       "sbomHash": "0xc9993f9bd53f4220c4d46baac2610718a81158d4f55d3d1c3879875412c1572c",
-      "releaseId": "0x47cb44a3b9fdfc2ef2254ef1bcd3435d0426bea013941d737e58cbb2a71675ee"
+      "releaseId": "0x92489516de8ecfe73874906abfba201dabc6d30133e408e3d21405024688e029"
     }
   ],
   "files": {
-    "Caddyfile": "0x2c2028faa448330b258698d751d01ea8fa9d53680f7d4bce36bdb22f7b6996cf",
-    "Caddyfile.payment-needed": "0xe80b6124dcf5116781f99b5e581907b6f718a84d5309b1a9e99a7ea626b3cfdb",
-    "app-compose.json": "0xb31a58ae19594fd537c6bbb154ee50fac64b1d4b53acad375ad42a10d912727d",
-    "config.json": "0x0e39d2181f11cab8c4eb266e53b9f27b6d04216bf9415dd49aa15d000de51e44",
-    "egress.json": "0x26e0f0f3ddc86b2e3f80128f4eaf6ed10053ba7a5ec02c444c9ef9ab0dc90f72",
-    "pre-launch.sh": "0x88cf133454284f9dadc1f2b473d73cec523821e1b6a51ce697f2c6f0c00018db",
-    "stack.json": "0x5da8944e0d5764d88c434ca114528a96359c966db3f2365305ba83edc04255d1"
+    "Caddyfile": "0x93a76cf5b4f0531f1511321e1a843a74b9e37d5934a0e49f9e77fc7944e9c4b7",
+    "Caddyfile.payment-needed": "0x91502643345b0c25b67af551398ea60687d2cfa52fb5c129f72459c90d3baadc",
+    "app-compose.json": "0xe3ba8478f8eafad2578a3e818d7a09efb012c863c10a5ff7ebed08434e5cd2c0",
+    "config.json": "0x628629031a489236510d81c28329111991183707a7746af855a9fd58b9538b29",
+    "egress.json": "0xc9dd351712aa76f4f721ddf60cab5bd3e077846252d5bb96a0d08caaafe1a7b9",
+    "pre-launch.sh": "0x81f9aac88feafb4ec82ec71375335a337c32b8f51068e531efced4c55a8fd216",
+    "stack.json": "0x22f2187c0f29f98b33f520dbe184cd075fbf7802cac6d778dee976635479c25a"
   }
 }

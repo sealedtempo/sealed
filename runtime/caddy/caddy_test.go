@@ -88,10 +88,12 @@ func TestRenderNormal(t *testing.T) {
 		"protocols h1 h2",
 		"\ncrm.34-1-2-3.sslip.io {",
 		"forward_auth sealed-agent:7070 {\n\t\t\t\turi /v1/gate?route=crm\n",
-		"copy_headers Set-Cookie>X-Sealed-Gate-Set-Cookie",
+		"copy_headers Set-Cookie>X-Sealed-Gate-Set-Cookie X-Sealed-Gate-Strip-Authorization",
+		"@sealed_gate_strip header X-Sealed-Gate-Strip-Authorization 1",
+		"request_header @sealed_gate_strip -Authorization",
 		"header @sealed_gate_cookie Set-Cookie {http.request.header.X-Sealed-Gate-Set-Cookie}",
 		"request_header @sealed_gate_basic -Authorization",
-		`@sealed_gate_basic header_regexp Authorization "^[Bb][Aa][Ss][Ii][Cc] +c2VhbGVkO"`,
+		`@sealed_gate_basic header_regexp Authorization "^[Bb][Aa][Ss][Ii][Cc][ \t]+c2VhbGVkO"`,
 		"network_proxy none",
 		"@r0 path /ui /ui/*",
 		"@r1_bearer {\n\t\theader Authorization \"Bearer *\"\n\t}",
@@ -116,10 +118,14 @@ func TestRenderNormal(t *testing.T) {
 	if strings.Contains(s, "basic_auth") || strings.Contains(s, "GATE_PASSWORD_BCRYPT") || strings.Contains(s, "header_up -Authorization") {
 		t.Errorf("old basic_auth gate still rendered:\n%s", s)
 	}
-	// Inside each gated handle, the gate runs first, then the cookie copy,
-	// then the strip of the gate's Basic credentials, then the app.
+	// Inside each gated handle, client copies of the relay headers go first,
+	// then the gate, then the cookie copy, then the strip of the gate's
+	// Basic credentials (on the agent's signal, then by prefix) and of the
+	// strip signal itself, then the app.
 	crm := site(t, s, "crm.34-1-2-3.sslip.io")
-	order := []string{"route {", "request_header -X-Sealed-Gate-Set-Cookie", "forward_auth", "header @sealed_gate_cookie", "request_header -X-Sealed-Gate-Set-Cookie", "request_header @sealed_gate_basic", "reverse_proxy crm-server:3000"}
+	order := []string{"route {", "request_header -X-Sealed-Gate-Set-Cookie", "request_header -X-Sealed-Gate-Strip-Authorization", "forward_auth",
+		"header @sealed_gate_cookie", "request_header -X-Sealed-Gate-Set-Cookie", "request_header @sealed_gate_strip -Authorization",
+		"request_header -X-Sealed-Gate-Strip-Authorization", "request_header @sealed_gate_basic", "reverse_proxy crm-server:3000"}
 	last := 0
 	for _, o := range order {
 		i := strings.Index(crm[last:], o)
@@ -159,14 +165,16 @@ func TestGateBasicPrefix(t *testing.T) {
 			t.Errorf("%q encodes to %s, not prefixed by %s", pw, enc, gateBasicPrefix)
 		}
 	}
-	re := regexp.MustCompile("^[Bb][Aa][Ss][Ii][Cc] +" + gateBasicPrefix)
+	re := regexp.MustCompile(GateBasicRegexp)
 	for _, user := range []string{"sealedx", "seale", "admin", "Sealed"} {
 		enc := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":pw"))
 		if re.MatchString(enc) {
 			t.Errorf("user %q would be stripped: %s", user, enc)
 		}
 	}
-	for _, h := range []string{"Basic " + base64.StdEncoding.EncodeToString([]byte("sealed:pw")), "basic  " + base64.StdEncoding.EncodeToString([]byte("sealed:pw"))} {
+	// Review C-3: sealed-agent accepts spaces or tabs after "Basic".
+	cred := base64.StdEncoding.EncodeToString([]byte("sealed:pw"))
+	for _, h := range []string{"Basic " + cred, "basic  " + cred, "Basic\t" + cred, "BASIC \t " + cred} {
 		if !re.MatchString(h) {
 			t.Errorf("%q not stripped", h)
 		}

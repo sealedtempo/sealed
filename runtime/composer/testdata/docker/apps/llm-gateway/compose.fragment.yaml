@@ -1,0 +1,10 @@
+services:
+  llm-gateway-proxy:
+    image: "{{image:standin}}"
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /tmp/www && echo ok > /tmp/www/healthz && exec httpd -f -p 4000 -h /tmp/www"]
+    depends_on:
+      llm-gateway-db:
+        condition: service_started
+  llm-gateway-db:
+    image: "{{image:standin}}"
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /tmp/www && echo db > /tmp/www/index.html && exec httpd -f -p 5432 -h /tmp/www"]

@@ -128,9 +128,26 @@ type Secret struct {
 	Generate    string `json:"generate"`
 	Optional    bool   `json:"optional,omitempty"`
 	// SameAs is "<appId>/<NAME>": the value of another app's secret (D-043).
-	// Compose requires that app in the stack and the secret in its manifest.
+	// Compose requires that app in the stack, the secret in its manifest and
+	// this app in that secret's ShareWith.
 	SameAs string `json:"same_as,omitempty"`
+	// ShareWith lists the apps that may reference this secret with same_as
+	// (D-059). Without it no other app can read the value.
+	ShareWith []string `json:"share_with,omitempty"`
 }
+
+// SharedWith reports whether the secret's share_with lists app.
+func (s Secret) SharedWith(app string) bool {
+	for _, a := range s.ShareWith {
+		if a == app {
+			return true
+		}
+	}
+	return false
+}
+
+// MaxSecretNameLen is the longest secret name; envexec refuses longer ones.
+const MaxSecretNameLen = 128
 
 // SameAsRef splits same_as into the referenced app and secret name.
 func (s Secret) SameAsRef() (app, name string, ok bool) {
@@ -276,6 +293,8 @@ func flattenSchemaError(ve *jsonschema.ValidationError) string {
 var (
 	serviceNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	envNameRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// appIDRe is the schema's id pattern.
+	appIDRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}[a-z0-9]$`)
 )
 
 // reservedAppIDs cannot be used as app ids because they collide with sidecar
@@ -369,6 +388,18 @@ func (m *Manifest) validate() error {
 		if s.Name == gateSecret {
 			return fail(f, "%q is reserved for the password gate", s.Name)
 		}
+		// envexec exports secrets over the service's environment, so a
+		// secret may not replace a variable the composer or the manifest
+		// sets (review C-9).
+		if len(s.Name) > MaxSecretNameLen {
+			return fail(f, "%d characters, at most %d", len(s.Name), MaxSecretNameLen)
+		}
+		if isReservedEnv(s.Name) {
+			return fail(f, "%q is set by the composer", s.Name)
+		}
+		if _, ok := m.TelemetryOffEnv[s.Name]; ok {
+			return fail(f, "%q is also a telemetry_off_env variable", s.Name)
+		}
 		seenSecret[s.Name] = true
 		if app, _, ok := s.SameAsRef(); ok {
 			sf := fmt.Sprintf("secrets[%d].same_as", i)
@@ -378,6 +409,23 @@ func (m *Manifest) validate() error {
 			if s.Generate != "none" {
 				return fail(fmt.Sprintf("secrets[%d].generate", i), "must be none when same_as is set: the value comes from %s", s.SameAs)
 			}
+			if len(s.ShareWith) > 0 {
+				return fail(fmt.Sprintf("secrets[%d].share_with", i), "a same_as reference cannot be shared again; list the app in the share_with of %s", s.SameAs)
+			}
+		}
+		seenShare := map[string]bool{}
+		for j, app := range s.ShareWith {
+			sf := fmt.Sprintf("secrets[%d].share_with[%d]", i, j)
+			if !appIDRe.MatchString(app) || reservedAppIDs[app] || strings.HasPrefix(app, "sealed-") {
+				return fail(sf, "%q is not an app id", app)
+			}
+			if app == m.ID {
+				return fail(sf, "%q is this app", app)
+			}
+			if seenShare[app] {
+				return fail(sf, "duplicate %q", app)
+			}
+			seenShare[app] = true
 		}
 	}
 	for _, k := range sortedKeys(m.TelemetryOffEnv) {

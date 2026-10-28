@@ -265,7 +265,7 @@ func TestComposeServices(t *testing.T) {
 	}
 	for name, wantIP := range map[string]string{
 		"sealed-egress": "172.30.0.2", "sealed-agent": "172.30.0.3", "caddy": "172.30.0.4",
-		"sealed-mpp-payer": "172.30.0.5", "sealed-verifierd": "172.30.0.6",
+		"sealed-mpp-payer": "172.30.0.5", "sealed-verifierd": "",
 		"llm-gateway-proxy": "172.30.0.16", "notes-web": "172.30.0.17", "notes-db": "",
 	} {
 		if got := ip(name, "apps"); got != wantIP {
@@ -281,6 +281,10 @@ func TestComposeServices(t *testing.T) {
 		{"sealed-egress", "app-notes", "172.30.2.2"},
 		{"sealed-agent", "app-llm-gateway", "172.30.1.3"},
 		{"sealed-agent", "app-notes", "172.30.2.3"},
+		// D-061: verifierd shares a network with the payer and egress only.
+		{"sealed-egress", "verifier", "172.30.250.2"},
+		{"sealed-mpp-payer", "verifier", "172.30.250.5"},
+		{"sealed-verifierd", "verifier", "172.30.250.6"},
 	} {
 		if got := ip(c.name, c.network); got != c.ip {
 			t.Errorf("%s on %s: %q, want %q", c.name, c.network, got, c.ip)
@@ -378,10 +382,10 @@ func TestComposeServices(t *testing.T) {
 	if nets["apps"].(map[string]any)["internal"] != true || nets["edge"].(map[string]any)["internal"] != nil {
 		t.Error("apps must be internal, edge not")
 	}
-	if strings.Join(sortedKeys(nets), ",") != "app-llm-gateway,app-notes,apps,edge" {
+	if strings.Join(sortedKeys(nets), ",") != "app-llm-gateway,app-notes,apps,edge,verifier" {
 		t.Errorf("networks %v", sortedKeys(nets))
 	}
-	for name, subnet := range map[string]string{"app-llm-gateway": "172.30.1.0/24", "app-notes": "172.30.2.0/24"} {
+	for name, subnet := range map[string]string{"app-llm-gateway": "172.30.1.0/24", "app-notes": "172.30.2.0/24", "verifier": "172.30.250.0/24"} {
 		n := nets[name].(map[string]any)
 		cfg := n["ipam"].(map[string]any)["config"].([]any)[0].(map[string]any)
 		if n["internal"] != true || cfg["subnet"] != subnet {
@@ -627,21 +631,25 @@ func TestEgressConfigCallers(t *testing.T) {
 		allow[c.Name+"@"+c.IP] = strings.Join(c.Allow, " ")
 	}
 	// One caller per source address: every address a service owns maps to
-	// its allowlist (D-041).
+	// its allowlist (D-041). Sidecar addresses no traffic leaves from (the
+	// agent on app networks, the payer on the verifier network) get none.
 	agent := "api.sealed.example:443 rpc.tempo.xyz:443 sealed-key-broker-xyz.a.run.app:443"
 	notes := "api.example.com:443 smtp.example.com:587"
 	want := map[string]string{
 		"sealed-agent@172.30.0.3":                  agent,
-		"sealed-agent--app-llm-gateway@172.30.1.3": agent,
-		"sealed-agent--app-notes@172.30.2.3":       agent,
+		"sealed-agent--app-llm-gateway@172.30.1.3": "",
+		"sealed-agent--app-notes@172.30.2.3":       "",
 		"caddy@172.30.0.4":                         "acme-v02.api.letsencrypt.org:443",
 		"sealed-mpp-payer@172.30.0.5":              "attest.relay.sealed.example:443 rpc.tempo.xyz:443",
-		"sealed-verifierd@172.30.0.6":              "api.trustedservices.intel.com:443 attest.relay.sealed.example:443 certificates.trustedservices.intel.com:443 github.com:443 objects.githubusercontent.com:443 release-assets.githubusercontent.com:443 rpc.tempo.xyz:443",
-		"llm-gateway-proxy--apps@172.30.0.16":      "",
-		"llm-gateway-proxy@172.30.1.16":            "",
-		"notes-web--apps@172.30.0.17":              notes,
-		"notes-web@172.30.2.16":                    notes,
-		"notes-db@172.30.2.17":                     notes,
+		"sealed-mpp-payer--verifier@172.30.250.5":  "",
+		// D-061: PCS, the RPC, the relay attest host and the release asset hosts.
+		"sealed-verifierd@172.30.250.6": "api.trustedservices.intel.com:443 attest.relay.sealed.example:443 certificates.trustedservices.intel.com:443 " +
+			"github.com:443 objects.githubusercontent.com:443 release-assets.githubusercontent.com:443 rpc.tempo.xyz:443",
+		"llm-gateway-proxy--apps@172.30.0.16": "",
+		"llm-gateway-proxy@172.30.1.16":       "",
+		"notes-web--apps@172.30.0.17":         notes,
+		"notes-web@172.30.2.16":               notes,
+		"notes-db@172.30.2.17":                notes,
 	}
 	if len(allow) != len(want) {
 		t.Fatalf("callers %v", allow)
@@ -848,9 +856,12 @@ func TestHostRulesScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"EDGE_SUBNET=172.31.0.0/24", "EGRESS_IP=172.31.0.2", "--ctstate ESTABLISHED,RELATED -j RETURN",
-		`-s "$EGRESS_IP" -j RETURN`, "-A SEALED-EDGE -j DROP", `iptables -w -I "$1" 1 -s "$EDGE_SUBNET" -j SEALED-EDGE`,
-		"ensure_jump FORWARD", "ensure_jump DOCKER-USER", "iptables -w -C FORWARD -j DOCKER-USER",
+		"Sealed host rules v3", "EDGE_SUBNET=172.31.0.0/24", "EDGE_BRIDGE=sealed-edge", "EGRESS_IP=172.31.0.2",
+		`CONTAINER_RANGES="172.30.0.0/16 172.31.0.0/24"`, "CONTAINER_BRIDGES=sealed-+",
+		"--ctstate ESTABLISHED,RELATED -j RETURN", `-s "$EGRESS_IP" -j RETURN`, "-A SEALED-EDGE -j DROP",
+		"-A SEALED-INPUT -j DROP", `ensure_jump INPUT SEALED-INPUT -s "$range"`, `ensure_jump INPUT SEALED-INPUT -i "$CONTAINER_BRIDGES"`,
+		`ensure_jump "$1" SEALED-EDGE -i "$EDGE_BRIDGE"`, `ensure_jump "$1" SEALED-EDGE -s "$EDGE_SUBNET"`,
+		"hook_edge FORWARD", "hook_edge DOCKER-USER", "iptables -w -C FORWARD -j DOCKER-USER",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
@@ -904,9 +915,11 @@ func TestHostRulesScriptRuns(t *testing.T) {
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const jump = "-s 172.31.0.0/24 -j SEALED-EDGE"
-	run := func(t *testing.T, chains map[string]string) (string, string, error) {
-		state := t.TempDir()
+	// hook_edge inserts the interface jump first, then the source jump on
+	// top of it; INPUT gets the two range jumps, then the bridge jump.
+	edgeJumps := []string{"-s 172.31.0.0/24 -j SEALED-EDGE", "-i sealed-edge -j SEALED-EDGE"}
+	inputJumps := []string{"-i sealed-+ -j SEALED-INPUT", "-s 172.31.0.0/24 -j SEALED-INPUT", "-s 172.30.0.0/16 -j SEALED-INPUT"}
+	run := func(t *testing.T, state string, chains map[string]string) (string, error) {
 		for name, rules := range chains {
 			if err := os.WriteFile(filepath.Join(state, "chain."+name), []byte(rules), 0o644); err != nil {
 				t.Fatal(err)
@@ -915,61 +928,79 @@ func TestHostRulesScriptRuns(t *testing.T) {
 		cmd := exec.Command("bash", scriptPath)
 		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FAKE_IPT="+state)
 		out, err := cmd.CombinedOutput()
-		return state, string(out), err
+		return string(out), err
 	}
 	read := func(state, chain string) []string {
 		b, _ := os.ReadFile(filepath.Join(state, "chain."+chain))
 		return strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	}
+	head := func(rules []string, n int) string {
+		if len(rules) < n {
+			return strings.Join(rules, " | ")
+		}
+		return strings.Join(rules[:n], " | ")
+	}
 	t.Run("docker iptables backend", func(t *testing.T) {
-		state, out, err := run(t, map[string]string{"FORWARD": "-j DOCKER-USER\n-j DOCKER-FORWARD\n", "DOCKER-USER": "-j RETURN\n"})
-		if err != nil {
+		state := t.TempDir()
+		chains := map[string]string{"INPUT": "-j ACCEPT\n", "FORWARD": "-j DOCKER-USER\n-j DOCKER-FORWARD\n", "DOCKER-USER": "-j RETURN\n"}
+		if out, err := run(t, state, chains); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
-		if fw := read(state, "FORWARD"); fw[0] != jump || len(fw) != 3 {
-			t.Errorf("FORWARD %q", fw)
+		check := func(when string) {
+			if fw := read(state, "FORWARD"); head(fw, 2) != strings.Join(edgeJumps, " | ") || len(fw) != 4 {
+				t.Errorf("%s: FORWARD %q", when, fw)
+			}
+			if du := read(state, "DOCKER-USER"); head(du, 2) != strings.Join(edgeJumps, " | ") || len(du) != 3 || du[2] != "-j RETURN" {
+				t.Errorf("%s: DOCKER-USER %q", when, du)
+			}
+			if in := read(state, "INPUT"); head(in, 3) != strings.Join(inputJumps, " | ") || len(in) != 4 || in[3] != "-j ACCEPT" {
+				t.Errorf("%s: INPUT %q", when, in)
+			}
+			edge := read(state, "SEALED-EDGE")
+			if len(edge) != 4 || edge[3] != "-j DROP" {
+				t.Errorf("%s: SEALED-EDGE %q", when, edge)
+			}
+			in := read(state, "SEALED-INPUT")
+			if len(in) != 2 || in[0] != "-m conntrack --ctstate ESTABLISHED,RELATED -j RETURN" || in[1] != "-j DROP" {
+				t.Errorf("%s: SEALED-INPUT %q", when, in)
+			}
 		}
-		if du := read(state, "DOCKER-USER"); du[0] != jump || du[1] != "-j RETURN" {
-			t.Errorf("DOCKER-USER %q", du)
-		}
-		edge := read(state, "SEALED-EDGE")
-		if len(edge) != 4 || edge[3] != "-j DROP" {
-			t.Errorf("SEALED-EDGE %q", edge)
-		}
-		// A second boot keeps one copy of each jump.
-		cmd := exec.Command("bash", scriptPath)
-		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FAKE_IPT="+state)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		check("first boot")
+		// A second boot keeps one copy of each jump and rebuilds the chains.
+		if out, err := run(t, state, nil); err != nil {
 			t.Fatalf("second run: %v %s", err, out)
 		}
-		if fw := read(state, "FORWARD"); len(fw) != 3 {
-			t.Errorf("FORWARD after rerun %q", fw)
-		}
-		if edge := read(state, "SEALED-EDGE"); len(edge) != 4 {
-			t.Errorf("SEALED-EDGE after rerun %q", edge)
-		}
+		check("second boot")
 	})
 	t.Run("no docker iptables chains", func(t *testing.T) {
-		state, out, err := run(t, map[string]string{"FORWARD": ""})
-		if err != nil {
+		state := t.TempDir()
+		if out, err := run(t, state, map[string]string{"INPUT": "", "FORWARD": ""}); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
-		if fw := read(state, "FORWARD"); fw[0] != jump {
+		if fw := read(state, "FORWARD"); strings.Join(fw, " | ") != strings.Join(edgeJumps, " | ") {
 			t.Errorf("FORWARD %q", fw)
+		}
+		if in := read(state, "INPUT"); strings.Join(in, " | ") != strings.Join(inputJumps, " | ") {
+			t.Errorf("INPUT %q", in)
 		}
 		if _, err := os.Stat(filepath.Join(state, "chain.DOCKER-USER")); err == nil {
 			t.Error("script created an unhooked DOCKER-USER chain")
 		}
 	})
 	t.Run("DOCKER-USER not hooked fails the boot", func(t *testing.T) {
-		_, out, err := run(t, map[string]string{"FORWARD": "-j DOCKER-FORWARD\n", "DOCKER-USER": ""})
+		out, err := run(t, t.TempDir(), map[string]string{"INPUT": "", "FORWARD": "-j DOCKER-FORWARD\n", "DOCKER-USER": ""})
 		if err == nil || !strings.Contains(out, "does not jump") {
 			t.Fatalf("unhooked DOCKER-USER accepted: %v %s", err, out)
 		}
 	})
 	t.Run("missing FORWARD fails the boot", func(t *testing.T) {
-		if _, out, err := run(t, map[string]string{}); err == nil {
+		if out, err := run(t, t.TempDir(), map[string]string{"INPUT": ""}); err == nil {
 			t.Fatalf("script succeeded without a FORWARD chain: %s", out)
+		}
+	})
+	t.Run("missing INPUT fails the boot", func(t *testing.T) {
+		if out, err := run(t, t.TempDir(), map[string]string{"FORWARD": ""}); err == nil {
+			t.Fatalf("script succeeded without an INPUT chain: %s", out)
 		}
 	})
 }

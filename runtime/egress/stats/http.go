@@ -10,7 +10,9 @@ import (
 
 // Handler serves GET /v1/stats to requests that pass authorize (source IP
 // in statsReaders, plus the caller's token when it uses proxy auth), and
-// GET /healthz to anyone (it carries no data).
+// GET /healthz to anyone (it carries no data). Served counts are rounded
+// down to two significant figures (Snapshot.Rounded, D-065); the interval
+// log lines inside the VM stay exact.
 func Handler(c *Counter, authorize func(r *http.Request) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/stats", func(w http.ResponseWriter, r *http.Request) {
@@ -23,7 +25,7 @@ func Handler(c *Counter, authorize func(r *http.Request) bool) http.Handler {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		writeJSON(w, http.StatusOK, c.Snapshot())
+		writeJSON(w, http.StatusOK, c.Snapshot().Rounded())
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

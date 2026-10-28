@@ -947,7 +947,18 @@ func checkMountTarget(target string, targets map[string]bool) error {
 	if !path.IsAbs(target) || path.Clean(target) != target || target == "/" {
 		return fmt.Errorf("target %q must be a clean absolute path", target)
 	}
-	if strings.HasPrefix(target+"/", "/run/sealed/") || strings.HasPrefix(target+"/", "/sealed/") || target == DstackSocket {
+	// /var/run is a symlink to /run in most images, so both spellings of
+	// the reserved directories count, and neither /run nor /var/run may be
+	// mounted over as a whole (review C-8).
+	if target == "/run" || target == "/var/run" || target == "/sealed" {
+		return fmt.Errorf("target %q is reserved", target)
+	}
+	for _, p := range []string{"/run/sealed/", "/var/run/sealed/", "/sealed/"} {
+		if strings.HasPrefix(target+"/", p) {
+			return fmt.Errorf("target %q is reserved", target)
+		}
+	}
+	if target == DstackSocket || target == "/run/dstack.sock" {
 		return fmt.Errorf("target %q is reserved", target)
 	}
 	if targets[target] {

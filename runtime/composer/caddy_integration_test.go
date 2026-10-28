@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -47,7 +48,7 @@ func TestCaddyfileWithRealCaddy(t *testing.T) {
 			if _, present := req.Header["Cookie"]; present && cookie == "" {
 				cookie = "(empty header)"
 			}
-			hits <- seen{req.Method, req.URL.RequestURI(), req.Header.Get("Authorization"), cookie, string(b), req.Header.Get("X-Sealed-Gate-Set-Cookie")}
+			hits <- seen{req.Method, req.URL.RequestURI(), req.Header.Get("Authorization"), cookie, string(b), req.Header.Get("X-Sealed-Gate-Set-Cookie") + req.Header.Get(caddy.GateStripHeader)}
 			fmt.Fprintf(w, "hello from %s", name)
 		}))
 	}
@@ -117,6 +118,20 @@ func TestCaddyfileWithRealCaddy(t *testing.T) {
 	// Cookie plus the browser's cached gate credentials: still stripped.
 	c.do("tools", "GET", "/", map[string]string{"Cookie": "sealed_gate=valid-cookie", "Authorization": "basic  " + strings.TrimPrefix(basic, "Basic ")}, nil)
 	expectHit(seen{method: "GET", path: "/"})
+	// Review C-3: credentials with a tab after "Basic" are accepted by the
+	// agent and stripped too.
+	resp = c.do("tools", "GET", "/tab", map[string]string{"Authorization": "Basic\t" + strings.TrimPrefix(basic, "Basic ")}, nil)
+	if resp.code != 200 {
+		t.Errorf("tab-separated credentials: %d", resp.code)
+	}
+	expectHit(seen{method: "GET", path: "/tab"})
+	// The agent's strip signal removes Authorization even in a form the
+	// prefix match does not cover...
+	c.do("tools", "GET", "/signal", map[string]string{"Cookie": "sealed_gate=valid-cookie", "Authorization": "Token gate-ish", "X-Test-Strip": "1"}, nil)
+	expectHit(seen{method: "GET", path: "/signal"})
+	// ...but a client cannot send the signal itself to strip the app's own header.
+	c.do("tools", "GET", "/nosignal", map[string]string{"Cookie": "sealed_gate=valid-cookie", "Authorization": "Bearer app-token", caddy.GateStripHeader: "1"}, nil)
+	expectHit(seen{method: "GET", path: "/nosignal", auth: "Bearer app-token"})
 	// A client cannot use the internal relay header to set cookies or reach the app with it.
 	resp = c.do("tools", "GET", "/", map[string]string{"Cookie": "sealed_gate=valid-cookie", "X-Sealed-Gate-Set-Cookie": "evil=1"}, nil)
 	if resp.code != 200 || resp.header.Get("Set-Cookie") != "" {
@@ -224,7 +239,8 @@ type fakeGateAgent struct {
 
 type gateCall struct{ path, route, uri, method, auth string }
 
-// seen is one request an upstream test server received.
+// seen is one request an upstream test server received; spoof holds any
+// internal gate relay header that reached it.
 type seen struct{ method, path, auth, cookie, body, spoof string }
 
 func newFakeGateAgent(hits chan<- seen) *fakeGateAgent {
@@ -253,20 +269,45 @@ func newFakeGateAgent(hits chan<- seen) *fakeGateAgent {
 			fmt.Fprint(w, "starting")
 			return
 		}
+		// Like sealed-agent: Basic with spaces or tabs, and on a 200 the
+		// strip signal whenever the credentials name the gate user. The
+		// X-Test-Strip request header lets the test ask for the signal on
+		// a credential form Caddy's prefix match does not cover.
+		user, pw, isBasic := parseGateBasic(req.Header.Get("Authorization"))
+		strip := (isBasic && user == caddy.DefaultGateUser) || req.Header.Get("X-Test-Strip") != ""
+		if strip {
+			w.Header().Set(caddy.GateStripHeader, "1")
+		}
 		if ck, err := req.Cookie(caddy.DefaultGateCookie); err == nil && ck.Value == "valid-cookie" {
 			w.WriteHeader(200)
 			return
 		}
-		if u, p, ok := req.BasicAuth(); ok && u == caddy.DefaultGateUser && p == "gate-pw" {
+		if isBasic && user == caddy.DefaultGateUser && pw == "gate-pw" {
 			http.SetCookie(w, &http.Cookie{Name: caddy.DefaultGateCookie, Value: "valid-cookie", Path: "/", MaxAge: GateCookieMaxAge,
 				HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 			w.WriteHeader(200)
 			return
 		}
+		w.Header().Del(caddy.GateStripHeader)
 		w.Header().Set("WWW-Authenticate", `Basic realm="sealed"`)
 		w.WriteHeader(401)
 	}))
 	return a
+}
+
+// parseGateBasic parses Basic credentials the way sealed-agent does:
+// /^Basic[ \t]+([A-Za-z0-9+/=]+)[ \t]*$/i.
+func parseGateBasic(h string) (user, pw string, ok bool) {
+	m := regexp.MustCompile(`(?i)^Basic[ \t]+([A-Za-z0-9+/=]+)[ \t]*$`).FindStringSubmatch(h)
+	if m == nil {
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(m[1])
+	if err != nil {
+		return "", "", false
+	}
+	user, pw, ok = strings.Cut(string(raw), ":")
+	return user, pw, ok
 }
 
 func (a *fakeGateAgent) last() gateCall {

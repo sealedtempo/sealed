@@ -101,7 +101,8 @@ func TestAppsCannotReachOtherAppsServices(t *testing.T) {
 			t.Errorf("%s is on app-notes", name)
 		}
 	}
-	// Caddy, the payer and verifierd stay on the shared network only.
+	// Caddy, the payer and verifierd join no app network (verifierd is on
+	// the verifier network only, TestVerifierdOnlyReachableFromPayer).
 	for _, name := range []string{"caddy", "sealed-mpp-payer", "sealed-verifierd"} {
 		for _, n := range serviceNetworks(t, doc, name) {
 			if strings.HasPrefix(n, AppNetworkPrefix) {
@@ -316,8 +317,11 @@ func TestSameAs(t *testing.T) {
 		t.Errorf("undeclared referenced secret: %v", err)
 	}
 	// A required secret cannot point at an optional one.
-	relay := buildFixture(t, "inference-relay")
-	dir := writeApp(t, "inference-relay", map[string][][2]string{ManifestFile: {{"    generate: password\n", "    generate: password\n    optional: true\n"}}})
+	relay, err := buildDir(t, writeApp(t, "inference-relay", map[string][][2]string{ManifestFile: {{"    generate: password\n", "    generate: password\n    share_with: [llm-gateway, notes]\n"}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := writeApp(t, "inference-relay", map[string][][2]string{ManifestFile: {{"    generate: password\n", "    generate: password\n    optional: true\n    share_with: [notes]\n"}}})
 	optRelay, err := buildDir(t, dir)
 	if err != nil {
 		t.Fatal(err)
@@ -349,6 +353,92 @@ func TestSameAs(t *testing.T) {
 	cfg := testConfig(chain, gwChain, relay)
 	if _, err := Compose(cfg, []*Bundle{chain, gwChain, relay}); err == nil || !strings.Contains(err.Error(), "itself a reference") {
 		t.Errorf("chain: %v", err)
+	}
+}
+
+// TestSameAsNeedsShareWith is D-059 (review C-1): a secret can be referenced
+// only by the apps its own manifest lists in share_with, so a catalog app
+// cannot read another app's admin key just by naming it.
+func TestSameAsNeedsShareWith(t *testing.T) {
+	notesRef := func(t *testing.T, target string) *Bundle {
+		t.Helper()
+		dir := writeApp(t, "notes", map[string][][2]string{
+			ManifestFile: {{"telemetry_off_env:", "  - name: LLM_KEY\n    description: x\n    generate: none\n    same_as: " + target + "\ntelemetry_off_env:"}},
+			FragmentFile: {{"x-sealed-secrets: [DB_PASSWORD]", "x-sealed-secrets: [DB_PASSWORD, LLM_KEY]"}},
+		})
+		b, err := buildDir(t, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	gwWith := func(t *testing.T, shareLine string) *Bundle {
+		t.Helper()
+		dir := writeApp(t, "llm-gateway", map[string][][2]string{ManifestFile: {{"    share_with: [notes]\n", shareLine}}})
+		b, err := buildDir(t, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	notes := notesRef(t, "llm-gateway/MASTER_KEY")
+	// The fixture shares MASTER_KEY with notes.
+	gw := buildFixture(t, "llm-gateway")
+	if s, _ := gw.Manifest.Secret("MASTER_KEY"); !s.SharedWith("notes") {
+		t.Fatalf("fixture MASTER_KEY share_with %v", s.ShareWith)
+	}
+	mustCompose(t, testConfig(notes, gw), notes, gw)
+	for name, line := range map[string]string{
+		"no share_with":      "",
+		"other app":          "    share_with: [coding-agent]\n",
+		"empty share_with":   "    share_with: []\n",
+		"two other apps too": "    share_with: [coding-agent, scraper]\n",
+	} {
+		g := gwWith(t, line)
+		_, err := Compose(testConfig(notes, g), []*Bundle{notes, g})
+		if err == nil || !strings.Contains(err.Error(), "does not share MASTER_KEY with notes") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	both := gwWith(t, "    share_with: [coding-agent, notes]\n")
+	mustCompose(t, testConfig(notes, both), notes, both)
+	// Manifest rules for share_with.
+	for name, line := range map[string]string{
+		"self":      "    share_with: [llm-gateway]\n",
+		"duplicate": "    share_with: [notes, notes]\n",
+		"bad id":    "    share_with: [Notes]\n",
+		"reserved":  "    share_with: [sealed-agent]\n",
+		"not list":  "    share_with: notes\n",
+	} {
+		dir := writeApp(t, "llm-gateway", map[string][][2]string{ManifestFile: {{"    share_with: [notes]\n", line}}})
+		if _, err := buildDir(t, dir); err == nil {
+			t.Errorf("share_with %s accepted", name)
+		}
+	}
+	// A reference cannot be shared again.
+	dir := writeApp(t, "notes", map[string][][2]string{ManifestFile: {{"telemetry_off_env:",
+		"  - name: LLM_KEY\n    description: x\n    generate: none\n    same_as: llm-gateway/MASTER_KEY\n    share_with: [inference-relay]\ntelemetry_off_env:"}}})
+	if _, err := buildDir(t, dir); err == nil || !strings.Contains(err.Error(), "cannot be shared again") {
+		t.Errorf("re-shared reference: %v", err)
+	}
+}
+
+// TestSecretNamesCannotShadowComposerEnv is review C-9: envexec exports
+// secrets over the environment, so a secret named like a composer-owned
+// variable or a telemetry switch would replace it.
+func TestSecretNamesCannotShadowComposerEnv(t *testing.T) {
+	for _, name := range []string{"HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY", "ALL_PROXY", "SEALED_PUBLIC_URL_TOOLS", "NOTES_TELEMETRY", "A" + strings.Repeat("B", MaxSecretNameLen)} {
+		dir := writeApp(t, "notes", map[string][][2]string{ManifestFile: {{"telemetry_off_env:",
+			"  - name: " + name + "\n    description: x\n    generate: hex32\ntelemetry_off_env:"}}})
+		if _, err := buildDir(t, dir); err == nil {
+			t.Errorf("secret %s accepted", name)
+		}
+	}
+	ok := "A" + strings.Repeat("B", MaxSecretNameLen-1)
+	dir := writeApp(t, "notes", map[string][][2]string{ManifestFile: {{"telemetry_off_env:",
+		"  - name: " + ok + "\n    description: x\n    generate: hex32\ntelemetry_off_env:"}}})
+	if _, err := buildDir(t, dir); err != nil {
+		t.Errorf("%d-character secret name refused: %v", len(ok), err)
 	}
 }
 
@@ -626,17 +716,22 @@ func TestServiceNameRules(t *testing.T) {
 
 func TestVpcRangesAvoidAppNetworks(t *testing.T) {
 	cfg, _ := fixtureStack(t)
-	for _, r := range []string{"172.30.5.0/24", "172.30.16.0/28", "172.30.0.0/16"} {
+	// Every range inside 172.30.0.0/16 or 172.31.0.0/24 is the VM's own
+	// (sealed-egress classes all of it as vm-internal and refuses such
+	// allowedPrivateCidrs, so a config naming one would never start).
+	for _, r := range []string{"172.30.5.0/24", "172.30.16.0/28", "172.30.0.0/16", "172.30.128.0/20", "172.30.250.0/24", "172.31.0.128/25", "172.16.0.0/12"} {
 		c := *cfg
 		c.AllowedVpcRanges = []string{r}
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s accepted", r)
 		}
 	}
-	c := *cfg
-	c.AllowedVpcRanges = []string{"172.30.128.0/20"}
-	if err := c.Validate(); err != nil {
-		t.Errorf("range outside the VM networks: %v", err)
+	for _, r := range []string{"172.29.0.0/16", "172.31.1.0/24", "10.0.0.0/8"} {
+		c := *cfg
+		c.AllowedVpcRanges = []string{r}
+		if err := c.Validate(); err != nil {
+			t.Errorf("range outside the VM networks: %v", err)
+		}
 	}
 }
 
@@ -664,7 +759,7 @@ func TestThreeAppStackIsDeterministic(t *testing.T) {
 		}
 	}
 	doc := composeDoc(t, first)
-	if n := len(doc["networks"].(map[string]any)); n != 5 {
-		t.Errorf("%d networks, want apps, edge and three app networks", n)
+	if n := len(doc["networks"].(map[string]any)); n != 6 {
+		t.Errorf("%d networks, want apps, edge, verifier and three app networks", n)
 	}
 }

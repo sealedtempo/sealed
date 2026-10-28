@@ -56,7 +56,15 @@ func TestClassify(t *testing.T) {
 		"172.30.0.1":             ClassVMInternal,
 		"172.30.0.3":             ClassVMInternal,
 		"172.31.0.2":             ClassVMInternal,
-		"172.30.1.1":             ClassPrivate,
+		// D-041 app networks and the verifier network are the VM's too
+		// (docker-checks bug 6): counted as vm-internal, never ip-private.
+		"172.30.1.1":     ClassVMInternal,
+		"172.30.2.17":    ClassVMInternal,
+		"172.30.16.254":  ClassVMInternal,
+		"172.30.250.6":   ClassVMInternal,
+		"172.30.255.255": ClassVMInternal,
+		"172.29.255.255": ClassPrivate,
+		"172.31.1.1":     ClassPrivate,
 	}
 	for s, want := range cases {
 		if got := Classify(netip.MustParseAddr(s)); got != want {

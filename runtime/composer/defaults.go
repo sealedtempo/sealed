@@ -17,13 +17,40 @@ const (
 	AgentIP      = "172.30.0.3"
 	CaddyIP      = "172.30.0.4"
 	PayerIP      = "172.30.0.5"
-	VerifierdIP  = "172.30.0.6"
 	EgressEdgeIP = "172.31.0.2"
 	CaddyEdgeIP  = "172.31.0.4"
 	DNSIP        = EgressAppsIP
 	firstAppHost = 16
 	lastAppHost  = 254
 )
+
+// The verifier network (D-061) joins sealed-verifierd to sealed-mpp-payer
+// and sealed-egress only, so no app primary on the shared apps network can
+// reach verifierd's API and use it as an HTTP client with verifierd's egress
+// allowlist. It exists only when llm-gateway is in the stack.
+const (
+	VerifierNetwork  = "verifier"
+	VerifierSubnet   = "172.30.250.0/24"
+	EgressVerifierIP = "172.30.250.2"
+	PayerVerifierIP  = "172.30.250.5"
+	VerifierdIP      = "172.30.250.6"
+	verifierBridge   = "sealed-verifier"
+)
+
+// VMRanges hold every address the VM's Docker networks can use: apps, the
+// per-app networks, the verifier network and edge. sealed-egress classes
+// them as vm-internal (policy.VMInternalPrefixes, D-064), the host rules
+// drop their traffic to the VM itself, and allowedVpcRanges may not overlap
+// them.
+var VMRanges = []string{"172.30.0.0/16", EdgeSubnet}
+
+// ContainerBridgePattern is the iptables interface pattern of every bridge
+// the composer creates (sealed-apps, sealed-edge, sealed-verifier and
+// sealed-app1 to sealed-app16).
+const ContainerBridgePattern = "sealed-+"
+
+// EdgeBridge is the edge network's bridge name.
+const EdgeBridge = "sealed-edge"
 
 // Per-app internal networks (D-041). App number n (1..MaxConfigApps, in the
 // config's sorted app order) gets network app-<appId>, subnet 172.30.<n>.0/24,

@@ -117,14 +117,20 @@
         "additionalProperties": false,
         "required": ["name", "description", "generate"],
         "properties": {
-          "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$", "description": "Environment variable name, at most 128 characters. It may not be a variable the composer sets (proxy variables, NODE_USE_ENV_PROXY, SEALED_PUBLIC_URL_*) or a telemetry_off_env key." },
           "description": { "type": "string" },
           "generate": { "enum": ["none", "hex32", "base64-32", "sk-hex32", "password"], "description": "how sealed secrets set --generate creates a value when the customer does not supply one: hex32 is 32 random bytes as 64 lowercase hex characters, base64-32 is 32 random bytes in standard base64 with padding, sk-hex32 is sk- followed by hex32, password is 24 characters drawn uniformly from [A-Za-z0-9]. Must be none when same_as is set." },
           "optional": { "type": "boolean" },
           "same_as": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]/[A-Z][A-Z0-9_]*$",
-            "description": "<appId>/<NAME>: this secret has the value of another app's secret (D-043). The composer requires that app to be in the stack and to declare that secret; the key broker returns the value under this app's name, and sealed secrets never asks for it twice."
+            "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]/[A-Z][A-Z0-9_]{0,127}$",
+            "description": "<appId>/<NAME>: this secret has the value of another app's secret (D-043). The composer requires that app to be in the stack, to declare that secret and to list this app in the secret's share_with (D-059); the key broker returns the value under this app's name, and sealed secrets never asks for it twice."
+          },
+          "share_with": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]$" },
+            "description": "App ids that may reference this secret with same_as (D-059). Without an entry no other app can read the value. Not allowed on a secret that is itself a same_as reference."
           }
         }
       }

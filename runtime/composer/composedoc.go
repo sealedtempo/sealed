@@ -58,18 +58,25 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri 
 		"apps": map[string]any{"ipv4_address": EgressAppsIP},
 		"edge": map[string]any{"ipv4_address": EgressEdgeIP},
 	}
+	if hasGateway {
+		egressNets[VerifierNetwork] = map[string]any{"ipv4_address": EgressVerifierIP}
+	}
 	agentNets := map[string]any{"apps": map[string]any{"ipv4_address": AgentIP}}
 	for _, a := range apps {
 		egressNets[a.network()] = map[string]any{"ipv4_address": a.egressIP()}
 		agentNets[a.network()] = map[string]any{"ipv4_address": a.agentIP()}
 	}
+	// No read_only: compose writes inline configs into the container's root
+	// filesystem when it creates the container, so "docker compose up"
+	// refuses a read-only service with a content config (D-063,
+	// docker-checks bug 1). sealed-egress still runs as nonroot from a
+	// distroless image with every capability dropped and no-new-privileges.
 	services[svcEgress] = harden(map[string]any{
 		"image":       img(imgEgress),
 		"networks":    egressNets,
 		"environment": map[string]any{"SEALED_EGRESS_CONFIG": EgressConfigPath},
 		"configs":     []any{configMount(cfgEgress, EgressConfigPath)},
 		"volumes":     []any{volumeMount(volBin, BinDir, true)},
-		"read_only":   true,
 		"healthcheck": probe("tcp://127.0.0.1:3128", "2s", "60s"),
 		"depends_on":  dependsOn(map[string]string{svcInit: "service_completed_successfully"}),
 		"restart":     "unless-stopped",
@@ -177,13 +184,21 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri 
 		for _, n := range payerSecrets {
 			payerVolumes = append(payerVolumes, secretBind(svcPayer, n))
 		}
+		// The payer reaches verifierd on the verifier network and everything
+		// else on apps. On SIGTERM it closes its relay session, which waits
+		// up to 30 s for the chain (mppx), so it gets more than Docker's
+		// default 10 s (D-067).
 		services[svcPayer] = harden(map[string]any{
-			"image":       img(imgPayer),
-			"networks":    map[string]any{"apps": map[string]any{"ipv4_address": PayerIP}},
-			"dns":         []any{DNSIP},
-			"environment": payerEnv,
-			"volumes":     payerVolumes,
-			"configs":     []any{configMount(cfgConfig, ConfigPath)},
+			"image": img(imgPayer),
+			"networks": map[string]any{
+				"apps":          map[string]any{"ipv4_address": PayerIP},
+				VerifierNetwork: map[string]any{"ipv4_address": PayerVerifierIP},
+			},
+			"dns":               []any{DNSIP},
+			"environment":       payerEnv,
+			"volumes":           payerVolumes,
+			"configs":           []any{configMount(cfgConfig, ConfigPath)},
+			"stop_grace_period": PayerStopGracePeriod,
 			"depends_on": dependsOn(map[string]string{
 				svcAgent:     "service_healthy",
 				svcVerifierd: "service_started",
@@ -191,23 +206,30 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri 
 			"restart": "unless-stopped",
 			"logging": logs,
 		}, capsNone, nil)
-		vdEnv := proxyEnv(ProxyURL, noProxy)
+		// sealed-verifierd is only on the verifier network (D-061), so only
+		// the payer can reach it, and its DNS and proxy are sealed-egress
+		// there. It also serves only the payer's address on that network
+		// (SEALED_VERIFIERD_ALLOWED_CLIENTS) and fetches no attest URL
+		// itself (the payer submits attestations it fetched); were fetches
+		// on, they would be limited to the relay attest host. No read_only,
+		// for the same reason as sealed-egress.
+		relayAttestHost, err := urlHostname(cfg.Endpoints.RelayAttest)
+		if err != nil {
+			return nil, err
+		}
+		vdProxy := "http://" + EgressVerifierIP + ":3128"
+		vdEnv := proxyEnv(vdProxy, noProxy)
 		vdEnv["PORT"] = strconv.Itoa(VerifierdPort)
 		vdEnv["SEALED_CONFIG_FILE"] = ConfigPath
-		// Live checks only ever fetch the relay's attest host, so no app on the apps network can use
-		// verifierd as an HTTP client to the other hosts its egress allows.
-		attest, err := url.Parse(cfg.Endpoints.RelayAttest)
-		if err != nil || attest.Hostname() == "" {
-			return nil, fmt.Errorf("endpoints.relayAttest: %q is not a URL", cfg.Endpoints.RelayAttest)
-		}
-		vdEnv["SEALED_VERIFIERD_LIVE_HOSTS"] = attest.Hostname()
+		vdEnv["SEALED_VERIFIERD_ALLOWED_CLIENTS"] = PayerVerifierIP
+		vdEnv["SEALED_VERIFIERD_LIVE_FETCH"] = "false"
+		vdEnv["SEALED_VERIFIERD_LIVE_HOSTS"] = relayAttestHost
 		services[svcVerifierd] = harden(map[string]any{
 			"image":       img(imgVerifierd),
-			"networks":    map[string]any{"apps": map[string]any{"ipv4_address": VerifierdIP}},
-			"dns":         []any{DNSIP},
+			"networks":    map[string]any{VerifierNetwork: map[string]any{"ipv4_address": VerifierdIP}},
+			"dns":         []any{EgressVerifierIP},
 			"environment": vdEnv,
 			"configs":     []any{configMount(cfgConfig, ConfigPath)},
-			"read_only":   true,
 			"depends_on":  dependsOn(map[string]string{svcEgress: "service_healthy"}),
 			"restart":     "unless-stopped",
 			"logging":     logs,
@@ -237,6 +259,24 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri 
 	}
 	for _, a := range apps {
 		networks[a.network()] = network(AppSubnet(a.n), appNetIP(a.n, 1), "sealed-app"+strconv.Itoa(a.n), true, true)
+	}
+	if hasGateway {
+		networks[VerifierNetwork] = network(VerifierSubnet, "172.30.250.1", verifierBridge, true, true)
+	}
+
+	// A container on two or more networks never routes between them
+	// (D-064, docker-checks bug 5): IPv4 sysctls of a new network namespace
+	// are inherited from the host, where Docker turns forwarding on. Today
+	// only Docker's bridge rules stop a container with NET_ADMIN from
+	// routing through sealed-egress, Caddy, the agent or a primary.
+	for _, name := range sortedKeys(services) {
+		svc := services[name].(map[string]any)
+		if nets, ok := svc["networks"].(map[string]any); ok && len(nets) > 1 {
+			svc["sysctls"] = map[string]any{"net.ipv4.ip_forward": "0"}
+		}
+	}
+	if err := checkInlineConfigsWritable(services); err != nil {
+		return nil, err
 	}
 
 	return map[string]any{
@@ -595,4 +635,33 @@ func network(subnet, gateway, bridge string, internal, icc bool) map[string]any 
 		n["internal"] = true
 	}
 	return n
+}
+
+// PayerStopGracePeriod is sealed-mpp-payer's stop_grace_period (D-067: at
+// least 45 s, above mppx's 30 s confirmation wait for the closing voucher).
+const PayerStopGracePeriod = "60s"
+
+// checkInlineConfigsWritable fails when a service that mounts an inline
+// (content) config is read_only. Compose injects such configs by copying a
+// file into the container at create time, which a read-only root
+// filesystem forbids, so the stack would never start (D-063). App services
+// get no configs, so an app fragment's read_only is unaffected.
+func checkInlineConfigsWritable(services map[string]any) error {
+	for _, name := range sortedKeys(services) {
+		svc := services[name].(map[string]any)
+		ro, _ := svc["read_only"].(bool)
+		if cfgs, _ := svc["configs"].([]any); ro && len(cfgs) > 0 {
+			return fmt.Errorf("compose: service %s is read_only but mounts inline configs, which docker compose cannot create", name)
+		}
+	}
+	return nil
+}
+
+// urlHostname is the host name of an endpoint URL Validate accepted.
+func urlHostname(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("config: %q has no host", raw)
+	}
+	return u.Hostname(), nil
 }

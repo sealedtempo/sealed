@@ -1,0 +1,10 @@
+services:
+  alpha-web:
+    image: "{{image:standin}}"
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /tmp/www && echo ok > /tmp/www/healthz && exec httpd -f -p 8080 -h /tmp/www"]
+    depends_on:
+      alpha-db:
+        condition: service_started
+  alpha-db:
+    image: "{{image:standin}}"
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /tmp/www && echo db > /tmp/www/index.html && exec httpd -f -p 5432 -h /tmp/www"]

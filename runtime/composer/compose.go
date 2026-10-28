@@ -97,11 +97,15 @@ const (
 // Intel PCS hosts the in-VM verifier needs for quote collateral and CRLs.
 var intelPCSHosts = []string{"api.trustedservices.intel.com:443", "certificates.trustedservices.intel.com:443"}
 
-// releaseAssetHosts are where sealed-verifierd fetches the relay stack's release bundles to recompute
-// it (D-046, D-061): the host of catalog.release_asset_base and the hosts GitHub redirects release
-// asset downloads to (release-assets.githubusercontent.com observed 2026-10-28, and the older
-// objects.githubusercontent.com). Without them stack_recompute fails closed and the payer never opens
-// the relay. TestReleaseAssetHostsMatchDefaults keeps the first in step with config/defaults.yaml.
+// releaseAssetHosts serve the GitHub release assets under
+// catalog.release_asset_base (D-046): github.com answers the asset URL with a
+// redirect to one of the two asset hosts (release-assets.githubusercontent.com
+// observed 2026-10-28, and the older objects.githubusercontent.com).
+// sealed-verifierd fetches the relay stack's bundles there (D-061); without
+// them stack_recompute fails closed and the payer never opens the relay. Every
+// bundle is checked against the onchain bundleHash.
+// TestReleaseAssetHostsCoverDefaults and TestReleaseAssetHostsMatchDefaults
+// keep them in step with config/defaults.yaml.
 var releaseAssetHosts = []string{"github.com:443", "objects.githubusercontent.com:443", "release-assets.githubusercontent.com:443"}
 
 // Compose builds the stack for a config and its release bundles using the
@@ -389,7 +393,9 @@ func checkImageRefs(apps []*plannedApp, ri *RuntimeImages) error {
 
 // checkSameAs validates cross-app secret references (D-043): the referenced
 // app is in the stack and declares the secret, which is not itself a
-// reference, and a required secret does not depend on an optional one.
+// reference and lists the referencing app in share_with (D-059: the source
+// app opts in, so a catalog app cannot read another app's admin key by
+// naming it), and a required secret does not depend on an optional one.
 func checkSameAs(apps []*plannedApp) error {
 	byID := map[string]*plannedApp{}
 	for _, a := range apps {
@@ -415,6 +421,9 @@ func checkSameAs(apps []*plannedApp) error {
 			}
 			if ref.SameAs != "" {
 				return fail("%q is itself a reference (same_as %q); point at the original secret", sec.SameAs, ref.SameAs)
+			}
+			if !ref.SharedWith(a.id) {
+				return fail("%q: %s does not share %s with %s (its share_with must list %q)", sec.SameAs, refApp, refName, a.id, a.id)
 			}
 			if ref.Optional && !sec.Optional {
 				return fail("%q is optional in %s, so the required secret %s could be missing", sec.SameAs, refApp, sec.Name)
@@ -554,9 +563,13 @@ func caddyInput(cfg *Config, routes []plannedRoute) (caddy.Input, error) {
 
 // Egress caller-name suffixes. A caller is one source address: a service's
 // address on its app network keeps the service name, a primary's address on
-// the shared apps network adds callerAppsSuffix, and sealed-agent's address
-// on an app network adds "--" plus the network name.
-const callerAppsSuffix = "--apps"
+// the shared apps network adds callerAppsSuffix, sealed-agent's address on
+// an app network adds "--" plus the network name, and sealed-mpp-payer's
+// address on the verifier network adds callerVerifierSuffix.
+const (
+	callerAppsSuffix     = "--apps"
+	callerVerifierSuffix = "--" + VerifierNetwork
+)
 
 func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte, error) {
 	hp := endpointHostPort
@@ -577,13 +590,17 @@ func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte
 		ip    string
 		allow []string
 	}
-	agentAllow := []string{keyBroker, platformAPI, tempoRPC}
 	callers := []caller{
-		{svcAgent, AgentIP, agentAllow},
+		{svcAgent, AgentIP, []string{keyBroker, platformAPI, tempoRPC}},
 		{svcCaddy, CaddyIP, []string{ACMEHost}},
 	}
+	// The agent's own traffic always leaves from its apps address (its
+	// proxy and DNS are 172.30.0.2). Its address on each app network shares
+	// a bridge with every service of that app, so it gets no allowlist: a
+	// packet forged from it reaches nothing (review ws-int-agent 5). The
+	// caller stays, so such traffic is counted under its name.
 	for _, a := range apps {
-		callers = append(callers, caller{svcAgent + "--" + a.network(), a.agentIP(), agentAllow})
+		callers = append(callers, caller{svcAgent + "--" + a.network(), a.agentIP(), nil})
 	}
 	if hasGateway {
 		relay, err := hp("endpoints.relay", cfg.Endpoints.Relay)
@@ -594,9 +611,14 @@ func buildEgressConfig(cfg *Config, apps []*plannedApp, hasGateway bool) ([]byte
 		if err != nil {
 			return nil, err
 		}
+		// sealed-verifierd (D-061): Intel PCS for collateral, the Tempo RPC,
+		// the relay's attest host, and the release asset hosts it fetches
+		// relay bundles from for stack_recompute (review V-2).
+		vdAllow := append(append([]string{tempoRPC, relayAttest}, intelPCSHosts...), releaseAssetHosts...)
 		callers = append(callers,
 			caller{svcPayer, PayerIP, []string{relay, tempoRPC}},
-			caller{svcVerifierd, VerifierdIP, append(append([]string{tempoRPC, relayAttest}, intelPCSHosts...), releaseAssetHosts...)})
+			caller{svcPayer + callerVerifierSuffix, PayerVerifierIP, nil},
+			caller{svcVerifierd, VerifierdIP, vdAllow})
 	}
 	for _, a := range apps {
 		allow := append(append([]string{}, a.bundle.Egress.DefaultAllow...), a.additions...)
