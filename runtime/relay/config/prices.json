@@ -14,12 +14,13 @@
       "id": "tinfoil/gpt-oss-120b",
       "provider": "tinfoil",
       "upstream_model": "gpt-oss-120b",
-      "input_per_1m": 240000,
-      "output_per_1m": 780000,
+      "input_per_1m": 150000,
+      "output_per_1m": 600000,
       "max_output_tokens": 4096,
-      "source": "unconfirmed: Tinfoil publishes no per-model price page; highest list price seen for this model at another provider",
+      "source": "https://tinfoil.sh/models",
+      "source_note": "Tinfoil's public model catalog, which lists per-model API prices (https://tinfoil.sh/pricing: API access is pay-as-you-go with per-model pricing). Read from the rendered page on 2026-10-28; Tinfoil's public model list API https://api.tinfoil.sh/v1/models gave the same figures that day.",
       "checked": "2026-10-28",
-      "confirmed": false
+      "confirmed": true
     },
     {
       "id": "tinfoil/glm-5-3",
@@ -28,9 +29,10 @@
       "input_per_1m": 1800000,
       "output_per_1m": 5750000,
       "max_output_tokens": 4096,
-      "source": "unconfirmed: Tinfoil publishes no per-model price page; highest list price seen for GLM-5.3 at another provider",
+      "source": "https://tinfoil.sh/models",
+      "source_note": "Tinfoil's public model catalog, which lists per-model API prices (https://tinfoil.sh/pricing: API access is pay-as-you-go with per-model pricing). Read from the rendered page on 2026-10-28; Tinfoil's public model list API https://api.tinfoil.sh/v1/models gave the same figures that day.",
       "checked": "2026-10-28",
-      "confirmed": false
+      "confirmed": true
     },
     {
       "id": "phala/openai/gpt-oss-120b",

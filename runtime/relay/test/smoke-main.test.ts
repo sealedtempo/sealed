@@ -31,6 +31,12 @@ describe.skipIf(!postgresAvailable() || !existsSync(built))('relay process smoke
       }
       const models = await (await fetch(`http://127.0.0.1:${port}/v1/models`)).json()
       expect(models.data.length).toBeGreaterThan(0)
+      // The shipped table: Tinfoil list price with the 5% markup, in FEE_TOKEN base units.
+      expect(models.data.find((m: { id: string }) => m.id === 'tinfoil/gpt-oss-120b').sealed.price).toMatchObject({
+        currency: '0x20c000000000000000000000b9537d11c60e8b50',
+        input_per_1m: '157500',
+        output_per_1m: '630000',
+      })
       const status = await (await fetch(`http://127.0.0.1:${port}/v1/attest-status`)).json()
       expect(status.providers.tinfoil.enabled).toBe(true)
       expect(status.providers.phala.enabled).toBe(false)

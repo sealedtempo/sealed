@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
 import {
   type ModelPrice,
   ceilToBaseUnits,
@@ -10,6 +11,7 @@ import {
   relayPricePer1M,
   scaledCost,
 } from '../src/prices.js'
+import { modelsDocument } from '../src/server.js'
 import { estimateDeltaTokens, estimatePromptTokens } from '../src/tokens.js'
 
 const model: ModelPrice = {
@@ -72,6 +74,43 @@ describe('relay pricing', () => {
     const providers = new Set(table.models.map((m) => m.provider))
     expect([...providers].sort()).toEqual(['nearai', 'phala', 'privatemode', 'tinfoil'])
     for (const m of table.models) expect(m.id.startsWith(`${m.provider}/`)).toBe(true)
+  })
+
+  // Read from Tinfoil's public model catalog (https://tinfoil.sh/models) on 2026-10-28:
+  // GPT-OSS 120B $0.15 in / $0.60 out per 1M tokens, GLM-5.3 $1.80 / $5.75.
+  const raw = JSON.parse(readFileSync(join(import.meta.dirname, '../config/prices.json'), 'utf8')) as {
+    models: { id: string; input_per_1m: number; output_per_1m: number; source?: string; checked?: string; confirmed?: boolean }[]
+  }
+  it('sets the Tinfoil list prices from its public price list, with source and date', () => {
+    const tinfoil = raw.models.filter((m) => m.id.startsWith('tinfoil/'))
+    expect(tinfoil.map(({ id, input_per_1m, output_per_1m, source, checked, confirmed }) => ({ id, input_per_1m, output_per_1m, source, checked, confirmed }))).toEqual([
+      { id: 'tinfoil/gpt-oss-120b', input_per_1m: 150_000, output_per_1m: 600_000, source: 'https://tinfoil.sh/models', checked: '2026-10-28', confirmed: true },
+      { id: 'tinfoil/glm-5-3', input_per_1m: 1_800_000, output_per_1m: 5_750_000, source: 'https://tinfoil.sh/models', checked: '2026-10-28', confirmed: true },
+    ])
+    for (const m of raw.models) {
+      expect(m.checked, m.id).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      if (m.confirmed) expect(m.source, m.id).toMatch(/^https:\/\//)
+    }
+  })
+
+  it('publishes Tinfoil prices with the 5% markup of spec 7.4 and charges by them', () => {
+    const table = loadPriceTable(join(import.meta.dirname, '../config/prices.json'), 500)
+    const gate = { allows: () => true, status: (p: string) => ({ provider: p, enabled: true, verified: true, detail: 'ok' }), all: () => [] }
+    const listed = modelsDocument(table, gate as never).data
+    const price = (id: string) => listed.find((m) => m.id === id)!.sealed.price
+    // list x (1 + 500/10000): 150000 x 1.05 = 157500, 600000 x 1.05 = 630000 base units per 1M tokens.
+    expect(price('tinfoil/gpt-oss-120b')).toMatchObject({
+      currency: '0x20c000000000000000000000b9537d11c60e8b50',
+      markup_bps: 500,
+      input_per_1m: '157500',
+      output_per_1m: '630000',
+      list_input_per_1m: '150000',
+      list_output_per_1m: '600000',
+    })
+    expect(price('tinfoil/glm-5-3')).toMatchObject({ input_per_1m: '1890000', output_per_1m: '6037500' })
+    // 1000 prompt + 500 completion tokens of gpt-oss-120b: (150 + 300) x 1.05 = 472.5 -> 473 base units.
+    const gptOss = table.models.find((m) => m.id === 'tinfoil/gpt-oss-120b')!
+    expect(costInBaseUnits(gptOss, 500, 1_000n, 500n)).toBe(473n)
   })
 })
 

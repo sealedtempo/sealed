@@ -45,9 +45,9 @@ describe('inference-relay release check', () => {
   })
 
   // Documents the open release items; update it as the operator confirms the remaining prices.
-  it.skipIf(process.env.RELEASE_CHECK === '1')('lists what still blocks this tree: the unconfirmed prices', () => {
+  it.skipIf(process.env.RELEASE_CHECK === '1')('lists what still blocks this tree: the Privatemode price (EUR, converted)', () => {
     const blockers = releaseBlockers(repoReleaseInputs(repo))
-    expect(blockers.map((b) => b.code)).toEqual(['unconfirmed-price', 'unconfirmed-price', 'unconfirmed-price'])
+    expect(blockers).toEqual([{ code: 'unconfirmed-price', detail: 'privatemode/gpt-oss-120b: list price not confirmed' }])
   })
 
   // CI runs this before publishing a release: pnpm --filter @sealed/relay release-check

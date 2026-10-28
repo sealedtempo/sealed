@@ -78,8 +78,10 @@ tokens.
 
 Prices live in `runtime/relay/config/prices.json`, baked into the measured image, as provider
 list prices in FEE_TOKEN base units per 1M tokens. Every entry names its source and the date it
-was read. Tinfoil does not publish per-model prices on a fetchable page and Privatemode prices in
-EUR; those entries are `"confirmed": false`.
+was read. Tinfoil's prices come from its public model catalog, `https://tinfoil.sh/models`, read on
+2026-10-28 (`https://tinfoil.sh/pricing` says API pricing is per model): GPT-OSS 120B $0.15 in and
+$0.60 out per 1M tokens, GLM-5.3 $1.80 and $5.75, so the relay charges $0.1575 / $0.63 and
+$1.89 / $6.0375. Privatemode prices in EUR, so its entry stays `"confirmed": false`.
 `TREASURY_ADDRESS` in the fragment is a literal (measured, read by every payer).
 `pnpm --filter @sealed/relay release-check` fails while a price is unconfirmed or unsourced, the
 treasury differs from the deployed one, or the fee token differs from `config/defaults.yaml`; the
