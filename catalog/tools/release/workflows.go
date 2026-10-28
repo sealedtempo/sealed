@@ -29,6 +29,7 @@ var KnownActions = map[string]ActionPin{
 	"actions/download-artifact":    {"9000827ccba6bdab643e8b6fd33ac0654aef8333", "v8.0.2"},
 	"pnpm/action-setup":            {"ea17c68df8912ef543352723c149a84f56e3d413", "v6.1.0"},
 	"foundry-rs/foundry-toolchain": {"908c540300062bd5a7e473851cdb4282204cee09", "v1.9.1"},
+	"hashicorp/setup-terraform":    {"dfe3c3f87815947d99a8997f908cb6525fc44e9e", "v4.0.1"},
 	"docker/setup-buildx-action":   {"f87e5991a6d7451dcb8d9637bfbc97413f497069", "v4.4.1"},
 	"sigstore/cosign-installer":    {"6f9f17788090df1f26f669e9d70d6ae9567deba6", "v4.1.2"},
 	"anchore/sbom-action":          {"66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c", "v0.24.3"},

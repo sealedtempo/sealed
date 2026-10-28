@@ -1,6 +1,6 @@
-# The full test matrix: Go (with a local Tempo node for the verifier and release script tests), every
-# TypeScript package, the catalog's Python and node suites, the contracts, and the workflow and script
-# policy. Catalog checks (lint, compose, SBOM and Grype) are in catalog.yml.
+# The full test matrix: Go (with a local Tempo node for the verifier, key broker, CLI and release script
+# tests), the customer bootstrap Terraform module, every TypeScript package, the catalog's Python and node
+# suites, the contracts, and the workflow and script policy. Catalog checks (lint, compose, SBOM and Grype) are in catalog.yml.
 #
 # Every action is pinned by full commit SHA with its version in a comment; catalog/tools/release
 # (go run ./catalog/tools/release workflows) enforces it, together with the secrets rules.
@@ -18,14 +18,21 @@ env:
   GO_VERSION: "1.27.3"
   NODE_VERSION: "24.22.1"
   PYTHON_VERSION: "3.12.16"
-  FOUNDRY_VERSION: v1.7.1
+  # D-053: Foundry v1.8.6 (Tempo hardforks T0 to T14).
+  FOUNDRY_VERSION: v1.8.6
+  TERRAFORM_VERSION: "1.17.0"
 jobs:
   go:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      # The verifier's anvil end-to-end tests and the release script tests must not skip in CI.
+      # Nothing may skip in CI: the anvil end-to-end tests (verifier, key broker, CLI, release scripts), the key
+      # broker's interop test against @sealed/core, the CLI's embedded Terraform module and the IAM check script.
       SEALED_REQUIRE_ANVIL: "1"
+      SEALED_REQUIRE_NODE: "1"
+      SEALED_REQUIRE_TERRAFORM: "1"
+      SEALED_REQUIRE_IAM_SCRIPT: "1"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -33,15 +40,42 @@ jobs:
         with: { go-version: "${{ env.GO_VERSION }}" }
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with: { terraform_version: "${{ env.TERRAFORM_VERSION }}", terraform_wrapper: false }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: pnpm }
+      # The key broker's interop test opens release ciphertexts with the built @sealed/core.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @sealed/core build
       # dependencies/ is not committed; restore it from soldeer.lock.
       - run: make -C contracts deps
       - run: go vet ./...
+      - run: go vet -tags sealeddev ./key-broker/...
       # gofmt for the release tooling (other packages keep their owners' checks).
       - name: gofmt catalog/tools
         run: |
           unformatted="$(gofmt -l catalog/tools)"
           if [ -n "$unformatted" ]; then echo "::error::gofmt needed: $unformatted"; exit 1; fi
       - run: go test -count=1 ./...
+      # The key broker's dev build: simulated quotes through the real binary.
+      - run: go test -count=1 -tags sealeddev ./key-broker/...
+  terraform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with: { terraform_version: "${{ env.TERRAFORM_VERSION }}", terraform_wrapper: false }
+      # The customer bootstrap module (the CLI embeds the same files); plan tests use mock providers.
+      - name: customer-bootstrap
+        working-directory: infra/terraform/customer-bootstrap
+        run: |
+          terraform init -input=false -backend=false
+          terraform validate -no-color
+          terraform fmt -check -recursive
+          terraform test -no-color
   ts:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -83,6 +117,11 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}" }
+      # The shared catalog tooling wraps the real composer lint (Node and Python).
+      - name: catalog/tools suites
+        run: |
+          node --test catalog/tools/*.test.mjs
+          python -m unittest discover -s catalog/tools
       # App-local node --test suites with their own lockfiles; they run the real composer from this tree.
       - name: crm and internal-tools suites
         run: |

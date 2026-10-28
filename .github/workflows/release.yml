@@ -29,7 +29,8 @@ concurrency:
   cancel-in-progress: false
 env:
   GO_VERSION: "1.27.3"
-  FOUNDRY_VERSION: v1.7.1
+  # D-053: Foundry v1.8.6; mainnet sends keep the D-038 path (fee token preference set once per account).
+  FOUNDRY_VERSION: v1.8.6
   SYFT_VERSION: v1.55.0
   GRYPE_VERSION: v0.121.0
   COSIGN_VERSION: v3.1.4
