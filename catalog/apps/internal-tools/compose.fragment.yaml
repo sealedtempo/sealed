@@ -50,6 +50,8 @@ services:
       SSO_DISABLE_SIGNUPS: "true"
       ENABLE_MULTIPLAYER_EDITING: "true"
       USER_SESSION_EXPIRY: "2880"
+      # The image default (4096 MB of V8 heap) does not fit the container limit below.
+      NODE_OPTIONS: "--max-old-space-size=2048"
     depends_on:
       internal-tools-db:
         condition: service_healthy
@@ -63,7 +65,7 @@ services:
       # First boot creates the databases and runs several hundred migrations.
       start_period: 300s
     stop_grace_period: 30s
-    mem_limit: 4g
+    mem_limit: 3g
 
   internal-tools-postgrest:
     image: "{{image:postgrest}}"
