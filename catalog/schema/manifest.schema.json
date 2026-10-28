@@ -16,6 +16,7 @@
     "name": { "type": "string", "minLength": 1, "maxLength": 64 },
     "category": { "enum": ["ai", "data", "crm", "developer", "internal-tools", "infrastructure"] },
     "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "release_version": { "type": "string", "pattern": "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$", "description": "Version passed to AppRegistry.publishRelease and hashed into releaseId. Defaults to upstream.version; bump it when only the packaging changes." },
     "upstream": {
       "type": "object",
       "additionalProperties": false,
@@ -52,7 +53,8 @@
           "source": { "type": "string", "description": "Upstream reference including tag, or 'build:images/<dir>' for images built by the runtime image workflow" },
           "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
           "platform": { "const": "linux/amd64" },
-          "license_spdx": { "type": "string" }
+          "license_spdx": { "type": "string" },
+          "ref": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9][a-z0-9._-]*)+@sha256:[0-9a-f]{64}$", "description": "Written by the bundle builder as <catalog.registry>/<name>@<digest>. Never set in catalog sources." }
         }
       }
     },
