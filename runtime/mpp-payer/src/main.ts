@@ -46,7 +46,7 @@ function main(): void {
     repin: () => gate.recheckAfterKeyMismatch(),
   })
   // First cap: the daily budget shared with the agent's fee settlement, which has priority (D-048).
-  const budget = new AgentSpendBudget({ agentUrl: config.agentUrl, log })
+  const budget = new AgentSpendBudget({ agentUrl: config.agentUrl, currency: config.currency, log })
   // Second cap: the local guard, the whole daily limit, persisted across restarts.
   const guard = new SpendGuard(config.spendLimitPerDay, Date.now, {
     store: new FileSpendStore(config.spendStateFile, (e) => log({ event: 'spend_state_unsaved', detail: e.message })),

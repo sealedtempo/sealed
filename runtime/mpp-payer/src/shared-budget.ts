@@ -40,6 +40,11 @@ export type SharedBudgetState = {
 export type AgentSpendBudgetDeps = {
   /** sealed-agent's local API, for example http://sealed-agent:7070. */
   agentUrl: string
+  /**
+   * FEE_TOKEN (config.feeToken). Sent with every reservation, so the agent refuses (422) a payer
+   * whose currency differs from the one its budget counts.
+   */
+  currency?: string
   fetch?: FetchLike
   /** Per-call timeout. Default 5000 ms. */
   timeoutMs?: number
@@ -60,7 +65,7 @@ function decimal(value: unknown): bigint | undefined {
 /**
  * Client of sealed-agent's shared spend budget (brief item 21, D-048):
  *
- *   POST /v1/spend/reserve {"amount":"<base units>"}  ->  {"ok":true,"reservationId":"…","remaining":"…"}
+ *   POST /v1/spend/reserve {"amount":"<base units>","currency"?:"0x…"}  ->  {"ok":true,"reservationId":"…","remaining":"…"}
  *                                                        {"ok":false,"remaining":"…","reason"?} when refused
  *   POST /v1/spend/release {"reservationId":"…","used":"<base units>"}
  *
@@ -84,7 +89,8 @@ export class AgentSpendBudget implements SpendBudget {
 
   async reserve(amount: bigint): Promise<SharedReservation> {
     if (amount <= 0n) throw new BudgetUnavailableError(`refusing to reserve a non-positive amount ${amount}`)
-    const { status, json } = await this.call('/v1/spend/reserve', { amount: amount.toString() }).catch((error: Error) => {
+    const request = { amount: amount.toString(), ...(this.deps.currency ? { currency: this.deps.currency } : {}) }
+    const { status, json } = await this.call('/v1/spend/reserve', request).catch((error: Error) => {
       this.current.lastError = error.message
       throw new BudgetUnavailableError(`sealed-agent spend budget unreachable: ${error.message}`)
     })

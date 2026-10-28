@@ -49,6 +49,17 @@ describe('shared spend budget client (sealed-agent /v1/spend/reserve and /releas
     expect(budget.state()).toEqual({ remaining: '1499640', checkedAt: 1_000, pendingReleases: 0, lastError: undefined })
   })
 
+  it('sends the fee token with each reservation, and treats a currency refusal as unavailable', async () => {
+    seen.length = 0
+    reply = (url) =>
+      url === '/v1/spend/reserve' ? { status: 200, body: JSON.stringify({ ok: true, reservationId: 'res-2', remaining: '10' }) } : { status: 204 }
+    const token = '0x20c000000000000000000000b9537d11c60e8b50'
+    await new AgentSpendBudget({ agentUrl, currency: token }).reserve(7n)
+    expect(seen[0]?.body).toBe(`{"amount":"7","currency":"${token}"}`)
+    reply = () => ({ status: 422, body: JSON.stringify({ error: 'currency is not the fee token' }) })
+    expect(await new AgentSpendBudget({ agentUrl, currency: token }).reserve(7n).catch((e) => e)).toBeInstanceOf(BudgetUnavailableError)
+  })
+
   it('turns ok:false into a shared SpendLimitError and accepts a numeric remaining', async () => {
     reply = () => ({ status: 409, body: JSON.stringify({ ok: false, remaining: 1200 }) })
     const error = await new AgentSpendBudget({ agentUrl }).reserve(5_000n).catch((e) => e)

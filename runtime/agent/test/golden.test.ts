@@ -27,6 +27,8 @@ import { fromPeer, testPeerOf, testSettings } from "./helpers/fixtures.js";
 // The payer's own code builds the /v1/spend body (brief item 21: accept it as payments built it).
 import { SpendGuard } from "../../mpp-payer/src/spend-guard.js";
 import { SpendReporter } from "../../mpp-payer/src/spend-reporter.js";
+import { AgentSpendBudget, BudgetUnavailableError } from "../../mpp-payer/src/shared-budget.js";
+import { SpendLimitError } from "../../mpp-payer/src/spend-guard.js";
 
 const golden = join(import.meta.dirname, "fixtures/composer-golden");
 const read = (f: string) => readFile(join(golden, f), "utf8");
@@ -305,6 +307,30 @@ describe("sealed-agent against the composer's golden stack", () => {
       expect(BigInt(agent.budget?.state.fees ?? "0") - before).toBe(paid);
       const h = await agent.reportHealth(now);
       expect(h.body.payments).toMatchObject({ budget_limit: "2000000", budget_payer: "40000", budget_fees: (before + paid).toString(), budget_reserved: "0" });
+    });
+
+    it("answers the payer's own AgentSpendBudget client (runtime/mpp-payer shared-budget)", async () => {
+      const client = (currency?: string) =>
+        new AgentSpendBudget({
+          agentUrl: `http://127.0.0.1:${agent.port}`,
+          ...(currency ? { currency } : {}),
+          retryDelaysMs: [],
+          fetch: (url, init) => fetch(url, { ...init, headers: { ...(init?.headers as Record<string, string>), ...fromPeer("172.30.0.5") } }),
+        });
+      const before = agent.budget?.available(now) as bigint;
+      const budget = client(config.feeToken);
+      const r = await budget.reserve(25_000n);
+      expect(r.remaining).toBe(before - 25_000n);
+      await budget.release(r, 10_000n);
+      expect(agent.budget?.available(now)).toBe(before - 10_000n);
+      expect(budget.state()).toMatchObject({ pendingReleases: 0 });
+      // Released twice: the agent answers 404, which the payer treats as already released.
+      await budget.release(r, 10_000n);
+      expect(budget.state()).toMatchObject({ pendingReleases: 0 });
+      // More than the budget: the payer gets a shared SpendLimitError, not a payment.
+      await expect(budget.reserve(before * 2n)).rejects.toBeInstanceOf(SpendLimitError);
+      // Another fee token: the agent refuses it, and the payer treats that as unavailable (fail closed).
+      await expect(client(`0x${"99".repeat(20)}`).reserve(1n)).rejects.toBeInstanceOf(BudgetUnavailableError);
     });
 
     it("follows the access key's limit period for the budget window", async () => {
