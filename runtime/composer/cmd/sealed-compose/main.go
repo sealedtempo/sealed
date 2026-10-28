@@ -4,6 +4,7 @@
 // the composer package directly.
 //
 //	sealed-compose bundle --app-dir catalog/apps/crm [--out crm.tar]
+//	sealed-compose lint [--catalog catalog/apps] [--app-dir DIR...] [--bundle FILE...] [--require-sbom]
 //	sealed-compose compose --config stack.json --app-dir DIR... [--bundle FILE...] [--print summary|app-compose|compose|egress|caddyfile|caddyfile-payment|stack|config|pre-launch] [--out DIR]
 package main
 
@@ -20,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealed-dev/sealed/runtime/composer/lint"
 )
 
 func main() {
@@ -92,15 +94,17 @@ func (b *bundleFlags) load(stderr io.Writer) ([]*composer.Bundle, error) {
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: sealed-compose bundle|compose [flags] (see -h)")
+		return errors.New("usage: sealed-compose bundle|lint|compose [flags] (see -h)")
 	}
 	switch args[0] {
 	case "bundle":
 		return runBundle(args[1:], stdout, stderr)
 	case "compose":
 		return runCompose(args[1:], stdout, stderr)
+	case "lint":
+		return runLint(args[1:], stdout, stderr)
 	}
-	return fmt.Errorf("unknown command %q (want bundle or compose)", args[0])
+	return fmt.Errorf("unknown command %q (want bundle, lint or compose)", args[0])
 }
 
 func runBundle(args []string, stdout, stderr io.Writer) error {
@@ -267,4 +271,61 @@ func findUp(rel string) (string, error) {
 		}
 		dir = parent
 	}
+}
+
+func runLint(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalog := fs.String("catalog", "", "lint every app under this directory (catalog/apps)")
+	var appDirs, bundleFiles multi
+	fs.Var(&appDirs, "app-dir", "catalog app directory (repeatable)")
+	fs.Var(&bundleFiles, "bundle", "bundle tar file (repeatable)")
+	requireSBOM := fs.Bool("require-sbom", false, "treat a missing SBOM as an error")
+	asJSON := fs.Bool("json", false, "print findings as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	opts := lint.Options{RequireSBOM: *requireSBOM}
+	var findings []lint.Finding
+	if *catalog != "" {
+		fsCat, err := lint.LintCatalog(*catalog, opts)
+		if err != nil {
+			return err
+		}
+		findings = append(findings, fsCat...)
+	}
+	for _, d := range appDirs {
+		findings = append(findings, lint.LintApp(d, opts)...)
+	}
+	for _, f := range bundleFiles {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		b, err := composer.LoadBundle(raw)
+		if err != nil {
+			findings = append(findings, lint.Finding{Severity: lint.Error, App: f, Code: "bundle", Message: err.Error()})
+			continue
+		}
+		findings = append(findings, lint.LintBundle(b, opts)...)
+	}
+	if *catalog == "" && len(appDirs) == 0 && len(bundleFiles) == 0 {
+		return errors.New("nothing to lint: pass --catalog, --app-dir or --bundle")
+	}
+	if *asJSON {
+		if findings == nil {
+			findings = []lint.Finding{}
+		}
+		if err := printJSON(stdout, findings); err != nil {
+			return err
+		}
+	} else {
+		for _, f := range findings {
+			fmt.Fprintln(stdout, f.String())
+		}
+	}
+	if lint.HasErrors(findings) {
+		return errors.New("lint found errors")
+	}
+	return nil
 }
