@@ -5,7 +5,7 @@ category: crm
 description: >-
   Twenty, an open-source CRM for companies, people and opportunities, with a REST and GraphQL
   API. Single workspace, sign-up closed after the first admin, email and calendar sync off,
-  telemetry off, enterprise features never enabled.
+  telemetry off, no enterprise key.
 upstream:
   repo: https://github.com/twentyhq/twenty
   version: v2.52.0
@@ -40,13 +40,19 @@ images:
     license_spdx: BSD-3-Clause
 resources:
   cpu: 2
-  memory_gb: 4
+  # Sum of the fragment's mem_limit values: 2g + 2g + 1g + 512m + 256m = 5.75 GiB.
+  memory_gb: 6
   disk_gb: 10
 routes:
   - name: crm
     service: crm-server
     internal_port: 3000
     path_or_host: crm
+    # Blocked on interface change 6. Twenty's web app and API send "Authorization: Bearer" on
+    # every signed-in call and Twenty reads its token from nowhere else, while the basic-auth
+    # gate refuses that header and strips it. The composer allows bearer-passthrough only for
+    # the gateway route, so crm uses gate until a cookie gate or bearer-passthrough for crm is
+    # decided; until then Twenty works only up to the login page.
     auth: gate
 healthcheck:
   service: crm-server
@@ -88,9 +94,13 @@ bootstrap:
   service: crm-bootstrap
   done_file: crm-bootstrap/done.json
 notes: >-
-  D-019: Twenty has no enterprise directory. Files marked "@license Enterprise" are compiled into
-  the official AGPL image; they are present but never enabled: no ENTERPRISE_KEY or
-  ENTERPRISE_VALIDITY_TOKEN, ENTERPRISE_API_URL empty, billing off, config variables in the
-  database off so no key can be stored from the admin panel. license_exclusions is empty because
-  there is no separable path to exclude; a stripped fork is a follow-up. Redis is replaced by
-  Valkey (D-020).
+  Release blocked on D-019: Twenty has no enterprise directory. Files marked "@license
+  Enterprise" (Twenty.com Commercial License) are compiled into the official image together with
+  the AGPL code; some of them run without a key (module setup, entitlement checks, billing
+  wiring with billing off, enterprise cron no-ops). That license allows production use only with
+  an Enterprise subscription and forbids redistribution, while the release mirrors the image to
+  GHCR. license_exclusions stays empty because there is no path that is left out of the image, so
+  the composer lint refuses this release until the lead decides between an image built without
+  those files and a recorded exemption. No ENTERPRISE_KEY or ENTERPRISE_VALIDITY_TOKEN is set,
+  ENTERPRISE_API_URL is empty, billing is off and config variables in the database are off.
+  Redis is replaced by Valkey (D-020).

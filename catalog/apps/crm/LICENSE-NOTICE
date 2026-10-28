@@ -13,16 +13,26 @@ Twenty v2.52.0
   source is the upstream tag above. If Sealed ever patches Twenty, the patched source will be
   published next to this notice before the patched image is released.
 
-  Enterprise-licensed files (decision D-019): Twenty has no enterprise directory. Files whose first
-  line is "/* @license Enterprise */" are under the Twenty.com Commercial License and are compiled
-  into the official image together with the AGPL code, so they cannot be excluded by path. They are
-  present but never enabled in this app:
-    - ENTERPRISE_KEY and ENTERPRISE_VALIDITY_TOKEN are never set, so no enterprise feature
-      (SSO, row-level permissions, audit logs, custom AI providers, more than 5 workspaces) unlocks;
-    - ENTERPRISE_API_URL is set to an empty value and IS_BILLING_ENABLED is false;
-    - IS_CONFIG_VARIABLES_IN_DB_ENABLED is false, so no key can be stored from the admin panel;
-    - the egress policy allows no host, so twenty.com cannot be reached.
-  A build of Twenty with the enterprise files removed is a tracked follow-up.
+  Enterprise-licensed files (decision D-019, escalated; this release is blocked until it is
+  resolved): Twenty has no enterprise directory. Files whose first line is
+  "/* @license Enterprise */" are under the Twenty.com Commercial License at the end of
+  LICENSES/twenty-v2.52.0-LICENSE, and the official image compiles them into the same server and
+  front-end bundles as the AGPL code, so no path can be left out. What that means here:
+    - The enterprise-marked modules are in the image, and some of them run on every start with
+      no key set: module setup (it reads the validity token from the database), entitlement
+      checks, billing module wiring with billing off, and enterprise cron jobs that return early.
+    - Features that need a valid enterprise key stay locked, because ENTERPRISE_KEY and
+      ENTERPRISE_VALIDITY_TOKEN are never set: SSO, row-level permissions, audit logs, more than
+      five workspaces. ENTERPRISE_API_URL is empty, IS_BILLING_ENABLED is false, and
+      IS_CONFIG_VARIABLES_IN_DB_ENABLED is false, so no key can be stored from the admin panel.
+      The egress policy allows no host, so twenty.com cannot be reached.
+    - The Commercial License says that part of the software "may only be used in production"
+      with an Enterprise subscription, and that otherwise "it is forbidden to copy, merge,
+      publish, distribute, sublicense, and/or sell the Software". The release job mirrors the
+      image to the catalog registry, which distributes those files.
+  Because of the last point Sealed does not mirror or publish this app until the decision is
+  made: either an image built from the tag with the enterprise-marked files removed, or a
+  recorded exemption.
 
 PostgreSQL 16.15
   Image:   docker.io/library/postgres:16.15

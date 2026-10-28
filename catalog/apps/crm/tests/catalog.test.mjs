@@ -1,22 +1,28 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, test } from "node:test";
+import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parse } from "yaml";
 
 import { findBlocks, render, unescapeFromCompose } from "../tools/embed-bootstrap.mjs";
 import {
+  caddyHandles,
+  caddySite,
   composeConfig,
+  composerLint,
+  composeStack,
   dockerComposeAvailable,
+  findComposer,
   lintEgress,
   lintFragment,
   lintWaivers,
   loadApp,
+  memMiB,
   substituteImages,
   validateManifestSchema,
 } from "./lib/catalog-lint.mjs";
@@ -40,11 +46,28 @@ describe("manifest", () => {
     assert.ok(!app.manifest.images.some((i) => /redis/.test(i.source)), "no Redis image (D-020)");
   });
 
-  test("meters app hours from heartbeats behind the gate with the default maintainer", () => {
+  test("meters app hours from heartbeats with the default maintainer", () => {
     assert.deepEqual(app.manifest.metering, { unit: "app_hour", source: "heartbeat" });
     assert.equal(app.manifest.maintainer.payout_address, "${MAINTAINER_DEFAULT_ADDRESS}");
     assert.equal(app.manifest.maintainer_share_bps, 2000);
-    assert.deepEqual(app.manifest.routes.map((r) => [r.name, r.auth]), [["crm", "gate"]]);
+  });
+
+  test("the crm route uses the gate the composer allows, pending interface change 6", () => {
+    // The basic-auth gate refuses and strips the "Authorization: Bearer" header Twenty sends on
+    // every signed-in call (a6.test.mjs shows both modes; the todo test below flips once the
+    // composer accepts bearer-passthrough for crm).
+    assert.deepEqual(app.manifest.routes.map((r) => [r.name, r.auth, r.internal_port]), [["crm", "gate", 3000]]);
+  });
+
+  test("declares at least the memory the fragment's mem_limit values add up to", () => {
+    const total = Object.values(app.fragment.services).reduce((sum, svc) => sum + memMiB(svc.mem_limit), 0);
+    assert.ok(Object.values(app.fragment.services).every((svc) => svc.mem_limit), "every service has a mem_limit");
+    assert.ok(app.manifest.resources.memory_gb * 1024 >= total, `memory_gb ${app.manifest.resources.memory_gb} < ${total} MiB`);
+  });
+
+  test("keeps license_exclusions honest: Twenty has no path that is left out (D-019 open)", () => {
+    assert.deepEqual(app.manifest.license_exclusions, []);
+    assert.match(app.manifest.notes, /Release blocked on D-019/);
   });
 
   test("turns telemetry, analytics, billing and enterprise calls off", () => {
@@ -82,7 +105,12 @@ describe("compose fragment", () => {
     assert.equal(DISABLE_DB_MIGRATIONS, "true");
     assert.equal(DISABLE_CRON_JOBS_REGISTRATION, "true");
     assert.deepEqual(rest, server.environment);
-    assert.deepEqual(worker.entrypoint.slice(0, 3), server.entrypoint.slice(0, 3));
+    // Same connection setup; only crm-server waits for the bootstrap on the setup port.
+    const [serverScript, workerScript] = [server, worker].map((s) => s.entrypoint[2]);
+    const setupStart = serverScript.indexOf("done_file=");
+    assert.ok(setupStart > 0);
+    assert.equal(workerScript, `${serverScript.slice(0, setupStart)}exec /app/entrypoint.sh "$$@"\n`);
+    assert.deepEqual(worker.entrypoint.slice(0, 2), server.entrypoint.slice(0, 2));
     assert.deepEqual(worker["x-sealed-secrets"], server["x-sealed-secrets"]);
   });
 
@@ -105,6 +133,41 @@ describe("compose fragment", () => {
     assert.match(script, /SERVER_URL="\$\$SEALED_PUBLIC_URL_CRM"/);
     assert.match(script, /unset PG_DATABASE_PASSWORD VALKEY_PASSWORD/);
     assert.match(script, /exec \/app\/entrypoint\.sh "\$\$@"/);
+  });
+
+  test("valkey gets its password from a tmpfs config file, never from argv", async () => {
+    const svc = app.fragment.services["crm-valkey"];
+    const script = unescapeFromCompose(svc.entrypoint[2]);
+    assert.deepEqual(svc.tmpfs, ["/run/valkey"]);
+    assert.doesNotMatch(script, /requirepass "\$\$?pass"|--requirepass/);
+    assert.doesNotMatch(svc.healthcheck.test[1], / -a /);
+    assert.match(svc.healthcheck.test[1], /^VALKEYCLI_AUTH="\$\$\(cat \/run\/sealed\/secrets\/crm\/VALKEY_PASSWORD\)" valkey-cli ping/);
+
+    // Run the script with stand-ins for chown and tini that record what valkey would see.
+    const dir = await mkdtemp(join(tmpdir(), "crm-valkey-"));
+    try {
+      const bin = join(dir, "bin");
+      await writeFile(join(dir, "placeholder"), "");
+      await spawnSync("mkdir", [bin]);
+      await writeFile(join(bin, "chown"), "#!/bin/sh\nexit 0\n");
+      await writeFile(join(bin, "tini"), `#!/bin/sh\nshift\nprintf '%s\\n' "$@" > "${dir}/argv"\nenv > "${dir}/env"\n`);
+      await chmod(join(bin, "chown"), 0o755);
+      await chmod(join(bin, "tini"), 0o755);
+      const conf = join(dir, "valkey.conf");
+      const body = script.replaceAll("/run/valkey/valkey.conf", conf);
+      const res = spawnSync("/bin/sh", ["-c", body, "crm-valkey", ...svc.command], {
+        env: { PATH: `${bin}:${process.env.PATH}`, VALKEY_PASSWORD: "0123abcd".repeat(8) },
+        encoding: "utf8",
+      });
+      assert.equal(res.status, 0, res.stderr);
+      const argv = (await readFile(join(dir, "argv"), "utf8")).trim().split("\n");
+      assert.deepEqual(argv, ["docker-entrypoint.sh", "valkey-server", conf, "--maxmemory-policy", "noeviction", "--appendonly", "yes"]);
+      assert.equal(await readFile(conf, "utf8"), `requirepass "${"0123abcd".repeat(8)}"\n`);
+      assert.equal((await stat(conf)).mode & 0o777, 0o600);
+      assert.doesNotMatch(await readFile(join(dir, "env"), "utf8"), /VALKEY_PASSWORD/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("embeds bootstrap/bootstrap.mjs byte for byte", async () => {
@@ -217,7 +280,9 @@ describe("licenses and docs", () => {
       assert.ok(text.length > 500, `${file} is empty`);
     }
     assert.match(notice, /https:\/\/github\.com\/twentyhq\/twenty\/tree\/twenty\/v2\.52\.0/);
-    assert.match(notice, /present but never enabled/);
+    assert.doesNotMatch(notice, /never enabled/, "the enterprise-marked modules do run as gating code");
+    assert.match(notice, /some of them run on every start/);
+    assert.match(notice, /does not mirror or publish this app until the decision/);
     assert.match(notice, /ENTERPRISE_KEY/);
     const twenty = await readFile(join(appDir, "LICENSES/twenty-v2.52.0-LICENSE"), "utf8");
     assert.match(twenty, /GNU AFFERO GENERAL PUBLIC LICENSE/);
@@ -240,5 +305,90 @@ describe("licenses and docs", () => {
     for (const file of ["manifest.yaml", "compose.fragment.yaml", "egress.yaml", "waivers.yaml"]) {
       assert.doesNotThrow(() => parse(readFileSync(join(appDir, file), "utf8"), { uniqueKeys: true }), file);
     }
+  });
+});
+
+const composer = findComposer(appDir);
+describe("the real composer (runtime/composer, ws/composer)", { skip: composer.skip }, () => {
+  test("sealed-compose lint finds only the D-019 block on crm", () => {
+    const findings = composerLint(composer, appDir);
+    const errors = findings.filter((f) => f.severity === "error").map((f) => `${f.code} ${f.field ?? ""}`.trim());
+    // The composer requires license_exclusions for open-core upstreams. Twenty has nothing that
+    // is left out of the image, so the release stays blocked until D-019 is decided. Any other
+    // error means this app drifted from the composer's rules.
+    assert.deepEqual(errors, ["license-exclusions license_exclusions"]);
+    const warnings = new Set(findings.filter((f) => f.severity === "warning").map((f) => f.code));
+    assert.deepEqual([...warnings], ["sbom-missing"], "only the SBOMs CI generates are missing");
+  });
+
+  describe("composed stack", async () => {
+    const out = await mkdtemp(join(tmpdir(), "crm-composed-"));
+    after(() => rm(out, { recursive: true, force: true }));
+    const stack = composeStack(composer, [appDir], out);
+    const services = stack.compose.services;
+
+    test("the Caddyfile gates crm with basic auth and never routes to the setup port", () => {
+      const site = caddySite(stack.caddyfile, "crm.34-1-2-3.sslip.io");
+      assert.ok(site, stack.caddyfile);
+      const handles = caddyHandles(site);
+      assert.deepEqual(Object.keys(handles), [""]);
+      assert.match(handles[""], /basic_auth \{\n\t\t\tsealed \{env\.GATE_PASSWORD_BCRYPT\}/);
+      assert.match(handles[""], /reverse_proxy crm-server:3000 \{\n\t\t\theader_up -Authorization/);
+      assert.doesNotMatch(stack.caddyfile, /crm-server:3001/, "no route reaches the setup port");
+    });
+
+    test("crm-server sees done.json read-only and keeps the fragment's healthcheck", () => {
+      const server = services["crm-server"];
+      const mount = server.volumes.find((v) => v.target === "/sealed-bootstrap");
+      assert.equal(mount.source, "/mnt/sealed-data/crm/crm-bootstrap");
+      assert.equal(mount.read_only, true);
+      assert.equal(server.environment.CRM_SETUP_PORT, "3001");
+      assert.deepEqual(server.healthcheck.test, app.fragment.services["crm-server"].healthcheck.test);
+      assert.equal(services["crm-bootstrap"].restart, "on-failure");
+      const crm = stack.stack.apps.find((a) => a.id === "crm");
+      assert.equal(crm.bootstrap.doneFile, "crm-bootstrap/done.json");
+      assert.equal(crm.bootstrap.service, "crm-bootstrap");
+      assert.deepEqual(crm.routes.map((r) => [r.auth, r.port, r.service]), [["gate", 3000, "crm-server"]]);
+    });
+
+    test("valkey's password stays out of the composed argv", () => {
+      const valkey = services["crm-valkey"];
+      assert.ok(!JSON.stringify(valkey.entrypoint).includes("--requirepass"));
+      assert.ok(!JSON.stringify(valkey.command).includes("requirepass"));
+    });
+
+    test("docker compose accepts the composed document", { skip: !dockerComposeAvailable() && "docker compose not installed" }, () => {
+      const result = composeConfig(stack.composePath, "sealed-crm-composed");
+      assert.ok(result.ok, result.stderr);
+    });
+
+    // Interface change 6, option (b): with bearer-passthrough the composed site must send
+    // bearer requests to crm-server unchanged and gate the rest, as fake-gate.mjs assumes.
+    test("bearer-passthrough for crm composes into a bearer handle plus the gate", { todo: "interface change 6: the composer allows bearer-passthrough only for the gateway route" }, async () => {
+      const variant = await mkdtemp(join(tmpdir(), "crm-bearer-"));
+      try {
+        await cp(appDir, join(variant, "crm"), { recursive: true, filter: (src) => !src.includes("node_modules") });
+        const manifestPath = join(variant, "crm", "manifest.yaml");
+        const text = await readFile(manifestPath, "utf8");
+        await writeFile(manifestPath, text.replace(/^    auth: gate$/m, "    auth: bearer-passthrough"));
+        const composed = composeStack(composer, [join(variant, "crm")], join(variant, "out"));
+        const handles = caddyHandles(caddySite(composed.caddyfile, "crm.34-1-2-3.sslip.io"));
+        assert.deepEqual(Object.keys(handles).sort(), ["", "@r0_bearer"]);
+        assert.match(composed.caddyfile, /@r0_bearer \{\n\t\theader Authorization "Bearer \*"\n\t\}/);
+        assert.match(handles["@r0_bearer"], /reverse_proxy crm-server:3000/);
+        assert.doesNotMatch(handles["@r0_bearer"], /basic_auth|header_up -Authorization/);
+        assert.match(handles[""], /basic_auth/);
+      } finally {
+        await rm(variant, { recursive: true, force: true });
+      }
+    });
+
+    // Interface change 1: until the composer sets SEALED_PUBLIC_URL_<ROUTE>, the ":?" guard in
+    // the entrypoints stops crm-server, crm-worker and crm-bootstrap on purpose.
+    test("the composer sets SEALED_PUBLIC_URL_CRM on every crm service", { todo: "interface change 1 is not in the composer yet" }, () => {
+      for (const name of ["crm-server", "crm-worker", "crm-bootstrap"]) {
+        assert.equal(services[name].environment.SEALED_PUBLIC_URL_CRM, "https://crm.34-1-2-3.sslip.io", name);
+      }
+    });
   });
 });
