@@ -59,6 +59,7 @@ export interface HealthInputs {
 /** Payment fields sent exactly: timestamps, limits, and totals the platform holds exactly elsewhere. */
 export const EXACT_PAYMENT_FIELDS: ReadonlySet<string> = new Set([
   "failingSince",
+  "deferredSince",
   "lastPaidAt",
   "lastAttemptAt",
   // The signed usage reports the platform stores carry every fee exactly.

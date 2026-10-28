@@ -10,7 +10,7 @@ import { HttpError, parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
 import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
 import { emptyBudgetState, SpendBudget } from "../src/payments/budget.js";
-import { PENDING_GIVE_UP_SEC, Settler } from "../src/payments/settler.js";
+import { PENDING_GIVE_UP_SEC, PLATFORM_SIDE_FAILURES, Settler } from "../src/payments/settler.js";
 import type { PaymentStatus } from "../src/state.js";
 import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
 import { FakePayer } from "./helpers/fakePayer.js";
@@ -37,6 +37,7 @@ describe("settlement, grace period and the payment-needed switch", () => {
     payer = new FakePayer();
     usage = [];
     capSeen = [];
+    platformDown = false;
     ledger = new Ledger(emptyLedgerState(1000), {
       deploymentId: `0x${"de".repeat(32)}`,
       apps: ["crm", "llm-gateway"],
@@ -172,24 +173,28 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect(status.failingSince).toBe(2000);
   });
 
-  it("a deployment that never gets registered goes to payment-needed one grace period after its oldest unpaid report", async () => {
+  // D-073: the platform registers the deployment (the oracle checks the agent's evidence, the ops key submits it), so
+  // an api the agent cannot reach at boot keeps it unregistered. That used to put the customer on the payment-needed
+  // page one grace period after the oldest unpaid report.
+  it("a deployment the platform has not registered yet defers settlement without a grace clock (D-073)", async () => {
     payer.deployment = "none";
     await ledger.record("crm", "app_hour", 3600n, 1001);
     const r1 = await settler.tick(2000);
-    expect(r1.outcome).toBe("deployment_not_registered");
-    expect(status.failingSince).toBe(2000);
-    expect(r1.paymentNeeded).toBe(false);
+    expect(r1).toMatchObject({ outcome: "deployment_not_registered", paymentNeeded: false, apps: [{ app: "*", result: "failed", reason: "deployment_not_registered" }] });
+    expect(status).toMatchObject({ failingSince: null, deferredSince: 2000, lastOutcome: "deployment_not_registered" });
     await ledger.record("crm", "app_hour", 60n, 2001);
-    expect((await settler.tick(2000 + GRACE - 1)).paymentNeeded).toBe(false);
-    const r3 = await settler.tick(2000 + GRACE);
-    expect(r3.paymentNeeded).toBe(true);
-    expect(paymentNeededShown()).toBe(true);
-    // Registered at last: the backlog is paid and the routes come back.
+    const r2 = await settler.tick(2000 + 10 * GRACE);
+    expect(r2.paymentNeeded).toBe(false);
+    expect(paymentNeededShown()).toBe(false);
+    expect(status.failingSince).toBeNull();
+    expect(payer.paid).toEqual([]);
+    // Registered at last: the deferred backlog is paid.
     payer.deployment = "active";
-    const r4 = await settler.tick(2000 + GRACE + 60);
-    expect(r4.outcome).toBe("settled");
-    expect(r4.paymentNeeded).toBe(false);
+    const r3 = await settler.tick(2000 + 10 * GRACE + 60);
+    expect(r3.outcome).toBe("settled");
+    expect(r3.paymentNeeded).toBe(false);
     expect(ledger.unpaid()).toEqual([]);
+    expect(status.deferredSince).toBeUndefined();
   });
 
   it("a Closed deployment switches to payment-needed at once and stays there", async () => {
@@ -471,6 +476,80 @@ describe("settlement, grace period and the payment-needed switch", () => {
     const late = await settler.tick(back + GRACE - 100);
     expect(late.paymentNeeded).toBe(true);
     expect(paymentNeededShown()).toBe(true);
+  });
+
+  // D-073: during an outage the settler still pays the reports the platform accepted before it. A customer who fixes
+  // their side then must not stay on the payment-needed page until the platform is back.
+  it("a customer who fixes their side during a platform outage leaves the payment-needed page at the next payment", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
+    const t0 = 10_000;
+    await settler.tick(t0);
+    expect(usage.length).toBe(1);
+    expect((await settler.tick(t0 + GRACE)).paymentNeeded).toBe(true);
+    // The platform goes down; the customer raises the limit. The accepted report is paid, the new one waits.
+    platformDown = true;
+    payer.budgetResult = { spendable: 1_000_000_000n };
+    await ledger.record("crm", "app_hour", 60n, t0 + GRACE + 1);
+    const r = await settler.tick(t0 + GRACE + 60);
+    expect(r.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" }), { app: "*", result: "failed", reason: "usage_not_submitted" }]);
+    expect(r.paymentNeeded).toBe(false);
+    expect(caddy.current).toBe(CADDYFILE);
+    expect(status).toMatchObject({ failingSince: null, deferredSince: t0 + GRACE + 60 });
+    // Still deferred, still no grace clock; then the platform is back and the waiting report is paid.
+    expect((await settler.tick(t0 + 5 * GRACE)).paymentNeeded).toBe(false);
+    platformDown = false;
+    const back = await settler.tick(t0 + 5 * GRACE + 60);
+    expect(back.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid" })]);
+    expect(ledger.unpaid()).toEqual([]);
+    expect(status.deferredSince).toBeUndefined();
+  });
+
+  // D-073: only failures on the customer's side count toward the grace period (D-048 billing policy), and a platform
+  // outage at the same time does not hide them.
+  describe("customer-side failures count toward the grace period, also during a platform outage", () => {
+    const cases: { name: string; reason: string; arrange: () => void }[] = [
+      { name: "a missing access key", reason: "access_key_missing", arrange: () => (payer.budgetResult = { spendable: 0n, problem: "access_key_missing" }) },
+      { name: "a revoked access key", reason: "access_key_revoked", arrange: () => (payer.budgetResult = { spendable: 0n, problem: "access_key_revoked" }) },
+      { name: "an expired access key", reason: "access_key_expired", arrange: () => (payer.budgetResult = { spendable: 0n, problem: "access_key_expired" }) },
+      { name: "an exhausted limit", reason: "spend_limit", arrange: () => (payer.budgetResult = { spendable: 0n, problem: "spend_limit" }) },
+      { name: "too little balance", reason: "insufficient_balance", arrange: () => (payer.budgetResult = { spendable: 0n, problem: "insufficient_balance" }) },
+      { name: "a reverted payment", reason: "tx_failed", arrange: () => (payer.failNext = 1_000) },
+      {
+        name: "a payment whose estimate reverts",
+        reason: "estimate_reverted",
+        arrange: () =>
+          (payer.feeReserve = async () => {
+            throw new Error("execution reverted: Unauthorized");
+          }),
+      },
+    ];
+    for (const c of cases) {
+      it(c.name, async () => {
+        // A report the platform accepts, whose payment fails on the customer's side; then the platform goes down too.
+        await ledger.record("crm", "app_hour", 3600n, 1001);
+        c.arrange();
+        const t0 = 10_000;
+        const first = await settler.tick(t0);
+        expect(first.apps).toEqual([{ app: "crm", result: "failed", reason: c.reason }]);
+        expect(usage.length).toBe(1);
+        platformDown = true;
+        await ledger.record("crm", "app_hour", 60n, t0 + 1);
+        const r = await settler.tick(t0 + 60);
+        expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: c.reason }, { app: "*", result: "failed", reason: "usage_not_submitted" }]);
+        expect(status.failingSince).toBe(t0);
+        expect(status.deferredSince).toBeUndefined();
+        expect((await settler.tick(t0 + GRACE - 1)).paymentNeeded).toBe(false);
+        expect((await settler.tick(t0 + GRACE)).paymentNeeded).toBe(true);
+        expect(paymentNeededShown()).toBe(true);
+        expect(status.lastOutcome).toBe(c.reason);
+      });
+    }
+
+    it("the platform-side reasons are exactly those D-073 defers", () => {
+      expect([...PLATFORM_SIDE_FAILURES].sort()).toEqual(["deployment_not_registered", "ledger_unverified", "usage_not_submitted"]);
+      for (const c of cases) expect(PLATFORM_SIDE_FAILURES.has(c.reason)).toBe(false);
+    });
   });
 
   it("voids a report the platform refuses as overlapping a stored one, and never pays it", async () => {

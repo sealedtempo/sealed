@@ -575,6 +575,8 @@ export class Agent {
         mode: ctx.config.settlement.mode,
         paymentNeeded: st.paymentNeeded,
         failingSince: st.failingSince,
+        // D-073: settlement waits for the platform (its stored reports, a report it has not accepted, registration).
+        deferredSince: st.deferredSince ?? null,
         lastPaidAt: st.lastPaidAt ?? null,
         lastAttemptAt: st.lastAttemptAt ?? null,
         lastOutcome: st.lastOutcome ?? null,
