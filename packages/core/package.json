@@ -1,0 +1,80 @@
+{
+  "name": "@sealed/core",
+  "version": "0.1.0",
+  "description": "Shared Sealed primitives: Tempo chain helpers, contract ABIs, EIP-712, CJSON, HPKE, config and pricing",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cjson": {
+      "types": "./dist/cjson.d.ts",
+      "default": "./dist/cjson.js"
+    },
+    "./hpke": {
+      "types": "./dist/hpke.d.ts",
+      "default": "./dist/hpke.js"
+    },
+    "./eip712": {
+      "types": "./dist/eip712.d.ts",
+      "default": "./dist/eip712.js"
+    },
+    "./abis": {
+      "types": "./dist/abis/index.d.ts",
+      "default": "./dist/abis/index.js"
+    },
+    "./chain": {
+      "types": "./dist/chain.d.ts",
+      "default": "./dist/chain.js"
+    },
+    "./config": {
+      "types": "./dist/defaults.d.ts",
+      "default": "./dist/defaults.js"
+    },
+    "./pricing": {
+      "types": "./dist/pricing.d.ts",
+      "default": "./dist/pricing.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/types/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./dstack": {
+      "types": "./dist/dstack.d.ts",
+      "default": "./dist/dstack.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "abis": "node scripts/refresh-abis.mjs"
+  },
+  "dependencies": {
+    "@hpke/core": "1.9.0",
+    "@noble/hashes": "1.8.0",
+    "viem": "2.57.13",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  }
+}

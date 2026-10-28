@@ -1,0 +1,48 @@
+// Tempo chain helpers. Always start from viem's `tempo` chain so clients get the 0x76 serializer,
+// Tempo formatters and prepare hooks (tempo-viem notes, G1).
+import type { Chain } from "viem";
+import { tempo } from "viem/chains";
+import { Addresses, type Hardfork } from "viem/tempo";
+import type { Address } from "./hex.js";
+
+export const TEMPO_MAINNET_ID = 4217;
+export const LOCAL_ANVIL_ID = 31337;
+export const PATH_USD: Address = "0x20c0000000000000000000000000000000000000";
+export const ACCOUNT_KEYCHAIN: Address = "0xaaaaaaaa00000000000000000000000000000000";
+export const FEE_TOKEN_DECIMALS = 6;
+
+export { tempo as tempoMainnet };
+
+export interface TempoChainOptions {
+  /** 4217 (default) for mainnet; any other id gives a local/dev chain with the same Tempo config. */
+  chainId?: number;
+  rpcUrl?: string;
+  /** Default fee token for transactions (pathUSD unless set). */
+  feeToken?: Address;
+  /** Tempo hardfork the node runs. Local anvil 1.7.1 supports up to t4. */
+  hardfork?: Hardfork.Hardfork;
+}
+
+/** A viem Chain for Tempo mainnet or a local Tempo node (anvil --network tempo). */
+export function tempoChain(opts: TempoChainOptions = {}): Chain {
+  const chainId = opts.chainId ?? TEMPO_MAINNET_ID;
+  const feeToken = opts.feeToken ?? (Addresses.pathUsd as Address);
+  if (chainId === TEMPO_MAINNET_ID) {
+    return tempo.extend({
+      feeToken,
+      ...(opts.rpcUrl ? { rpcUrls: { default: { http: [opts.rpcUrl] } } } : {}),
+    }) as unknown as Chain;
+  }
+  return tempo.extend({
+    id: chainId,
+    name: `Tempo local ${chainId}`,
+    testnet: true,
+    feeToken,
+    hardfork: opts.hardfork ?? "t4",
+    blockExplorers: undefined,
+    rpcUrls: { default: { http: [opts.rpcUrl ?? "http://127.0.0.1:8545"] } },
+  }) as unknown as Chain;
+}
+
+export const explorerTxUrl = (hash: string) => `https://explore.tempo.xyz/tx/${hash}`;
+export const explorerAddressUrl = (addr: string) => `https://explore.tempo.xyz/address/${addr}`;
