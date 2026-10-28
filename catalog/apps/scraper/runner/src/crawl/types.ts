@@ -13,6 +13,8 @@ export interface CrawlSink {
   item(item: CrawledItem): Promise<void>;
   failed(url: string, error: string): Promise<void>;
   skipped(url: string, reason: string): Promise<void>;
+  // One call per robots.txt URL the run fetched, with what it decided and why.
+  robots(robotsUrl: string, outcome: RobotsOutcome, reason: string): Promise<void>;
 }
 
 export interface CrawlDeps {

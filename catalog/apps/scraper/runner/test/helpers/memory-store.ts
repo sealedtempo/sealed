@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CrawledItem } from '../../src/crawl/types.js';
-import { FINISHED, isRunId, type Item, type Run, type RunEvent, type RunStatus, type RunStore } from '../../src/db/store.js';
+import { FINISHED, isRunId, type EventKind, type Item, type NoteKind, type Run, type RunEvent, type RunStatus, type RunStore } from '../../src/db/store.js';
 import type { JobSpec } from '../../src/job.js';
 
 // In-memory RunStore with the same contract as PgRunStore (test/store.contract.test.ts checks both),
@@ -117,6 +117,11 @@ export class MemoryRunStore implements RunStore {
     if (logEvent) this.pushEvent(runId, 'skipped', url, reason);
   }
 
+  async addNote(runId: string, kind: NoteKind, url: string, detail: string): Promise<void> {
+    this.requireRun(runId);
+    this.pushEvent(runId, kind, url, detail);
+  }
+
   async listItems(runId: string, { after = 0, limit }: { after?: number; limit: number }): Promise<Item[]> {
     return this.items.filter((i) => i.runId === runId && i.id > after).slice(0, limit);
   }
@@ -134,7 +139,7 @@ export class MemoryRunStore implements RunStore {
     if (!this.runs.has(id)) throw new Error('insert or update violates foreign key constraint');
   }
 
-  private pushEvent(runId: string, kind: 'failed' | 'skipped', url: string, detail: string) {
+  private pushEvent(runId: string, kind: EventKind, url: string, detail: string) {
     const list = this.events.get(runId) ?? [];
     list.push({ id: this.nextEvent++, kind, url, detail, at: new Date() });
     this.events.set(runId, list);

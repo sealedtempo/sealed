@@ -31,9 +31,14 @@ export interface Item {
   fetchedAt: Date;
 }
 
+// failed and skipped: one URL each, counted on the run. robots: what a robots.txt fetch decided.
+// limit: why the run stopped early.
+export type EventKind = 'failed' | 'skipped' | 'robots' | 'limit';
+export type NoteKind = Exclude<EventKind, 'failed' | 'skipped'>;
+
 export interface RunEvent {
   id: number;
-  kind: 'failed' | 'skipped';
+  kind: EventKind;
   url: string;
   detail: string;
   at: Date;
@@ -59,6 +64,8 @@ export interface RunStore {
   addItem(runId: string, item: CrawledItem): Promise<void>;
   addFailure(runId: string, url: string, error: string, logEvent: boolean): Promise<void>;
   addSkip(runId: string, url: string, reason: string, logEvent: boolean): Promise<void>;
+  // An event that is not counted on the run.
+  addNote(runId: string, kind: NoteKind, url: string, detail: string): Promise<void>;
   listItems(runId: string, options: { after?: number; limit: number }): Promise<Item[]>;
   listEvents(runId: string, options: { limit: number }): Promise<RunEvent[]>;
 }
@@ -212,6 +219,15 @@ export class PgRunStore implements RunStore {
     await this.addCounted(runId, 'skipped', 'pages_skipped', url, reason, logEvent);
   }
 
+  async addNote(runId: string, kind: NoteKind, url: string, detail: string): Promise<void> {
+    await this.pool.query('INSERT INTO run_events (run_id, kind, url, detail) VALUES ($1, $2, $3, $4)', [
+      runId,
+      kind,
+      clean(url, MAX_URL),
+      clean(detail, MAX_DETAIL),
+    ]);
+  }
+
   private async addCounted(
     runId: string,
     kind: 'failed' | 'skipped',
@@ -258,7 +274,7 @@ export class PgRunStore implements RunStore {
 
   async listEvents(runId: string, { limit }: { limit: number }): Promise<RunEvent[]> {
     if (!isRunId(runId)) return [];
-    const { rows } = await this.pool.query<{ id: string; kind: 'failed' | 'skipped'; url: string; detail: string; at: Date }>(
+    const { rows } = await this.pool.query<{ id: string; kind: EventKind; url: string; detail: string; at: Date }>(
       'SELECT id, kind, url, detail, at FROM run_events WHERE run_id = $1 ORDER BY id LIMIT $2',
       [runId, limit],
     );

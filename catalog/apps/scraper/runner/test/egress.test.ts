@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { describeFailure, HttpStatusError } from '../src/crawl/common.js';
-import { egressMessage, egressVerdictFromError, egressVerdictFromHeader, hostPort } from '../src/crawl/egress.js';
+import { egressMessage, egressVerdictFromError, egressVerdictFromHeader, hostPort } from '../src/egress.js';
 
 describe('egress verdicts', () => {
   it('reads the X-Sealed-Egress marker on http responses', () => {

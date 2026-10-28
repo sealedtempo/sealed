@@ -18,7 +18,7 @@ const RULES = 'User-agent: *\nDisallow: /private/\n\nUser-agent: SealedScraper\n
 
 describe('interpretRobots (RFC 9309)', () => {
   it('parses 2xx bodies', () => {
-    expect(interpretRobots({ status: 200, body: RULES })).toEqual({ outcome: 'parsed', body: RULES });
+    expect(interpretRobots({ status: 200, body: RULES })).toEqual({ outcome: 'parsed', body: RULES, reason: 'HTTP 200' });
   });
 
   it('caps parsed bodies at 500 KiB', () => {
@@ -26,20 +26,34 @@ describe('interpretRobots (RFC 9309)', () => {
     expect(interpretRobots({ status: 200, body: big }).body).toHaveLength(MAX_ROBOTS_BYTES);
   });
 
-  it.each([400, 401, 403, 404, 410, 429, 451])('treats %i as unavailable: allow everything', (status) => {
-    expect(interpretRobots({ status, body: 'User-agent: *\nDisallow: /' })).toEqual({ outcome: 'allow-all', body: '' });
+  it.each([400, 401, 403, 404, 410, 451])('treats %i as unavailable: allow everything', (status) => {
+    expect(interpretRobots({ status, body: 'User-agent: *\nDisallow: /' })).toEqual({ outcome: 'allow-all', body: '', reason: `unavailable: HTTP ${status}` });
   });
 
   it('treats a redirect loop beyond five hops as unavailable', () => {
-    expect(interpretRobots(new RobotsRedirectLimitError('too many'))).toEqual({ outcome: 'allow-all', body: '' });
+    expect(interpretRobots(new RobotsRedirectLimitError('too many'))).toEqual({ outcome: 'allow-all', body: '', reason: 'unavailable: more than 5 redirects' });
   });
 
-  it.each([500, 502, 503, 504, 599, 100])('treats %i as unreachable: disallow everything', (status) => {
-    expect(interpretRobots({ status, body: '' })).toEqual({ outcome: 'deny-all', body: DENY_ALL });
+  it.each([429, 500, 502, 503, 504, 599, 100])('treats %i as unreachable: disallow everything', (status) => {
+    expect(interpretRobots({ status, body: '' })).toEqual({ outcome: 'deny-all', body: DENY_ALL, reason: `unreachable: HTTP ${status}` });
   });
 
   it('treats network errors and timeouts as unreachable', () => {
-    expect(interpretRobots(new Error('ECONNREFUSED')).outcome).toBe('deny-all');
+    expect(interpretRobots(new Error('ECONNREFUSED'))).toMatchObject({ outcome: 'deny-all', reason: 'unreachable: ECONNREFUSED' });
+  });
+
+  it('treats sealed-egress refusals as unreachable, never as an origin 4xx', () => {
+    // http targets: the proxy answers with 403 and its own marker.
+    expect(interpretRobots({ status: 403, body: 'blocked', egress: 'blocked' })).toMatchObject({
+      outcome: 'deny-all',
+      reason: 'unreachable: refused by sealed-egress (blocked), add the host to egressAdditions.scraper',
+    });
+    expect(interpretRobots({ status: 429, body: '', egress: 'limited' }).outcome).toBe('deny-all');
+    // https targets: the CONNECT fails.
+    expect(interpretRobots(new Error('Proxy responded with 403 Forbidden: 0 bytes.'))).toMatchObject({
+      outcome: 'deny-all',
+      reason: 'unreachable: refused by sealed-egress, add the host to egressAdditions.scraper',
+    });
   });
 });
 
@@ -88,6 +102,25 @@ describe('RobotsPolicy', () => {
     expect(await policy.isAllowed('https://err.test/', UA)).toBe(false);
   });
 
+  it('reports each outcome once, with its reason', async () => {
+    const { fetcher } = fake({
+      'https://shop.test/robots.txt': { status: 200, body: RULES },
+      'https://down.test/robots.txt': { status: 503, body: '' },
+    });
+    const seen: string[] = [];
+    const policy = new RobotsPolicy(fetcher, undefined, (url, outcome, reason) => void seen.push(`${url} ${outcome} ${reason}`));
+    await Promise.all([policy.forUrl('https://shop.test/a'), policy.forUrl('https://shop.test/b'), policy.forUrl('https://down.test/')]);
+    expect(seen.sort()).toEqual(['https://down.test/robots.txt deny-all unreachable: HTTP 503', 'https://shop.test/robots.txt parsed HTTP 200']);
+  });
+
+  it('keeps its decision when reporting fails', async () => {
+    const { fetcher } = fake({ 'https://shop.test/robots.txt': { status: 200, body: RULES } });
+    const policy = new RobotsPolicy(fetcher, undefined, () => {
+      throw new Error('db down');
+    });
+    expect(await policy.isAllowed('https://shop.test/no-sealed/x', UA)).toBe(false);
+  });
+
   it('builds robots URLs from the origin', () => {
     expect(robotsUrlFor('https://shop.test:8443/a/b?c=1#d')).toBe('https://shop.test:8443/robots.txt');
   });
@@ -119,7 +152,7 @@ describe('createProxyRobotsFetcher', () => {
 
   it('fetches through the proxy with our User-Agent and no generated headers', async () => {
     const fetch = createProxyRobotsFetcher({ proxyUrl: proxy.url, userAgent: 'SealedScraper/1.0 (+test)' });
-    expect(await fetch('http://ok.test/robots.txt')).toEqual({ status: 200, body: RULES });
+    expect(await fetch('http://ok.test/robots.txt')).toEqual({ status: 200, body: RULES, egress: null });
     const entry = proxy.log.find((e) => e.target === 'http://ok.test/robots.txt');
     expect(entry?.headers['user-agent']).toBe('SealedScraper/1.0 (+test)');
     expect(entry?.headers['sec-ch-ua']).toBeUndefined();
@@ -139,6 +172,14 @@ describe('createProxyRobotsFetcher', () => {
   it('reads at most 500 KiB', async () => {
     const fetch = createProxyRobotsFetcher({ proxyUrl: proxy.url, userAgent: 'x' });
     expect((await fetch('http://big.test/robots.txt')).body).toHaveLength(MAX_ROBOTS_BYTES);
+  });
+
+  it('marks an http destination the proxy refuses, so it is not mistaken for an origin 403', async () => {
+    const fetch = createProxyRobotsFetcher({ proxyUrl: proxy.url, userAgent: 'x' });
+    expect(await fetch('http://blocked.test/robots.txt')).toMatchObject({ status: 403, egress: 'blocked' });
+    const policy = new RobotsPolicy(fetch, proxy.url);
+    expect(await policy.isAllowed('http://blocked.test/page', UA)).toBe(false);
+    expect(policy.outcomes.get('http://blocked.test/robots.txt')).toBe('deny-all');
   });
 
   it('fails when the proxy refuses the destination (egress block) and when the proxy is down', async () => {

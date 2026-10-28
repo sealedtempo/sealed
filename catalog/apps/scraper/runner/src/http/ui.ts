@@ -98,7 +98,7 @@ function itemsTable(run: Run, items: Item[]): Html {
 
 function eventsTable(events: RunEvent[]): Html | string {
   if (events.length === 0) return '';
-  return html`<section><h2>Failed and skipped URLs</h2><div class="scroll"><table><thead><tr><th>Kind</th><th>URL</th><th>Detail</th></tr></thead>
+  return html`<section><h2>robots.txt, failed and skipped URLs</h2><div class="scroll"><table><thead><tr><th>Kind</th><th>URL</th><th>Detail</th></tr></thead>
 <tbody>${events.map((e) => html`<tr><td>${e.kind}</td><td class="url">${e.url}</td><td>${e.detail}</td></tr>`)}</tbody></table></div></section>`;
 }
 

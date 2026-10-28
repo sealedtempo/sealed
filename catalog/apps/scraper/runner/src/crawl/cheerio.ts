@@ -4,7 +4,7 @@ import type { RobotsTxtFile } from '@crawlee/utils';
 import type { JobSpec } from '../job.js';
 import type { RobotsPolicy } from '../robots.js';
 import { handlePage, jobConfiguration, robotsPolicy, runWithAbort, sharedOptions, throwOnFailedResponse, type PageResponse } from './common.js';
-import { EGRESS_HEADER, egressVerdictFromHeader } from './egress.js';
+import { EGRESS_HEADER, egressVerdictFromHeader } from '../egress.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
 
 function pageResponse(response: { statusCode?: number; headers: IncomingHttpHeaders }): PageResponse {
@@ -54,7 +54,7 @@ export function cheerioOptions(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink):
 }
 
 export async function runCheerio(spec: JobSpec, deps: CrawlDeps, sink: CrawlSink, signal: AbortSignal): Promise<CrawlSummary> {
-  const robots = robotsPolicy(deps);
+  const robots = robotsPolicy(deps, sink);
   const crawler = new SealedCheerioCrawler(cheerioOptions(spec, deps, sink), jobConfiguration(deps.memoryMbytes), robots);
   return runWithAbort(crawler, spec, robots, signal);
 }

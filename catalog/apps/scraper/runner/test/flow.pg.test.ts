@@ -106,7 +106,10 @@ describe.runIf(hasPostgres)('end to end: job -> crawl -> Postgres -> CSV export 
     expect(json).toHaveLength(10);
 
     const events = (await (await fetch(`${base}/api/v1/runs/${run.id}/events`)).json()) as { events: { kind: string; url: string }[] };
-    expect(events.events).toEqual([expect.objectContaining({ kind: 'skipped', url: `http://${FIXTURE_HOST}/private/staff.html` })]);
+    expect(events.events).toEqual([
+      expect.objectContaining({ kind: 'robots', url: `http://${FIXTURE_HOST}/robots.txt`, detail: 'parsed: HTTP 200' }),
+      expect.objectContaining({ kind: 'skipped', url: `http://${FIXTURE_HOST}/private/staff.html` }),
+    ]);
 
     // Metering: 10 successful pages reported in batches, never one event per page.
     expect(usage.every((u) => u.app === 'scraper' && u.unit === 'pages')).toBe(true);

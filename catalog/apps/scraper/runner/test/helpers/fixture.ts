@@ -38,6 +38,7 @@ export interface MemorySink {
   items: CrawledItem[];
   failed: { url: string; error: string }[];
   skipped: { url: string; reason: string }[];
+  robots: { url: string; outcome: string; reason: string }[];
 }
 
 export function memorySink(onItem?: (item: CrawledItem) => void): MemorySink {
@@ -45,6 +46,7 @@ export function memorySink(onItem?: (item: CrawledItem) => void): MemorySink {
     items: [],
     failed: [],
     skipped: [],
+    robots: [],
     sink: {
       item: async (item) => {
         out.items.push(item);
@@ -55,6 +57,9 @@ export function memorySink(onItem?: (item: CrawledItem) => void): MemorySink {
       },
       skipped: async (url, reason) => {
         out.skipped.push({ url, reason });
+      },
+      robots: async (url, outcome, reason) => {
+        out.robots.push({ url, outcome, reason });
       },
     },
   };

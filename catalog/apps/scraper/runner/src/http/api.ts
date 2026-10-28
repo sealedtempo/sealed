@@ -21,7 +21,7 @@ function attachment(run: Run, ext: string): string {
 //   GET    /runs                  list runs, newest first (?limit, ?offset)
 //   GET    /runs/:id              run status and counters
 //   GET    /runs/:id/items        items (?limit, ?after=<item id>)
-//   GET    /runs/:id/events       failed and skipped URLs (?limit)
+//   GET    /runs/:id/events       robots.txt outcomes, failed and skipped URLs, limits (?limit)
 //   GET    /runs/:id/export.json  all items as a JSON array
 //   GET    /runs/:id/export.csv   all items as CSV (?escape_formulas=false to keep raw values)
 //   POST   /runs/:id/cancel       stop a queued or running run

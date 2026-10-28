@@ -81,6 +81,26 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
     });
   });
 
+  it('reports a site missing from the egress allowlist instead of crawling it as allowed', async () => {
+    const before = proxy.log.length;
+    const out = memorySink();
+    await runCheerio(a6Job({ start_urls: ['http://blocked.test/', 'https://blocked.test/'] }), testDeps(proxy.url), out.sink, never);
+    expect(out.items).toEqual([]);
+    expect(out.skipped.sort((a, b) => a.url.localeCompare(b.url))).toEqual([
+      { url: 'http://blocked.test/', reason: 'robotsTxt' },
+      { url: 'https://blocked.test/', reason: 'robotsTxt' },
+    ]);
+    expect(out.robots.map((r) => [r.url, r.outcome, r.reason]).sort()).toEqual([
+      ['http://blocked.test/robots.txt', 'deny-all', 'unreachable: refused by sealed-egress (blocked), add the host to egressAdditions.scraper'],
+      ['https://blocked.test/robots.txt', 'deny-all', 'unreachable: refused by sealed-egress, add the host to egressAdditions.scraper'],
+    ]);
+    // Only the robots.txt fetches left the runner; the pages themselves were never requested.
+    expect(proxy.log.slice(before).map((t) => `${t.method} ${t.target}`).sort()).toEqual([
+      'CONNECT blocked.test:443',
+      'GET http://blocked.test/robots.txt',
+    ]);
+  });
+
   it('retries a page sealed-egress rate limited', async () => {
     const out = memorySink();
     await runCheerio(a6Job({ start_urls: ['http://busy.test/p02.html'], respect_robots: false, max_pages: 1 }), testDeps(proxy.url), out.sink, never);
@@ -103,6 +123,7 @@ describe('Cheerio crawl of the fixture site through the egress proxy', () => {
     expect(out.skipped).toEqual([{ url: `http://${FIXTURE_HOST}/private/staff.html`, reason: 'robotsTxt' }]);
     expect(out.failed).toEqual([]);
     expect(summary.robots).toEqual({ [`http://${FIXTURE_HOST}/robots.txt`]: 'parsed' });
+    expect(out.robots).toEqual([{ url: `http://${FIXTURE_HOST}/robots.txt`, outcome: 'parsed', reason: 'HTTP 200' }]);
 
     const traffic = proxy.log.slice(before);
     // Every request, robots.txt included, went through the proxy; nothing left the fixture host.

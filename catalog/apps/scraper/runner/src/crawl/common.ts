@@ -5,7 +5,7 @@ import type { JobSpec } from '../job.js';
 import { errorMessage } from '../log.js';
 import { createProxyRobotsFetcher, RobotsPolicy } from '../robots.js';
 import { checkTargetUrl } from '../url-policy.js';
-import { egressMessage, egressVerdictFromError, type EgressVerdict } from './egress.js';
+import { egressMessage, egressVerdictFromError, type EgressVerdict } from '../egress.js';
 import type { CrawlDeps, CrawlSink, CrawlSummary } from './types.js';
 
 // Every job gets its own Configuration and an explicit non-persistent MemoryStorage: its own request
@@ -25,9 +25,9 @@ export function egressProxy(proxyUrl: string | undefined): ProxyConfiguration | 
   return proxyUrl ? new ProxyConfiguration({ proxyUrls: [proxyUrl] }) : undefined;
 }
 
-export function robotsPolicy(deps: CrawlDeps): RobotsPolicy {
+export function robotsPolicy(deps: CrawlDeps, sink: CrawlSink): RobotsPolicy {
   const fetcher = deps.robotsFetcher ?? createProxyRobotsFetcher({ proxyUrl: deps.proxyUrl, userAgent: deps.userAgent });
-  return new RobotsPolicy(fetcher, deps.proxyUrl);
+  return new RobotsPolicy(fetcher, deps.proxyUrl, (url, outcome, reason) => sink.robots(url, outcome, reason));
 }
 
 // Crawlee reports a skipped link once per page that links to it, and reports max_pages

@@ -139,6 +139,9 @@ export class RunManager {
       skipped: async (url, reason) => {
         await store.addSkip(runId, url, reason, logEvent());
       },
+      robots: async (robotsUrl, outcome, reason) => {
+        if (logEvent()) await store.addNote(runId, 'robots', robotsUrl, `${outcome}: ${reason}`);
+      },
     };
   }
 }

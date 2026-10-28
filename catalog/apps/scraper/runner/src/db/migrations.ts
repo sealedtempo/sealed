@@ -49,4 +49,13 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX run_events_run_id_id_idx ON run_events (run_id, id);
     `,
   },
+  {
+    version: 2,
+    name: 'run_events_robots_and_limit',
+    sql: `
+      ALTER TABLE run_events DROP CONSTRAINT run_events_kind_check;
+      ALTER TABLE run_events ADD CONSTRAINT run_events_kind_check
+        CHECK (kind IN ('failed', 'skipped', 'robots', 'limit'));
+    `,
+  },
 ];

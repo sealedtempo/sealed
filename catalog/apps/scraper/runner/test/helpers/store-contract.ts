@@ -51,6 +51,8 @@ export function describeRunStoreContract(name: string, enabled: boolean, open: (
         }
         await expect(store.addItem(randomUUID(), item)).rejects.toThrow();
         await expect(store.addFailure(randomUUID(), item.url, 'HTTP 500', true)).rejects.toThrow();
+        await expect(store.addNote(randomUUID(), 'robots', 'https://shop.example/robots.txt', 'parsed: HTTP 200')).rejects.toThrow();
+        await expect(store.addNote('not-a-uuid', 'robots', 'https://shop.example/robots.txt', 'parsed: HTTP 200')).rejects.toThrow();
       }),
     );
 
@@ -80,8 +82,12 @@ export function describeRunStoreContract(name: string, enabled: boolean, open: (
         await store.addFailure(run.id, 'https://shop.example/x', 'HTTP 500', true);
         await store.addFailure(run.id, 'https://shop.example/y', 'HTTP 500', false);
         await store.addSkip(run.id, 'https://shop.example/p', 'robotsTxt', true);
+        await store.addNote(run.id, 'robots', 'https://shop.example/robots.txt', 'deny-all: unreachable: HTTP 503');
+        await store.addNote(run.id, 'limit', run.spec.start_urls[0]!, 'stopped after 1 minute');
         expect(await store.getRun(run.id)).toMatchObject({ pagesOk: 1, pagesFailed: 2, pagesSkipped: 1 });
-        expect((await store.listEvents(run.id, { limit: 10 })).map((e) => e.kind)).toEqual(['failed', 'skipped']);
+        const events = await store.listEvents(run.id, { limit: 10 });
+        expect(events.map((e) => e.kind)).toEqual(['failed', 'skipped', 'robots', 'limit']);
+        expect(events[2]).toMatchObject({ url: 'https://shop.example/robots.txt', detail: 'deny-all: unreachable: HTTP 503' });
       }),
     );
   });
