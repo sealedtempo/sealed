@@ -8,8 +8,10 @@ Limits: confidential VMs do not stop physical attacks on the server, bugs inside
 
 ## What a passing verification shows
 
-- The quote was produced by an Intel TDX confidential VM whose TCB status the policy allows, and is not a debug TD.
+- The quote was produced by an Intel TDX confidential VM whose TCB status the policy allows, and is exactly the signed quote.
+- The TD is not a debug TD, and the host launched it with the TD attributes and CPU features pinned for its image.
 - The VM booted a platform image registered and approved in PlatformRegistry, identified by its MRTD and RTMR0 to RTMR2.
+- Every chain read came from one block that was at most 60 seconds old when the verification ran, so a lagging RPC cannot hide a revocation.
 - The VM runs exactly the stack whose hash is in RTMR3, and that stack is what the deterministic composer produces from the public config and the onchain releases' bundles, byte for byte.
 - Every release is active onchain, and the customer's wallet approved exactly this stack with exactly these releases and this image.
 - The onchain deployment record matches the evidence, and the quote binds the enclave signer that pays fees.
@@ -23,7 +25,7 @@ go build -o sealed ./cli/cmd/sealed       # Go 1.26 or newer
 ./sealed version
 ```
 
-The CLI embeds `config/defaults.yaml` (TCB policy, release asset base, public RPC) and `contracts/deployments/tempo-mainnet.json` (registry addresses), so it needs no configuration for mainnet. It contacts only the Tempo RPC, Intel PCS (`api.trustedservices.intel.com`, `certificates.trustedservices.intel.com`) and the release asset host (`github.com`, which redirects to `release-assets.githubusercontent.com`), plus the attest URL in live mode. Intel collateral and bundles are cached under your user cache directory.
+The CLI embeds `config/defaults.yaml` (TCB policy, release asset base, public RPC) and `contracts/deployments/tempo-mainnet.json` (registry addresses), so it needs no configuration for mainnet. It contacts only the Tempo RPC, Intel PCS (`api.trustedservices.intel.com`, `certificates.trustedservices.intel.com`) and the release asset host (`github.com`, which redirects to `release-assets.githubusercontent.com` or `objects.githubusercontent.com`), plus the attest URL in live mode. Intel collateral and bundles are cached under your user cache directory.
 
 ## Commands
 
@@ -61,6 +63,7 @@ sealed verify --deployment dep_<8 chars> --api https://<platform api>
 | `--expect-customer`, `--expect-apps` | fail unless the deployment belongs to that wallet and contains those apps |
 | `--max-age` | fail when the evidence is older than this; re-attestation runs every 24 hours, so `26h` is a reasonable bound |
 | `--deployments`, `--defaults`, `--release-asset-base` | other chains, defaults or a bundle mirror (every bundle is still checked against its onchain bundleHash) |
+| `--bundle-cache` | the content-addressed bundle cache directory (default under your user cache directory). Keep your own copy of the bundles, so a later re-verification does not depend on the release assets staying online |
 | `--json`, `--report` | print JSON, or also write it to a file |
 
 Exit status: 0 when every check passed, 1 when any check failed, 2 for a usage error. The `--dev-*` flags accept dev simulator quotes and exist only with `SEALED_DEV_SIM=1`; a report produced that way says `SIMULATED` and proves nothing about real hardware.
@@ -72,10 +75,10 @@ Every check is listed in the report, and a check whose inputs are missing fails 
 | check | passes when | why it matters |
 |---|---|---|
 | `bundle` | the evidence or `/attest` document has every field, with the right schema and sizes; JSON keys are unique and case-exact | no ambiguous input reaches the checks |
-| `chain` | the RPC's chain id, the bundle's and the config's are equal, and their registry addresses are the verifier's | evidence from another chain or a look-alike contract fails |
+| `chain` | the RPC's chain id, the bundle's and the config's are equal (4217 on mainnet), their registry addresses are the verifier's, and the block every read is pinned to has a timestamp within 60 seconds of your clock (D-060) | evidence from another chain or a look-alike contract fails, and a stale or lagging RPC fails this check instead of hiding a revocation |
 | `quote_hash` | `sha256(quote)` equals `quoteHash` | ties the quote to the record |
-| `quote` | the quote is exactly the signed quote; its signature, PCK chain to Intel's root, QE report, collateral and CRLs verify; the TCB status is in the policy | proves real TDX hardware with an allowed TCB |
-| `td_attributes` | no debug bits, not migratable, `SEPT_VE_DISABLE` set, no reserved bits | a debug TD can be inspected by the host |
+| `quote` | the quote is exactly the signed quote, with no trailing bytes (D-052); its signature, PCK chain to Intel's root, QE report, collateral and CRLs verify; the TCB status is in the policy | proves real TDX hardware with an allowed TCB; unsigned padding would let one quote carry many quoteHash values |
+| `td_attributes` | no debug bits, not migratable, `SEPT_VE_DISABLE` set, no reserved bits, and TD_ATTRIBUTES and XFAM equal the values pinned for the image (on Google Cloud C3, `0x10000000` and `0x602e7`, D-052) | a debug TD can be inspected by the host, and the host chooses both fields while no register measures them |
 | `image_measurements` | `keccak256(mrtd, rtmr0, rtmr1, rtmr2)` equals `PlatformRegistry.getImage(imageId).measurementsHash` | the VM booted that registered OS image |
 | `image_approved` | `isApprovedImage(imageId)` and the image is not a debug image | the image is still approved |
 | `event_log_hash` | `sha256(CJSON(eventLog))` equals `eventLogHash` | ties the event log to the record |
@@ -149,14 +152,17 @@ jq -r .chainId,.contracts $E                          # same chain, same registr
    python3 -c 'import json,sys,hashlib; e=json.load(open(sys.argv[1])); c=lambda v: json.dumps(v,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode(); print(hashlib.sha256(c(e["config"])).hexdigest(), hashlib.sha256(c(e["eventLog"])).hexdigest())' $E
    ```
 
-2. Quote fields. A TDX quote v4 has a 48-byte header and then the TD report body; v5 has 6 more bytes (body type and size) before it.
+2. Quote fields. A TDX quote v4 has a 48-byte header and then the 584-byte TD report body; v5 has 6 more bytes (body type and size) before it. The signature length and the signature follow the body, and nothing may follow the signature: dstack on Google Cloud returns the quote in an 8000-byte zero-padded buffer, and evidence carries only the signed bytes (4935 for the quotes seen so far, D-052).
 
    ```python
    import json, sys
    e = json.load(open(sys.argv[1])); q = bytes.fromhex(e["quote"][2:])
-   v = int.from_bytes(q[0:2], "little"); b = 48 if v == 4 else 54
+   v = int.from_bytes(q[0:2], "little")
+   b, body = (48, 584) if v == 4 else (54, int.from_bytes(q[50:54], "little"))
+   sig = int.from_bytes(q[b + body : b + body + 4], "little")
+   assert len(q) == b + body + 4 + sig, "unsigned bytes after the signature"
    f = lambda off, n: q[b + off : b + off + n].hex()
-   print("td_attributes", f(120, 8)); print("mrtd", f(136, 48))
+   print("td_attributes", f(120, 8)); print("xfam", f(128, 8)); print("mrtd", f(136, 48))
    for i in range(4): print(f"rtmr{i}", f(328 + 48 * i, 48))
    print("report_data", f(520, 64))
    ```
@@ -166,10 +172,11 @@ jq -r .chainId,.contracts $E                          # same chain, same registr
    ```sh
    go run github.com/google/go-tdx-guest/tools/check@v0.3.2-0.20261014222600-23b3eac9db39 \
      -in quote.bin -get_collateral=true -check_crl=true \
-     -mr_td <mrtd> -rtmrs <rtmr0>,<rtmr1>,<rtmr2>,<rtmr3> -report_data <report_data> -td_attributes <td_attributes>
+     -mr_td <mrtd> -rtmrs <rtmr0>,<rtmr1>,<rtmr2>,<rtmr3> -report_data <report_data> \
+     -td_attributes <td_attributes> -xfam <xfam>
    ```
 
-   Its TCB rule is its own; compare the reported status with `tcb_policy.allowed_statuses` in `config/defaults.yaml` (`UpToDate`, `SWHardeningNeeded`). Check that td_attributes has no debug bit (bit 0 of the first byte).
+   Its TCB rule is its own; compare the reported status with `tcb_policy.allowed_statuses` in `config/defaults.yaml` (`UpToDate`, `SWHardeningNeeded`). The checker accepts trailing bytes, which is why step 2 checks the length. td_attributes must have no debug bit (bit 0 of the first byte). On Google Cloud C3, td_attributes must be `0000001000000000` and xfam `e702060000000000`, the values `0x10000000` (`SEPT_VE_DISABLE` only) and `0x602e7` in the quote's little-endian byte order; the host chooses both and no register measures them, so they are pinned per image (D-052).
 
 4. RTMR3 replay and the compose hash:
 
@@ -213,7 +220,18 @@ jq -r .chainId,.contracts $E                          # same chain, same registr
    cast call $DEPLOYMENTS "getDeployment(bytes32)((bytes32,address,uint64,uint8,uint8,uint8,bytes32,bytes32,bytes32,bytes32,bytes32,address,uint64,uint64,uint64))" $ID --rpc-url $RPC
    ```
 
-   `getImage` returns `(measurementsHash, isDebug, status, addedAt, name, version, sourceURI)` with status 1 = Active. `getStackApproval` returns `(releaseIds, imageId, expiry, revoked, approvedAt)`: the release set must equal the config's `apps[].releaseId` and the imageId the config's. `getDeployment` returns `(deploymentId, customer, attestedAt, method, lastMethod, status, stackHash, imageId, quoteHash, eventLogHash, configHash, enclaveSigner, lastAttestedAt, registeredAt, closedAt)` with status 1 = Active; compare each field with the evidence.
+   `getImage` returns `(measurementsHash, isDebug, status, addedAt, name, version, sourceURI)` with status 1 = Active. The image's name and version say which machine types it was measured on, because RTMR0 differs per machine type.
+
+   RTMR1 and RTMR2 can also be computed from the image itself (D-052). `sourceURI` names the image's GCE tarball with its sha256 (`#sha256=...`):
+
+   ```sh
+   curl -LO <tarball URL from sourceURI>
+   sha256sum <tarball>                                # = the #sha256= part of sourceURI
+   tar -xzf <tarball> disk.raw
+   python3 -I verifier/attest/testdata/gcp/tools/predict_rtmr12.py disk.raw   # = rtmr1 and rtmr2 from step 2
+   ```
+
+   MRTD and RTMR0 cannot be computed this way, because Google builds the firmware, the TD HOB and the ACPI tables. They are recorded trust-on-first-use per machine type ([THREAT_MODEL.md](THREAT_MODEL.md#trust-on-first-use)). `getStackApproval` returns `(releaseIds, imageId, expiry, revoked, approvedAt)`: the release set must equal the config's `apps[].releaseId` and the imageId the config's. `getDeployment` returns `(deploymentId, customer, attestedAt, method, lastMethod, status, stackHash, imageId, quoteHash, eventLogHash, configHash, enclaveSigner, lastAttestedAt, registeredAt, closedAt)` with status 1 = Active; compare each field with the evidence.
 
 7. Releases and bundles, for each `config.apps[]` entry:
 
@@ -243,6 +261,8 @@ If every step matches, you have checked the deployment with your own tools again
 ## What verification does not show
 
 - That the apps are free of bugs or behave well with the data they are given. Read the app's README, LICENSE-NOTICE and egress policy, and the customer's `egressAdditions` in the config.
+- That the config says what you want. `debug`, `endpoints` (the key broker, platform api, Tempo RPC and relay the deployment uses), `egressAdditions` and `allowedVpcRanges` are inside the stackHash, so a passing verification shows they are what the customer approved: `jq '.config | {debug, endpoints, egressAdditions, allowedVpcRanges}' evidence.json`. A secret one app takes from another (`same_as`) is allowed only when the source app's manifest lists the taking app in `share_with` (D-059); both are in the release bundles' manifests.
 - That the hardware resists physical attacks, or that the cloud provider with physical access does not attack it.
-- The platform image's MRTD and RTMR0 to RTMR2 are recorded trust-on-first-use on Google Cloud, so `image_measurements` shows the VM booted the registered image, and the trust in that registration is described in [THREAT_MODEL.md](THREAT_MODEL.md#trust-on-first-use).
-- Evidence shows the state at `attestedAt`. Use `--live` for the state now, and `onchain_record`'s `lastAttestedAt` for the latest heartbeat.
+- The platform image's MRTD and RTMR0 are recorded trust-on-first-use per machine type on Google Cloud, and RTMR1 and RTMR2 are computed from the image. So `image_measurements` shows the VM booted the registered image, and the trust in that registration is described in [THREAT_MODEL.md](THREAT_MODEL.md#trust-on-first-use).
+- That nothing signals through counts. An app can still carry a few bits per minute to the platform through its egress counts, health and usage quantities (an accepted residual, [THREAT_MODEL.md](THREAT_MODEL.md#residual-risks)).
+- Evidence shows the state at `attestedAt`, which comes from the VM's clock, and the host sets that clock. Use `--live` for the state now (your own nonce does not depend on any clock), and `onchain_record`'s `lastAttestedAt` for the latest heartbeat.
