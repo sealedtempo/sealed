@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+# Sealed debug image only: export container logs to the customer project's
+# Cloud Logging (spec 5.8). Needs a VM service account with
+# roles/logging.logWriter; without one it waits and reports why on the
+# serial console. The production image does not contain this unit.
+[Unit]
+Description=Sealed debug image: export container logs to Cloud Logging
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sealed-logship
+Restart=always
+RestartSec=5
+# Status and errors (rate limited) go to the serial console, the only debug
+# channel of an image without a shell. Log lines themselves never do.
+StandardOutput=journal+console
+StandardError=journal+console
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

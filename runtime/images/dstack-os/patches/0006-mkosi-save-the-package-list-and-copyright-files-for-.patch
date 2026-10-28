@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sealedtempo <349375820+sealedtempo@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 +0000
+Subject: [PATCH 6/7] mkosi: save the package list and copyright files for the
+ license inventory
+
+mkosi.postinst is the last hook that sees /var/lib/dpkg and
+/usr/share/doc/*/copyright before CleanPackageMetadata= and RemoveFiles=
+delete them. Write the installed package list (binary and source package,
+versions, section, architecture) and every copyright file to
+$OUTPUTDIR/dstack-sealed-inventory, outside the measured image. The Sealed
+license check reads it after the build.
+---
+ os/mkosi/mkosi.postinst | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/os/mkosi/mkosi.postinst b/os/mkosi/mkosi.postinst
+index d247e26..96b24b8 100755
+--- a/os/mkosi/mkosi.postinst
++++ b/os/mkosi/mkosi.postinst
+@@ -3,6 +3,25 @@
+ set -euo pipefail
+ 
+ B=${BUILDROOT:?}
++
++# Sealed: record the installed Debian packages and their copyright files for
++# the image's license inventory. CleanPackageMetadata= and the prod profile's
++# RemoveFiles= delete /var/lib/dpkg and /usr/share/doc after this script, so
++# this is the last point where both exist. The directory sits in the output
++# directory, outside the image, and its dstack- prefix makes mkosi.clean
++# remove it with the other outputs.
++inventory="${OUTPUTDIR:?}/dstack-sealed-inventory"
++rm -rf "$inventory"
++mkdir -p "$inventory/copyright"
++dpkg-query --admindir="$B/var/lib/dpkg" -W \
++  -f='${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\t${Section}\t${Architecture}\n' \
++  | LC_ALL=C sort > "$inventory/packages.tsv"
++for copyright in "$B"/usr/share/doc/*/copyright; do
++  [[ -f $copyright ]] || continue
++  package=${copyright%/copyright}
++  install -m0644 "$copyright" "$inventory/copyright/${package##*/}"
++done
++
+ rm -f "$B/etc/machine-id" "$B/var/lib/dbus/machine-id"
+ : > "$B/etc/machine-id"
+ 

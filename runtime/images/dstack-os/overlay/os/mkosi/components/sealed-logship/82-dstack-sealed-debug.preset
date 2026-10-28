@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
+# Sealed debug image only. Sorted after 80-dstack.preset and before
+# 99-dstack-default.preset ("disable *").
+enable sealed-logship.service
