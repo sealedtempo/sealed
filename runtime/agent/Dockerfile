@@ -2,9 +2,13 @@
 # sealed-agent image. Build from the repository root:
 #   docker build -f runtime/agent/Dockerfile -t sealed-agent .
 #
-# The agent starts as root because LUKS (cryptsetup open/luksFormat), mkfs and mount need it
-# (the composer grants this one container CAP_SYS_ADMIN and the data-disk device). After the
-# disk is mounted and the tmpfs secrets are written it drops to uid/gid 10001 (SEALED_RUN_AS).
+# The agent starts as root because LUKS (cryptsetup open/luksFormat), dmsetup, mkfs and mount need
+# it (the composer grants this one container CAP_SYS_ADMIN and the data-disk device). After the
+# disk is mounted and the tmpfs secrets are written it forks the small Caddy admin helper (which
+# keeps root to reach the root-only admin socket) and drops to uid/gid 10001 (SEALED_RUN_AS).
+#
+# Not built in this workstream (no Docker daemon): the pins below are from packages.debian.org
+# for bookworm and must be confirmed by the CI image build.
 
 # node:24.22.1-bookworm-slim, index digest pinned 2026-10-28 (docs/notes/crawlee.md).
 ARG NODE_IMAGE=node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
@@ -43,7 +47,10 @@ RUN printf '%s\n' \
  && apt-get install -y --no-install-recommends \
       cryptsetup-bin=2:2.6.1-4~deb12u2 \
       libcryptsetup12=2:2.6.1-4~deb12u2 \
-      e2fsprogs \
+      dmsetup=2:1.02.185-2 \
+      libdevmapper1.02.1=2:1.02.185-2 \
+      e2fsprogs=1.47.0-2+b2 \
+      mount=2.38.1-5+deb12u3 \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 10001 sealed \
@@ -59,7 +66,7 @@ ENV NODE_ENV=production \
     DM_DISABLE_UDEV=1 \
     SEALED_DEFAULTS_PATH=/app/config/defaults.yaml \
     SEALED_RUN_AS=10001:10001 \
-    SEALED_LISTEN=0.0.0.0:7070
+    PORT=7070
 
 LABEL org.opencontainers.image.title="sealed-agent" \
       org.opencontainers.image.licenses="Apache-2.0" \
