@@ -1,0 +1,6 @@
+packages:
+  - packages/*
+  - runtime/agent
+  - runtime/mpp-payer
+  - runtime/relay
+  - catalog/apps/scraper/runner

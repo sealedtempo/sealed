@@ -1,0 +1,13 @@
+{
+  "name": "sealed",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@10.33.2",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  }
+}
