@@ -30,7 +30,7 @@ export interface Finding {
 }
 
 export function findComposer(repo: string): Composer | { skip: string } {
-  const dir = resolve(process.env.SEALED_COMPOSER_DIR ?? repo);
+  const dir = resolve(process.env.SEALED_COMPOSER_DIR || repo);
   let reason: string | undefined;
   if (spawnSync('go', ['version'], { encoding: 'utf8' }).status !== 0) reason = 'go is not installed';
   else if (!existsSync(join(dir, CLI, 'main.go'))) reason = `composer source not found under ${dir} (set SEALED_COMPOSER_DIR)`;

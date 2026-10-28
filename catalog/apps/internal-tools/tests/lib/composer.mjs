@@ -43,7 +43,7 @@ function atLeast(a, b) {
 // SEALED_REQUIRE_COMPOSER=1 instead of skipping.
 export function findComposer(appDir) {
   let reason;
-  const dir = resolve(process.env.SEALED_COMPOSER_DIR ?? resolve(appDir, "../../.."));
+  const dir = resolve(process.env.SEALED_COMPOSER_DIR || resolve(appDir, "../../.."));
   if (spawnSync("go", ["version"], { encoding: "utf8" }).status !== 0) reason = "go is not installed";
   else if (!existsSync(join(dir, CLI, "main.go"))) reason = `composer source not found under ${dir} (set SEALED_COMPOSER_DIR)`;
   if (reason) {
