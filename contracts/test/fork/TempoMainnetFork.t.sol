@@ -30,23 +30,24 @@ interface ITIP403RegistryLike {
 /// @notice Deploys the whole system on a fork of Tempo mainnet and moves real pathUSD through FeeSplitter:
 ///         approve + payFees (transferFrom into the contract) + withdraw (transfer out of the contract).
 /// @dev RPC: TEMPO_RPC_URL, falling back to https://rpc.tempo.xyz. Every test is skipped when the RPC is not
-///      reachable or SKIP_FORK_TESTS=true. Foundry 1.7.1 executes forks with Tempo T4 rules while mainnet runs T12;
-///      T9 moved the token -> policy binding into the TIP-403 registry, so T4 code reads pathUSD's policy id as 0
-///      (always-reject). setUp detects that and writes the live policy id (2) into the legacy slot, reproducing
-///      mainnet behavior. See README "Fork tests".
+///      reachable or SKIP_FORK_TESTS=true. Needs Foundry 1.8.6+ with foundry.toml `hardfork` at mainnet's
+///      hardfork (tempo:t12; tempo:t13 from 2026-11-03 15:00 UTC): older rules read the token policy ids as 0
+///      and every transfer reverts PolicyForbids. Nothing is patched; see README "Fork tests".
 contract TempoMainnetForkTest is Test {
     ITIP20Like internal constant PATH_USD = ITIP20Like(0x20C0000000000000000000000000000000000000);
+    /// @dev USDC.e, the mainnet FEE_TOKEN (D-035).
+    ITIP20Like internal constant USDC_E = ITIP20Like(0x20C000000000000000000000b9537d11c60E8b50);
     ITIP403RegistryLike internal constant TIP403 = ITIP403RegistryLike(0x403c000000000000000000000000000000000000);
-    /// @dev Stablecoin DEX precompile: the largest pathUSD holder, impersonated to fund test accounts.
+    /// @dev Stablecoin DEX precompile: the largest pathUSD and USDC.e holder, impersonated to fund test accounts.
     address internal constant FUNDER = 0xDEc0000000000000000000000000000000000000;
     /// @dev An address on pathUSD's blacklist (policy 2) at the time of writing.
     address internal constant BLACKLISTED = 0xfEC8A60023265364D066a1212fDE3930F6Ae8da7;
     uint64 internal constant MAINNET_POLICY_ID = 2;
+    /// @dev TIP-403 built-in policy 1: always allow. USDC.e is bound to it.
+    uint64 internal constant ALWAYS_ALLOW_POLICY_ID = 1;
     /// @dev TIP-20 `PolicyForbids()`.
     bytes4 internal constant POLICY_FORBIDS = 0x54cfe659;
     uint256 internal constant TEMPO_CHAIN_ID = 4217;
-
-    bool internal policyPatched;
 
     address internal owner = makeAddr("fork-owner");
     address internal ops = makeAddr("fork-ops");
@@ -88,7 +89,11 @@ contract TempoMainnetForkTest is Test {
             vm.skip(true);
             return;
         }
-        _patchPolicyIfNeeded();
+        // Fails loudly instead of patching: a policy id of 0 means Foundry runs the fork with pre-T9 rules.
+        require(
+            PATH_USD.transferPolicyId() == MAINNET_POLICY_ID && USDC_E.transferPolicyId() == ALWAYS_ALLOW_POLICY_ID,
+            "fork reads stale token policy ids: use Foundry 1.8.6+ with hardfork = tempo:t12 or newer"
+        );
 
         (customer, customerKey) = makeAddrAndKey("fork-customer");
         (oracle, oracleKey) = makeAddrAndKey("fork-oracle");
@@ -134,22 +139,51 @@ contract TempoMainnetForkTest is Test {
         registry.registerDeployment(r, 1, abi.encode(abi.encodePacked(rr, s, v)));
     }
 
-    /// @dev Foundry 1.7.1 (Tempo T4 rules) reads the pre-T9 policy slot of the token, which is 0 on mainnet now.
-    ///      Write the live policy id into that slot (u64 at bit 160 of slot 7) so transfers follow policy 2.
-    function _patchPolicyIfNeeded() internal {
-        if (PATH_USD.transferPolicyId() == MAINNET_POLICY_ID) return;
-        bytes32 slot = bytes32(uint256(7));
-        uint256 word = uint256(vm.load(address(PATH_USD), slot));
-        word = (word & ~(uint256(type(uint64).max) << 160)) | (uint256(MAINNET_POLICY_ID) << 160);
-        vm.store(address(PATH_USD), slot, bytes32(word));
-        policyPatched = true;
-        console.log("patched pathUSD legacy policy slot to policy 2 (Foundry T4 fork rules)");
-    }
-
     /// @dev Funds `to` with real pathUSD by impersonating a large holder (no storage writes).
     function _fund(address to, uint256 amount) internal {
         vm.prank(FUNDER);
         assertTrue(PATH_USD.transfer(to, amount));
+    }
+
+    /// @dev Funds `to` with real USDC.e the same way.
+    function _fundUsdcE(address to, uint256 amount) internal {
+        vm.prank(FUNDER);
+        assertTrue(USDC_E.transfer(to, amount));
+    }
+
+    function test_fork_usdcEFacts() public view {
+        assertEq(USDC_E.decimals(), 6);
+        assertEq(USDC_E.symbol(), "USDC.e");
+        assertEq(USDC_E.currency(), "USD");
+        assertFalse(USDC_E.paused());
+        assertEq(USDC_E.transferPolicyId(), ALWAYS_ALLOW_POLICY_ID, "USDC.e is bound to policy 1 (always allow)");
+        assertTrue(TIP403.isAuthorized(ALWAYS_ALLOW_POLICY_ID, BLACKLISTED), "policy 1 authorizes everyone");
+        assertGt(USDC_E.balanceOf(FUNDER), 1_000_000_000, "funder holds USDC.e");
+    }
+
+    /// @dev The mainnet FeeSplitter takes USDC.e (FEE_TOKEN). Same flow as the pathUSD test, unpatched.
+    function test_fork_payFeesAndWithdrawWithRealUsdcE() public {
+        vm.prank(owner);
+        splitter.setToken(address(USDC_E), true, 5_000_000, 20_000_000);
+        _fundUsdcE(customer, 10_000_000);
+
+        vm.prank(customer);
+        assertTrue(USDC_E.approve(address(splitter), 3_000_000));
+        vm.prank(customer);
+        splitter.payFees(deploymentId, appId, address(USDC_E), 2_500_000, keccak256("usage-usdce-1"));
+        assertEq(USDC_E.balanceOf(customer), 7_500_000);
+        assertEq(USDC_E.balanceOf(address(splitter)), 2_500_000, "transferFrom into the contract");
+        assertEq(splitter.credited(address(USDC_E), maintainer), 500_000);
+        assertEq(splitter.credited(address(USDC_E), treasury), 2_000_000);
+
+        vm.prank(maintainer);
+        splitter.withdraw(address(USDC_E));
+        vm.prank(treasury);
+        splitter.withdraw(address(USDC_E));
+        assertEq(USDC_E.balanceOf(maintainer), 500_000, "transfer out of the contract");
+        assertEq(USDC_E.balanceOf(treasury), 2_000_000);
+        assertEq(USDC_E.balanceOf(address(splitter)), 0);
+        assertEq(splitter.totalCredited(address(USDC_E)), 0);
     }
 
     function test_fork_pathUsdFacts() public view {

@@ -1,4 +1,4 @@
-# Sealed contracts. Foundry 1.7.1+, Solidity 0.8.38, OpenZeppelin Contracts 5.7.0 (Soldeer).
+# Sealed contracts. Foundry 1.8.6, Solidity 0.8.38, OpenZeppelin Contracts 5.7.0 (Soldeer).
 [profile.default]
 src = "src"
 test = "test"
@@ -15,9 +15,10 @@ via_ir = false
 bytecode_hash = "ipfs"
 # Tempo network features in forge/cast/anvil (TIP-20 precompiles, Tempo gas schedule, Tempo transactions).
 network = "tempo"
-# Execute tests with the Tempo mainnet gas schedule (TIP-1010: 250k gas per new storage slot, 1000 gas per
-# deployed byte). t4 is the newest Tempo hardfork this Foundry release knows; mainnet is on T12 (see README).
-hardfork = "tempo:t4"
+# Execute tests, scripts and forks with mainnet's Tempo hardfork (gas schedule, TIP-403 registry binding, precompiles).
+# Mainnet runs T12 until T13 activates on 2026-11-03 15:00 UTC: change this to "tempo:t13" then. Foundry 1.8.6 knows
+# T0..T14; forks follow this setting, not the fork block, so a stale value brings back the pre-T9 policy reads.
+hardfork = "tempo:t12"
 auto_detect_remappings = false
 fs_permissions = [
     { access = "read-write", path = "./deployments" },
@@ -26,8 +27,9 @@ fs_permissions = [
     { access = "read", path = "./out" },
 ]
 
-# Mainnet broadcasts. Same compiler settings (identical bytecode), but standard EIP-1559 transactions:
-# Foundry 1.7.1 cannot build a Tempo 0x76 transaction for contract creation. Fees are paid in the sender's
+# Mainnet broadcasts (D-038). Same compiler settings (identical bytecode), but standard EIP-1559 transactions. With
+# gas left to the node, forge/cast still send the eth_estimateGas request for a Tempo 0x76 contract creation without
+# the creation in `calls`, which mainnet rejects ("empty calls list"). Fees are paid in the sender's
 # FeeManager.setUserToken preference (make fee-token-pref).
 [profile.deploy]
 network = "ethereum"
@@ -65,6 +67,11 @@ int_types = "long"
 quote_style = "double"
 number_underscore = "thousands"
 sort_imports = false
+
+# forge lint runs on every build. Foundry 1.8.6 flags each `vm.warp(block.timestamp + n)` in the tests (75 hits);
+# the 20 findings in src/ stay visible.
+[lint]
+exclude_lints = ["environment-read-across-mutation"]
 
 [soldeer]
 remappings_generate = false

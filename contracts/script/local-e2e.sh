@@ -9,13 +9,13 @@
 #   script/local-e2e.sh            # from the contracts directory, or: make local-e2e
 #
 # Uses only anvil's well-known default dev keys. Nothing here touches a public network.
-# Environment: E2E_PORT (default 8546), E2E_HARDFORK (default T4: Tempo mainnet gas schedule), E2E_KEEP=1 to
-# leave anvil running afterwards.
+# Environment: E2E_PORT (default 8546), E2E_HARDFORK (default T12, mainnet's hardfork; T13 from 2026-11-03),
+# E2E_KEEP=1 to leave anvil running afterwards.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 PORT="${E2E_PORT:-8546}"
-HARDFORK="${E2E_HARDFORK:-T4}"
+HARDFORK="${E2E_HARDFORK:-T12}"
 RPC="http://127.0.0.1:${PORT}"
 WORK=".e2e"
 mkdir -p "$WORK" deployments
@@ -69,8 +69,8 @@ now() { cast block latest --rpc-url "$RPC" -f timestamp; }
 
 step "start anvil --network tempo --hardfork $HARDFORK on :$PORT"
 if cast chain-id --rpc-url "$RPC" >/dev/null 2>&1; then fail "port $PORT is already in use"; fi
-# Block gas limit 500M as on mainnet (anvil's default is 30M). Foundry 1.7.1's T4 rules charge about 2x mainnet
-# (T12) gas for CREATE, so DeploymentRegistry needs ~27M here and forge's 1.3x estimate margin exceeds 30M.
+# Block gas limit 500M as on mainnet (anvil's default is 30M). DeploymentRegistry's CREATE takes ~12M gas and forge
+# adds a 1.3x estimate margin.
 anvil --network tempo --hardfork "$HARDFORK" --port "$PORT" --gas-limit 500000000 > "$WORK/anvil.log" 2>&1 &
 ANVIL_PID=$!
 cleanup() { if [ "${E2E_KEEP:-0}" != "1" ]; then kill "$ANVIL_PID" 2>/dev/null || true; fi; }
