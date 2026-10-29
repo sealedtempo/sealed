@@ -21,7 +21,7 @@ never printed. The CLI only reads Tempo (eth_call); it holds no keys and sends n
 ```sh
 sealed bootstrap --project <id> --customer-address <0x...> --platform-sa <email> \
   --key-broker-image ghcr.io/sealedtempo/sealed-key-broker@sha256:<digest> [--region us-central1] [--plan] [--yes] \
-  [--allowed-images 0x<imageId>,...] [--fee-splitter 0x... --fee-token 0x...]
+  [--allowed-images 0x<imageId>,...] [--fee-splitter 0x... --fee-token 0x...] [--os-image-version 0.6.1-s1] [--no-os-images]
 sealed connect gcp --project <id> ...                  # the same command (D-032)
 
 sealed secrets set --config stack.yaml --missing       # generate or ask for every required secret, once
@@ -55,7 +55,15 @@ FeeSplitter (or, on another chain, no `config.feeToken`). `--fee-splitter` and `
 and `--allowed-images 0x<imageId>,...` gives the broker your own imageId allowlist on top of PlatformRegistry
 approval (`SEALED_ALLOWED_IMAGES`); the CLI also reads all three from its environment under those names.
 `--debug-logging` also creates `sealed-debug-logs`, the log writer identity
-that only debug VMs get (spec 5.8). The output is the `sct_`
+that only debug VMs get (spec 5.8). After the apply, bootstrap creates the project's boot and system disk images with
+your credentials (D-075): `sealed-dstack-os-<version>` and `sealed-dstack-os-debug-<version>` from the OS image
+release `<release asset base>/os-image-v<version>/` (`--os-image-version`, default the version
+`runtime/images/dstack-os/upstream.env` pins), each tarball checked against the release's `-hashes.txt` before it
+is staged in the boot bucket and imported, and `sealed-dstack-data-v1`, the dstack system disk. An image already in
+place from the same tarball is kept, one from other bytes stops the command, and a failed run can simply be run
+again; `--no-os-images` skips the step. The summary names the refs for `image.boot` and `image.systemDisk`, and the
+connection binding written on `sealed-subnet` (`sealed-binding/v1 customer=<wallet> key_broker=<url>`), which the
+platform checks before it uses the connection. The output is the `sct_`
 token: `sct_` + base64url(JSON) with `v`, `project`, `region`, `deployerAccount`, `keyBrokerUrl`, `customer`,
 `subnetwork` and `issuedAt`. It holds no secret.
 

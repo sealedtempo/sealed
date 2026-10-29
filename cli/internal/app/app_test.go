@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/sealedtempo/sealed/cli/internal/bootstrap"
 	"github.com/sealedtempo/sealed/cli/internal/deploy"
 	"github.com/sealedtempo/sealed/cli/internal/gcp"
 	"github.com/sealedtempo/sealed/cli/internal/registry"
@@ -39,6 +40,7 @@ type harness struct {
 	store   *memStore
 	compute *fakeCompute
 	shared  *fakeShared
+	osImgs  *fakeOSImages
 	tf      *fakeTerraform
 	dir     string
 	stdin   string
@@ -55,7 +57,7 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	h := &harness{t: t, env: map[string]string{"HOME": t.TempDir()}, chain: testkit.NewMemChain(), store: newMemStore(),
-		compute: newFakeCompute(), shared: &fakeShared{}, tf: &fakeTerraform{}, dir: t.TempDir()}
+		compute: newFakeCompute(), shared: &fakeShared{}, tf: &fakeTerraform{}, osImgs: &fakeOSImages{}, dir: t.TempDir()}
 	h.bundles = testkit.NewBundleServer(t)
 	// A deployments file naming the fake registries.
 	dep := map[string]any{"chainId": 4217, "network": "test", "contracts": map[string]any{
@@ -114,6 +116,7 @@ func (h *harness) run(args ...string) (int, string, string) {
 		NewCompute:       func(string, gcp.TokenSource) deploy.Compute { return h.compute },
 		NewShared:        func(string, string, gcp.TokenSource) deploy.SharedDisk { return h.shared },
 		Terraform:        h.tf,
+		ImportOSImages:   h.osImgs.ensure,
 		HTTP:             h.bundles.Client(),
 		AllowHTTPBundles: true,
 	}
@@ -246,8 +249,28 @@ func (f *fakeTerraform) Capture(_ context.Context, dir string, _ []string, args 
  "key_broker_url": {"value": "https://sealed-key-broker-xyz-uc.a.run.app"},
  "subnetwork": {"value": "sealed-subnet"}, "boot_bucket": {"value": "acme-prod-4417-sealed-boot"},
  "tempo_rpc_url": {"value": "RPC"}, "debug_log_service_account": {"value": ""},
+ "connection_binding": {"value": "sealed-binding/v1 customer=0x00000000000000000000000000000000000000c1 key_broker=https://sealed-key-broker-xyz-uc.a.run.app"},
  "kms_key_version": {"value": "projects/acme-prod-4417/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1"}
 }`, `"RPC"`, strconv.Quote(rpc), 1)), nil
+}
+
+// fakeOSImages stands in for bootstrap.OSImages.Ensure and records what bootstrap asked for.
+type fakeOSImages struct {
+	calls []bootstrap.OSImages
+	err   error
+}
+
+func (f *fakeOSImages) ensure(_ context.Context, o *bootstrap.OSImages) ([]bootstrap.OSImage, error) {
+	f.calls = append(f.calls, *o)
+	if f.err != nil {
+		return nil, f.err
+	}
+	var out []bootstrap.OSImage
+	for i, role := range []string{"boot", "debugBoot", "systemDisk"} {
+		name := o.Planned()[i]
+		out = append(out, bootstrap.OSImage{Role: role, Name: name, Ref: "projects/" + o.Project + "/global/images/" + name, Created: true})
+	}
+	return out, nil
 }
 
 // --- verify ---
@@ -893,6 +916,71 @@ func TestBootstrapNeverPrintsTheRPCKey(t *testing.T) {
 		if vars["tempo_rpc_url"] != keyed {
 			t.Fatalf("%v: the broker must still get the full RPC: %v", mode, vars["tempo_rpc_url"])
 		}
+	}
+}
+
+// TestBootstrapCreatesTheOSImages (D-075): after the apply, bootstrap creates the boot and system disk images in
+// the project with the customer's own credentials, staged in the boot bucket; --plan only says so, --no-os-images
+// skips it, and a failure says how to finish.
+func TestBootstrapCreatesTheOSImages(t *testing.T) {
+	args := []string{"bootstrap", "--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
+		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
+		"--key-broker-image", "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32)}
+	h := newHarness(t)
+	work := filepath.Join(h.dir, "work")
+	code, out, errs := h.run(append(args, "--yes", "--work-dir", work)...)
+	if code != ExitOK || len(h.osImgs.calls) != 1 {
+		t.Fatalf("%d %d calls %s", code, len(h.osImgs.calls), errs)
+	}
+	o := h.osImgs.calls[0]
+	if o.Project != "acme-prod-4417" || o.Bucket != "acme-prod-4417-sealed-boot" || o.Version != bootstrap.DefaultOSImageVersion ||
+		o.AssetBase != "https://github.com/sealedtempo/sealed/releases/download" || o.Images == nil || o.Storage == nil || o.Dir != filepath.Join(work, "os-images") {
+		t.Fatalf("os images %+v", o)
+	}
+	for _, want := range []string{
+		"Boot image         projects/acme-prod-4417/global/images/sealed-dstack-os-0-6-1-s1",
+		"Debug boot image   projects/acme-prod-4417/global/images/sealed-dstack-os-debug-0-6-1-s1",
+		"System disk image  projects/acme-prod-4417/global/images/sealed-dstack-data-v1",
+		"Binding            sealed-binding/v1 customer=0x00000000000000000000000000000000000000c1 key_broker=https://sealed-key-broker-xyz-uc.a.run.app",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary lacks %q:\n%s", want, out)
+		}
+	}
+	// JSON names the refs for image.boot and image.systemDisk, and the binding.
+	h.osImgs.calls = nil
+	code, out, _ = h.run(append(args, "--yes", "--json", "--work-dir", work, "--os-image-version", "0.6.2-s3")...)
+	var sum struct {
+		OSImages          map[string]string `json:"osImages"`
+		ConnectionBinding string            `json:"connectionBinding"`
+	}
+	json.Unmarshal([]byte(out), &sum)
+	if code != ExitOK || sum.OSImages["boot"] != "projects/acme-prod-4417/global/images/sealed-dstack-os-0-6-2-s3" ||
+		sum.OSImages["systemDisk"] != "projects/acme-prod-4417/global/images/sealed-dstack-data-v1" || !strings.HasPrefix(sum.ConnectionBinding, "sealed-binding/v1 ") ||
+		h.osImgs.calls[0].Version != "0.6.2-s3" {
+		t.Fatalf("json %d %s", code, out)
+	}
+	// --plan creates nothing and names what the apply will create.
+	h.osImgs.calls = nil
+	code, _, errs = h.run(append(args, "--plan", "--work-dir", work)...)
+	if code != ExitOK || len(h.osImgs.calls) != 0 || !strings.Contains(errs, "sealed-dstack-os-0-6-1-s1, sealed-dstack-os-debug-0-6-1-s1, sealed-dstack-data-v1 from https://github.com/sealedtempo/sealed/releases/download/os-image-v0.6.1-s1") {
+		t.Fatalf("plan: %d %d %s", code, len(h.osImgs.calls), errs)
+	}
+	// --no-os-images skips them.
+	code, out, _ = h.run(append(args, "--yes", "--no-os-images", "--work-dir", work)...)
+	if code != ExitOK || len(h.osImgs.calls) != 0 || strings.Contains(out, "Boot image") {
+		t.Fatalf("--no-os-images: %d %d", code, len(h.osImgs.calls))
+	}
+	// A bad version is refused before Terraform runs.
+	h.tf.calls = nil
+	if code, _, errs := h.run(append(args, "--yes", "--os-image-version", "latest", "--work-dir", work)...); code != ExitUsage || len(h.tf.calls) != 0 || !strings.Contains(errs, "--os-image-version") {
+		t.Fatalf("bad version: %d %v %s", code, h.tf.calls, errs)
+	}
+	// A failed import fails the command and says the rerun is safe.
+	h.osImgs.err = fmt.Errorf("sealed-dstack-os-0.6.1-s1-gce.tar.gz has sha256 00, but the release's hashes file says 11")
+	code, out, errs = h.run(append(args, "--yes", "--work-dir", work)...)
+	if code != ExitFailed || strings.Contains(out, "sct_") || !strings.Contains(errs, "OS images are not ready: sealed-dstack-os-0.6.1-s1-gce.tar.gz has sha256 00") || !strings.Contains(errs, "Run the same sealed bootstrap command again") {
+		t.Fatalf("failed import: %d %s %s", code, out, errs)
 	}
 }
 
