@@ -1,0 +1,718 @@
+{
+ "SPDXID": "SPDXRef-DOCUMENT",
+ "creationInfo": {
+  "created": "2026-10-29T00:00:00Z",
+  "creators": [
+   "Organization: Anchore, Inc",
+   "Tool: syft-1.55.0"
+  ],
+  "licenseListVersion": "3.29"
+ },
+ "dataLicense": "CC0-1.0",
+ "hasExtractedLicensingInfos": [
+  {
+   "extractedText": "NOASSERTION",
+   "licenseId": "LicenseRef-2c8d4ff4244edf09d99dcd428d278e47a059d24f0030b38c1ab38e93b1c8030c",
+   "name": "sha256:2c8d4ff4244edf09d99dcd428d278e47a059d24f0030b38c1ab38e93b1c8030c",
+   "seeAlsos": [
+    "https://proxy.golang.org/github.com/quic-go/quic-go/@v/v0.64.1.zip#github.com/quic-go/quic-go@v0.64.1/assets/LICENSE.md"
+   ]
+  }
+ ],
+ "name": "release-scan-excerpt",
+ "packages": [
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-moby-sys-user-178c9574b6fb9b23",
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "5a667dddfe54c7a85eb798a2b6e87dc76cc01bb34563d02a8b8f638c4d4f6908"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:moby:sys\\/user:v0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/moby/sys/user@v0.1.0",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "Apache-2.0",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/moby/sys/user",
+   "sourceInfo": "acquired package info from go module information: /usr/local/bin/gosu",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v0.1.0"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-tianon-gosu-4e0a698656ebcb5a",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:tianon:gosu:v1.19.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/tianon/gosu@v1.19.0",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/tianon/gosu",
+   "sourceInfo": "acquired package info from go module information: /usr/local/bin/gosu",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v1.19.0"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-golang.org-x-sys-8e1e532eed597621",
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "92e9c02d07877f5ff5f395358b418e07f7f2d483d10c3a6ea0e3aa451786e7b5"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:golang:x\\/sys:v0.1.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/golang.org/x/sys@v0.1.0",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "BSD-3-Clause",
+   "licenseDeclared": "NOASSERTION",
+   "name": "golang.org/x/sys",
+   "sourceInfo": "acquired package info from go module information: /usr/local/bin/gosu",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v0.1.0"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-stdlib-c5726b35636bdfbb",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:golang:go:1.24.6:-:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/stdlib@1.24.6",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "BSD-3-Clause",
+   "name": "stdlib",
+   "sourceInfo": "acquired package info from go module information: /usr/local/bin/gosu",
+   "supplier": "NOASSERTION",
+   "versionInfo": "go1.24.6"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-binary-postgresql-95e27a925524c5ff",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:postgresql:postgresql:17.11:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:generic/postgresql@17.11",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "postgresql",
+   "sourceInfo": "acquired package info from the following paths: /usr/local/bin/postgres",
+   "supplier": "NOASSERTION",
+   "versionInfo": "17.11"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-binary-valkey-1373238fa52479ed",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:lfprojects:valkey:9.0.7:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:linuxfoundation:valkey:9.0.7:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:valkey-io:valkey:9.0.7:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:generic/valkey@9.0.7",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "valkey",
+   "sourceInfo": "acquired package info from the following paths: /usr/local/bin/valkey-server",
+   "supplier": "NOASSERTION",
+   "versionInfo": "9.0.7"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-nix-openssl-static-x86-64-unknown-linux-musl-b5c13df9bbf0beb4",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown-linux-musl:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown-linux-musl:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown-linux-musl:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown-linux-musl:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown-linux-musl:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown-linux-musl:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown_linux_musl:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown_linux_musl:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown_linux_musl:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown-linux:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown-linux:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown-linux:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown-linux:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown-linux:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown-linux:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown_linux:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown_linux:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown_linux:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64-unknown:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64-unknown:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64_unknown:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86-64:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86_64:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86_64:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static-x86:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static_x86:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl-static:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl_static:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl:openssl-static-x86-64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl:openssl-static-x86_64-unknown-linux-musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:openssl:openssl_static_x86_64_unknown_linux_musl:3.0.13:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:nix/openssl-static-x86_64-unknown-linux-musl@3.0.13?output=etc&outputhash=bsjyygcid7x9zd42i448phh56hcc1kqv",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "openssl-static-x86_64-unknown-linux-musl",
+   "sourceInfo": "acquired package info from nix store path: /nix/store/bsjyygcid7x9zd42i448phh56hcc1kqv-openssl-static-x86_64-unknown-linux-musl-3.0.13-etc",
+   "supplier": "NOASSERTION",
+   "versionInfo": "3.0.13"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-emirpasic-gods-v2-37fdfdd257e13920",
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "77016587ca4183554c3975868a934c46df2ff7a74a008bc17a1b42b7a3adba75"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:emirpasic:gods\\/v2:v2.0.0-alpha:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/emirpasic/gods/v2@v2.0.0-alpha",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "BSD-2-Clause AND ISC",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/emirpasic/gods/v2",
+   "sourceInfo": "acquired package info from go module information: /usr/bin/ollama",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v2.0.0-alpha"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-gin-gonic-gin-9722cfb2ec37a758",
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "6f76006eb66d9dff0dfffca329e536f8c42c876998e61b6466274e33b3b4c06f"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:gin-gonic:gin:v1.12.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:gin_gonic:gin:v1.12.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:gin:gin:v1.12.0:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/gin-gonic/gin@v1.12.0",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "MIT",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/gin-gonic/gin",
+   "sourceInfo": "acquired package info from go module information: /usr/bin/ollama",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v1.12.0"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-klauspost-compress-ec01e3b6e86a0fea",
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "cd636816aabf952b984118a6ddd517957780d08ab0b991a271d1b96537d8e63e"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:klauspost:compress:v1.20.3:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/klauspost/compress@v1.20.3",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "Apache-2.0 AND BSD-3-Clause AND MIT",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/klauspost/compress",
+   "sourceInfo": "acquired package info from go module information: /usr/bin/ollama",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v1.20.3"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-ollama-ollama-d5b0a26d99751e72",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:ollama:ollama:v0.40.12:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/ollama/ollama@v0.40.12",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/ollama/ollama",
+   "sourceInfo": "acquired package info from go module information: /usr/bin/ollama",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v0.40.12"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-github.com-quic-go-quic-go-a009e157680ac545",
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "0423533feeb1ebef8e3caac6493d854777f5b72731f0edd0380dd042fd3d83bd"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:quic-go:quic-go:v0.64.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:quic-go:quic_go:v0.64.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:quic_go:quic-go:v0.64.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:quic_go:quic_go:v0.64.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:quic:quic-go:v0.64.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:quic:quic_go:v0.64.1:*:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/github.com/quic-go/quic-go@v0.64.1",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "MIT AND LicenseRef-2c8d4ff4244edf09d99dcd428d278e47a059d24f0030b38c1ab38e93b1c8030c",
+   "licenseDeclared": "NOASSERTION",
+   "name": "github.com/quic-go/quic-go",
+   "sourceInfo": "acquired package info from go module information: /usr/bin/ollama",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v0.64.1"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-gopkg.in-yaml.v3-3ccc3f869e9bf52d",
+   "checksums": [
+    {
+     "algorithm": "SHA256",
+     "checksumValue": "7f1566fc6cc0cc45aa2c7baf72d23dd4a4bd8613669963a85aed174d8252ec20"
+    }
+   ],
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:yaml_project:yaml:v3.0.1:*:*:*:*:go:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/gopkg.in/yaml.v3@v3.0.1",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "Apache-2.0 AND MIT",
+   "licenseDeclared": "NOASSERTION",
+   "name": "gopkg.in/yaml.v3",
+   "sourceInfo": "acquired package info from go module information: /usr/bin/ollama",
+   "supplier": "NOASSERTION",
+   "versionInfo": "v3.0.1"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-sealed.local-ollama-gate-cc02f35a6b28cd1f",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/sealed.local/ollama-gate",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "NOASSERTION",
+   "name": "sealed.local/ollama-gate",
+   "sourceInfo": "acquired package info from go module information: /usr/local/bin/sealed-ollama-gate",
+   "supplier": "NOASSERTION",
+   "versionInfo": "UNKNOWN"
+  },
+  {
+   "SPDXID": "SPDXRef-Package-go-module-stdlib-d12367ed5ff4d66d",
+   "copyrightText": "NOASSERTION",
+   "downloadLocation": "NOASSERTION",
+   "externalRefs": [
+    {
+     "referenceCategory": "SECURITY",
+     "referenceLocator": "cpe:2.3:a:golang:go:1.27.3:-:*:*:*:*:*:*",
+     "referenceType": "cpe23Type"
+    },
+    {
+     "referenceCategory": "PACKAGE-MANAGER",
+     "referenceLocator": "pkg:golang/stdlib@1.27.3",
+     "referenceType": "purl"
+    }
+   ],
+   "filesAnalyzed": false,
+   "licenseConcluded": "NOASSERTION",
+   "licenseDeclared": "BSD-3-Clause",
+   "name": "stdlib",
+   "sourceInfo": "acquired package info from go module information: /usr/local/bin/sealed-ollama-gate",
+   "supplier": "NOASSERTION",
+   "versionInfo": "go1.27.3"
+  }
+ ],
+ "spdxVersion": "SPDX-2.3"
+}
