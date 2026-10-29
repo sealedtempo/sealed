@@ -107,15 +107,21 @@ The environment names are exactly the ones the bootstrap module sets (`infra/ter
 | | `SEALED_SECRET_PREFIX` | must be `sealed-` if set |
 | `--kms-key-version` | `SEALED_KMS_KEY_VERSION` | required: `projects/../locations/../keyRings/../cryptoKeys/../cryptoKeyVersions/N` |
 
+Set by the bootstrap only when the customer chose a value (`bootstrapOptionalEnv`; one `dynamic "env"` block per
+name in `key_broker.tf`, also compared by `TestBootstrapEnvContract`):
+
+| flag | environment (bootstrap, optional) | default |
+|---|---|---|
+| `--fee-splitter`, `--fee-token` | `SEALED_FEE_SPLITTER`, `SEALED_FEE_TOKEN` | mainnet FeeSplitter and USDC.e; `sealed bootstrap` sets both from its deployments file when the registries are not mainnet's |
+| `--allowed-images` | `SEALED_ALLOWED_IMAGES` | empty (every image PlatformRegistry approves); otherwise comma-separated 0x imageIds, the customer's own allowlist (`sealed bootstrap --allowed-images`) |
+
 | flag | environment (optional) | default |
 |---|---|---|
-| `--fee-splitter`, `--fee-token` | `SEALED_FEE_SPLITTER`, `SEALED_FEE_TOKEN` | mainnet FeeSplitter and USDC.e |
 | `--region` | `SEALED_GCP_REGION` | the metadata server's region on Cloud Run, else `us-central1` (log resource only) |
 | `--decision-log-id` | `SEALED_DECISION_LOG_ID` | `sealed-key-broker-decisions` |
 | `--tcb-allowed`, `--tcb-advisories` | `SEALED_TCB_ALLOWED`, `SEALED_TCB_ADVISORIES` | `UpToDate,SWHardeningNeeded`, any |
 | `--max-in-flight`, `--nonce-capacity` | `SEALED_MAX_IN_FLIGHT`, `SEALED_NONCE_CAPACITY` | `8`, `100000` |
 | `--chain-max-head-age` | | `60s`, at most `5m` |
-| `--allowed-images` | | empty (every image PlatformRegistry approves) |
 | `--client-rate`, `--nonce-journal` | | `2`, none |
 | `--listen` | `PORT` | `:8080` |
 
@@ -126,8 +132,10 @@ Optional API endpoint overrides (for example restricted VIPs, https only): `SEAL
 
 - One instance only (`--max-instances 1`): nonces live in memory, so a nonce issued by one instance is unknown to
   another. Ingress all and unauthenticated invocations: the attestation is the authentication.
-- Request timeout above the broker's 90 s release deadline (120 s or more); the broker bounds its own concurrency,
-  so the per-instance request concurrency can stay high (80 or more) without memory risk.
+- Request timeout of at least `MaxRequestDuration` (10 s body read, 90 s release deadline, 15 s decision log write:
+  115 s; the bootstrap sets 120 s); the broker bounds its own concurrency, so the per-instance request concurrency
+  stays high (the bootstrap sets 80) without memory risk. `TestBootstrapCloudRunLimits` checks both against
+  `key_broker.tf`, and that 80 bodies of the 2 MiB limit stay below half of `GOMEMLIMIT`.
 - The broker's own service account: `roles/secretmanager.secretAccessor` on secrets named `sealed-*` (an IAM
   condition on the resource name), `roles/cloudkms.signer` on the one MAC key (`macSign` only), `roles/logging.logWriter` (the decision log); `infra/terraform/customer-bootstrap` grants exactly these.
 - The platform's deployer account gets nothing on the broker, its service account, the secrets or the key.

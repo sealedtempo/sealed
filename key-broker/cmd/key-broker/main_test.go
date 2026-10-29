@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"go.yaml.in/yaml/v3"
 
+	keybroker "github.com/sealed-dev/sealed/key-broker"
 	"github.com/sealed-dev/sealed/key-broker/internal/anvil"
 	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
 	"github.com/sealed-dev/sealed/verifier/chain"
@@ -76,6 +78,25 @@ func TestLoadConfigDefaults(t *testing.T) {
 	c, err = loadConfig(nil, prodEnv(map[string]string{"TEMPO_RPC_URL": "https://tempo.customer-rpc.example/v1/KEY"}), io.Discard)
 	if err != nil || c.RPCURL != "https://tempo.customer-rpc.example/v1/KEY" {
 		t.Fatalf("rpc %v %+v", err, c)
+	}
+	// The optional bootstrap variables (bootstrapOptionalEnv) reach the config.
+	img1, img2 := "0x"+strings.Repeat("ab", 32), "0x"+strings.Repeat("CD", 32)
+	c, err = loadConfig(nil, prodEnv(map[string]string{
+		"SEALED_FEE_SPLITTER":   "0x00000000000000000000000000000000000000e5",
+		"SEALED_FEE_TOKEN":      "0x00000000000000000000000000000000000000e6",
+		"SEALED_ALLOWED_IMAGES": img1 + ", " + img2,
+	}), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FeeSplitter != common.HexToAddress("0xe5") || c.FeeToken != common.HexToAddress("0xe6") || len(c.AllowedImages) != 2 ||
+		c.AllowedImages[0] != [32]byte(common.FromHex(img1)) || c.AllowedImages[1] != [32]byte(common.FromHex(img2)) {
+		t.Fatalf("optional bootstrap env: %+v", c)
+	}
+	// The flag still wins over the environment.
+	c, err = loadConfig([]string{"--allowed-images", img2}, prodEnv(map[string]string{"SEALED_ALLOWED_IMAGES": img1}), io.Discard)
+	if err != nil || len(c.AllowedImages) != 1 || c.AllowedImages[0] != [32]byte(common.FromHex(img2)) {
+		t.Fatalf("--allowed-images over SEALED_ALLOWED_IMAGES: %v %+v", err, c)
 	}
 }
 
@@ -138,6 +159,9 @@ func TestLoadConfigRejects(t *testing.T) {
 		"bad fee splitter":         {nil, map[string]string{"SEALED_FEE_SPLITTER": "0x12"}},
 		"zero fee token":           {[]string{"--fee-token", "0x0000000000000000000000000000000000000000"}, nil},
 		"bad allowed image":        {[]string{"--allowed-images", "0x12"}, nil},
+		"bad allowed image env":    {nil, map[string]string{"SEALED_ALLOWED_IMAGES": "0x" + strings.Repeat("ab", 32) + ",0x12"}},
+		"allowed image without 0x": {nil, map[string]string{"SEALED_ALLOWED_IMAGES": strings.Repeat("ab", 32)}},
+		"bad fee token env":        {nil, map[string]string{"SEALED_FEE_TOKEN": "usdc"}},
 		"unknown tcb status":       {[]string{"--tcb-allowed", "UpToDate,Whatever"}, nil},
 		"empty tcb policy":         {[]string{"--tcb-allowed", ""}, nil},
 		"zero chain id":            {[]string{"--chain-id", "0"}, nil},
@@ -193,15 +217,17 @@ func TestBootstrapEnvContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names []string
-	for _, m := range regexp.MustCompile(`(?s)env\s*\{\s*name\s*=\s*"([A-Z0-9_]+)"`).FindAllStringSubmatch(string(raw), -1) {
-		names = append(names, m[1])
-	}
-	sort.Strings(names)
+	names, optional := bootstrapTFEnv(string(raw))
 	want := append([]string(nil), bootstrapEnv...)
 	sort.Strings(want)
 	if !slices.Equal(names, want) {
 		t.Fatalf("the bootstrap sets %v, the broker reads %v", names, want)
+	}
+	// The optional ones are dynamic env blocks, each naming its variable literally.
+	wantOptional := append([]string(nil), bootstrapOptionalEnv...)
+	sort.Strings(wantOptional)
+	if !slices.Equal(optional, wantOptional) {
+		t.Fatalf("the bootstrap sets %v when chosen, the broker reads %v", optional, wantOptional)
 	}
 	// Values as the module renders them (lower-cased addresses, the full key version name).
 	c, err := loadConfig(nil, prodEnv(nil), io.Discard)
@@ -210,6 +236,93 @@ func TestBootstrapEnvContract(t *testing.T) {
 	}
 	if c.RPCURL != "https://rpc.tempo.xyz" || c.KMSKey != testKeyVersion {
 		t.Fatalf("config %+v", c)
+	}
+}
+
+// bootstrapTFEnv lists the variable names key_broker.tf sets: literal env blocks (always set) and dynamic env blocks
+// whose content names the variable literally (set only when the customer chose a value).
+func bootstrapTFEnv(tf string) (always, optional []string) {
+	for _, m := range regexp.MustCompile(`(?s)\benv\s*\{\s*name\s*=\s*"([A-Z0-9_]+)"`).FindAllStringSubmatch(tf, -1) {
+		always = append(always, m[1])
+	}
+	for _, m := range regexp.MustCompile(`(?s)dynamic\s*"env"\s*\{[^{}]*content\s*\{\s*name\s*=\s*"([A-Z0-9_]+)"`).FindAllStringSubmatch(tf, -1) {
+		optional = append(optional, m[1])
+	}
+	sort.Strings(always)
+	sort.Strings(optional)
+	return always, optional
+}
+
+func TestBootstrapTFEnvParser(t *testing.T) {
+	always, optional := bootstrapTFEnv(`
+      env {
+        name  = "TEMPO_RPC_URL"
+        value = module.key_broker_env.env["TEMPO_RPC_URL"]
+      }
+      dynamic "env" {
+        for_each = contains(keys(module.key_broker_env.optional_env), "SEALED_FEE_TOKEN") ? [module.key_broker_env.optional_env["SEALED_FEE_TOKEN"]] : []
+        content {
+          name  = "SEALED_FEE_TOKEN"
+          value = env.value
+        }
+      }
+      dynamic "env" {
+        for_each = module.key_broker_env.runtime_env
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }`)
+	if !slices.Equal(always, []string{"TEMPO_RPC_URL"}) || !slices.Equal(optional, []string{"SEALED_FEE_TOKEN"}) {
+		t.Fatalf("always %v, optional %v", always, optional)
+	}
+}
+
+// TestBootstrapCloudRunLimits: the bootstrap's Cloud Run request timeout covers the longest release request (body
+// read, checks and the decision log write, keybroker.MaxRequestDuration), so Cloud Run never cuts an allowed release
+// off after its secrets were decided; and its per-instance concurrency is high (harden-kb: the broker bounds its own
+// work), while that many bodies of the broker's limit stay well below the Go soft memory limit.
+func TestBootstrapCloudRunLimits(t *testing.T) {
+	root, err := anvil.RepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "infra", "terraform", "customer-bootstrap")
+	tf, err := os.ReadFile(filepath.Join(dir, "key_broker.tf"))
+	if errors.Is(err, os.ErrNotExist) {
+		t.Skipf("%s is not in this tree", dir)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod, err := os.ReadFile(filepath.Join(dir, "modules", "key-broker-env", "main.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^\s*timeout\s*=\s*"([0-9]+s)"`).FindSubmatch(tf)
+	if m == nil {
+		t.Fatal("key_broker.tf sets no Cloud Run request timeout")
+	}
+	timeout, _ := time.ParseDuration(string(m[1]))
+	if timeout < keybroker.MaxRequestDuration || timeout < 120*time.Second {
+		t.Fatalf("Cloud Run timeout %s is below the broker's longest release request %s (body read %s, release %s, decision log %s) or 120 s",
+			timeout, keybroker.MaxRequestDuration, keybroker.DefaultBodyReadTimeout, keybroker.DefaultReleaseTimeout, keybroker.DefaultLogTimeout)
+	}
+	m = regexp.MustCompile(`(?m)^\s*max_instance_request_concurrency\s*=\s*([0-9]+)`).FindSubmatch(tf)
+	if m == nil {
+		t.Fatal("key_broker.tf sets no max_instance_request_concurrency")
+	}
+	concurrency, _ := strconv.Atoi(string(m[1]))
+	m = regexp.MustCompile(`GOMEMLIMIT\s*=\s*"([0-9]+)MiB"`).FindSubmatch(mod)
+	if m == nil {
+		t.Fatal("modules/key-broker-env sets no GOMEMLIMIT in MiB")
+	}
+	memLimit, _ := strconv.Atoi(string(m[1]))
+	if concurrency < 80 {
+		t.Fatalf("max_instance_request_concurrency %d: the broker bounds its own work (%d releases, %d bodies parsed), keep 80 or more", concurrency, keybroker.DefaultMaxInFlight, keybroker.DefaultMaxParsing)
+	}
+	if bodies := int64(concurrency) * keybroker.DefaultMaxBodyBytes; bodies > int64(memLimit)<<20/2 {
+		t.Fatalf("%d requests of %d bytes (%d MiB) exceed half of GOMEMLIMIT %d MiB", concurrency, keybroker.DefaultMaxBodyBytes, bodies>>20, memLimit)
 	}
 }
 

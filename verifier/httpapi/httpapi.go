@@ -5,11 +5,13 @@
 //	                          or a caller-fetched attestation: {"attestUrl", "nonce", "attest": {...},
 //	                          "observedTlsPubKeyHash", "expectedCustomer", "expectedAppIds", "options"}
 //	POST /v1/compose          {"config": {...}} or a bare config -> {appCompose, stackHash, configHash, deploymentId, unbuilt?}
-//	GET  /healthz
+//	GET  /healthz             {ok, chainId, allowSimulated, composer, composerVersion, liveFetch, maxBodyBytes}
 //
 // Verification results are always HTTP 200 with the report (check "ok"); 400 means the request itself was
-// unusable, 403 that the caller's address is not an allowed client (or that this server does not fetch attest URLs)
-// and 429 that MaxInFlight verifications are already running. Add ?format=text for the human-readable report.
+// unusable, 403 that the caller's address is not an allowed client (or that this server does not fetch attest URLs),
+// 413 that the body is larger than MaxBodyBytes (8 MiB; {"error", "code": "body_too_large", "limitBytes"}, before a
+// slot is taken when Content-Length says so) and 429 that MaxInFlight verifications are already running. Add
+// ?format=text for the human-readable report.
 package httpapi
 
 import (
@@ -33,8 +35,20 @@ import (
 	"github.com/sealed-dev/sealed/verifier/internal/hexb"
 )
 
-// MaxBodyBytes bounds request bodies (an evidence bundle with a full compose is well under 1 MiB).
+// MaxBodyBytes bounds request bodies: 8 MiB (8388608 bytes). An evidence bundle with a full compose is well under
+// 1 MiB. Callers that forward bodies here (the platform api's /v1/evidence and /v1/verify, and Caddy in front of
+// it) must not accept more, or a body between the two limits passes them and fails here; /healthz reports the
+// value as maxBodyBytes.
 const MaxBodyBytes = 8 << 20
+
+// bodyTooLarge is the 413 answer: the limit in words and in bytes, so a caller can tell it from other failures.
+func bodyTooLarge(w http.ResponseWriter) {
+	writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+		"error":      fmt.Sprintf("request body is larger than %d MiB (%d bytes), the sealed-verifierd limit", MaxBodyBytes>>20, MaxBodyBytes),
+		"code":       "body_too_large",
+		"limitBytes": MaxBodyBytes,
+	})
+}
 
 // DefaultMaxInFlight bounds concurrent verifications and compositions. Each one makes about ten RPC calls and may
 // fetch Intel PCS collateral or an /attest document.
@@ -157,9 +171,15 @@ func unmapBits(a netip.Addr) int {
 }
 
 // limited runs h only when one of MaxInFlight slots is free, and answers 429 otherwise: the API is unauthenticated,
-// so callers must not be able to queue unbounded work against the RPC, Intel PCS or attest hosts.
+// so callers must not be able to queue unbounded work against the RPC, Intel PCS or attest hosts. A body that
+// Content-Length already shows to be over MaxBodyBytes is refused first, without a slot.
 func (s *Server) limited(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > MaxBodyBytes {
+			s.log().Warn("refused an oversized body", "path", r.URL.Path, "contentLength", r.ContentLength, "limitBytes", MaxBodyBytes)
+			bodyTooLarge(w)
+			return
+		}
 		s.slotsOnce.Do(func() {
 			n := s.MaxInFlight
 			if n <= 0 {
@@ -252,8 +272,13 @@ func (s *Server) ctx(r *http.Request) (context.Context, context.CancelFunc) {
 
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "request body too large or unreadable")
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		bodyTooLarge(w)
+		return nil, false
+	case err != nil:
+		writeError(w, http.StatusBadRequest, "request body unreadable: "+err.Error())
 		return nil, false
 	}
 	return body, true
@@ -419,13 +444,27 @@ func (s *Server) compose(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ComposerVersion is the composerVersion configs must name for this server's composer: the runtime/composer
+// version a bundles.Composer recomputes with, empty when the composer does not say (or none is wired).
+func (s *Server) ComposerVersion() string {
+	if v, ok := s.Deps.Composer.(interface{ ComposerVersion() string }); ok {
+		return v.ComposerVersion()
+	}
+	return ""
+}
+
+// healthz reports what callers need to talk to this server: the chain, whether simulated quotes pass, whether a
+// composer is wired and the composerVersion configs must name (the platform api writes it into new configs), whether
+// attest URLs are fetched, and the body limit.
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":             true,
-		"chainId":        s.ChainID,
-		"allowSimulated": s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated(),
-		"composer":       s.Deps.Composer != nil,
-		"liveFetch":      !s.DisableLiveFetch,
+		"ok":              true,
+		"chainId":         s.ChainID,
+		"allowSimulated":  s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated(),
+		"composer":        s.Deps.Composer != nil,
+		"composerVersion": s.ComposerVersion(),
+		"liveFetch":       !s.DisableLiveFetch,
+		"maxBodyBytes":    MaxBodyBytes,
 	})
 }
 

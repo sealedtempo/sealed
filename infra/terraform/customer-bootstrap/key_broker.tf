@@ -80,6 +80,9 @@ module "key_broker_env" {
   project_id          = var.project_id
   project_number      = data.google_project.this.number
   kms_crypto_key      = google_kms_crypto_key.hmac.id
+  fee_splitter        = var.fee_splitter
+  fee_token           = var.fee_token
+  allowed_images      = var.key_broker_allowed_images
 }
 
 resource "google_cloud_run_v2_service" "key_broker" {
@@ -97,10 +100,15 @@ resource "google_cloud_run_v2_service" "key_broker" {
   deletion_protection  = var.key_broker_deletion_protection
 
   template {
-    service_account                  = google_service_account.key_broker.email
-    max_instance_request_concurrency = 40
-    # Above the broker's 90 s release deadline (which covers the 60 s bundle
-    # fetches of a cold start), so Cloud Run never cuts a release short.
+    service_account = google_service_account.key_broker.email
+    # The broker bounds its own work (8 releases and 4 body parses at a time,
+    # 2 MiB bodies, a per-client rate limit), so Cloud Run may hand it many
+    # requests; the broker then answers 429 with Retry-After itself (harden-kb).
+    max_instance_request_concurrency = 80
+    # Above the broker's longest release request: a 10 s body read, the 90 s
+    # release deadline (which covers the 60 s bundle fetches of a cold start)
+    # and the 15 s decision log write of an allowed release, so Cloud Run never
+    # cuts a release short (key-broker TestBootstrapCloudRunLimits).
     timeout = "120s"
 
     scaling {
@@ -169,6 +177,31 @@ resource "google_cloud_run_v2_service" "key_broker" {
       env {
         name  = "SEALED_KMS_KEY_VERSION"
         value = module.key_broker_env.env["SEALED_KMS_KEY_VERSION"]
+      }
+
+      # Set only when the customer chose a value (modules/key-broker-env
+      # optional_env): the FeeSplitter and fee token of non-mainnet
+      # registries, and the customer's own imageId allowlist.
+      dynamic "env" {
+        for_each = contains(keys(module.key_broker_env.optional_env), "SEALED_FEE_SPLITTER") ? [module.key_broker_env.optional_env["SEALED_FEE_SPLITTER"]] : []
+        content {
+          name  = "SEALED_FEE_SPLITTER"
+          value = env.value
+        }
+      }
+      dynamic "env" {
+        for_each = contains(keys(module.key_broker_env.optional_env), "SEALED_FEE_TOKEN") ? [module.key_broker_env.optional_env["SEALED_FEE_TOKEN"]] : []
+        content {
+          name  = "SEALED_FEE_TOKEN"
+          value = env.value
+        }
+      }
+      dynamic "env" {
+        for_each = contains(keys(module.key_broker_env.optional_env), "SEALED_ALLOWED_IMAGES") ? [module.key_broker_env.optional_env["SEALED_ALLOWED_IMAGES"]] : []
+        content {
+          name  = "SEALED_ALLOWED_IMAGES"
+          value = env.value
+        }
       }
 
       # Go runtime settings, not broker configuration.

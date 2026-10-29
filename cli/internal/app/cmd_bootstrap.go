@@ -4,9 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/sealed-dev/sealed/cli/internal/bootstrap"
 	"github.com/sealed-dev/sealed/cli/internal/embedded"
+	"github.com/sealed-dev/sealed/cli/internal/settings"
+	"github.com/sealed-dev/sealed/verifier/chain"
 )
 
 func runBootstrap(ctx context.Context, args []string, e *Env) error {
@@ -14,7 +19,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	var c commonFlags
 	c.register(fs)
 	p := &bootstrap.Params{EnableAPIs: true}
-	var workDir, stateBucket, subnet, kms string
+	var workDir, stateBucket, subnet, kms, allowedImages string
 	var planOnly, yes, noAPIs, debugLogging bool
 	fs.StringVar(&p.Project, "project", "", "your Google Cloud project id (required)")
 	fs.StringVar(&p.Region, "region", "", "region with C3 TDX zones (default cloud.region, us-central1)")
@@ -30,6 +35,9 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	fs.BoolVar(&yes, "yes", false, "apply without asking for confirmation")
 	fs.BoolVar(&noAPIs, "no-enable-apis", false, "do not enable the Google Cloud APIs (they are managed elsewhere)")
 	fs.BoolVar(&debugLogging, "debug-logging", false, "also create sealed-debug-logs, a log writer identity for debug VMs only (spec 5.8); production VMs never get it")
+	fs.StringVar(&p.FeeSplitter, "fee-splitter", e.getenv("SEALED_FEE_SPLITTER"), "FeeSplitter the key broker requires in every config (SEALED_FEE_SPLITTER; default the deployments file's when the registries are not mainnet's)")
+	fs.StringVar(&p.FeeToken, "fee-token", e.getenv("SEALED_FEE_TOKEN"), "fee token the key broker requires in every config (SEALED_FEE_TOKEN; default the deployments file's when it is not mainnet's)")
+	fs.StringVar(&allowedImages, "allowed-images", e.getenv("SEALED_ALLOWED_IMAGES"), "comma-separated 0x imageIds: the only images the key broker releases to, on top of PlatformRegistry approval (SEALED_ALLOWED_IMAGES)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -59,6 +67,10 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 		p.ReleaseAssetBase = c.assetBase
 	}
 	p.SubnetCIDR, p.KMSProtection, p.EnableAPIs, p.EnableDebugLogging = subnet, kms, !noAPIs, debugLogging
+	p.AllowedImages = bootstrap.ParseImageIDs(allowedImages)
+	if err := brokerFees(p, s); err != nil {
+		return err
+	}
 	if err := p.Validate(); err != nil {
 		return usagef("%s", err)
 	}
@@ -94,6 +106,15 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	}
 	e.errorf("Bootstrapping project %s in %s for wallet %s. Module and state: %s\n", p.Project, p.Region, p.Customer, workDir)
 	e.errorf("The key broker will read Tempo chain %d through %s.\n", p.ChainID, p.TempoRPC)
+	if p.FeeSplitter != "" || p.FeeToken != "" {
+		e.errorf("It requires FeeSplitter %s and fee token %s in every config (not mainnet's).\n", orMainnet(p.FeeSplitter), orMainnet(p.FeeToken))
+	}
+	if len(p.AllowedImages) > 0 {
+		e.errorf("It releases only to your %d allowed image(s): %s.\n", len(p.AllowedImages), strings.Join(p.AllowedImages, ", "))
+	}
+	if p.ChainID != chain.MainnetChainID {
+		e.errorf("Warning: a production key broker image serves only Tempo mainnet (4217) and refuses to start on chain %d (D-060); other chains need a dev build of the broker.\n", p.ChainID)
+	}
 	out, err := bootstrap.Run(ctx, e.terraform(), bootstrap.Options{Dir: workDir, PlanOnly: planOnly, AutoApprove: yes, AccessToken: accessToken})
 	if err != nil {
 		return err
@@ -131,4 +152,37 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	e.printf("\nConnection token (paste it in the console, or use it as connection: in stack.yaml):\n\n%s\n\n", tok)
 	e.printf("Next: store your secrets with sealed secrets set, then check the IAM rules with scripts/iam-checks/check.sh.\n")
 	return nil
+}
+
+// brokerFees fills the FeeSplitter and fee token the key broker checks (SEALED_FEE_SPLITTER, SEALED_FEE_TOKEN) from
+// the deployments file when they are not mainnet's, the broker's defaults. Registries other than mainnet's settle
+// fees through their own FeeSplitter: a broker that required mainnet's would refuse every release, so bootstrap
+// stops when it cannot tell which one applies.
+func brokerFees(p *bootstrap.Params, s *settings.Settings) error {
+	mainnet, err := settings.Load(settings.Options{})
+	if err != nil {
+		return err
+	}
+	if p.FeeSplitter == "" && s.FeeSplitter != (common.Address{}) && s.FeeSplitter != mainnet.FeeSplitter {
+		p.FeeSplitter = strings.ToLower(s.FeeSplitter.Hex())
+	}
+	if p.FeeToken == "" && s.FeeToken != (common.Address{}) && s.FeeToken != mainnet.FeeToken {
+		p.FeeToken = strings.ToLower(s.FeeToken.Hex())
+	}
+	own := s.Registries.PlatformRegistry != mainnet.Registries.PlatformRegistry || s.Registries.AppRegistry != mainnet.Registries.AppRegistry ||
+		s.Registries.DeploymentRegistry != mainnet.Registries.DeploymentRegistry
+	if own && p.FeeSplitter == "" && s.FeeSplitter == (common.Address{}) {
+		return usagef("the deployments file names registries other than mainnet's but no FeeSplitter: pass --fee-splitter (SEALED_FEE_SPLITTER), or the key broker would require mainnet's and refuse every release")
+	}
+	if s.Derived && p.FeeToken == "" && s.FeeToken == (common.Address{}) {
+		return usagef("the deployments file for chain %d names no config.feeToken: pass --fee-token (SEALED_FEE_TOKEN), or the key broker would require mainnet's USDC.e", s.ChainID)
+	}
+	return nil
+}
+
+func orMainnet(a string) string {
+	if a == "" {
+		return "(mainnet's)"
+	}
+	return a
 }

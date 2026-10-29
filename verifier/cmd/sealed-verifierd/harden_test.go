@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealed-dev/sealed/verifier/httpapi"
 )
 
 // D-061 and review V-1: the in-VM sidecar (--stack-config) serves only its allowed clients and, by default, never
@@ -109,5 +113,34 @@ func TestAllowedClientsHelpNamesThePayersVerifierAddress(t *testing.T) {
 	loadConfig([]string{"-h"}, envMap(nil), &help)
 	if !strings.Contains(help.String(), composer.PayerVerifierIP) || strings.Contains(help.String(), composer.PayerIP+" ") {
 		t.Fatalf("--allowed-clients help: %s", help.String())
+	}
+}
+
+// /healthz tells the platform api which composerVersion new configs must name (the daemon's runtime/composer) and the
+// body limit, so the api reads them instead of pinning its own copies (harden-api deferred item, merge-c-private).
+func TestHealthzReportsComposerVersionAndBodyLimit(t *testing.T) {
+	useComposer(t, newComposer)
+	c, err := loadConfig(append([]string{"--tempo-rpc", "http://127.0.0.1:1", "--chain-id", "31337", "--dev-allow-simulated"}, addrFlags...),
+		envMap(map[string]string{"SEALED_DEV_SIM": "1"}), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := newServer(context.Background(), c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(srv.Handler())
+	defer api.Close()
+	resp, err := http.Get(api.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["composerVersion"] != composer.Version || body["maxBodyBytes"] != float64(httpapi.MaxBodyBytes) || body["composer"] != true {
+		t.Fatalf("healthz %v, want composerVersion %s and maxBodyBytes %d", body, composer.Version, httpapi.MaxBodyBytes)
 	}
 }

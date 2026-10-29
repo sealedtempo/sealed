@@ -69,7 +69,17 @@ address is not in `--allowed-clients`, or that URL fetches are off (`--live-fetc
   plus `unbuilt` (images still at the all-zero digest; such a stack cannot boot and must not be approved) when not
   empty. The releases are read from AppRegistry at one block and their bundles fetched as for `stack_recompute`.
   422 for a config or release that does not compose, 503 (with `Retry-After`) when a bundle cannot be fetched.
-- `GET /healthz`: `{ok, chainId, allowSimulated, composer, liveFetch}`.
+- `GET /healthz`: `{ok, chainId, allowSimulated, composer, composerVersion, liveFetch, maxBodyBytes}`.
+  `composerVersion` is the runtime/composer version the daemon recomputes stacks with, the exact `composerVersion`
+  every config must name (empty without a composer); the platform api can read it instead of pinning its own
+  default. `maxBodyBytes` is the body limit below.
+
+Request bodies are limited to 8 MiB (8388608 bytes, `httpapi.MaxBodyBytes`; a real evidence bundle is far below
+1 MiB). A larger body answers 413 with `{"error": "request body is larger than 8 MiB (8388608 bytes), the
+sealed-verifierd limit", "code": "body_too_large", "limitBytes": 8388608}`; when Content-Length already says so,
+before an in-flight slot is taken. Whatever forwards bodies here (the platform api's `/v1/evidence` and
+`/v1/verify`, Caddy in front of it) must not accept more than this, or a body between the two limits passes the
+edge and fails here.
 
 Options: `requireRecord` (default true; the oracle sends false before it registers), `maxEvidenceAgeSeconds`
 (the oracle sends 900), `heartbeat` (the oracle sends true for heartbeat evidence), `deploymentId` (evidence and

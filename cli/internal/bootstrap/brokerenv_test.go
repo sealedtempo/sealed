@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,8 +34,29 @@ import (
 // terraform, git and go; SEALED_REQUIRE_KEY_BROKER=1 turns a skip into a failure.
 
 // contractInputs are deliberately not the broker's defaults, so a variable the broker ignored would show up as a
-// default value in its config.
-var contractInputs = map[string]any{
+// default value in its config. requiredInputs are the module's required variables; the rest are the optional ones
+// (SEALED_FEE_SPLITTER, SEALED_FEE_TOKEN, SEALED_ALLOWED_IMAGES), which the module renders only when set.
+var contractInputs = mergeInputs(requiredInputs, map[string]any{
+	"fee_splitter":   "0x00000000000000000000000000000000000000E5",
+	"fee_token":      "0x20C0000000000000000000000000000000000001",
+	"allowed_images": []string{"0xAB00000000000000000000000000000000000000000000000000000000000001", "0x00000000000000000000000000000000000000000000000000000000000000cd"},
+})
+
+// optionalEnvNames are the variables the bootstrap sets only when the customer chose a value.
+var optionalEnvNames = []string{"SEALED_ALLOWED_IMAGES", "SEALED_FEE_SPLITTER", "SEALED_FEE_TOKEN"}
+
+func mergeInputs(a, b map[string]any) map[string]any {
+	m := map[string]any{}
+	for k, v := range a {
+		m[k] = v
+	}
+	for k, v := range b {
+		m[k] = v
+	}
+	return m
+}
+
+var requiredInputs = map[string]any{
 	"customer_address":    "0x00000000000000000000000000000000000000C1",
 	"tempo_rpc_url":       "https://tempo.customer-node.example/rpc",
 	"chain_id":            4217,
@@ -53,6 +75,7 @@ var informational = map[string]bool{"SEALED_GCP_PROJECT_NUMBER": true}
 
 type renderedEnv struct {
 	Env           map[string]string `json:"env"`
+	OptionalEnv   map[string]string `json:"optional_env"`
 	RuntimeEnv    map[string]string `json:"runtime_env"`
 	ContainerPort int               `json:"container_port"`
 	KMSKeyVersion string            `json:"kms_key_version"`
@@ -295,9 +318,12 @@ type brokerConfig struct {
 	Addrs    struct {
 		PlatformRegistry, AppRegistry, DeploymentRegistry string
 	}
-	ReleaseBase string
-	Project     string
-	KMSKey      string
+	ReleaseBase   string
+	Project       string
+	KMSKey        string
+	FeeSplitter   string
+	FeeToken      string
+	AllowedImages [][32]byte
 }
 
 // runBrokerParser hands each env to the broker's loadConfig.
@@ -351,8 +377,9 @@ func cloneEnv(m map[string]string) map[string]string {
 }
 
 // contractProblems runs the broker's parser on env (as Cloud Run passes it: the rendered variables, the runtime
-// variables and PORT) and on each variable dropped and garbled, and lists every way the contract is broken.
-func contractProblems(t *testing.T, tree string, r *renderedEnv, env map[string]string) []string {
+// variables and PORT) and on each variable dropped and garbled, and lists every way the contract is broken. inputs
+// are the module inputs env was rendered from.
+func contractProblems(t *testing.T, tree string, r *renderedEnv, env map[string]string, inputs map[string]any) []string {
 	t.Helper()
 	full := cloneEnv(env)
 	for k, v := range r.RuntimeEnv {
@@ -391,17 +418,30 @@ func contractProblems(t *testing.T, tree string, r *renderedEnv, env map[string]
 			problems = append(problems, fmt.Sprintf("%s: the broker uses %q, the bootstrap chose %q", what, got, want))
 		}
 	}
-	eq("customer", c.Customer, contractInputs["customer_address"].(string))
-	eq("tempo rpc", c.RPCURL, contractInputs["tempo_rpc_url"].(string))
-	eq("chain id", fmt.Sprint(c.ChainID), fmt.Sprint(contractInputs["chain_id"]))
-	eq("PlatformRegistry", c.Addrs.PlatformRegistry, contractInputs["platform_registry"].(string))
-	eq("AppRegistry", c.Addrs.AppRegistry, contractInputs["app_registry"].(string))
-	eq("DeploymentRegistry", c.Addrs.DeploymentRegistry, contractInputs["deployment_registry"].(string))
-	eq("release asset base", c.ReleaseBase, contractInputs["release_asset_base"].(string))
-	eq("project", c.Project, contractInputs["project_id"].(string))
-	eq("KMS key version", c.KMSKey, contractInputs["kms_crypto_key"].(string)+"/cryptoKeyVersions/1")
+	eq("customer", c.Customer, inputs["customer_address"].(string))
+	eq("tempo rpc", c.RPCURL, inputs["tempo_rpc_url"].(string))
+	eq("chain id", fmt.Sprint(c.ChainID), fmt.Sprint(inputs["chain_id"]))
+	eq("PlatformRegistry", c.Addrs.PlatformRegistry, inputs["platform_registry"].(string))
+	eq("AppRegistry", c.Addrs.AppRegistry, inputs["app_registry"].(string))
+	eq("DeploymentRegistry", c.Addrs.DeploymentRegistry, inputs["deployment_registry"].(string))
+	eq("release asset base", c.ReleaseBase, inputs["release_asset_base"].(string))
+	eq("project", c.Project, inputs["project_id"].(string))
+	eq("KMS key version", c.KMSKey, inputs["kms_crypto_key"].(string)+"/cryptoKeyVersions/1")
 	eq("KMS key version output", c.KMSKey, r.KMSKeyVersion)
 	eq("listen address", c.Listen, fmt.Sprintf(":%d", r.ContainerPort))
+	if v, ok := inputs["fee_splitter"].(string); ok && v != "" {
+		eq("FeeSplitter", c.FeeSplitter, v)
+	}
+	if v, ok := inputs["fee_token"].(string); ok && v != "" {
+		eq("fee token", c.FeeToken, v)
+	}
+	if ids, ok := inputs["allowed_images"].([]string); ok && len(ids) > 0 {
+		var got []string
+		for _, id := range c.AllowedImages {
+			got = append(got, "0x"+hex.EncodeToString(id[:]))
+		}
+		eq("allowed images", strings.Join(got, ","), strings.Join(ids, ","))
+	}
 	return problems
 }
 
@@ -411,8 +451,34 @@ func TestKeyBrokerEnvContract(t *testing.T) {
 	}
 	r := renderBrokerEnv(t, contractInputs)
 	tree := brokerTree(t)
-	if p := contractProblems(t, tree, r, r.Env); len(p) > 0 {
+	if p := contractProblems(t, tree, r, r.Env, contractInputs); len(p) > 0 {
 		t.Fatalf("the bootstrap's key broker environment breaks the contract:\n  %s\nenv: %v", strings.Join(p, "\n  "), r.Env)
+	}
+	// Every optional variable is rendered when chosen, and only in optional_env besides env.
+	var optional []string
+	for k := range r.OptionalEnv {
+		optional = append(optional, k)
+		if r.Env[k] != r.OptionalEnv[k] {
+			t.Errorf("%s: env %q, optional_env %q", k, r.Env[k], r.OptionalEnv[k])
+		}
+	}
+	sort.Strings(optional)
+	if strings.Join(optional, ",") != strings.Join(optionalEnvNames, ",") {
+		t.Errorf("optional variables %v, want %v", optional, optionalEnvNames)
+	}
+	// Without the optional inputs none of them is set, and the broker still accepts the environment (its defaults are
+	// mainnet's FeeSplitter and fee token and no allowlist of its own).
+	plain := renderBrokerEnv(t, requiredInputs)
+	for _, k := range optionalEnvNames {
+		if _, ok := plain.Env[k]; ok {
+			t.Errorf("%s is set although the customer chose no value", k)
+		}
+	}
+	if len(plain.OptionalEnv) != 0 {
+		t.Errorf("optional_env %v without optional inputs", plain.OptionalEnv)
+	}
+	if p := contractProblems(t, tree, plain, plain.Env, requiredInputs); len(p) > 0 {
+		t.Fatalf("the bootstrap's key broker environment without optional inputs breaks the contract:\n  %s\nenv: %v", strings.Join(p, "\n  "), plain.Env)
 	}
 	// The Go runtime variables are not broker configuration.
 	for k := range r.RuntimeEnv {
@@ -440,6 +506,11 @@ func TestKeyBrokerEnvContractCatchesMistakes(t *testing.T) {
 			}
 			e["SEALED_CUSTOMER_RPC"] = contractInputs["tempo_rpc_url"].(string)
 		},
+		"fee splitter under another name": func(e map[string]string) {
+			e["SEALED_FEESPLITTER"] = e["SEALED_FEE_SPLITTER"]
+			delete(e, "SEALED_FEE_SPLITTER")
+		},
+		"allowlist dropped": func(e map[string]string) { delete(e, "SEALED_ALLOWED_IMAGES") },
 		"no customer": func(e map[string]string) {
 			for k, v := range e {
 				if strings.EqualFold(v, contractInputs["customer_address"].(string)) {
@@ -451,7 +522,7 @@ func TestKeyBrokerEnvContractCatchesMistakes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			env := cloneEnv(r.Env)
 			mutate(env)
-			if p := contractProblems(t, tree, r, env); len(p) == 0 {
+			if p := contractProblems(t, tree, r, env, contractInputs); len(p) == 0 {
 				t.Fatal("the mistake was not detected")
 			} else {
 				t.Logf("detected: %s", strings.Join(p, "; "))
