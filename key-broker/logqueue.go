@@ -18,8 +18,9 @@ const (
 const MaxLogBatch = 32
 
 // logQueue writes decisions that do not gate an answer in the background, so a slow Cloud Logging never holds a
-// release slot or a request: junk, and denials and errors of requests whose quote did not verify. Allowed releases
-// and denials of a verified quote are not queued (writeNow): no flood of junk quotes can crowd them out (kb-6).
+// release slot or a request: junk, and denials and errors of requests whose quote did not verify or did not carry
+// this request's report_data. Allowed releases and denials past report_data are not queued (writeNow): no flood of
+// junk or replayed quotes can crowd them out (kb-6).
 type logQueue struct {
 	log     DecisionLog
 	op      *slog.Logger
@@ -165,8 +166,9 @@ func (q *logQueue) write(batch []*Decision) {
 	q.mu.Unlock()
 }
 
-// writeNow writes d before returning, for a denial or error of a request whose TDX quote verified (kb-6). Such
-// attempts need a real TDX VM, so they are few, and their entry must not be dropped by a full queue. The answer waits
+// writeNow writes d before returning, for a denial or error of a request past report_data: its TDX quote verified and
+// binds this request's nonce and ephemeral key (kb-6). Such attempts need a live TDX VM, so they are few, and their
+// entry must not be dropped by a full queue. A replayed quote fails report_data and never comes here. The answer waits
 // for the write but does not depend on it: a failed write is reported on the operational log, and the denial stands.
 func (q *logQueue) writeNow(ctx context.Context, d *Decision) {
 	q.takeSuppressed(d)

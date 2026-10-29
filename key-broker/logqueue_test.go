@@ -13,6 +13,7 @@ import (
 	keybroker "github.com/sealedtempo/sealed/key-broker"
 	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // gatedLog holds every write of a decision with the given reason until gate is closed; other decisions are written
@@ -168,6 +169,55 @@ func TestDenialFloodKeepsAttestedDenial(t *testing.T) {
 	defer cancel()
 	if err := b.Flush(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestReplayedQuoteDenialIsQueued (kb-6 repair): VerifyQuote checks no freshness, so anyone holding one captured
+// genuine quote can replay it with a fresh nonce. The replay passes the quote check and fails report_data, without
+// any TDX VM. Its denial must go to the background queue, not the synchronous write: with a stuck decision log the
+// answer comes at once, and the entry is written once the log moves again. On the old code (writeNow for every
+// verified quote) the answer waited for the log write, up to DefaultLogTimeout.
+func TestReplayedQuoteDenialIsQueued(t *testing.T) {
+	w := kbtest.NewWorld(t, kbtest.NewMemRegistrar())
+	s := w.Compose(t, kbtest.StackOptions{})
+	w.Approve(t, s)
+	h := newHarness(t, w, harnessOpts{})
+	dlog := &gatedLog{reason: keybroker.ReasonReportDataMismatch, gate: make(chan struct{})}
+	var op syncBuf
+	b := floodBroker(t, w, h, dlog, &op)
+	var gateOnce sync.Once
+	openGate := func() { gateOnce.Do(func() { close(dlog.gate) }) }
+	defer b.Close(context.Background())
+	defer openGate()
+
+	// A genuine quote captured from another release attempt: it verifies, but binds another nonce.
+	a := kbtest.NewAttempt(t, s, h.nonce(t))
+	a.Quote = kbtest.SimQuoteFor(t, a.Events, attest.KeyReleaseReportData(randomNonce(t), a.Pub), false, nil)
+	started := time.Now()
+	out := b.Release(context.Background(), a.Body(t), "203.0.113.67")
+	took := time.Since(started)
+	expectDenied(t, out, 403, keybroker.ReasonReportDataMismatch)
+	if took > 3*time.Second {
+		t.Fatalf("the replayed quote's denial waited %s for the stuck decision log; it must be queued", took)
+	}
+	if len(dlog.All()) != 0 {
+		t.Fatal("the denial was written before the answer")
+	}
+
+	openGate()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := b.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var got *keybroker.Decision
+	for _, d := range dlog.All() {
+		if d.RequestID == out.Decision.RequestID {
+			got = d
+		}
+	}
+	if got == nil || got.Truncated || got.Hashes.QuoteHash == "" {
+		t.Fatalf("queued entry %+v", got)
 	}
 }
 

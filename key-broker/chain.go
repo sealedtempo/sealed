@@ -18,7 +18,9 @@ import (
 	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
-// Registry is the onchain state one release decision reads. Every read of a decision comes from one block.
+// Registry is the onchain state one release decision reads, at one pinned block. A decision uses two pins (kb-2):
+// the first holds the image and release reads, the repin right before the approval holds the approval and
+// deployment reads.
 type Registry interface {
 	GetImage(ctx context.Context, imageID [32]byte) (*chain.Image, error)
 	IsApprovedImage(ctx context.Context, imageID [32]byte) (bool, error)
@@ -30,7 +32,7 @@ type Registry interface {
 	GetDeployment(ctx context.Context, deploymentID [32]byte) (*chain.Deployment, error)
 }
 
-// Head is the block every read of one decision is pinned to.
+// Head is the block a Registry reads at: the first pin of a decision, or its repin before the approval reads.
 type Head struct {
 	Number uint64
 	// Time is the block timestamp. The broker refuses a head older than Config.MaxHeadAge (D-060), so a lagging or

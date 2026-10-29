@@ -58,9 +58,9 @@ type ServerOptions struct {
 //
 // A release runs in this order, so unauthenticated work stays bounded (D-066): the per-client limit; the body read
 // with its own deadline and size limit, before any slot; parsing, the nonce check and request validation under the
-// parse limit; only then a release slot for the attestation and approval checks. Junk and denials of quotes that did
-// not verify are logged in the background (junk truncated); an allowed release, and a denial of a verified quote,
-// waits for its log entry after giving its slot back (kb-6).
+// parse limit; only then a release slot for the attestation and approval checks. Junk and denials that stopped at
+// the quote or report_data check are logged in the background (junk truncated); an allowed release, and a denial
+// past report_data, waits for its log entry after giving its slot back (kb-6).
 func (b *Broker) Handler(o ServerOptions) http.Handler {
 	if o.MaxInFlight <= 0 {
 		o.MaxInFlight = DefaultMaxInFlight

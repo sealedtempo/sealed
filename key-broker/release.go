@@ -26,7 +26,8 @@ import (
 const (
 	// CheckConfigChain requires config.chainId and config.contracts to name this broker's chain and registries.
 	CheckConfigChain = "config_chain"
-	// CheckChain pins every registry read of the decision to the current head block.
+	// CheckChain pins the registry reads to the current head block: the first pin holds the image and release reads,
+	// the repin before the approval holds the approval and deployment reads (kb-2).
 	CheckChain = "chain"
 	// CheckDeployment refuses a deployment that was closed onchain (kb-1).
 	CheckDeployment = "deployment"
@@ -62,6 +63,10 @@ type session struct {
 	junk bool
 
 	quote *attest.Quote
+	// bound marks a request whose verified quote also carries this request's report_data, so it came from a live
+	// TDX VM holding the nonce. Only its denials are written before the answer (kb-6); a replayed quote fails
+	// report_data and its denial is queued in the background.
+	bound bool
 	reg   Registry
 	// head is the block reg reads at. repinChain moves it forward before the approval reads, and release checks its
 	// age again right before sealing (kb-2).
@@ -157,8 +162,9 @@ func (s *session) check(ctx context.Context) (*ReleaseResponse, *stop) {
 }
 
 // finish records the decision. An allowed release is answered only after its entry was written. A denial or error
-// of a request whose TDX quote verified is written before the answer too, so a flood of junk quotes cannot drop it
-// from the queue (kb-6). Every other decision is written in the background, junk in truncated form (D-066).
+// of a request whose TDX quote verified and carries this request's report_data is written before the answer too, so
+// a flood of junk quotes cannot drop it from the queue (kb-6). A quote that verifies but fails report_data is a
+// replay of a captured quote or a broken client; it needs no TDX VM, so its denial is queued. Every other decision is written in the background, junk in truncated form (D-066).
 func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, st *stop) *Outcome {
 	out := &Outcome{Decision: s.d}
 	if st != nil {
@@ -176,7 +182,7 @@ func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, 
 		case s.junk:
 			s.d.truncate()
 			b.logs.enqueue(s.d, true)
-		case s.quote != nil:
+		case s.bound:
 			b.opLog(s.d)
 			b.logs.writeNow(ctx, s.d)
 		default:
@@ -315,6 +321,7 @@ func (s *session) checkReportData(context.Context) *stop {
 			`report_data is not sha256("sealed/kb-release/v1" || nonce || ephemeralPub) || 32 zero bytes`, data)
 	}
 	s.pass(CheckReportData, "binds this nonce and ephemeral key", data)
+	s.bound = true
 	return nil
 }
 
@@ -335,7 +342,7 @@ func (s *session) pinChain(ctx context.Context) *stop {
 	if st != nil {
 		return st
 	}
-	s.pass(CheckChain, fmt.Sprintf("registry reads pinned to block %d of chain %d, %s old", head.Number, cfg.ChainID, age.Round(time.Second)), data)
+	s.pass(CheckChain, fmt.Sprintf("image and release reads pinned to block %d of chain %d, %s old", head.Number, cfg.ChainID, age.Round(time.Second)), data)
 	return nil
 }
 
