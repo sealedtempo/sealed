@@ -8,6 +8,7 @@
 //	envexec --app <id> [--secret NAME]... [--optional-secret NAME]... -- <cmd> [args...]
 //	envexec install <dir>
 //	envexec probe <tcp://host:port | http://host:port/path>
+//	envexec private <dir> -- <cmd> [args...]
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -283,6 +285,35 @@ func probe(target string, timeout time.Duration) error {
 	}
 	if code >= 400 {
 		return fmt.Errorf("status %d", code)
+	}
+	return nil
+}
+
+// privateDir makes dir, a data-disk directory that sealed-agent created for
+// this container's user, private to that user (mode 0700) before the
+// command runs (sealed-mpp-payer's state, fix-payments). Docker binds the
+// directory as the agent created it (0755), and only its owner may change
+// the mode. The directory is opened without following a symlink, and it must
+// belong to euid: anything else is an error, so a container never starts
+// with state another user could read or that it could not write.
+func privateDir(dir string, euid int) error {
+	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("%s: %w (it must be a directory, not a symlink)", dir, err)
+	}
+	defer syscall.Close(fd)
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("%s: %w", dir, err)
+	}
+	if int64(st.Uid) != int64(euid) {
+		return fmt.Errorf("%s is owned by uid %d, not by this container's uid %d", dir, st.Uid, euid)
+	}
+	if st.Mode&0o7777 == 0o700 {
+		return nil
+	}
+	if err := syscall.Fchmod(fd, 0o700); err != nil {
+		return fmt.Errorf("%s: chmod 0700: %w", dir, err)
 	}
 	return nil
 }
