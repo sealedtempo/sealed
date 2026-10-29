@@ -238,7 +238,8 @@ else
   mkstack --writable "$ro"
   docker compose -f "$TC" -p "$PROJECT" up -d >"$LOG/up2.log" 2>&1 || die "compose up failed again, see $LOG/up2.log"
 fi
-if wait_healthy 120 sealed-egress sealed-agent alpha-db bravo-db alpha-web bravo-web caddy dc-spoofer dc-router dc-egress2 dc-hostsvc; then
+# dc-egress2 is not waited for: sealed-egress refuses its config at start (E1).
+if wait_healthy 120 sealed-egress sealed-agent alpha-db bravo-db alpha-web bravo-web caddy dc-spoofer dc-router dc-hostsvc; then
   pass C4 "stack is up: egress and agent healthy, app services healthy behind the envexec ready gate"
 else
   docker compose -f "$TC" -p "$PROJECT" ps -a > "$LOG/ps.log" 2>&1
@@ -423,8 +424,24 @@ expect T6 dc-spoofer "status|error" "unknown source" -- http -noproxy http://172
 
 # ---------------------------------------------------------------------------
 section "Egress denies its own app networks even when allowedPrivateCidrs covers them"
-expect E1 dc-router blocked "dc-egress2 (allowedPrivateCidrs 172.16.0.0/12, allow 172.30.2.17:5432) refuses bravo-db" -- http -proxy http://172.30.1.50:3128 http://172.30.2.17:5432/
-expect E1 dc-router blocked "dc-egress2 refuses the app-bravo gateway" -- http -proxy http://172.30.1.50:3128 "http://172.30.2.1:$HOST_PORT/"
+# dc-egress2's config sets allowedPrivateCidrs 172.16.0.0/12 and allows dc-router bravo-db (172.30.2.17:5432) and the
+# app-bravo gateway. Since the vm-internal class (D-064, docker-checks bug 6) sealed-egress refuses such a config when
+# it starts, so the VM's own networks are closed before any request: the container exits 2 and names both entries.
+# (Requests to them through the stack's egress are counted as ip-vm-internal, T7.)
+e2st=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$(ctr dc-egress2)" 2>&1)
+e2log=$(docker logs "$(ctr dc-egress2)" 2>&1)
+if [ "$e2st" = "exited 2" ] && printf '%s' "$e2log" | grep -q 'config rejected'; then
+  pass E1 "dc-egress2 (allowedPrivateCidrs 172.16.0.0/12) refuses to start with a config that allows its app networks [$e2st]"
+else
+  fail E1 "dc-egress2 with a config that allows its app networks is $e2st (want exited 2, config rejected)" "$(printf '%s' "$e2log" | tail -n 2)"
+fi
+for dst in 172.30.2.17 172.30.2.1; do
+  if printf '%s' "$e2log" | grep -q "destination $dst is a vm-internal address"; then
+    pass E1 "dc-egress2 names $dst as vm-internal, so allowedPrivateCidrs cannot open it"
+  else
+    fail E1 "dc-egress2 does not refuse $dst as vm-internal" "$(printf '%s' "$e2log" | tail -n 1)"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 section "Gateways and host listeners (no other route out)"

@@ -9,11 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // Docker tests (D-063): the composed stack must start under docker compose,
@@ -535,5 +538,155 @@ func TestDockerChecksBuildThisTree(t *testing.T) {
 		if code, _, _ := strings.Cut(line, "#"); strings.Contains(code, "ws/") {
 			t.Errorf("run.sh:%d names a workstream branch: %s", i+1, strings.TrimSpace(line))
 		}
+	}
+}
+
+// TestDockerChecksEgressConfigs runs the docker-checks pipeline up to the
+// laptop stack without Docker (compose scripts/docker-checks/fixtures as
+// run.sh does, then mkstack.py) and loads every sealed-egress config of that
+// stack with runtime/egress/policy, as sealed-egress does when it starts.
+// The stack's egress must load. The dc-egress2 control (allowedPrivateCidrs
+// 172.16.0.0/12, allow entries on its own app networks) must be refused for
+// naming vm-internal destinations (D-064), and run.sh must not wait for it to
+// run: after the vm-internal class landed, run.sh at HEAD stopped with "stack
+// did not become healthy" because it waited for that refused container.
+func TestDockerChecksEgressConfigs(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	root := filepath.Join("..", "..")
+	dc := filepath.Join(root, "scripts", "docker-checks")
+	defs, err := LoadDefaults(filepath.Join(root, "config", "defaults.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	var bundles []*Bundle
+	for _, app := range []string{"alpha", "bravo"} {
+		b, err := BuildBundle(BuildInput{AppDir: filepath.Join(dc, "fixtures", "apps", app), Registry: defs.Catalog.Registry})
+		if err != nil {
+			t.Fatalf("bundle %s: %v", app, err)
+		}
+		ids[b.Manifest.ID] = b.ReleaseID.Hex()
+		bundles = append(bundles, b)
+	}
+	// The config as run.sh writes it: this composer's version and the bundles' releaseIds (--fill-release-ids).
+	raw, err := os.ReadFile(filepath.Join(dc, "fixtures", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["composerVersion"] = Version
+	for _, a := range doc["apps"].([]any) {
+		m := a.(map[string]any)
+		m["releaseId"] = ids[m["id"].(string)]
+	}
+	raw, _ = json.Marshal(doc)
+	cfg, err := ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Compose(cfg, bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	in, out := filepath.Join(work, "docker-compose.json"), filepath.Join(work, "test-compose.json")
+	if err := os.WriteFile(in, res.ComposeJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const egressImg = "sealed-dc/sealed-egress:local"
+	mk := exec.Command(py, "-I", "-B", filepath.Join(dc, "mkstack.py"), in, out, "--egress", egressImg,
+		"--init", "sealed-dc/sealed-init:local", "--standin", "sealed-dc/standin:local", "--host-port", "47090", "--project", "sealed-dc")
+	if b, err := mk.CombinedOutput(); err != nil {
+		t.Fatalf("mkstack.py: %v\n%s", err, b)
+	}
+	var stack struct {
+		Services map[string]struct {
+			Image   string `json:"image"`
+			Configs []struct {
+				Source string `json:"source"`
+				Target string `json:"target"`
+			} `json:"configs"`
+			Environment map[string]string `json:"environment"`
+		} `json:"services"`
+		Configs map[string]struct {
+			Content string `json:"content"`
+		} `json:"configs"`
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &stack); err != nil {
+		t.Fatal(err)
+	}
+	loads := map[string]error{}
+	for name, svc := range stack.Services {
+		if svc.Image != egressImg {
+			continue
+		}
+		path := svc.Environment["SEALED_EGRESS_CONFIG"]
+		content, found := "", false
+		for _, c := range svc.Configs {
+			if c.Target == path {
+				content, found = strings.ReplaceAll(stack.Configs[c.Source].Content, "$$", "$"), true
+			}
+		}
+		if !found {
+			t.Fatalf("%s: no config mounted at SEALED_EGRESS_CONFIG %q", name, path)
+		}
+		_, loads[name] = policy.Parse([]byte(content))
+	}
+	if len(loads) != 2 {
+		t.Fatalf("sealed-egress services in the laptop stack: %v (want sealed-egress and dc-egress2)", loads)
+	}
+	if err := loads["sealed-egress"]; err != nil {
+		t.Errorf("the composed sealed-egress config does not load: %v", err)
+	}
+	if err := loads["dc-egress2"]; err == nil {
+		t.Error("dc-egress2's config loads; E1 expects sealed-egress to refuse allow entries on its own app networks")
+	} else {
+		for _, dst := range []string{"172.30.2.17", "172.30.2.1"} {
+			if !strings.Contains(err.Error(), "destination "+dst+" is a vm-internal address") {
+				t.Errorf("dc-egress2 is not refused for %s as vm-internal (run.sh E1 looks for it): %v", dst, err)
+			}
+		}
+	}
+	// run.sh waits only for services that are meant to run.
+	script, err := os.ReadFile(filepath.Join(dc, "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	waits := 0
+	for _, line := range strings.Split(string(script), "\n") {
+		code, _, _ := strings.Cut(line, "#")
+		f := strings.Fields(code)
+		for i := 0; i+1 < len(f); i++ {
+			if _, err := strconv.Atoi(f[i+1]); f[i] != "wait_healthy" || err != nil {
+				continue // not a call: wait_healthy SECONDS SERVICE...
+			}
+			waits++
+			for _, svc := range f[i+2:] {
+				svc = strings.TrimSuffix(svc, ";")
+				if svc == "then" || !name.MatchString(svc) {
+					break
+				}
+				if _, ok := stack.Services[svc]; !ok {
+					t.Errorf("run.sh waits for %s, which is not in the laptop stack", svc)
+				}
+				if err, egress := loads[svc]; egress && err != nil {
+					t.Errorf("run.sh waits for %s, whose egress config is refused: %v", svc, err)
+				}
+			}
+		}
+	}
+	if waits == 0 {
+		t.Error("found no wait_healthy call in run.sh; the pattern no longer matches")
 	}
 }

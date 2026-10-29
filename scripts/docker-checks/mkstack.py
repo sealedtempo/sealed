@@ -15,8 +15,10 @@ Only what needs the confidential VM is replaced:
 Test-only services (prefix dc-): dc-spoofer (app-alpha, Docker's default
 capabilities: the NET_RAW control), dc-router (app-alpha, NET_ADMIN, default
 route via sealed-egress), dc-egress2 (a second sealed-egress whose config
-allows 172.16.0.0/12) and dc-hostsvc (host network, a 0.0.0.0 listener that
-stands for the dstack guest agent's 8090 listener).
+allows 172.16.0.0/12 and two of its own app network addresses; sealed-egress
+refuses that config and exits 2, which run.sh checks as E1) and dc-hostsvc
+(host network, a 0.0.0.0 listener that stands for the dstack guest agent's
+8090 listener).
 
 usage: mkstack.py IN OUT --egress IMG --init IMG --standin IMG --host-port N
                   [--project NAME] [--writable SERVICE]...
@@ -116,8 +118,10 @@ def main():
         "logging": {"driver": "local"},
     }
     # A second egress on both app networks whose config opens all of
-    # 172.16.0.0/12: its own interface networks (D-041 app networks) must
-    # stay denied anyway (runtime/egress/README.md, destination checks).
+    # 172.16.0.0/12 and allows two of its own app network addresses: they
+    # must stay denied anyway (runtime/egress/README.md, destination checks).
+    # Since the vm-internal class (D-064) the egress refuses this config at
+    # start; runtime/composer TestDockerChecksEgressConfigs checks both.
     e2 = {
         "allowedPrivateCidrs": ["172.16.0.0/12"],
         "callers": [{"allow": ["172.30.2.1:%d" % a.host_port, "172.30.2.17:5432"],
