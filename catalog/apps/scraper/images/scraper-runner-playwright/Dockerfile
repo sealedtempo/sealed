@@ -25,13 +25,17 @@ RUN pnpm install --frozen-lockfile --ignore-workspace
 COPY catalog/apps/scraper/runner/tsconfig.json catalog/apps/scraper/runner/tsconfig.build.json ./
 COPY catalog/apps/scraper/runner/src ./src
 RUN pnpm run build
+# pnpm stamps .modules.yaml and the workspace state file with the install time; they are removed so a
+# no-cache rebuild gives the same digest (D-028).
 RUN mkdir /app \
  && cp package.json pnpm-lock.yaml /app/ \
  && cd /app \
  && pnpm install --frozen-lockfile --ignore-workspace --prod \
+ && rm -f /app/node_modules/.modules.yaml /app/node_modules/.pnpm-workspace-state*.json \
  && cp -r /src/catalog/apps/scraper/runner/dist /app/dist
 
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS rootfs
+# The RUN ends by removing the logs and caches apt, dpkg and ldconfig write with the build time in them (D-028).
 RUN rm -rf /ms-playwright/chromium-* /ms-playwright/chromium_headless_shell-* /ms-playwright/webkit-* /ms-playwright/ffmpeg-* \
  && ls -d /ms-playwright/firefox-* \
  && chmod -R go-w /ms-playwright \
@@ -39,7 +43,8 @@ RUN rm -rf /ms-playwright/chromium-* /ms-playwright/chromium_headless_shell-* /m
  && apt-get install -y --no-install-recommends tini=0.19.0-1 \
  && apt-get purge -y git openssh-client \
  && npm uninstall --global yarn \
- && rm -rf /var/lib/apt/lists/* /root/.npm /tmp/*
+ && rm -rf /var/lib/apt/lists/* /root/.npm /tmp/* \
+ && rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old /var/lib/dpkg/*-old
 COPY --from=build /app /app
 
 FROM scratch
