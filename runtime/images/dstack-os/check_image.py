@@ -11,13 +11,17 @@ directory written by the patched mkosi.postinst (packages.tsv and copyright/).
 It fails (exit 1) when anything NVIDIA, ZFS or CDDL-licensed is in the image,
 when a kernel module has a license the kernel does not treat as GPL-compatible,
 when an ELF file links against an NVIDIA or ZFS library, when a Debian package
-comes from outside main or declares a banned license, or when a login, shell or
-SSH surface is present. The inventory it writes is published with the release.
+comes from outside main or declares a banned license, when a login, shell or
+SSH surface is present, or when the magic SysRq key can be on at runtime
+(kernel.sysrq must end up 0 after systemd-sysctl, and the UKI's measured
+command line must not override it). The inventory it writes is published with
+the release.
 Needs unsquashfs (squashfs-tools) and, for the ESP listing, mdir (mtools).
 Run as root so unsquashfs can extract every file. Standard library only.
 """
 
 import argparse
+import fnmatch
 import gzip
 import json
 import lzma
@@ -98,6 +102,20 @@ DEBUG_ONLY = [
     "usr/lib/systemd/system/sealed-logship.service",
     "usr/lib/systemd/system-preset/82-dstack-sealed-debug.preset",
 ]
+
+# Magic SysRq (kb-4). The host owns the serial port, and with SysRq on, a serial
+# BREAK plus one key can reboot, crash or dump the guest. Upstream's kernel is
+# built without it (CONFIG_MAGIC_SYSRQ=n); the overlay also sets kernel.sysrq = 0
+# (usr/lib/sysctl.d/90-sealed-sysrq.conf) in case a later kernel config turns
+# SysRq on. The check computes what systemd-sysctl leaves on kernel.sysrq
+# (sysctl.d(5): every *.conf in these directories sorted by file name, a name in
+# an earlier directory hides the same name in a later one, the last assignment
+# wins), refuses command-line overrides, and refuses a kernel with SysRq that
+# starts with it on (CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE other than 0).
+SYSCTL_DIRS = ("etc/sysctl.d", "run/sysctl.d", "usr/local/lib/sysctl.d", "usr/lib/sysctl.d")
+SYSRQ_KEY = "kernel.sysrq"
+SYSRQ_CMDLINE = re.compile(r"^(sysrq_always_enabled(=.*)?|sysctl\.kernel[./]sysrq=(.*))$")
+UKI_PATH = "::/EFI/BOOT/BOOTX64.EFI"
 
 # DEP-5 License: values that are banned (rule 9, D-021) or are not free.
 BANNED_LICENSE = re.compile(
@@ -202,6 +220,143 @@ def module_info(path):
     return lic, intree
 
 
+def pe_section(data, wanted):
+    """Contents of the named section of a PE image (the UKI), or None."""
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        return None
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if pe + 24 > len(data) or data[pe : pe + 4] != b"PE\0\0":
+        return None
+    count = struct.unpack_from("<H", data, pe + 6)[0]
+    table = pe + 24 + struct.unpack_from("<H", data, pe + 20)[0]
+    for i in range(count):
+        off = table + 40 * i
+        if off + 40 > len(data):
+            return None
+        if data[off : off + 8].rstrip(b"\0").decode("ascii", "replace") != wanted:
+            continue
+        vsize, _, raw_size, raw_ptr = struct.unpack_from("<IIII", data, off + 8)
+        size = min(vsize, raw_size) if vsize else raw_size
+        return data[raw_ptr : raw_ptr + size]
+    return None
+
+
+def uki_cmdline(disk, esp_offset):
+    """The kernel command line measured into the UKI on the ESP, or (None, why)."""
+    if not shutil.which("mcopy"):
+        return None, "mcopy (mtools) is needed to read the UKI"
+    tmp = tempfile.mkdtemp(prefix="sealed-uki-")
+    try:
+        uki = os.path.join(tmp, "BOOTX64.EFI")
+        res = subprocess.run(["mcopy", "-n", "-i", f"{disk}@@{esp_offset}", UKI_PATH, uki], capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            return None, f"cannot copy the UKI: {res.stderr.strip()}"
+        with open(uki, "rb") as f:
+            section = pe_section(f.read(), ".cmdline")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if section is None:
+        return None, "the UKI has no .cmdline section"
+    return section.rstrip(b"\0").decode("utf-8", "replace").strip(), None
+
+
+def in_root(root, rel):
+    """Host path of a file inside the extracted rootfs, following its symlinks inside the rootfs.
+    None for a masked (/dev/null), dangling or escaping link."""
+    for _ in range(40):
+        full = os.path.join(root, rel)
+        if not os.path.islink(full):
+            return full if os.path.isfile(full) else None
+        target = os.readlink(full)
+        if target == "/dev/null":
+            return None
+        rel = os.path.normpath(target.lstrip("/") if target.startswith("/") else os.path.join(os.path.dirname(rel), target))
+        if rel == ".." or rel.startswith("../"):
+            return None
+    return None
+
+
+def sysctl_value(root, key):
+    """(value, file) that systemd-sysctl leaves on key in this rootfs; (None, None) when nothing sets it."""
+    files = {}
+    for d in SYSCTL_DIRS:
+        full = os.path.join(root, d)
+        if os.path.islink(full):
+            raise ValueError(f"{d} is a symlink; the sysctl.d directories must be real directories")
+        if not os.path.isdir(full):
+            continue
+        for name in os.listdir(full):
+            if name.endswith(".conf") and name not in files:
+                files[name] = f"{d}/{name}"
+    value, source = None, None
+    for name in sorted(files):
+        path = in_root(root, files[name])
+        if path is None:
+            continue
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] in "#;":
+                    continue
+                k, sep, v = line.partition("=")
+                if not sep:
+                    continue
+                # "-key = value" only means a failed write is ignored; "/" and "." separate the same way.
+                pattern = k.strip().lstrip("-").strip().replace("/", ".")
+                if fnmatch.fnmatchcase(key, pattern):
+                    value, source = v.strip(), files[name]
+    return value, source
+
+
+def kernel_sysrq_config(root):
+    """{kernel release: (CONFIG_MAGIC_SYSRQ, CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE)} from usr/lib/modules/*/config."""
+    out = {}
+    base = os.path.join(root, "usr/lib/modules")
+    for kver in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        path = os.path.join(base, kver, "config")
+        if not os.path.isfile(path) or os.path.islink(path):
+            continue
+        conf = {}
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if sep and k.startswith("CONFIG_"):
+                    conf[k] = v
+        out[kver] = (conf.get("CONFIG_MAGIC_SYSRQ", "n"), conf.get("CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE"))
+    return out
+
+
+def check_sysrq(root, cmdline, violate):
+    """kb-4: SysRq stays off. Returns the report entry."""
+    try:
+        value, source = sysctl_value(root, SYSRQ_KEY)
+    except ValueError as e:
+        value, source = None, None
+        violate("sysrq", SYSRQ_KEY, str(e))
+    else:
+        try:
+            off = value is not None and int(value, 0) == 0
+        except ValueError:
+            off = False
+        if not off:
+            where = f" (last set in {source})" if source else ""
+            violate("sysrq", SYSRQ_KEY, f"systemd-sysctl leaves {SYSRQ_KEY} = {value}{where}; it must be 0")
+    for token in (cmdline or "").split():
+        m = SYSRQ_CMDLINE.match(token)
+        if m and m.group(3) != "0":
+            violate("sysrq", f"cmdline:{token}", "the measured kernel command line turns SysRq on")
+    kernels = kernel_sysrq_config(root)
+    for kver, (magic, default) in kernels.items():
+        try:
+            starts_off = default is not None and int(default, 0) == 0
+        except ValueError:
+            starts_off = False
+        if magic == "y" and not starts_off:
+            violate("sysrq", f"usr/lib/modules/{kver}/config",
+                    f"CONFIG_MAGIC_SYSRQ=y with CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE={default}: SysRq is on until systemd-sysctl runs")
+    return {"sysctl": value, "sysctl_file": source, "kernel_config": {k: v[0] for k, v in kernels.items()}}
+
+
 def dep5_licenses(text):
     """License short names from a machine-readable (DEP-5) copyright file, or None if it is not one."""
     if not text.lstrip().lower().startswith("format:"):
@@ -250,6 +405,12 @@ def scan(disk, inventory, out_json, exceptions, variant=None):
         report["esp_files"] = files
         if res.returncode != 0 or files != ["::/EFI/BOOT/BOOTX64.EFI"]:
             violate("esp", "contents", f"ESP must hold only the UKI, found {files or res.stderr.strip()}")
+    cmdline = None
+    if "EFI System Partition" in parts:
+        cmdline, why = uki_cmdline(disk, parts["EFI System Partition"][0])
+        if cmdline is None:
+            violate("uki", "cmdline", why)
+    report["uki_cmdline"] = cmdline
 
     work = tempfile.mkdtemp(prefix="sealed-check-")
     root = os.path.join(work, "root")
@@ -305,6 +466,7 @@ def scan(disk, inventory, out_json, exceptions, variant=None):
         for path in FORBIDDEN_SURFACE:
             if os.path.lexists(os.path.join(root, path)):
                 violate("surface", path, "login, shell, debugger or SSH component present")
+        report["sysrq"] = check_sysrq(root, cmdline, violate)
         for path in DEBUG_ONLY if variant else []:
             present = os.path.lexists(os.path.join(root, path))
             if variant == "debug" and not present:
@@ -374,7 +536,7 @@ def main():
     if violations:
         print(f"{len(violations)} violation(s); see {a.out_json}", file=sys.stderr)
         return 1
-    print(f"image check passed: no NVIDIA, ZFS or CDDL content; inventory in {a.out_json}")
+    print(f"image check passed: no NVIDIA, ZFS or CDDL content, SysRq off; inventory in {a.out_json}")
     return 0
 
 

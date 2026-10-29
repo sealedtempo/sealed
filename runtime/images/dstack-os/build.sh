@@ -65,9 +65,9 @@ prepare() {
   sgit -C "$dir" add -A os
   sgit -C "$dir" commit -q -m "sealed: overlay $SEALED_OS_VERSION
 
-Adds the sealed-debug mkosi profile, the sealed-logship component and the
-sealed-logship sources (os/sealed/logship) from runtime/images/dstack-os in
-the Sealed public repository."
+Adds the kernel.sysrq = 0 sysctl file, the sealed-debug mkosi profile, the
+sealed-logship component and the sealed-logship sources (os/sealed/logship)
+from runtime/images/dstack-os in the Sealed public repository."
   sgit -C "$dir" diff --quiet HEAD || die "prepared tree is dirty"
 }
 
