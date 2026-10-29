@@ -880,7 +880,9 @@ func TestHostRulesScript(t *testing.T) {
 }
 
 // fakeIptables simulates the iptables subset the host rules use, one file per
-// chain under $FAKE_IPT, so the script's control flow runs for real.
+// chain under $FAKE_IPT, so the script's control flow runs for real. -D, -X
+// and -S are what scripts/docker-checks/run.sh's cleanup and checks use
+// (TestDockerChecksHostRules); -X refuses a chain that is still referenced.
 const fakeIptables = `#!/bin/bash
 set -u
 args=()
@@ -895,6 +897,10 @@ case "$op" in
   -I) c=$1; pos=$2; shift 2; f="$FAKE_IPT/chain.$c"; [ -e "$f" ] || exit 1
       { head -n $((pos-1)) "$f"; echo "$*"; tail -n +$pos "$f"; } > "$f.tmp"; mv "$f.tmp" "$f" ;;
   -C) c=$1; shift; [ -e "$FAKE_IPT/chain.$c" ] && grep -qxF -- "$*" "$FAKE_IPT/chain.$c" ;;
+  -D) c=$1; shift; f="$FAKE_IPT/chain.$c"; [ -e "$f" ] && grep -qxF -- "$*" "$f" || exit 1
+      awk -v r="$*" '!d && $0 == r { d = 1; next } { print }' "$f" > "$f.tmp"; mv "$f.tmp" "$f" ;;
+  -X) [ -e "$FAKE_IPT/chain.$1" ] || exit 1; grep -q -- "-j $1\$" "$FAKE_IPT"/chain.* && exit 1; rm "$FAKE_IPT/chain.$1" ;;
+  -S) [ -e "$FAKE_IPT/chain.$1" ] || exit 1; echo "-N $1"; sed "s/^/-A $1 /" "$FAKE_IPT/chain.$1" ;;
   -n) [ "$1" = "-L" ] && [ -e "$FAKE_IPT/chain.$2" ] ;;
   *) exit 2 ;;
 esac

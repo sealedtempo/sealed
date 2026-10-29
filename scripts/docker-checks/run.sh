@@ -103,11 +103,14 @@ host_sh() { # run a bash script (stdin) in the Docker VM's host namespaces
 RULES_INSTALLED=0
 remove_host_rules() {
   [ "$RULES_INSTALLED" = 1 ] || return 0
+  # Every jump host rules v3 adds (runtime/composer TestDockerChecksHostRules runs this against them).
   host_sh >/dev/null 2>&1 <<'EOF'
 for c in FORWARD DOCKER-USER; do
   while iptables -w -D "$c" -s 172.31.0.0/24 -j SEALED-EDGE 2>/dev/null; do :; done
+  while iptables -w -D "$c" -i sealed-edge -j SEALED-EDGE 2>/dev/null; do :; done
 done
 while iptables -w -D INPUT -i sealed-+ -j SEALED-INPUT 2>/dev/null; do :; done
+for r in 172.30.0.0/16 172.31.0.0/24; do while iptables -w -D INPUT -s "$r" -j SEALED-INPUT 2>/dev/null; do :; done; done
 for c in SEALED-EDGE SEALED-INPUT; do iptables -w -F "$c" 2>/dev/null; iptables -w -X "$c" 2>/dev/null; done
 true
 EOF
@@ -446,14 +449,14 @@ done
 # ---------------------------------------------------------------------------
 section "Gateways and host listeners (no other route out)"
 info H0 "dc-hostsvc listens on 0.0.0.0:$HOST_PORT in the Docker VM, standing in for the dstack guest agent's 0.0.0.0:8090"
+# Without host rules this is Docker's default (docker-checks bug 6): recorded, not judged. On the VM the composer's
+# pre_launch_script installs the host rules before any container starts, so H5 below is what a deployment gets.
 for s in $APPS; do
   n=$(appnet "$s")
-  expect H1 "$s" "unreachable|timeout" "host listener via its app network gateway 172.30.$n.1" -- tcp "172.30.$n.1:$HOST_PORT"
-  info H1 "$s to the Docker VM's sshd at 172.30.$n.1:22: $(probe_in "$s" tcp "172.30.$n.1:22")"
+  info H1 "$s without host rules: host listener via its app network gateway 172.30.$n.1: $(probe_in "$s" tcp "172.30.$n.1:$HOST_PORT")"
 done
-expect H1 alpha-web "unreachable|timeout" "host listener via the apps gateway 172.30.0.1" -- tcp "172.30.0.1:$HOST_PORT"
-expect H1 sealed-agent "unreachable|timeout" "host listener via the apps gateway 172.30.0.1" -- tcp "172.30.0.1:$HOST_PORT"
-expect H1 caddy "unreachable|timeout" "host listener via the edge gateway 172.31.0.1" -- tcp "172.31.0.1:$HOST_PORT"
+info H1 "alpha-web without host rules: host listener via the apps gateway 172.30.0.1: $(probe_in alpha-web tcp "172.30.0.1:$HOST_PORT")"
+info H1 "caddy without host rules: host listener via the edge gateway 172.31.0.1: $(probe_in caddy tcp "172.31.0.1:$HOST_PORT")"
 expect H1 alpha-web blocked "host listener through the proxy" -- http -proxy http://172.30.1.2:3128 "http://172.30.1.1:$HOST_PORT/"
 out=$(probe_in caddy tcp 1.1.1.1:443)
 info H2 "caddy direct to 1.1.1.1:443 without host rules: $out"
@@ -463,38 +466,29 @@ if [ "$HOST_RULES" = 1 ]; then
     RULES_INSTALLED=1
     pass H3 "pre_launch_script installs in the Docker VM"
     if host_sh < "$WORK/stack/pre-launch.sh" >"$LOG/prelaunch2.log" 2>&1; then pass H3 "pre_launch_script is idempotent (second run exits 0)"; else fail H3 "second run failed" "$(head -2 "$LOG/prelaunch2.log")"; fi
-    j=$(echo 'iptables -w -S FORWARD | grep -c SEALED-EDGE; iptables -w -S DOCKER-USER 2>/dev/null | grep -c SEALED-EDGE' | host_sh 2>/dev/null | tr '\n' ' ')
-    if [ "$j" = "1 1 " ]; then pass H3 "one jump each from FORWARD and DOCKER-USER"; else fail H3 "jump counts FORWARD/DOCKER-USER: $j"; fi
+    # Host rules v3 after two runs: FORWARD and DOCKER-USER jump to SEALED-EDGE for the edge bridge and the edge
+    # subnet; INPUT jumps to SEALED-INPUT for the two container ranges and the sealed bridges.
+    j=$(echo 'iptables -w -S FORWARD | grep -c -- "-j SEALED-EDGE"; iptables -w -S DOCKER-USER 2>/dev/null | grep -c -- "-j SEALED-EDGE"; iptables -w -S INPUT | grep -c -- "-j SEALED-INPUT"' | host_sh 2>/dev/null | tr '\n' ' ')
+    if [ "$j" = "2 2 3 " ]; then pass H3 "after two runs, two jumps each from FORWARD and DOCKER-USER and three from INPUT"; else fail H3 "jump counts FORWARD/DOCKER-USER/INPUT: $j (want 2 2 3)"; fi
     expect H4 caddy "unreachable|timeout" "with host rules, caddy cannot leave the VM directly" -- tcp 1.1.1.1:443
     expect H4 alpha-web ok "with host rules, egress still reaches an allowlisted host" -- http https://example.com/
     expect H4 caddy blocked "caddy through the proxy to a non-ACME host" -- http https://example.com/
-    expect H4 caddy "unreachable|timeout" "with host rules, caddy to the host listener on 172.31.0.1" -- tcp "172.31.0.1:$HOST_PORT"
-    # Proposed addition to the host rules: drop new connections from the
-    # container bridges to the VM itself (INPUT), which FORWARD rules never see.
-    if host_sh >"$LOG/input-rule.log" 2>&1 <<'EOF'
-iptables -w -N SEALED-INPUT 2>/dev/null || true
-iptables -w -F SEALED-INPUT
-iptables -w -A SEALED-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-iptables -w -A SEALED-INPUT -j DROP
-iptables -w -C INPUT -i sealed-+ -j SEALED-INPUT 2>/dev/null || iptables -w -I INPUT 1 -i sealed-+ -j SEALED-INPUT
-EOF
-    then
-      info H5 "proposed rule installed: iptables -I INPUT -i sealed-+ -j SEALED-INPUT (ESTABLISHED,RELATED return, else DROP)"
-      for s in alpha-web alpha-db bravo-db; do
-        n=$(appnet "$s")
-        expect H5 "$s" "unreachable|timeout" "with the proposed INPUT rule, host listener via 172.30.$n.1" -- tcp "172.30.$n.1:$HOST_PORT"
-      done
-      expect H5 caddy "unreachable|timeout" "with the proposed INPUT rule, host listener via 172.31.0.1" -- tcp "172.31.0.1:$HOST_PORT"
-      expect H5 alpha-web ok "with the proposed INPUT rule, the proxy still works" -- http https://example.com/
-      expect H5 alpha-db answer "with the proposed INPUT rule, DNS still works" -- dns example.com
-    else
-      fail H5 "could not install the proposed INPUT rule" "$(head -2 "$LOG/input-rule.log")"
-    fi
+    # D-064: the composer's SEALED-INPUT chain drops new connections from every container to the VM itself.
+    for s in $APPS; do
+      n=$(appnet "$s")
+      expect H5 "$s" "unreachable|timeout" "with host rules, host listener via its app network gateway 172.30.$n.1" -- tcp "172.30.$n.1:$HOST_PORT"
+      expect H5 "$s" "unreachable|timeout" "with host rules, the Docker VM's sshd via 172.30.$n.1" -- tcp "172.30.$n.1:22"
+    done
+    expect H5 alpha-web "unreachable|timeout" "with host rules, host listener via the apps gateway 172.30.0.1" -- tcp "172.30.0.1:$HOST_PORT"
+    expect H5 sealed-agent "unreachable|timeout" "with host rules, host listener via the apps gateway 172.30.0.1" -- tcp "172.30.0.1:$HOST_PORT"
+    expect H5 caddy "unreachable|timeout" "with host rules, host listener via the edge gateway 172.31.0.1" -- tcp "172.31.0.1:$HOST_PORT"
+    expect H5 alpha-web ok "with host rules, the proxy still works" -- http https://example.com/
+    expect H5 alpha-db answer "with host rules, DNS still works" -- dns example.com
   else
     fail H3 "pre_launch_script failed in the Docker VM" "$(head -3 "$LOG/prelaunch1.log")"
   fi
 else
-  info H3 "host rules skipped (--no-host-rules)"
+  info H3 "host rules skipped (--no-host-rules); H5 not run"
 fi
 
 # ---------------------------------------------------------------------------

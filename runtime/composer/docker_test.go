@@ -555,45 +555,8 @@ func TestDockerChecksEgressConfigs(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	root := filepath.Join("..", "..")
-	dc := filepath.Join(root, "scripts", "docker-checks")
-	defs, err := LoadDefaults(filepath.Join(root, "config", "defaults.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := map[string]string{}
-	var bundles []*Bundle
-	for _, app := range []string{"alpha", "bravo"} {
-		b, err := BuildBundle(BuildInput{AppDir: filepath.Join(dc, "fixtures", "apps", app), Registry: defs.Catalog.Registry})
-		if err != nil {
-			t.Fatalf("bundle %s: %v", app, err)
-		}
-		ids[b.Manifest.ID] = b.ReleaseID.Hex()
-		bundles = append(bundles, b)
-	}
-	// The config as run.sh writes it: this composer's version and the bundles' releaseIds (--fill-release-ids).
-	raw, err := os.ReadFile(filepath.Join(dc, "fixtures", "config.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	doc["composerVersion"] = Version
-	for _, a := range doc["apps"].([]any) {
-		m := a.(map[string]any)
-		m["releaseId"] = ids[m["id"].(string)]
-	}
-	raw, _ = json.Marshal(doc)
-	cfg, err := ParseConfig(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := Compose(cfg, bundles)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dc := filepath.Join("..", "..", "scripts", "docker-checks")
+	res := composeDockerChecksFixture(t)
 	work := t.TempDir()
 	in, out := filepath.Join(work, "docker-compose.json"), filepath.Join(work, "test-compose.json")
 	if err := os.WriteFile(in, res.ComposeJSON, 0o644); err != nil {
@@ -688,5 +651,145 @@ func TestDockerChecksEgressConfigs(t *testing.T) {
 	}
 	if waits == 0 {
 		t.Error("found no wait_healthy call in run.sh; the pattern no longer matches")
+	}
+}
+
+// composeDockerChecksFixture composes scripts/docker-checks/fixtures the way
+// run.sh does (sealed-compose compose --fill-release-ids with this composer's
+// version).
+func composeDockerChecksFixture(t *testing.T) *Result {
+	t.Helper()
+	root := filepath.Join("..", "..")
+	dc := filepath.Join(root, "scripts", "docker-checks")
+	defs, err := LoadDefaults(filepath.Join(root, "config", "defaults.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	var bundles []*Bundle
+	for _, app := range []string{"alpha", "bravo"} {
+		b, err := BuildBundle(BuildInput{AppDir: filepath.Join(dc, "fixtures", "apps", app), Registry: defs.Catalog.Registry})
+		if err != nil {
+			t.Fatalf("bundle %s: %v", app, err)
+		}
+		ids[b.Manifest.ID] = b.ReleaseID.Hex()
+		bundles = append(bundles, b)
+	}
+	raw, err := os.ReadFile(filepath.Join(dc, "fixtures", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["composerVersion"] = Version
+	for _, a := range doc["apps"].([]any) {
+		m := a.(map[string]any)
+		m["releaseId"] = ids[m["id"].(string)]
+	}
+	raw, _ = json.Marshal(doc)
+	cfg, err := ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Compose(cfg, bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// TestDockerChecksHostRules runs the composed pre_launch_script (host rules
+// v3) twice against a fake iptables with Docker's chains, then run.sh's
+// remove_host_rules. run.sh still expected composer 1.2's single edge jump
+// ("jump counts FORWARD/DOCKER-USER: 2 2" failed), installed its own proposed
+// SEALED-INPUT chain on top of the composer's, and its cleanup removed only
+// the subnet jumps, so SEALED-EDGE and SEALED-INPUT stayed referenced and
+// were never deleted from the Docker VM.
+func TestDockerChecksHostRules(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not on PATH")
+	}
+	res := composeDockerChecksFixture(t)
+	bin, state := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "iptables"), []byte(fakeIptables), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Docker's chains before the rules (iptables backend): FORWARD jumps to DOCKER-USER.
+	for chain, rules := range map[string]string{"INPUT": "", "FORWARD": "-j DOCKER-USER\n", "DOCKER-USER": ""} {
+		if err := os.WriteFile(filepath.Join(state, "chain."+chain), []byte(rules), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(name, script string) {
+		t.Helper()
+		cmd := exec.Command(bash, "-s")
+		cmd.Stdin = strings.NewReader(script)
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_IPT="+state)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", name, err, out)
+		}
+	}
+	chains := func() map[string][]string {
+		t.Helper()
+		st := map[string][]string{}
+		files, _ := filepath.Glob(filepath.Join(state, "chain.*"))
+		for _, f := range files {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rules := []string{}
+			if s := strings.TrimRight(string(b), "\n"); s != "" {
+				rules = strings.Split(s, "\n")
+			}
+			st[strings.TrimPrefix(filepath.Base(f), "chain.")] = rules
+		}
+		return st
+	}
+	count := func(rules []string, target string) (n int) {
+		for _, r := range rules {
+			if strings.HasSuffix(r, "-j "+target) {
+				n++
+			}
+		}
+		return n
+	}
+	run("pre_launch_script", res.PreLaunchScript)
+	run("pre_launch_script, second run", res.PreLaunchScript)
+	st := chains()
+	want := fmt.Sprintf("%d %d %d ", count(st["FORWARD"], "SEALED-EDGE"), count(st["DOCKER-USER"], "SEALED-EDGE"), count(st["INPUT"], "SEALED-INPUT"))
+
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "docker-checks", "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(b)
+	if !strings.Contains(script, `[ "$j" = "`+want+`" ]`) {
+		t.Errorf("run.sh H3 does not expect the jump counts host rules v3 leaves after two runs (FORWARD DOCKER-USER INPUT: %q)", want)
+	}
+	if strings.Contains(script, "-N SEALED-INPUT") || strings.Contains(script, "-A SEALED-INPUT") {
+		t.Error("run.sh installs a SEALED-INPUT chain of its own; H5 must check the composer's host rules")
+	}
+	_, after, ok := strings.Cut(script, "\nremove_host_rules() {\n")
+	if !ok {
+		t.Fatal("run.sh has no remove_host_rules")
+	}
+	_, after, ok = strings.Cut(after, "<<'EOF'\n")
+	body, _, ok2 := strings.Cut(after, "\nEOF\n")
+	if !ok || !ok2 {
+		t.Fatal("remove_host_rules has no host script heredoc")
+	}
+	run("remove_host_rules", body)
+	st = chains()
+	for _, c := range []string{"SEALED-EDGE", "SEALED-INPUT"} {
+		if _, left := st[c]; left {
+			t.Errorf("after remove_host_rules chain %s is still there (FORWARD %q, DOCKER-USER %q, INPUT %q)", c, st["FORWARD"], st["DOCKER-USER"], st["INPUT"])
+		}
+	}
+	if fmt.Sprint(st["FORWARD"], st["DOCKER-USER"], st["INPUT"]) != "[-j DOCKER-USER] [] []" {
+		t.Errorf("after remove_host_rules Docker's chains are not as before: FORWARD %q, DOCKER-USER %q, INPUT %q", st["FORWARD"], st["DOCKER-USER"], st["INPUT"])
 	}
 }
