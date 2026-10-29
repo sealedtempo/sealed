@@ -757,3 +757,26 @@ func TestDeployerScopeDocumented(t *testing.T) {
 		}
 	}
 }
+
+// TestStatusNamesCurrentComposer: wherever the README, the threat model and the architecture doc name a composer
+// version, it is the current one, and the README and the threat model give the same devnet assertion count (the
+// README said composer 1.3.0 after 1.4.0 had merged).
+func TestStatusNamesCurrentComposer(t *testing.T) {
+	version := regexp.MustCompile(`(?i)\bcomposer (\d+\.\d+\.\d+)`)
+	count := regexp.MustCompile(`\b(\d+) assertions\b`)
+	counts := map[string]string{}
+	for _, f := range []string{"README.md", "docs/THREAT_MODEL.md", "docs/ARCHITECTURE.md"} {
+		text := read(t, f)
+		for _, m := range version.FindAllStringSubmatch(text, -1) {
+			if m[1] != composer.Version {
+				t.Errorf("%s names composer %s; the composer is %s", f, m[1], composer.Version)
+			}
+		}
+		for _, m := range count.FindAllStringSubmatch(text, -1) {
+			counts[m[1]] = f
+		}
+	}
+	if len(counts) != 1 {
+		t.Errorf("the README and the threat model give different devnet assertion counts: %v", counts)
+	}
+}

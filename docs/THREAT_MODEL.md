@@ -1,6 +1,6 @@
 # Sealed threat model
 
-Status: 2026-10-29. Written from the code on `ws/integration` after merge C and the release-candidate round (the hardening branches merged, composer 1.4.0), the decisions through D-073, and the build, review and Docker check notes. The runtime has been tested locally, end to end on a local Tempo devnet with the dstack simulator (`make devnet-e2e`: 16 steps, 817 assertions, passing), on a real Docker engine (the per-app network layout and sealed-egress), and against real dstack 0.6.1 quotes from three Google Cloud C3 TDX VMs running the upstream image, which `verifier/attest`, the quote verifier the key broker and `sealed verify` share, verifies offline against recorded Intel collateral (runtime spike, D-052; `TestRealGCPGolden`, `TestRealGCPMachineTypes`). Statements that depend on a boot of the production image are marked (first boot). At block 46329286 no platform image and no app is registered on mainnet yet, so the production measurements below are not recorded yet.
+Status: 2026-10-29. Written from the code after merge C, the release-candidate round (the hardening branches merged, composer 1.4.0) and the public fixes of the pre-publish review, the decisions through D-073, and the build, review and Docker check notes. The runtime has been tested locally, end to end on a local Tempo devnet with the dstack simulator (`make devnet-e2e`: 16 steps, 818 assertions, passing at the end of merge C), on a real Docker engine (the per-app network layout and sealed-egress), and against real dstack 0.6.1 quotes from three Google Cloud C3 TDX VMs running the upstream image, which `verifier/attest`, the quote verifier the key broker and `sealed verify` share, verifies offline against recorded Intel collateral (runtime spike, D-052; `TestRealGCPGolden`, `TestRealGCPMachineTypes`). Statements that depend on a boot of the production image are marked (first boot). At block 46329286 no platform image and no app is registered on mainnet yet, so the production measurements below are not recorded yet.
 
 ## What Sealed protects
 
@@ -254,7 +254,7 @@ From payments (relay and payer, after the fixes of D-054 and D-067):
 
 ## Open items before production
 
-- The production image: measure MRTD and RTMR0 on c3-standard-8 (and on any other machine type that will run), check RTMR1 and RTMR2 against the values computed from the image, register it, and record the values above.
+- The production image: measure MRTD and RTMR0 on c3-standard-8 (and on every other machine type a deployment runs on), check RTMR1 and RTMR2 against the values computed from the image, register it, and record the values above.
 - Pin XFAM `0x602e7` for the C3 family in the key broker and the verifier (D-070).
 - First boot of the production image: per-file secret binds from `/run`, the agent's device rules, Caddy's admin socket permissions, `bridge-nf-call-iptables=1`, Docker's embedded DNS forwarding to sealed-egress, the D-064 INPUT drop in front of the guest agent's port 8090, and whether a failing `pre_launch_script` stops the boot.
 - Google firmware endorsement checks for MRTD.
