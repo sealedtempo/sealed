@@ -550,6 +550,16 @@ describe("settlement, grace period and the payment-needed switch", () => {
       expect([...PLATFORM_SIDE_FAILURES].sort()).toEqual(["deployment_not_registered", "ledger_unverified", "usage_not_submitted"]);
       for (const c of cases) expect(PLATFORM_SIDE_FAILURES.has(c.reason)).toBe(false);
     });
+
+    // fix-parity: the header said the operator's onchain limits were the only deferrals, which D-073 contradicts.
+    it("the module header describes the deferral the code implements", () => {
+      const src = readFileSync(join(import.meta.dirname, "../src/payments/settler.ts"), "utf8");
+      const header = src.slice(0, src.indexOf("import "));
+      for (const reason of PLATFORM_SIDE_FAILURES) expect(header, reason).toContain(reason);
+      expect(header).toContain("rpc_error");
+      expect(header).not.toMatch(/Only limits the operator sets onchain are\s+\/\/\s*deferrals/);
+      expect(header).not.toMatch(/cannot be submitted is a failure|keeps billing failing closed/);
+    });
   });
 
   it("voids a report the platform refuses as overlapping a stored one, and never pays it", async () => {

@@ -4,22 +4,27 @@
 // the report's fee: a leg paid short (the customer can pay first with any amount) is topped up with
 // the shortfall, so it is never settled for less.
 //
-// Billing fails closed on the customer's side. A failure there counts toward the grace period: a
-// missing, revoked or expired access key, an exhausted limit, too little balance, a reverted estimate
-// or transaction, a leg that cannot be topped up, and a chain read error (the customer chooses the RPC
-// and controls the VPC firewall, so it can block the RPC). Failures that last the grace period switch
-// Caddy to the measured payment-needed Caddyfile; a Closed deployment (terminal) switches at once. The
-// next successful settlement restores the normal Caddyfile. Only limits the operator sets onchain are
-// deferrals: the daily cap, and legs above a lowered per-payment cap (reported as overCap, never paid
-// at that cap).
+// Billing fails closed on the customer's side only. Every failure that is not the platform's (D-073,
+// below) counts toward the grace period: a missing, revoked or expired access key, an exhausted limit,
+// too little balance, a reverted estimate or transaction, a payment whose outcome is unknown, a leg
+// opened in another token (it cannot be topped up), a leg for an app that is not in the deployment, and
+// a chain read error (rpc_error: the customer chooses the RPC and controls the VPC firewall, so it can
+// block the RPC). Failures that last the grace period switch Caddy to the measured payment-needed
+// Caddyfile; a Closed deployment (terminal) switches at once. A later tick without a customer-side
+// failure that pays a leg, or leaves nothing unpaid, restores the normal Caddyfile.
+//
+// Two limits the operator sets onchain hold legs back without being failures: legs beyond the daily cap
+// wait for the next day, and legs above a lowered per-payment cap wait (reported as overCap, never paid
+// at that cap). Neither starts nor pauses the grace period.
 //
 // D-073: a platform outage never puts a customer on the payment-needed page. What only the platform
-// can do defers settlement instead: rebuilding this boot's ledger from its stored reports, accepting a
-// report, registering the deployment (the oracle and the ops key do, from the agent's evidence). While
-// nothing but those fails, settlement records deferredSince and the grace period does not run: none
-// starts, and one a customer-side failure started stands still until settlement resumes. Deferred fees
-// are paid once the platform is back. A tick that pays every leg it can try shows the customer's side
-// works, so it ends a customer-side failure streak even during a deferral.
+// can do defers settlement instead (PLATFORM_SIDE_FAILURES): rebuilding this boot's ledger from its
+// stored reports (ledger_unverified), accepting a report (usage_not_submitted), registering the
+// deployment (deployment_not_registered: the oracle and the ops key do, from the agent's evidence).
+// While nothing but those fails, settlement records deferredSince and the grace period does not run:
+// none starts, and one a customer-side failure started stands still until settlement resumes. Deferred
+// fees are paid once the platform is back. A tick that pays every leg it can try shows the customer's
+// side works, so it ends a customer-side failure streak even during a deferral.
 //
 // D-062: a report is paid only once the platform has accepted it, so every paid period is among the
 // stored reports the agent rebuilds its ledger from after a disk rollback. Each tick first rebuilds
