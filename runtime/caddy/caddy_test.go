@@ -3,9 +3,13 @@ package caddy
 import (
 	"bytes"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func testInput() Input {
@@ -213,6 +217,40 @@ func TestRenderACMEIssuer(t *testing.T) {
 		for _, never := range []string{"staging", "acme_ca", "zerossl", "local_certs", "email", "tls "} {
 			if strings.Contains(s, never) {
 				t.Errorf("payment-needed=%v: has %q", pn, never)
+			}
+		}
+	}
+}
+
+// TestPaymentCopyNamesCodename ties the product name in the payment-needed
+// copy to config/defaults.yaml codename (spec-conformance G30): both the
+// plain 402 message and the static page send the owner to the console.
+func TestPaymentCopyNamesCodename(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "defaults.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defaults struct {
+		Codename string `yaml:"codename"`
+	}
+	if err := yaml.Unmarshal(raw, &defaults); err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Codename == "" {
+		t.Fatal("config/defaults.yaml has no codename")
+	}
+	console := "the " + defaults.Codename + " console"
+	if !strings.Contains(PaymentMessage, console) {
+		t.Errorf("PaymentMessage %q does not name %q (config/defaults.yaml codename)", PaymentMessage, console)
+	}
+	if !strings.Contains(string(PaymentNeededHTML), console) {
+		t.Errorf("payment-needed.html does not name %q (config/defaults.yaml codename)", console)
+	}
+	// No other product name: every capitalized word before "console" is the codename.
+	for _, copy := range []string{PaymentMessage, string(PaymentNeededHTML)} {
+		for _, m := range regexp.MustCompile(`\b([A-Z][A-Za-z]+) console\b`).FindAllStringSubmatch(copy, -1) {
+			if m[1] != defaults.Codename {
+				t.Errorf("payment copy names %q console, the codename is %q", m[1], defaults.Codename)
 			}
 		}
 	}
