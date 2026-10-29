@@ -32,7 +32,8 @@ import (
 var allowedChecks = []string{
 	keybroker.CheckNonce, keybroker.CheckRequest, keybroker.CheckQuote, keybroker.CheckReportData, keybroker.CheckChain, keybroker.CheckImage,
 	keybroker.CheckRTMR3, keybroker.CheckComposeHash, keybroker.CheckCustomer, keybroker.CheckConfigChain, keybroker.CheckStackRecompute,
-	keybroker.CheckChain, keybroker.CheckStackApproved, keybroker.CheckApprovalReleases, keybroker.CheckSecrets, keybroker.CheckKeys, keybroker.CheckSeal,
+	keybroker.CheckChain, keybroker.CheckStackApproved, keybroker.CheckApprovalReleases, keybroker.CheckDeployment, keybroker.CheckSecrets,
+	keybroker.CheckKeys, keybroker.CheckSeal,
 }
 
 // hmacKey is HMAC(key, tag || customer || salt) (D-058).

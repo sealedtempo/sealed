@@ -28,6 +28,8 @@
 //  11. stack_approved: DeploymentRegistry.isStackApproved(customer, stackHash) (stack_not_approved)
 //  12. approval_releases: the approval's releaseIds equal config.apps[].releaseId as a set, and its imageId equals
 //     config.imageId and the request's imageId (stack_not_approved)
+//  13. deployment: DeploymentRegistry.getDeployment(deploymentId) is not Closed; a deployment that is not registered
+//     yet (the first boot) passes (stack_not_approved)
 //
 // Only then does it read the secrets the stack's manifests name (same_as only where the source secret lists the
 // referencing app in share_with), derive diskKey and signerSeed from (customer, salt) with the Cloud KMS HMAC key,

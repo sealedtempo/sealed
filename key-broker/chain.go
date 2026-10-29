@@ -25,6 +25,9 @@ type Registry interface {
 	GetRelease(ctx context.Context, releaseID [32]byte) (*chain.Release, error)
 	IsStackApproved(ctx context.Context, customer common.Address, stackHash [32]byte) (bool, error)
 	GetStackApproval(ctx context.Context, customer common.Address, stackHash [32]byte) (*chain.StackApproval, error)
+	// GetDeployment is DeploymentRegistry.getDeployment; an unregistered id returns an error wrapping
+	// chain.ErrNotFound.
+	GetDeployment(ctx context.Context, deploymentID [32]byte) (*chain.Deployment, error)
 }
 
 // Head is the block every read of one decision is pinned to.

@@ -50,6 +50,7 @@ every check with its data.
 | `chain` again: the approval reads below are pinned to the current head, which must also be at most 60 s from the broker's clock; the bundle fetches and the compose cannot age them (kb-2) | 503 `chain_stale` |
 | `stack_approved`: `DeploymentRegistry.isStackApproved(customer, stackHash)` | `stack_not_approved` |
 | `approval_releases`: the approval's releaseIds equal the config's as a set, and its imageId equals `config.imageId` and the request's (D-014) | `stack_not_approved` |
+| `deployment`: `DeploymentRegistry.getDeployment(deploymentId)` is not Closed, so a revived VM or a copied disk of a closed deployment gets nothing; a deployment the oracle has not registered yet (the first boot) passes | `stack_not_approved` |
 | `secrets`: every secret the stack's manifests name is stored (optional ones may be missing) | 503 `secret_missing` / `secret_invalid` |
 | `keys`: `diskKey` and `signerSeed` from the KMS HMAC key | 503 |
 | `chain` at the seal: the head of the approval reads is still at most 60 s old when the release is sealed | 503 `chain_stale` |

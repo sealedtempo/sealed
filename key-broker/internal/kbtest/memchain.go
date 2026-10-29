@@ -18,14 +18,15 @@ import (
 
 // MemChain is an in-memory model of the three registries with the contracts' view semantics: isApprovedImage is
 // Active and not debug, isActiveRelease is Active or Deprecated, isStackApproved requires an unrevoked, unexpired
-// approval whose image and releases are all still approved or active.
+// approval whose image and releases are all still approved or active, getDeployment reverts for an unknown id.
 type MemChain struct {
-	mu        sync.Mutex
-	id        uint64
-	block     uint64
-	images    map[[32]byte]*chain.Image
-	releases  map[[32]byte]*chain.Release
-	approvals map[common.Address]map[[32]byte]*chain.StackApproval
+	mu          sync.Mutex
+	id          uint64
+	block       uint64
+	images      map[[32]byte]*chain.Image
+	releases    map[[32]byte]*chain.Release
+	approvals   map[common.Address]map[[32]byte]*chain.StackApproval
+	deployments map[[32]byte]*chain.Deployment
 
 	// FailReads makes every registry read fail (an RPC outage).
 	FailReads error
@@ -36,7 +37,7 @@ type MemChain struct {
 // NewMemChain returns an empty chain with the given id.
 func NewMemChain(id uint64) *MemChain {
 	return &MemChain{id: id, block: 1, images: map[[32]byte]*chain.Image{}, releases: map[[32]byte]*chain.Release{},
-		approvals: map[common.Address]map[[32]byte]*chain.StackApproval{}}
+		approvals: map[common.Address]map[[32]byte]*chain.StackApproval{}, deployments: map[[32]byte]*chain.Deployment{}}
 }
 
 var _ keybroker.Chain = (*MemChain)(nil)
@@ -157,6 +158,50 @@ func (m *MemChain) GetStackApproval(_ context.Context, customer common.Address, 
 	cp := *a
 	cp.ReleaseIDs = append([][32]byte(nil), a.ReleaseIDs...)
 	return &cp, nil
+}
+
+// GetDeployment implements keybroker.Registry.
+func (m *MemChain) GetDeployment(_ context.Context, id [32]byte) (*chain.Deployment, error) {
+	if err := m.fail(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.deployments[id]
+	if !ok {
+		return nil, &chain.RevertError{Contract: "DeploymentRegistry", Name: "DeploymentNotFound"}
+	}
+	cp := *d
+	return &cp, nil
+}
+
+// RegisterDeployment records an Active deployment like DeploymentRegistry.registerDeployment (the record's
+// signature is not modeled).
+func (m *MemChain) RegisterDeployment(r chain.Record) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.deployments[r.DeploymentId]; ok {
+		return errors.New("DeploymentAlreadyRegistered")
+	}
+	m.deployments[r.DeploymentId] = &chain.Deployment{DeploymentId: r.DeploymentId, Customer: r.Customer, AttestedAt: r.AttestedAt,
+		Method: 1, LastMethod: 1, Status: chain.DeploymentActive, StackHash: r.StackHash, ImageId: r.ImageId, QuoteHash: r.QuoteHash,
+		EventLogHash: r.EventLogHash, ConfigHash: r.ConfigHash, EnclaveSigner: r.EnclaveSigner, LastAttestedAt: r.AttestedAt,
+		RegisteredAt: uint64(time.Now().Unix())}
+	m.bump()
+	return nil
+}
+
+// CloseDeployment closes an Active deployment like DeploymentRegistry.closeDeployment.
+func (m *MemChain) CloseDeployment(id [32]byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.deployments[id]
+	if !ok || d.Status != chain.DeploymentActive {
+		return errors.New("DeploymentNotActive")
+	}
+	d.Status, d.ClosedAt = chain.DeploymentClosed, uint64(time.Now().Unix())
+	m.bump()
+	return nil
 }
 
 // AddImage registers an image.

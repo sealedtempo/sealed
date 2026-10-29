@@ -18,6 +18,7 @@ import (
 	"github.com/sealedtempo/sealed/runtime/composer"
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // Test accounts. Customer is the broker's bootstrap customer; both are anvil dev accounts so they can sign on anvil.
@@ -279,6 +280,21 @@ func (w *World) Compose(t testing.TB, o StackOptions) *Stack {
 func (w *World) Approve(t testing.TB, s *Stack) {
 	t.Helper()
 	w.Reg.ApproveStack(t, s.Customer, s.Result.StackHash, s.ReleaseIDs, s.ImageID)
+}
+
+// Register registers the stack's deployment onchain, as the oracle does after the first boot's evidence. The
+// record's quote and event log hashes are placeholders; the broker reads only the deployment's status.
+func (w *World) Register(t testing.TB, s *Stack, attestedAt uint64) {
+	t.Helper()
+	w.Reg.RegisterDeployment(t, chain.Record{DeploymentId: s.Result.DeploymentID, Customer: s.Customer, StackHash: s.Result.StackHash,
+		ImageId: s.ImageID, QuoteHash: [32]byte{0x0a}, EventLogHash: [32]byte{0x0e}, ConfigHash: s.Result.ConfigHash,
+		EnclaveSigner: common.HexToAddress("0x00000000000000000000000000000000000000e5"), AttestedAt: attestedAt})
+}
+
+// Close closes the stack's deployment onchain as its customer.
+func (w *World) Close(t testing.TB, s *Stack) {
+	t.Helper()
+	w.Reg.CloseDeployment(t, s.Customer, s.Result.DeploymentID)
 }
 
 // Attempt is one boot's release request, built like sealed-agent builds it. Tests change fields before Body.

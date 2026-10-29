@@ -31,6 +31,10 @@ type Registrar interface {
 	RevokeRelease(t testing.TB, id [32]byte)
 	ApproveStack(t testing.TB, customer common.Address, stackHash [32]byte, releaseIDs [][32]byte, imageID [32]byte)
 	RevokeStack(t testing.TB, customer common.Address, stackHash [32]byte)
+	// RegisterDeployment registers an attested deployment record (oracle method 1); CloseDeployment closes it as
+	// its customer.
+	RegisterDeployment(t testing.TB, rec chain.Record)
+	CloseDeployment(t testing.TB, customer common.Address, deploymentID [32]byte)
 }
 
 // MemRegistrar is a Registrar over MemChain.
@@ -84,6 +88,20 @@ func (m *MemRegistrar) ApproveStack(t testing.TB, customer common.Address, stack
 
 func (m *MemRegistrar) RevokeStack(t testing.TB, customer common.Address, stackHash [32]byte) {
 	m.C.RevokeStack(customer, stackHash)
+}
+
+func (m *MemRegistrar) RegisterDeployment(t testing.TB, rec chain.Record) {
+	t.Helper()
+	if err := m.C.RegisterDeployment(rec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (m *MemRegistrar) CloseDeployment(t testing.TB, customer common.Address, id [32]byte) {
+	t.Helper()
+	if err := m.C.CloseDeployment(id); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // AnvilRegistrar is a Registrar over the real contracts on a local anvil node, read with the verifier's client.
@@ -160,4 +178,20 @@ func (a *AnvilRegistrar) ApproveStack(t testing.TB, customer common.Address, sta
 func (a *AnvilRegistrar) RevokeStack(t testing.TB, customer common.Address, stackHash [32]byte) {
 	t.Helper()
 	a.R.RevokeStack(t, a.account(t, customer), stackHash)
+}
+
+func (a *AnvilRegistrar) RegisterDeployment(t testing.TB, rec chain.Record) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	digest, err := a.client.RecordDigest(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.R.RegisterDeployment(t, rec, digest)
+}
+
+func (a *AnvilRegistrar) CloseDeployment(t testing.TB, customer common.Address, id [32]byte) {
+	t.Helper()
+	a.R.CloseDeployment(t, a.account(t, customer), id)
 }

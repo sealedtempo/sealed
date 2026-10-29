@@ -28,6 +28,8 @@ const (
 	CheckConfigChain = "config_chain"
 	// CheckChain pins every registry read of the decision to the current head block.
 	CheckChain = "chain"
+	// CheckDeployment refuses a deployment that was closed onchain (kb-1).
+	CheckDeployment = "deployment"
 	// ReasonInternal answers 500: a defect in the broker itself.
 	ReasonInternal = "internal"
 )
@@ -145,7 +147,7 @@ func (s *session) check(ctx context.Context) (*ReleaseResponse, *stop) {
 	defer cancel()
 	for _, step := range []func(context.Context) *stop{
 		s.checkQuote, s.checkReportData, s.pinChain, s.checkImage, s.checkRTMR3, s.checkComposeHash,
-		s.checkCustomer, s.checkConfigChain, s.checkRecompute, s.repinChain, s.checkApproval,
+		s.checkCustomer, s.checkConfigChain, s.checkRecompute, s.repinChain, s.checkApproval, s.checkDeployment,
 	} {
 		if st := step(rctx); st != nil {
 			return nil, st
@@ -623,6 +625,35 @@ func (s *session) checkApproval(ctx context.Context) *stop {
 	}
 	s.pass(CheckApprovalReleases, "the approval names exactly the config's releases and image", data)
 	return nil
+}
+
+// checkDeployment refuses a deployment that was closed onchain (kb-1). closeDeployment is terminal and the
+// deploymentId is keccak256(customer, stackHash, salt), so a revived VM or a copied disk of a closed deployment never
+// gets its secrets or keys again; a new deployment uses a new salt. A deployment the oracle has not registered yet
+// (every first boot, which registers after its release) passes. It reads at the repinned head, like the approval.
+func (s *session) checkDeployment(ctx context.Context) *stop {
+	id := s.deployment
+	data := map[string]any{"deploymentId": hex0x(id[:])}
+	dep, err := s.reg.GetDeployment(ctx, id)
+	if errors.Is(err, chain.ErrNotFound) {
+		data["status"] = chain.DeploymentNone
+		s.pass(CheckDeployment, "the deployment is not registered yet", data)
+		return nil
+	}
+	if err != nil {
+		return s.unavailable(CheckDeployment, "", "DeploymentRegistry.getDeployment: "+err.Error())
+	}
+	data["status"], data["closedAt"] = dep.Status, dep.ClosedAt
+	switch dep.Status {
+	case chain.DeploymentActive:
+		s.pass(CheckDeployment, "the deployment is Active", data)
+		return nil
+	case chain.DeploymentClosed:
+		return s.deny(CheckDeployment, ReasonStackNotApproved, fmt.Sprintf("deployment %s was closed onchain (closedAt %d); a closed deployment never gets its secrets again",
+			hex0x(id[:]), dep.ClosedAt), data)
+	default:
+		return s.deny(CheckDeployment, ReasonStackNotApproved, fmt.Sprintf("deployment %s has unknown status %d", hex0x(id[:]), dep.Status), data)
+	}
 }
 
 // release reads the stack's secrets, derives the keys and seals everything to the ephemeral key.
