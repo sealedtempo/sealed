@@ -9,7 +9,17 @@ First-party code
 
 Images
   relay            built from runtime/relay on node:24.22.1-bookworm-slim. Node.js is MIT; Debian
-                   base packages are OS system components (D-021).
+                   base packages are OS system components (D-021). Each npm package in /app/node_modules
+                   carries its license text in its own directory or README, except these two:
+                   @phala/dcap-qvl 0.7.0: npm metadata Apache-2.0, repository LICENSE MIT; used under
+                   either, both allowed. The npm package lists LICENSE in "files" but does not
+                   contain it, so the repository's text is in this bundle:
+                   Text:    LICENSES/phala-dcap-qvl-v0.7.0-LICENSE
+                            (Phala-Network/dcap-qvl v0.7.0 LICENSE, git blob 6f0b6ce4963f1a5a8ab3efa23ee4012cc37e5c9c)
+                   tr46 0.0.3 (MIT in package.json; pulled in by node-fetch 2.7.0 under
+                   @phala/dcap-qvl): neither the npm package nor the upstream tag 0.0.3 of
+                   jsdom/tr46 (formerly Sebmaster/tr46.js) has a license text. Upstream added one in
+                   2016, after this release, so there is no text of this version to ship.
   litellm-relay    LiteLLM v1.106.5, MIT core only. Derived from
                    ghcr.io/berriai/litellm-database:v1.106.5 with /app/enterprise and the
                    litellm_enterprise package (proprietary "BerriAI Enterprise license") deleted and
@@ -32,7 +42,7 @@ Privatemode
 Notable JavaScript dependencies (all on the allowlist)
   mppx 0.15.0 MIT, viem 2.57.13 MIT, hono 4.13.11 MIT, @hono/node-server 2.0.10 MIT, pg 8.23.1 MIT,
   undici 7.30.1 MIT, eventsource-parser 4.1.1 MIT, @tinfoilsh/verifier 1.3.0 Apache-2.0,
-  @phala/aci-verifier 0.10.0 Apache-2.0, @phala/dcap-qvl 0.7.0 Apache-2.0,
+  @phala/aci-verifier 0.10.0 Apache-2.0, @phala/dcap-qvl 0.7.0 (Apache-2.0 or MIT, see relay above),
   @freedomofpress/sigstore-browser 0.1.15 (npm metadata MIT, repository LICENSE Apache-2.0; used
   under either, both allowed), @freedomofpress/tuf-browser 0.1.11 MIT,
   @freedomofpress/crypto-browser 0.1.8 Apache-2.0.
