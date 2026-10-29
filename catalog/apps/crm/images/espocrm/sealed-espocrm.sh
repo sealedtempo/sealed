@@ -165,6 +165,16 @@ if [ "$(id -u)" = 0 ]; then
       chown -R "$WWW_UID:$WWW_GID" "$d"
     fi
   done
+  # Docker hands a container started as root its stdout and stderr as pipes owned by root, mode
+  # 0600 (runc gives them to the user only when the container itself starts as that user). Apache
+  # opens its error log by path (ErrorLog /proc/self/fd/2), which needs the pipe's permission, so
+  # as www-data it fails with "could not open error log file" and exits. Give both pipes to
+  # www-data first, as runc does for a non-root container; a terminal or /dev/null stays as it is.
+  for fd in 1 2; do
+    if [ -p "/dev/fd/$fd" ]; then
+      chown "$WWW_UID:$WWW_GID" "/dev/fd/$fd"
+    fi
+  done
   exec setpriv --reuid="$WWW_UID" --regid="$WWW_GID" --clear-groups --inh-caps=-all \
     --bounding-set=-all --no-new-privs -- "$0" "$mode" "$@"
 fi
