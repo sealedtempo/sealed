@@ -21,6 +21,7 @@ import (
 	"github.com/sealedtempo/sealed/verifier/chain"
 	"github.com/sealedtempo/sealed/verifier/internal/anviltest"
 	"github.com/sealedtempo/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/verifier/releasesig"
 )
 
 func envMap(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -31,6 +32,14 @@ func useComposer(t *testing.T, f func(*config, verify.ChainReader) (verify.Compo
 	old := composerFactory
 	composerFactory = f
 	t.Cleanup(func() { composerFactory = old })
+}
+
+// useSignatures replaces signaturesFactory for one test.
+func useSignatures(t *testing.T, f func(*config) (verify.ReleaseSignatures, error)) {
+	t.Helper()
+	old := signaturesFactory
+	signaturesFactory = f
+	t.Cleanup(func() { signaturesFactory = old })
 }
 
 var addrFlags = []string{
@@ -147,6 +156,7 @@ func TestDaemonRedactsRPCURL(t *testing.T) {
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 	useComposer(t, func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil })
+	useSignatures(t, func(*config) (verify.ReleaseSignatures, error) { return fixture.Signatures{}, nil })
 	srv, err := newServer(context.Background(), c, log)
 	if err != nil {
 		t.Fatal(err)
@@ -212,6 +222,7 @@ func TestDaemonEndToEnd(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	useComposer(t, func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil })
+	useSignatures(t, func(*config) (verify.ReleaseSignatures, error) { return fixture.Signatures{}, nil })
 	srv, err := newServer(context.Background(), c, log)
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +236,8 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 	text, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(text), "Sealed verification (evidence): PASS") || !strings.Contains(string(text), "WARNING") {
+	if !strings.Contains(string(text), "Sealed verification (evidence): PASS") || !strings.Contains(string(text), "WARNING") ||
+		!strings.Contains(string(text), "2 releases signed by "+fixture.ReleaseSigner) {
 		t.Fatalf("daemon report:\n%s", text)
 	}
 
@@ -244,6 +256,15 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 	if srv.Deps.Composer != nil {
 		t.Fatal("composer wired")
+	}
+
+	// The production signature checker is wired by default, from the release asset bases.
+	signaturesFactory = newSignatures
+	if srv, err = newServer(context.Background(), c, log); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := srv.Deps.Signatures.(*releasesig.Verifier); !ok {
+		t.Fatalf("signatures %T", srv.Deps.Signatures)
 	}
 }
 

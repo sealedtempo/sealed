@@ -24,6 +24,10 @@ import (
 // composer, so stack recomputation fails closed and POST /v1/compose answers 501.
 var composerFactory = newComposer
 
+// signaturesFactory builds the release signature checker (composer.go). Tests replace it; nil leaves the daemon
+// without one, so release_signature fails closed outside dev mode.
+var signaturesFactory = newSignatures
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(os.Args[1:], os.Getenv, log); err != nil {
@@ -58,7 +62,7 @@ func run(args []string, getenv func(string) string, log *slog.Logger) error {
 	go func() { errc <- hs.ListenAndServe() }()
 	log.Info("listening", "addr", c.Listen, "chainId", c.ChainID, "rpc", chain.RedactURL(c.RPCURL), "allowSimulated", c.AllowSimulated,
 		"addresses", c.AddrSource, "deploymentRegistry", c.Addrs.DeploymentRegistry.Hex(),
-		"composer", srv.Deps.Composer != nil, "composerVersion", srv.ComposerVersion(), "maxBodyBytes", httpapi.MaxBodyBytes, "releaseAssetBases", c.ReleaseAssetBases, "bundleCache", orMemory(c.BundleCacheDir),
+		"composer", srv.Deps.Composer != nil, "releaseSignatures", srv.Deps.Signatures != nil, "composerVersion", srv.ComposerVersion(), "maxBodyBytes", httpapi.MaxBodyBytes, "releaseAssetBases", c.ReleaseAssetBases, "bundleCache", orMemory(c.BundleCacheDir),
 		"liveAllowedHosts", c.LiveHosts, "liveFetch", c.LiveFetch, "allowedClients", c.AllowedClients,
 		"maxChainHeadAge", c.MaxChainHeadAge.String(), "maxInFlight", c.MaxInFlight)
 	select {
@@ -108,6 +112,11 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 		}
 	} else {
 		log.Warn("no composer: stack_recompute fails closed and /v1/compose returns 501")
+	}
+	if signaturesFactory != nil {
+		if deps.Signatures, err = signaturesFactory(c); err != nil {
+			return nil, err
+		}
 	}
 	return &httpapi.Server{
 		Deps: deps, ChainID: c.ChainID, LiveInsecureTLS: c.InsecureLiveTLS, LiveTimeout: c.LiveTimeout,

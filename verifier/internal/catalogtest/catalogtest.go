@@ -160,6 +160,16 @@ func (s *Server) PublishBytes(t testing.TB, app, version string, data []byte) {
 	s.assets[p] = bytes.Clone(data)
 }
 
+// PublishNext serves data next to the bundle of (app, version), at the bundle URL plus suffix (".sigstore.json",
+// ".intoto.jsonl").
+func (s *Server) PublishNext(t testing.TB, app, version, suffix string, data []byte) {
+	t.Helper()
+	p := s.path(t, app, version) + suffix
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.assets[p] = bytes.Clone(data)
+}
+
 // Remove deletes the asset of (app, version).
 func (s *Server) Remove(t testing.TB, app, version string) {
 	t.Helper()

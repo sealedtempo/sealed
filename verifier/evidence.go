@@ -156,6 +156,7 @@ func VerifyEvidence(ctx context.Context, b *Bundle, deps Deps, opts Options) (*R
 	}
 
 	s.checkReleases()
+	s.checkReleaseSignatures()
 	s.checkRecompute(derived)
 	s.checkApproval()
 	s.checkExpectedCustomer()

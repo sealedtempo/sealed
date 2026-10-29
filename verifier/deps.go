@@ -117,12 +117,33 @@ type ComposeOutput struct {
 // ErrComposerNotConfigured is returned by a nil Composer. Verification then fails closed.
 var ErrComposerNotConfigured = errors.New("composer not configured")
 
+// ReleaseSignatures checks that release CI built and signed a release (supply-2). verifier/releasesig implements it
+// with sigstore-go: <bundle>.sigstore.json must sign exactly the onchain bundleHash with the identity of
+// release.yml on main, and the SLSA provenance <bundle>.intoto.jsonl, signed by the pinned slsa-github-generator for
+// that workflow, must name bundleHash as a subject.
+type ReleaseSignatures interface {
+	VerifyReleaseSignature(ctx context.Context, rel ComposeRelease) (*ReleaseSignature, error)
+}
+
+// ReleaseSignature is what a verified release signature shows.
+type ReleaseSignature struct {
+	Signer        string // certificate identity of the bundle signature
+	Issuer        string // OIDC issuer of that certificate
+	SignatureURL  string
+	LogIndex      int64  // transparency log index of the bundle signature
+	SignedAt      int64  // unix seconds, the earliest verified timestamp of the bundle signature
+	Builder       string // certificate identity of the provenance, the SLSA builder
+	BuildConfig   string // the workflow that called the builder (certificate Build Config URI)
+	ProvenanceURL string // URL of the SLSA provenance
+}
+
 // Deps are the verifier's collaborators.
 type Deps struct {
-	Quotes   *attest.Verifier
-	Chain    ChainReader
-	Composer Composer // nil: stack_recompute fails
-	Now      func() time.Time
+	Quotes     *attest.Verifier
+	Chain      ChainReader
+	Composer   Composer          // nil: stack_recompute fails
+	Signatures ReleaseSignatures // nil: release_signature fails, unless Options.AcceptUnsignedReleases
+	Now        func() time.Time
 }
 
 func (d Deps) now() time.Time {
@@ -155,6 +176,11 @@ type Options struct {
 	// (attest.VerifierOptions.AllowSimulated). Without it a simulated quote fails the quote check, so a consumer that
 	// only reads Report.OK never accepts one; dev use is an opt-in per verification.
 	AcceptSimulated bool
+	// AcceptUnsignedReleases is for dev verifications on local chains, whose releases no release CI signed: the
+	// release_signature check still runs and reports what it found, but passes. Like AcceptSimulated it is an opt-in
+	// per verification; sealed verify and sealed-verifierd set it only in dev mode (--dev-allow-simulated with
+	// SEALED_DEV_SIM=1).
+	AcceptUnsignedReleases bool
 	// RequireOnchainRecord fails when the deployment is not registered. The oracle verifies evidence before it
 	// registers, so it leaves this false; `sealed verify` sets it.
 	RequireOnchainRecord bool

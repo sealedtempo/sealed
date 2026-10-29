@@ -218,10 +218,12 @@ type RequestOptions struct {
 func (s *Server) options(o RequestOptions) (verify.Options, error) {
 	// A simulated quote can only pass on a dev daemon (--dev-allow-simulated with SEALED_DEV_SIM=1). Such a daemon
 	// opts in for every request; its consumers (the payer, the oracle) refuse simulated reports themselves unless
-	// they run in dev mode too, and every such report says simulated.
+	// they run in dev mode too, and every such report says simulated. The same dev daemon passes releases of a local
+	// chain that no release CI signed (release_signature still says what it found).
+	dev := s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated()
 	opts := verify.Options{
 		ChainID: s.ChainID, RequireOnchainRecord: true, MaxChainHeadAge: s.MaxChainHeadAge,
-		AcceptSimulated: s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated(),
+		AcceptSimulated: dev, AcceptUnsignedReleases: dev,
 	}
 	if o.RequireRecord != nil {
 		opts.RequireOnchainRecord = *o.RequireRecord
@@ -455,16 +457,17 @@ func (s *Server) ComposerVersion() string {
 
 // healthz reports what callers need to talk to this server: the chain, whether simulated quotes pass, whether a
 // composer is wired and the composerVersion configs must name (the platform api writes it into new configs), whether
-// attest URLs are fetched, and the body limit.
+// release signatures are checked, whether attest URLs are fetched, and the body limit.
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"chainId":         s.ChainID,
-		"allowSimulated":  s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated(),
-		"composer":        s.Deps.Composer != nil,
-		"composerVersion": s.ComposerVersion(),
-		"liveFetch":       !s.DisableLiveFetch,
-		"maxBodyBytes":    MaxBodyBytes,
+		"ok":                true,
+		"chainId":           s.ChainID,
+		"allowSimulated":    s.Deps.Quotes != nil && s.Deps.Quotes.AllowsSimulated(),
+		"composer":          s.Deps.Composer != nil,
+		"composerVersion":   s.ComposerVersion(),
+		"releaseSignatures": s.Deps.Signatures != nil,
+		"liveFetch":         !s.DisableLiveFetch,
+		"maxBodyBytes":      MaxBodyBytes,
 	})
 }
 

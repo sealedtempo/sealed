@@ -100,7 +100,7 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	fs.StringVar(&clients, "allowed-clients", env("SEALED_VERIFIERD_ALLOWED_CLIENTS"), "comma-separated source IP addresses or CIDR prefixes that may call the API, for example the payer's 172.30.250.5 on a stack's verifier network, which the composer sets (SEALED_VERIFIERD_ALLOWED_CLIENTS); every source when empty; loopback may always read /healthz")
 	fs.StringVar(&headAge, "max-chain-head-age", or(env("SEALED_VERIFIERD_MAX_CHAIN_HEAD_AGE"), verify.DefaultMaxChainHeadAge.String()), "oldest chain head a verification accepts, at most 5m; a staler RPC fails the chain check (SEALED_VERIFIERD_MAX_CHAIN_HEAD_AGE)")
 	fs.StringVar(&maxInFlight, "max-in-flight", or(env("SEALED_VERIFIERD_MAX_IN_FLIGHT"), strconv.Itoa(httpapi.DefaultMaxInFlight)), "concurrent verifications before answering 429 (SEALED_VERIFIERD_MAX_IN_FLIGHT)")
-	fs.BoolVar(&c.AllowSimulated, "dev-allow-simulated", false, "DEV ONLY: accept dev simulator quotes; requires SEALED_DEV_SIM=1")
+	fs.BoolVar(&c.AllowSimulated, "dev-allow-simulated", false, "DEV ONLY: accept dev simulator quotes and releases without release CI's signature; requires SEALED_DEV_SIM=1")
 	fs.BoolVar(&c.InsecureLiveTLS, "dev-insecure-live-tls", false, "DEV ONLY: skip WebPKI checks of /attest certificates; requires SEALED_DEV_SIM=1")
 	fs.BoolVar(&c.LivePrivate, "dev-live-allow-private", false, "DEV ONLY: let live verification fetch loopback and private addresses; requires SEALED_DEV_SIM=1")
 	if err := fs.Parse(args); err != nil {
