@@ -3,15 +3,21 @@ package attest
 import (
 	"bytes"
 	"context"
+	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/go-tdx-guest/abi"
+	pb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
 // Fuzz targets for the quote parser, offline quote verification and the
@@ -160,10 +166,44 @@ func FuzzParseQuote(f *testing.F) {
 	})
 }
 
-// FuzzVerifyQuote: VerifyQuote never panics, and no quote other than the
-// recorded originals verifies against the recorded collateral. A mutated
-// quote that still verified would give one attestation several quoteHash
-// values (INTERFACES section 2), or worse, other measurements.
+// lowS returns raw with both ECDSA signatures (the quote's and the QE
+// report's) in their low-s form, re-serialized. Each signature also verifies
+// as (r, n-s), so these four encodings of one attestation are the only
+// variants a verifier cannot refuse; ok is false if raw does not parse.
+func lowS(raw []byte) ([]byte, bool) {
+	p, err := abi.QuoteToProto(raw)
+	if err != nil {
+		return nil, false
+	}
+	s, ok := p.(interface {
+		GetSignedData() *pb.Ecdsa256BitQuoteV4AuthData
+	})
+	if !ok {
+		return nil, false
+	}
+	n := elliptic.P256().Params().N
+	half := new(big.Int).Rsh(n, 1)
+	norm := func(sig []byte) {
+		if len(sig) != 64 {
+			return
+		}
+		v := new(big.Int).SetBytes(sig[32:])
+		if v.Cmp(half) > 0 {
+			v.Sub(n, v).FillBytes(sig[32:])
+		}
+	}
+	sd := s.GetSignedData()
+	norm(sd.GetSignature())
+	norm(sd.GetCertificationData().GetQeReportCertificationData().GetQeReportSignature())
+	out, err := abi.QuoteToAbiBytes(p)
+	return out, err == nil
+}
+
+// FuzzVerifyQuote: VerifyQuote never panics, and no quote verifies against
+// the recorded collateral except the recorded originals and their ECDSA
+// (r, n-s) twins (lowS). Any other mutation that still verified would give
+// one attestation more quoteHash values (INTERFACES section 2), or worse,
+// other measurements.
 func FuzzVerifyQuote(f *testing.F) {
 	policy := fuzzPolicy(f)
 	verifiers := []*Verifier{
@@ -182,6 +222,12 @@ func FuzzVerifyQuote(f *testing.F) {
 	if len(originals) < 2 {
 		f.Fatalf("only %d recorded quotes verify offline", len(originals))
 	}
+	twins := map[string]bool{}
+	for q := range originals {
+		if l, ok := lowS([]byte(q)); ok {
+			twins[string(l)] = true
+		}
+	}
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		for _, v := range verifiers {
 			res, err := v.VerifyQuote(context.Background(), raw)
@@ -191,8 +237,11 @@ func FuzzVerifyQuote(f *testing.F) {
 				}
 				continue
 			}
-			if !originals[string(raw)] {
-				t.Fatalf("a quote that is not one of the recorded originals verifies (FMSPC %s, TCB %s): %x", res.FMSPC, res.TCBStatus, raw)
+			if originals[string(raw)] {
+				continue
+			}
+			if l, ok := lowS(raw); !ok || !twins[string(l)] {
+				t.Fatalf("a quote that is not one of the recorded originals verifies (FMSPC %s, TCB %s, %d bytes, sha256 %x)", res.FMSPC, res.TCBStatus, len(raw), sha256.Sum256(raw))
 			}
 		}
 	})
