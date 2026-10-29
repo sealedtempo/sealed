@@ -49,7 +49,9 @@ that change a Dockerfile or an image directory, without pushing. So a build must
 contents carry the build time: `dockerfile_apt_test.go` requires every apt, dpkg or ldconfig RUN of a stage
 that reaches the image to end with `rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log
 /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old /var/lib/dpkg/*-old`, and every copied pnpm tree to
-drop `node_modules/.modules.yaml` and `node_modules/.pnpm-workspace-state*.json`.
+drop `node_modules/.modules.yaml` and `node_modules/.pnpm-workspace-state*.json`. `scripts/release/sign-image.sh`
+then signs each pushed digest keyless, with the identity
+`https://github.com/<owner>/<repo>/.github/workflows/images.yml@refs/heads/main`.
 
 ## Release assets (D-046)
 
