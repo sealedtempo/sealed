@@ -114,6 +114,12 @@ describe('catalog/apps/inference-relay', () => {
     expect(text).not.toContain('confidential.cloud')
   })
 
+  it('the example environment lists exactly the relay providers it reads a key for (D-055: no Privatemode)', () => {
+    const example = readFileSync(join(repo, '.env.example'), 'utf8')
+    const keys = [...example.matchAll(/^([A-Z0-9_]+_API_KEY)=/gm)].map((m) => m[1]).sort()
+    expect(keys).toEqual(Object.values(PROVIDER_KEY_ENV).sort())
+  })
+
   // Runs the real composer lint once runtime/composer is in this tree (after ws/composer merges).
   const composerCli = join(repo, 'runtime/composer/cmd/sealed-compose')
   const haveGo = spawnSync('go', ['version']).status === 0
