@@ -34,8 +34,8 @@ env:
 jobs:
   go:
     runs-on: ubuntu-24.04
-    # go test's per-package -timeout (25m) fires first, so a hung test prints its stack instead of the job
-    # being killed silently.
+    # Well above go test's -timeout (25m, counted per package test binary), so a hung package normally panics
+    # with its goroutine stacks before the job is cancelled without them.
     timeout-minutes: 45
     env:
       # Nothing may skip in CI: the anvil end-to-end tests (verifier, key broker, CLI, release scripts), the key
@@ -63,8 +63,8 @@ jobs:
         run: |
           echo "$COMPOSE_SHA256  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
           test "$(docker compose version --short)" = "$COMPOSE_VERSION"
-      # TestSystemFsck runs fsck.fat (dosfstools) when the runner has it; the measurement script test needs GNU
-      # base64, sha256sum and jq; TestDockerChecksEgressConfigs runs the system python3.
+      # TestSystemFsck runs fsck.fat (dosfstools) when the runner has it; the measurement script test needs
+      # base64 -w0, sha256sum and jq; TestDockerChecksEgressConfigs runs the system python3.
       - name: Tool versions
         run: |
           go version
@@ -121,15 +121,17 @@ jobs:
           terraform test -no-color
   ts:
     runs-on: ubuntu-24.04
-    # More than the go job's share: the chain tests start anvil per suite, and the Firefox crawl installs
-    # Playwright's Firefox first.
+    # 45 minutes, up from 30: the chain suites start anvil per suite, and the Firefox crawl installs Playwright's
+    # Firefox first.
     timeout-minutes: 45
     env:
       # Scraper and relay Postgres tests use the runner image's PostgreSQL 16 (CI makes the scraper's required).
       PG_BIN: /usr/lib/postgresql/16/bin
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      # The anvil suites (@sealed/core contracts, agent payments and access keys, relay and mpp-payer end to end)
-      # fail instead of skipping when anvil or the contracts project is missing.
+      # The @sealed/core and agent anvil suites gate on chainTestsEnabled() (packages/core/src/testing/localTempo.ts),
+      # which with this set fails instead of skipping when anvil or the contracts project is missing. The relay and
+      # mpp-payer end-to-end suites gate on anvilAvailable() (runtime/relay/test/helpers/anvil.ts), which ignores
+      # it; the "Require anvil" step below covers them.
       SEALED_REQUIRE_CHAIN_TESTS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -143,6 +145,14 @@ jobs:
         with: { go-version: "${{ env.GO_VERSION }}" }
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      # anvilAvailable() is true when `anvil --version` exits 0; without anvil the relay and mpp-payer end-to-end
+      # suites would skip and pnpm -r test would still pass.
+      - name: Require anvil
+        run: |
+          if ! anvil --version >/dev/null 2>&1; then
+            echo "::error::anvil --version failed; the relay and mpp-payer end-to-end suites would skip"
+            exit 1
+          fi
       # The scraper's catalog test runs `docker compose config` on the composed document.
       - uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2.4.0
         with: { version: "v${{ env.COMPOSE_VERSION }}", cache-binary: false }
@@ -189,8 +199,8 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}" }
-      # The crm and internal-tools suites check the normalized `docker compose config` output; the llm-gateway and
-      # catalog/tools checks run `docker compose config --quiet`.
+      # The crm, internal-tools and catalog/tools suites parse `docker compose config --format json` output; the
+      # llm-gateway check runs `docker compose config --quiet`.
       - uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2.4.0
         with: { version: "v${{ env.COMPOSE_VERSION }}", cache-binary: false }
       - name: Check the compose plugin

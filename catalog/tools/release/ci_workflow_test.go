@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -67,8 +68,8 @@ func ciUsesAction(name string) func(ciStep) bool {
 var ciRunsSuites = regexp.MustCompile(`go test |pnpm (-r )?test|node --test|-m unittest| test PYTHON=|make -C contracts test`)
 
 // L-8: Go's default timeout is 10 minutes per package binary, too tight for runtime/composer's real-Docker
-// stacks and catalog/tools/release on a 4 vCPU runner. The job timeout must be longer, so a hung test is
-// reported by Go with its stack rather than by the job being cancelled.
+// stacks and catalog/tools/release on a 4 vCPU runner. The job timeout must be longer than -timeout, or a hung
+// test can never be reported by Go with its stack before the job is cancelled.
 func TestCIGoTestsHaveATimeout(t *testing.T) {
 	wf := loadCIWorkflow(t)
 	goTest := regexp.MustCompile(`\bgo test\b[^\n]*`)
@@ -141,8 +142,10 @@ func TestCIPinsCompose(t *testing.T) {
 	}
 }
 
-// L-7 and L-6.4: the ts job runs the anvil suites (they skip without anvil, so CI requires them) and the
-// scraper's Playwright Firefox crawl, which test/playwright.test.ts runs only with SCRAPER_PLAYWRIGHT_TESTS=1.
+// L-7 and L-6.4: the ts job installs anvil and the contracts and sets SEALED_REQUIRE_CHAIN_TESTS=1, so the
+// suites that gate on chainTestsEnabled() fail instead of skipping (TestCITSJobRequiresAnvil covers the ones that
+// gate on anvilAvailable()), and it runs the scraper's Playwright Firefox crawl, which test/playwright.test.ts
+// runs only with SCRAPER_PLAYWRIGHT_TESTS=1.
 func TestCITSJobRunsChainTestsAndFirefoxCrawl(t *testing.T) {
 	ts, ok := loadCIWorkflow(t).Jobs["ts"]
 	if !ok {
@@ -175,6 +178,110 @@ func TestCITSJobRunsChainTestsAndFirefoxCrawl(t *testing.T) {
 	pkg := readFile(t, filepath.Join(repoRoot(t), "catalog/apps/scraper/runner/package.json"))
 	if !strings.Contains(pkg, `"test:playwright": "SCRAPER_PLAYWRIGHT_TESTS=1 vitest run test/playwright.test.ts"`) {
 		t.Error("catalog/apps/scraper/runner/package.json: test:playwright no longer sets SCRAPER_PLAYWRIGHT_TESTS=1 for test/playwright.test.ts")
+	}
+}
+
+// L-7: the relay and mpp-payer end-to-end suites gate on anvilAvailable() from runtime/relay/test/helpers/anvil.ts.
+// It ignores SEALED_REQUIRE_CHAIN_TESTS and skips the suite when `anvil --version` does not exit 0, so the ts job's
+// Require anvil step must fail the job in exactly that case, before pnpm -r test. The core and agent suites gate
+// on chainTestsEnabled(), which throws under SEALED_REQUIRE_CHAIN_TESTS=1.
+func TestCITSJobRequiresAnvil(t *testing.T) {
+	root := repoRoot(t)
+	ts, ok := loadCIWorkflow(t).Jobs["ts"]
+	if !ok {
+		t.Fatal("ci.yml has no ts job")
+	}
+	guard := ciStepIndex(ts.Steps, func(s ciStep) bool { return s.Name == "Require anvil" })
+	suite := ciStepIndex(ts.Steps, func(s ciStep) bool { return strings.TrimSpace(s.Run) == "pnpm -r test" })
+	if guard < 0 {
+		t.Fatal("ts job: no Require anvil step")
+	}
+	if suite < 0 || guard > suite {
+		t.Fatalf("ts job: Require anvil (step %d) must run before pnpm -r test (step %d)", guard, suite)
+	}
+
+	// The gates as they are today. A change to either one needs a matching change to the step or the comment.
+	const helperPath = "runtime/relay/test/helpers/anvil.ts"
+	body := regexp.MustCompile(`(?s)export function anvilAvailable\(\)[^{]*\{(.*?)\n\}`).FindStringSubmatch(readFile(t, filepath.Join(root, helperPath)))
+	switch {
+	case body == nil:
+		t.Fatalf("%s: no anvilAvailable()", helperPath)
+	case strings.Contains(body[1], "SEALED_REQUIRE_CHAIN_TESTS"):
+		t.Log("anvilAvailable() reads SEALED_REQUIRE_CHAIN_TESTS itself; the Require anvil step is now a second check")
+	case strings.Join(strings.Fields(body[1]), " ") != "const res = spawnSync('anvil', ['--version'], { stdio: 'ignore' }) return res.status === 0":
+		t.Errorf("%s: anvilAvailable() is no longer just `anvil --version` exits 0; make the Require anvil step check the same, then update this test:\n%s", helperPath, body[1])
+	}
+	core := readFile(t, filepath.Join(root, "packages/core/src/testing/localTempo.ts"))
+	if !regexp.MustCompile(`(?s)export function chainTestsEnabled\(\).*?process\.env\.SEALED_REQUIRE_CHAIN_TESTS === "1"\) \{\s*throw `).MatchString(core) {
+		t.Error("chainTestsEnabled() no longer throws under SEALED_REQUIRE_CHAIN_TESTS=1, which ci.yml's ts job relies on")
+	}
+
+	// Every suite that gates on anvilAvailable() takes it from that helper, so the step covers it.
+	importRe := regexp.MustCompile(`import \{[^}]*\banvilAvailable\b[^}]*\} from '([^']+)'`)
+	var gated []string
+	for _, top := range []string{"packages", "runtime", "catalog"} {
+		err := filepath.WalkDir(filepath.Join(root, top), func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				switch d.Name() {
+				case "node_modules", "dist", "dependencies":
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(p, ".test.ts") {
+				return nil
+			}
+			src, err := os.ReadFile(p)
+			if err != nil || !strings.Contains(string(src), "anvilAvailable()") {
+				return err
+			}
+			rel, _ := filepath.Rel(root, p)
+			gated = append(gated, rel)
+			m := importRe.FindStringSubmatch(string(src))
+			if m == nil {
+				t.Errorf("%s: calls anvilAvailable() without importing it from %s", rel, helperPath)
+				return nil
+			}
+			from, _ := filepath.Rel(root, filepath.Join(filepath.Dir(p), strings.TrimSuffix(m[1], ".js")+".ts"))
+			if from != helperPath {
+				t.Errorf("%s: anvilAvailable() comes from %s, not %s", rel, m[1], helperPath)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(gated) == 0 {
+		t.Error("no suite gates on anvilAvailable() any more; drop the Require anvil step and this test")
+	}
+	t.Logf("suites that gate on anvilAvailable(): %v", gated)
+
+	// Run the step as GitHub does (bash -e) with only the fake anvil on PATH.
+	run := func(anvil string) (string, error) {
+		bin := t.TempDir()
+		if anvil != "" {
+			writeFile(t, filepath.Join(bin, "anvil"), "#!/bin/sh\n"+anvil+"\n")
+			if err := os.Chmod(filepath.Join(bin, "anvil"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.Command("bash", "--noprofile", "--norc", "-e", "-c", ts.Steps[guard].Run)
+		cmd.Env = []string{"PATH=" + bin}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run("echo 'anvil Version: 1.8.6-v1.8.6'"); err != nil {
+		t.Errorf("Require anvil failed with a working anvil: %v\n%s", err, out)
+	}
+	if out, err := run(""); err == nil || !strings.Contains(out, "::error::") {
+		t.Errorf("Require anvil passed without anvil on PATH: %v\n%s", err, out)
+	}
+	if out, err := run("echo 'anvil: broken' >&2; exit 1"); err == nil || !strings.Contains(out, "::error::") {
+		t.Errorf("Require anvil passed although anvil --version fails: %v\n%s", err, out)
 	}
 }
 
