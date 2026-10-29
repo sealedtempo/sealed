@@ -139,6 +139,38 @@ describe.skipIf(!anvilAvailable())('MPP session over SSE with real mppx client a
     await second.relay.close()
   }, 120_000)
 
+  it('a session the relay cannot serve costs nothing and is answered 503 charged: false, a free retry (payments-6)', async () => {
+    const world = relayWorld({ node, treasury, settler })
+    const journal = new ChannelJournal(undefined)
+    const { app, relay, guard } = payerStack({ relayFetch: world.fetch, treasury, account: payerAccount, node, journal })
+    expect((await app.request('/v1/chat/completions', post(body))).status).toBe(200)
+    const [record] = journal.all()
+    const creditedBefore = world.credited.reduce((a, b) => a + b, 0n)
+
+    // The relay's LiteLLM is down. Before the fix the relay kept the estimated prompt and the payer answered 502,
+    // which SDKs retry: every retry paid again. A large prompt makes that estimate visible.
+    world.upstream.down = true
+    const big = { ...body, messages: [{ role: 'user', content: 'x'.repeat(30_000) }] }
+    for (const request of [big, { ...big, stream: true }]) {
+      const res = await app.request('/v1/chat/completions', post(request))
+      expect(res.status).toBe(503)
+      expect((await res.json()).error).toMatchObject({ type: 'upstream_unreachable', charged: false })
+    }
+    // Each attempt prepaid the estimated prompt (about 10k tokens) and got all of it credited back.
+    expect(world.credited.reduce((a, b) => a + b, 0n) - creditedBefore).toBeGreaterThan(2n * 18_000n)
+    expect(guard.counters().deposits).toBe(1)
+
+    // The retry once LiteLLM is back is served on the same channel, and the relay captures only what was served.
+    world.upstream.down = false
+    const retry = await app.request('/v1/chat/completions', post(body))
+    expect((await retry.json()).choices[0].message.content).toBe('Metered per token over SSE')
+    expect(journal.all()).toHaveLength(1)
+    await relay.close()
+    const closed = (await escrowEvents(node, record!.channelId)).find((e) => e.eventName === 'ChannelClosed')!
+    // The relay captured two served requests at 53 base units each, nothing for the two it could not serve.
+    expect(200_000n - (closed.args.refundedToPayer as bigint)).toBe(106n)
+  }, 120_000)
+
   it('rotates a channel before maxDeposit: closes it cooperatively and continues on a new one (M2)', async () => {
     // A pricey model and a small channel: a few requests exhaust it.
     const world = relayWorld({ node, treasury, settler, suggestedDeposit: '0.006', prices: testPrices(60_000_000, 120_000_000) })

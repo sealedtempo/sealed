@@ -43,6 +43,42 @@ function failedAfterPayment(detail: string, upstreamStatus?: number): Response {
   )
 }
 
+/**
+ * payments-6: a session the relay could not serve. `charged: false` means the relay credited back everything it
+ * took, so a retry is free: 503, which LiteLLM and the OpenAI SDKs retry. Anything else may have kept a charge: 424,
+ * which they do not retry, so a retry cannot pay again.
+ */
+function sessionFailed(relayError: unknown): Response {
+  const e = relayError && typeof relayError === 'object' ? (relayError as Record<string, unknown>) : {}
+  const type = typeof e.type === 'string' && /^[a-z_]{1,40}$/.test(e.type) ? e.type : 'upstream_error'
+  const status = typeof e.status === 'number' && Number.isSafeInteger(e.status) ? e.status : undefined
+  if (e.charged === false) {
+    return Response.json(
+      { error: { type, message: 'the relay could not serve this request and took no charge; a retry is free', charged: false, ...(status !== undefined ? { upstream_status: status } : {}) } },
+      { status: 503 },
+    )
+  }
+  return failedAfterPayment(`session ${type}`, status)
+}
+
+/** The relay's error object when a session event is an error event. */
+function sessionError(data: string): unknown {
+  if (!data.startsWith('{')) return undefined
+  try {
+    const parsed = JSON.parse(data) as { error?: unknown; choices?: unknown }
+    return parsed.error !== undefined && parsed.choices === undefined ? parsed.error : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Reads a session to its end (the relay's receipt follows its error event), ignoring a failure. */
+async function drain(iterator: AsyncIterator<string>): Promise<void> {
+  try {
+    for (;;) if ((await iterator.next()).done) return
+  } catch {}
+}
+
 function passthroughHeaders(from: Headers): Headers {
   const out = new Headers()
   for (const name of ['content-type', 'cache-control']) {
@@ -157,7 +193,8 @@ export function createPayerApp(deps: PayerDeps): Hono {
       }
       if (err instanceof RelaySessionFailedError) {
         log({ event: 'relay_session_failed', model, detail: (err.cause as Error)?.message?.slice(0, 200) })
-        return error(502, 'relay_session_failed', 'the relay session failed after the request was sent')
+        // It may have been paid (payments-6): a 4xx, so LiteLLM and the OpenAI SDKs do not pay for it again.
+        return error(424, 'relay_session_failed', 'the relay session failed after the request was sent; it may have been paid and is not retried automatically')
       }
       log({ event: 'relay_request_failed', model, detail: (err as Error).message?.slice(0, 200) })
       return error(502, 'relay_unreachable', 'relay request failed')
@@ -191,7 +228,32 @@ export function createPayerApp(deps: PayerDeps): Hono {
     }
 
     log({ event: 'relay_request', model, intent: 'session', stream: wantsStream })
-    if (wantsStream) return streamSession(result.events, () => deps.onPayment?.())
+    if (wantsStream) {
+      // The first event decides the status: a session the relay could not serve gets a status, not a 200 stream.
+      const iterator = result.events[Symbol.asyncIterator]()
+      let first: IteratorResult<string>
+      try {
+        first = await iterator.next()
+      } catch (err) {
+        deps.onPayment?.()
+        if (err instanceof SpendLimitError) return error(429, 'spend_limit_exceeded', err.message)
+        if (err instanceof BudgetUnavailableError) return error(503, 'spend_budget_unavailable', err.message)
+        return error(502, 'relay_stream_failed', (err as Error).message)
+      }
+      const failed = first.done ? undefined : sessionError(first.value)
+      if (failed !== undefined) {
+        await drain(iterator)
+        deps.onPayment?.()
+        log({ event: 'relay_session_unserved', model, charged: (failed as { charged?: unknown }).charged !== false })
+        return sessionFailed(failed)
+      }
+      const events = (async function* () {
+        if (first.done) return
+        yield first.value
+        yield* { [Symbol.asyncIterator]: () => iterator }
+      })()
+      return streamSession(events, () => deps.onPayment?.())
+    }
 
     const acc = new CompletionAccumulator()
     try {
@@ -206,7 +268,7 @@ export function createPayerApp(deps: PayerDeps): Hono {
     } finally {
       deps.onPayment?.()
     }
-    if (acc.error !== undefined) return Response.json({ error: acc.error }, { status: 502 })
+    if (acc.error !== undefined) return sessionFailed(acc.error)
     return Response.json(acc.result(model))
   })
 

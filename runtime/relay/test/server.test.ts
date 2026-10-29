@@ -36,7 +36,7 @@ function gate(verified: Record<string, boolean>) {
 
 type Recorded = { offers: { chargeAmount?: bigint; description?: string }[]; credits: bigint[] }
 
-function payments(intent: 'none' | 'charge' | 'session', recorded: Recorded): Payments {
+function payments(intent: 'none' | 'charge' | 'session', recorded: Recorded, creditOutcome: 'credited' | 'declined' = 'credited'): Payments {
   return {
     sessionsEnabled: true,
     async preflightCharge() {
@@ -69,20 +69,28 @@ function payments(intent: 'none' | 'charge' | 'session', recorded: Recorded): Pa
       }
     },
     async credit(_channel, amount) {
+      if (creditOutcome !== 'credited') return creditOutcome
       recorded.credits.push(amount)
       return 'credited'
     },
   }
 }
 
-function app(intent: 'none' | 'charge' | 'session', verified: Record<string, boolean> = { tinfoil: true, nearai: true }, llm = fakeLiteLLM()) {
+type LiteLLM = { fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response> }
+
+function app<L extends LiteLLM = ReturnType<typeof fakeLiteLLM>>(
+  intent: 'none' | 'charge' | 'session',
+  verified: Record<string, boolean> = { tinfoil: true, nearai: true },
+  llm: L = fakeLiteLLM() as unknown as L,
+  creditOutcome: 'credited' | 'declined' = 'credited',
+) {
   const recorded: Recorded = { offers: [], credits: [] }
   const logs: Record<string, unknown>[] = []
   const usage: Record<string, unknown>[] = []
   const relay = createRelayApp({
     prices,
     gate: gate(verified),
-    payments: payments(intent, recorded),
+    payments: payments(intent, recorded, creditOutcome),
     upstream: new Upstream({ baseURL: 'http://litellm:4000/v1', apiKey: 'sk-master', fetch: llm.fetch }),
     batchTokens: 8,
     log: (e) => logs.push(e),
@@ -179,7 +187,83 @@ describe('relay front', () => {
     const res = await relay.request('/v1/chat/completions', chat({ model: 'nearai/z-ai/glm-5.3', messages, stream: true }))
     const text = await res.text()
     expect(text).toContain('upstream_error')
+    expect(errorEvent(text)).toEqual({ type: 'upstream_error', status: 500, charged: false })
     const charged = BigInt(JSON.parse(text.match(/event: payment-receipt\ndata: (.*)\n/)![1]!).charged)
     expect(recorded.credits.reduce((a, b) => a + b, 0n)).toBe(charged)
   })
+
+  // payments-6: before the fix the prompt estimate (about 0.19 USD for this prompt) was kept when the call threw.
+  const bigPrompt = [{ role: 'user', content: 'x'.repeat(300_000) }]
+  const throwing = { fetch: async () => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })) }
+
+  it('credits everything when the upstream call throws before answering (payments-6)', async () => {
+    const { relay, recorded, usage, logs } = app('session', undefined, throwing)
+    const res = await relay.request('/v1/chat/completions', chat({ model: 'nearai/z-ai/glm-5.3', messages: bigPrompt, stream: true }))
+    const text = await res.text()
+    expect(errorEvent(text)).toEqual({ type: 'upstream_unreachable', charged: false })
+    const charged = receiptCharged(text)
+    expect(charged).toBeGreaterThan(100_000n)
+    expect(recorded.credits.reduce((a, b) => a + b, 0n)).toBe(charged)
+    expect(usage).toEqual([{ model: 'nearai/z-ai/glm-5.3', promptTokens: 0, completionTokens: 0 }])
+    expect(logs.at(-1)).toMatchObject({ intent: 'session', upstreamStatus: 0, charged: '0' })
+  })
+
+  it('credits everything when the upstream stream breaks before its first chunk', async () => {
+    const broken = {
+      fetch: async () =>
+        new Response(new ReadableStream({ pull: (c) => c.error(new Error('socket hang up')) }), { headers: { 'content-type': 'text/event-stream' } }),
+    }
+    const { relay, recorded, usage } = app('session', undefined, broken)
+    const res = await relay.request('/v1/chat/completions', chat({ model: 'nearai/z-ai/glm-5.3', messages: bigPrompt, stream: true }))
+    const text = await res.text()
+    expect(errorEvent(text)).toEqual({ type: 'upstream_unreachable', charged: false })
+    expect(recorded.credits.reduce((a, b) => a + b, 0n)).toBe(receiptCharged(text))
+    expect(usage).toEqual([{ model: 'nearai/z-ai/glm-5.3', promptTokens: 0, completionTokens: 0 }])
+  })
+
+  it('keeps the prompt and the delivered tokens when the stream breaks after a chunk', async () => {
+    const encoder = new TextEncoder()
+    const chunk = { id: 'c', choices: [{ index: 0, delta: { content: 'Hello there' } }] }
+    let sent = false
+    const midway = {
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            pull: (c) => {
+              if (sent) return c.error(new Error('socket hang up'))
+              sent = true
+              c.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    }
+    const { relay, logs, usage } = app('session', undefined, midway)
+    const res = await relay.request('/v1/chat/completions', chat({ model: 'nearai/z-ai/glm-5.3', messages, stream: true }))
+    const text = await res.text().catch(() => '')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(errorEvent(text)).toBeUndefined()
+    const last = logs.at(-1) as { charged: string; promptTokens: number; completionTokens: number }
+    expect(last.promptTokens).toBeGreaterThan(0)
+    expect(last.completionTokens).toBeGreaterThan(0)
+    // What was served stays paid: the prompt estimate plus the delivered tokens, at the relay's price.
+    const model = prices.models[1]!
+    expect(BigInt(last.charged)).toBe(costInBaseUnits(model, 500, BigInt(last.promptTokens), BigInt(last.completionTokens)))
+    expect(usage).toEqual([expect.objectContaining({ promptTokens: last.promptTokens })])
+  })
+
+  it('says charged: true when the prepayment could not be credited back', async () => {
+    const { relay } = app('session', undefined, throwing, 'declined')
+    const res = await relay.request('/v1/chat/completions', chat({ model: 'nearai/z-ai/glm-5.3', messages, stream: true }))
+    expect(errorEvent(await res.text())).toEqual({ type: 'upstream_unreachable', charged: true })
+  })
 })
+
+function errorEvent(text: string): unknown {
+  const data = [...text.matchAll(/event: message\ndata: (.*)\n/g)].map((m) => JSON.parse(m[1]!))
+  return data.find((d) => d && typeof d === 'object' && 'error' in d)?.error
+}
+
+function receiptCharged(text: string): bigint {
+  return BigInt(JSON.parse(text.match(/event: payment-receipt\ndata: (.*)\n/)![1]!).charged)
+}
