@@ -7,8 +7,8 @@
 # disk is mounted and the tmpfs secrets are written it drops to uid/gid 10001 (SEALED_RUN_AS). Caddy's
 # admin socket is mode 0660 with group 10001 (brief item 15), so no root helper is needed.
 #
-# Not built in this workstream (no Docker daemon): the pins below are from packages.debian.org
-# for bookworm and must be confirmed by the CI image build.
+# The pins below are from packages.debian.org for bookworm. images-preflight (2026-10-29) built the
+# image for linux/amd64 and linux/arm64 from the snapshot below and every pinned version installed.
 
 # node:24.22.1-bookworm-slim, index digest pinned 2026-10-28 (docs/notes/crawlee.md).
 ARG NODE_IMAGE=node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
