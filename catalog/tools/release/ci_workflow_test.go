@@ -49,8 +49,8 @@ func loadCIWorkflow(t *testing.T) ciFile {
 	return wf
 }
 
-// stepIndex returns the index of the first step that matches, or -1.
-func stepIndex(steps []ciStep, match func(ciStep) bool) int {
+// ciStepIndex returns the index of the first step that matches, or -1.
+func ciStepIndex(steps []ciStep, match func(ciStep) bool) int {
 	for i, s := range steps {
 		if match(s) {
 			return i
@@ -59,12 +59,12 @@ func stepIndex(steps []ciStep, match func(ciStep) bool) int {
 	return -1
 }
 
-func usesAction(name string) func(ciStep) bool {
+func ciUsesAction(name string) func(ciStep) bool {
 	return func(s ciStep) bool { return strings.HasPrefix(s.Uses, name+"@") }
 }
 
-// runsSuites matches the steps that run test suites (not the checks that merely contain the word test).
-var runsSuites = regexp.MustCompile(`go test |pnpm (-r )?test|node --test|-m unittest| test PYTHON=|make -C contracts test`)
+// ciRunsSuites matches the steps that run test suites (not the checks that merely contain the word test).
+var ciRunsSuites = regexp.MustCompile(`go test |pnpm (-r )?test|node --test|-m unittest| test PYTHON=|make -C contracts test`)
 
 // L-8: Go's default timeout is 10 minutes per package binary, too tight for runtime/composer's real-Docker
 // stacks and catalog/tools/release on a 4 vCPU runner. The job timeout must be longer, so a hung test is
@@ -116,7 +116,7 @@ func TestCIPinsCompose(t *testing.T) {
 			t.Errorf("ci.yml has no %s job", name)
 			continue
 		}
-		setup := stepIndex(job.Steps, usesAction("docker/setup-compose-action"))
+		setup := ciStepIndex(job.Steps, ciUsesAction("docker/setup-compose-action"))
 		if setup < 0 {
 			t.Errorf("job %s: no docker/setup-compose-action step", name)
 			continue
@@ -134,7 +134,7 @@ func TestCIPinsCompose(t *testing.T) {
 				t.Errorf("job %s: the step after setup-compose-action does not run %s", name, want)
 			}
 		}
-		first := stepIndex(job.Steps, func(s ciStep) bool { return runsSuites.MatchString(s.Run) })
+		first := ciStepIndex(job.Steps, func(s ciStep) bool { return ciRunsSuites.MatchString(s.Run) })
 		if first < 0 || first < setup {
 			t.Errorf("job %s: compose is pinned at step %d, after the first suite (step %d)", name, setup, first)
 		}
@@ -151,20 +151,20 @@ func TestCITSJobRunsChainTestsAndFirefoxCrawl(t *testing.T) {
 	if ts.Env["SEALED_REQUIRE_CHAIN_TESTS"] != "1" {
 		t.Error(`ts job: env SEALED_REQUIRE_CHAIN_TESTS must be "1"`)
 	}
-	suite := stepIndex(ts.Steps, func(s ciStep) bool { return strings.TrimSpace(s.Run) == "pnpm -r test" })
+	suite := ciStepIndex(ts.Steps, func(s ciStep) bool { return strings.TrimSpace(s.Run) == "pnpm -r test" })
 	if suite < 0 {
 		t.Fatal("ts job: no `pnpm -r test` step")
 	}
-	foundry := stepIndex(ts.Steps, usesAction("foundry-rs/foundry-toolchain"))
+	foundry := ciStepIndex(ts.Steps, ciUsesAction("foundry-rs/foundry-toolchain"))
 	if foundry < 0 || foundry > suite {
 		t.Error("ts job: foundry-rs/foundry-toolchain must run before pnpm -r test")
 	} else if v := fmt.Sprint(ts.Steps[foundry].With["version"]); v != "${{ env.FOUNDRY_VERSION }}" {
 		t.Errorf("ts job: Foundry version %q, want ${{ env.FOUNDRY_VERSION }}", v)
 	}
-	if deps := stepIndex(ts.Steps, func(s ciStep) bool { return strings.TrimSpace(s.Run) == "make -C contracts deps" }); deps < 0 || deps > suite {
+	if deps := ciStepIndex(ts.Steps, func(s ciStep) bool { return strings.TrimSpace(s.Run) == "make -C contracts deps" }); deps < 0 || deps > suite {
 		t.Error("ts job: make -C contracts deps must run before pnpm -r test (the chain suites build the contracts)")
 	}
-	crawl := stepIndex(ts.Steps, func(s ciStep) bool {
+	crawl := ciStepIndex(ts.Steps, func(s ciStep) bool {
 		return s.WorkingDirectory == "catalog/apps/scraper/runner" &&
 			regexp.MustCompile(`pnpm exec playwright install (--with-deps )?firefox\n`).MatchString(s.Run) &&
 			strings.Contains(s.Run, "pnpm test:playwright")
@@ -182,7 +182,7 @@ func TestCITSJobRunsChainTestsAndFirefoxCrawl(t *testing.T) {
 // prints them, after its setup actions so the versions shown are the ones it uses.
 func TestCIJobsPrintToolVersions(t *testing.T) {
 	for name, job := range loadCIWorkflow(t).Jobs {
-		i := stepIndex(job.Steps, func(s ciStep) bool { return s.Name == "Tool versions" })
+		i := ciStepIndex(job.Steps, func(s ciStep) bool { return s.Name == "Tool versions" })
 		if i < 0 {
 			t.Errorf("job %s: no Tool versions step", name)
 			continue
