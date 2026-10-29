@@ -808,3 +808,30 @@ func TestPrePublishWording(t *testing.T) {
 	mustContain(t, "INTERFACES.md section 11", section(t, read(t, "docs/INTERFACES.md"), "11"), "the settlement's outcome is `partial`")
 	mustContain(t, "contracts/README.md", read(t, "contracts/README.md"), "This is not a third-party audit; no external audit has been done.")
 }
+
+// TestVerifyReleaseDownloadUsesTagRule: the download recipe in VERIFY.md builds the release tag the way the composer
+// does (one leading v before a digit dropped). It used `$APP-v$VERSION`, which gives coding-agent-vv1.58.2. The TAG
+// line runs in sh for versions of each shape and must give composer.ReleaseTag.
+func TestVerifyReleaseDownloadUsesTagRule(t *testing.T) {
+	doc := read(t, "docs/VERIFY.md")
+	if strings.Contains(doc, "$APP-v$VERSION/") {
+		t.Error("VERIFY.md builds the release tag as $APP-v$VERSION; the tag is <appId>-v<tagVersion>")
+	}
+	m := regexp.MustCompile(`(?m)^(TAG=[^#\n]*?)\s+#`).FindStringSubmatch(doc)
+	if m == nil {
+		t.Fatal("VERIFY.md's release recipe has no TAG= line")
+	}
+	mustContain(t, "VERIFY.md's release recipe", doc, "curl -LO $B/$TAG/$APP-$VERSION.bundle.tar\n")
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	for _, v := range []string{"v1.58.2", "V2.0.1", "10.0.11", "v3.20.251-lts", "vnext", "0.1.0"} {
+		out, err := exec.Command("sh", "-c", "APP=coding-agent VERSION='"+v+"'\n"+m[1]+"\nprintf %s \"$TAG\"").Output()
+		if err != nil {
+			t.Fatalf("running %q: %v", m[1], err)
+		}
+		if want := composer.ReleaseTag("coding-agent", v); string(out) != want {
+			t.Errorf("VERIFY.md's TAG line gives %q for version %s; the composer's tag is %q", out, v, want)
+		}
+	}
+}

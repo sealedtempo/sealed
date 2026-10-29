@@ -104,9 +104,10 @@ Each release in a stack can be checked on its own:
 ```sh
 B=https://github.com/sealedtempo/sealed/releases/download
 APP=crm VERSION=<version>                                  # version as published in AppRegistry
-curl -LO $B/$APP-v$VERSION/$APP-$VERSION.bundle.tar
-curl -LO $B/$APP-v$VERSION/$APP-$VERSION.bundle.tar.sigstore.json
-curl -LO $B/$APP-v$VERSION/$APP-$VERSION.bundle.tar.intoto.jsonl
+TAG=$APP-v$(printf %s "$VERSION" | sed -E 's/^[vV]([0-9])/\1/')   # the tag drops one leading v before a digit
+curl -LO $B/$TAG/$APP-$VERSION.bundle.tar
+curl -LO $B/$TAG/$APP-$VERSION.bundle.tar.sigstore.json
+curl -LO $B/$TAG/$APP-$VERSION.bundle.tar.intoto.jsonl
 
 # Signed by the release workflow of the public repo (cosign keyless, logged in Rekor)
 cosign verify-blob --bundle $APP-$VERSION.bundle.tar.sigstore.json \
