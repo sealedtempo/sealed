@@ -45,6 +45,17 @@ scraper-runner-playwright (shipped by the catalog release)
                                browserslist). Allowed for data-only packages: browser usage
                                tables, no code; attribution: caniuse.com, Alexis Deveria,
                                https://github.com/browserslist/caniuse-lite
+    Each npm package carries its license text in its own directory or README, except these four
+    (runner/test/licenses.test.ts checks the list):
+      @sapphire/async-queue 1.5.5   MIT. The text is at the root of sapphiredev/utilities, not in
+                                    the npm package; LICENSES/ carries it (see License texts).
+      type-fest 2.19.0              Used under MIT. The npm package has neither of upstream's two
+                                    license files; LICENSES/ carries the MIT one.
+      got-scraping 4.2.2            Apache-2.0 in package.json. apify/got-scraping has no license
+                                    file at v4.2.2; the Apache License 2.0 text is Crawlee's (see
+                                    License texts).
+      boolbase 1.0.0                ISC in package.json. fb55/boolbase added its LICENSE in 2015,
+                                    after this release, so there is no text of this version to ship.
 
 scraper-runner (Cheerio-only variant)
   - The same npm packages without the optional ones (@crawlee/playwright, playwright and what
@@ -87,3 +98,9 @@ hashes). Each file is followed by the repository, ref, path and git blob hash it
                to toolkit/content/license.html, which the browser shows at about:license.
   PostgreSQL:  LICENSES/postgresql-17.11-COPYRIGHT
                (postgres/postgres REL_17_11 COPYRIGHT, git blob 0a397648dcd3c2177acc58bd7daecd11ad64be62)
+  @sapphire/async-queue 1.5.5 (npm package without its text):
+               LICENSES/sapphire-async-queue-1.5.5-LICENSE.md
+               (sapphiredev/utilities @sapphire/async-queue@1.5.5 LICENSE.md, git blob 685eb3a186a514b7423eb1d3730f3fb9f000575d)
+  type-fest 2.19.0 (npm package without its text):
+               LICENSES/type-fest-v2.19.0-license-mit
+               (sindresorhus/type-fest v2.19.0 license-mit, git blob fa7ceba3eb4a9657a9db7f3ffca4e4e97a9019de)
