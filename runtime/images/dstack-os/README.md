@@ -43,7 +43,10 @@ production secrets to a debug image, and acceptance tests run on production.
 
 CI (`.github/workflows/os-image.yml`) builds both variants on `ubuntu-24.04`
 for every `workflow_dispatch` and `os-image-v*` tag, and publishes the assets
-on the tag. Pull requests that touch this directory run the static checks only
+on the tag. The release job refuses a tag whose commit is not on main, and
+signs every disk tarball and identity file keyless with cosign (GitHub OIDC,
+Fulcio certificate for `os-image.yml` at that tag, Rekor entry) before it
+uploads anything. Pull requests that touch this directory run the static checks only
 (Go and Python tests, shellcheck, actionlint, patch application against
 `source.lock`, upstream's static contract on the patched tree).
 
@@ -86,6 +89,7 @@ minutes cold on 4 vCPUs.
 | `<name>-<version>-identity.json` | The same `image-identity.json`: `os_image_hash`, UKI Authenticode (sha256 = dstack's `gcp_uki_auth`, sha384 for the TDX RTMR1 event), tarball sha256, source commit and tree, the `vm_config` string for `.sys-config.json` |
 | `<name>-<version>-license-inventory.json` | Every Debian package with its version, source package, section and DEP-5 licenses; kernel module license counts; check results |
 | `<name>-<version>-rust-crates.json` | The Rust crates compiled into the guest with their license expressions |
+| `<name>-<version>-gce.tar.gz.sigstore.json`, `-identity.tar.gz.sigstore.json`, `-identity.json.sigstore.json` | Sigstore bundles (certificate, signature, Rekor entry) for the disk tarball and the identity files, signed by `os-image.yml` at the release tag |
 | `<name>-<version>-hashes.txt`, `<name>-<version>.sha256` | `os_image_hash`, `gcp_uki_auth`, UKI sha384 Authenticode, `disk.raw` sha256 and the sha256 of every asset |
 
 ## Measure and register
@@ -105,9 +109,15 @@ runtime/images/dstack-os/import-and-measure.sh \
   --release-base https://github.com/<owner>/<repo>/releases/download
 ```
 
-It checks the tarball sha256 against the identity, imports the image
-(`UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC`), and boots it once per machine type and
-boot, one VM at a time, with no service account, no scopes, no external IP,
+Download the `.sigstore.json` bundles next to the tarball and the identity.
+The script first verifies them with cosign: both must be signed by
+`os-image.yml` of the release repository (`--repo`, else the `--release-base`
+repository) at the tag `os-image-v<version>` the identity names, so only an
+image released from main can be measured. `--allow-unsigned` skips this for a
+local or `workflow_dispatch` build, which must never be registered for
+production. It then checks the tarball sha256 against the identity, imports
+the image (`UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC`), and boots it once per machine
+type and boot, one VM at a time, with no service account, no scopes, no external IP,
 project SSH keys blocked and OS Login off. Each VM gets a data disk with the
 `dstack-data` partition and a `DSTACKSHR` disk whose `app-compose.json` uses the
 `bash` runner: it asks the guest agent for a quote over a fresh 64-byte nonce
