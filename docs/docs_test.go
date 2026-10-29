@@ -686,3 +686,50 @@ func TestRepositoryNamedSealedtempo(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestVerifyReleaseRecipe: the slsa-verifier recipe in VERIFY.md pins the source branch and the builder (review
+// supply-8), the builder is the generator version release.yml calls, and cosign checks release.yml on main.
+func TestVerifyReleaseRecipe(t *testing.T) {
+	m := regexp.MustCompile(`uses: (slsa-framework/slsa-github-generator/\.github/workflows/generator_generic_slsa3\.yml)@(v[0-9]+\.[0-9]+\.[0-9]+)`).
+		FindStringSubmatch(read(t, ".github/workflows/release.yml"))
+	if m == nil {
+		t.Fatal("release.yml no longer calls generator_generic_slsa3.yml at a version tag; update VERIFY.md and this test")
+	}
+	builder := "https://github.com/" + m[1] + "@refs/tags/" + m[2]
+	doc := read(t, "docs/VERIFY.md")
+	i := strings.Index(doc, "slsa-verifier verify-artifact ")
+	if i < 0 {
+		t.Fatal("VERIFY.md has no slsa-verifier command")
+	}
+	cmd := doc[i:]
+	if j := strings.Index(cmd, "\n\n"); j >= 0 {
+		cmd = cmd[:j]
+	}
+	mustContain(t, "VERIFY.md's slsa-verifier command", cmd, "--source-uri github.com/sealedtempo/sealed", "--source-branch main", "--builder-id "+builder)
+	mustContain(t, "VERIFY.md's cosign command", doc,
+		"--certificate-identity https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main",
+		"--certificate-oidc-issuer https://token.actions.githubusercontent.com")
+}
+
+// TestReleaseSignaturesNotClaimedChecked: no verifier check reads a release's cosign signature or SLSA provenance and
+// the module has no Sigstore dependency (review supply-2), so the docs must not say `stack_recompute` proves signed
+// releases, and VERIFY.md and the threat model must say what anchors a release instead. When a release signature
+// check lands, change this test with the docs.
+func TestReleaseSignaturesNotClaimedChecked(t *testing.T) {
+	for _, m := range regexp.MustCompile(`Check[A-Za-z]+\s*=\s*"([a-z_]+)"`).FindAllStringSubmatch(read(t, "verifier/report.go"), -1) {
+		if strings.Contains(m[1], "signature") || strings.Contains(m[1], "provenance") {
+			t.Fatalf("the verifier has a %s check now; update VERIFY.md, THREAT_MODEL.md and this test", m[1])
+		}
+	}
+	if strings.Contains(read(t, "go.mod"), "github.com/sigstore/") {
+		t.Fatal("go.mod requires a Sigstore module; if releases are verified now, update VERIFY.md, THREAT_MODEL.md and this test")
+	}
+	doc := read(t, "docs/VERIFY.md")
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(line, "| `stack_recompute` |") && strings.Contains(line, "signed") && !strings.Contains(line, "does not verify") {
+			t.Errorf("VERIFY.md's stack_recompute row claims signed releases: %s", line)
+		}
+	}
+	mustContain(t, "VERIFY.md", doc, "does not check the cosign signature or the SLSA provenance")
+	mustContain(t, "THREAT_MODEL.md", read(t, "docs/THREAT_MODEL.md"), "No component checks release signatures.", "anchored by the OPS key and the release CI")
+}
