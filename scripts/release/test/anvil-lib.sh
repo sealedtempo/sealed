@@ -55,7 +55,7 @@ start_anvil() {
 deploy_contracts() {
 	C="$WORK/contracts"
 	mkdir -p "$C/deployments"
-	cp -R "$ROOT/contracts/src" "$ROOT/contracts/script" "$ROOT/contracts/catalog" "$C/"
+	cp -R "$ROOT/contracts/src" "$ROOT/contracts/script" "$ROOT/contracts/catalog" "$ROOT/contracts/abi" "$C/"
 	cp "$ROOT/contracts/foundry.toml" "$ROOT/contracts/remappings.txt" "$ROOT/contracts/soldeer.lock" "$C/"
 	ln -s "$ROOT/contracts/dependencies" "$C/dependencies"
 	(cd "$C" && OWNER_PRIVATE_KEY=$K_OWNER OPS_ADDRESS="$(cast wallet address --private-key $K_OPS)" ORACLE_ADDRESS=$ORACLE \
