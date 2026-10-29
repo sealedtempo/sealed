@@ -11,7 +11,8 @@ type IPClass int
 const (
 	ClassPublic IPClass = iota
 	// ClassPrivate covers RFC 1918, CGNAT (100.64/10) and IPv6 ULA (fc00::/7).
-	// These are denied unless allowedPrivateCidrs lists them.
+	// These are denied unless allowedPrivateCidrs lists them, and then only
+	// through a raw IP entry of the caller (Policy.CheckDial).
 	ClassPrivate
 	// The remaining classes are denied always.
 	ClassMetadata
@@ -176,9 +177,35 @@ func (p IPPolicy) Check(ip netip.Addr) error {
 	}
 }
 
+// CheckResolved is Check for an address a hostname resolved to. Whoever
+// controls the name's DNS picks that address (DNS rebinding), so a private
+// one is refused even inside allowedPrivateCidrs: only a raw IP entry
+// reaches a private address (runtime-1).
+func (p IPPolicy) CheckResolved(ip netip.Addr) error {
+	if err := p.Check(ip); err != nil {
+		return err
+	}
+	if Classify(ip) == ClassPrivate {
+		return fmt.Errorf("destination %s is a private address, which a hostname never reaches; list the address as a raw IP entry", ip.Unmap().WithZone(""))
+	}
+	return nil
+}
+
 // AllowedPrivate returns the private prefixes this policy opens.
 func (p IPPolicy) AllowedPrivate() []netip.Prefix {
 	return append([]netip.Prefix(nil), p.allowedPrivate...)
+}
+
+// PrivatePrefixes lists the ClassPrivate ranges. The proxy denies them by
+// rule and admits only the private raw IP entries.
+func PrivatePrefixes() []netip.Prefix {
+	var out []netip.Prefix
+	for _, r := range classRanges {
+		if r.class == ClassPrivate {
+			out = append(out, r.prefix)
+		}
+	}
+	return out
 }
 
 // DeniedPrefixes lists every range that is never dialable: the static

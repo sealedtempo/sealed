@@ -28,7 +28,10 @@ type fixture struct {
 	stats *stats.Counter
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T) *fixture { return newFixtureWith(t, nil) }
+
+// newFixtureWith lets a test adjust the config before it is compiled.
+func newFixtureWith(t *testing.T, mutate func(*policy.Config)) *fixture {
 	t.Helper()
 	up := dnstest.Start(t)
 	up.AddA("api.alpha.test", "203.0.113.10")
@@ -59,6 +62,9 @@ func newFixture(t *testing.T) *fixture {
 		},
 		AllowedPrivateCIDRs: []string{},
 		StatsReaders:        []string{},
+	}
+	if mutate != nil {
+		mutate(cfg)
 	}
 	pol, err := policy.Compile(cfg)
 	if err != nil {
@@ -178,6 +184,23 @@ func TestRebindingAnswersAreFiltered(t *testing.T) {
 	}
 	b := f.stats.Snapshot().Callers["alpha"].Blocked
 	if b["rebind.alpha.test:53"] != 1 || b["mixed.alpha.test:53"] != 1 {
+		t.Errorf("rebinding not counted: %v", b)
+	}
+}
+
+// TestPrivateAnswersAreFilteredInsideAllowedRanges: a name never resolves
+// to a private address, even one inside allowedPrivateCidrs that the
+// caller lists as a raw IP entry (runtime-1).
+func TestPrivateAnswersAreFilteredInsideAllowedRanges(t *testing.T) {
+	f := newFixtureWith(t, func(cfg *policy.Config) {
+		cfg.AllowedPrivateCIDRs = []string{"10.0.0.0/8"}
+		cfg.Callers[0].Allow = append(cfg.Callers[0].Allow, "10.0.0.5:443")
+	})
+	m := f.ask(alphaIP, "mixed.alpha.test", dns.TypeA)
+	if m.Rcode != dns.RcodeSuccess || fmt.Sprint(addrs(m)) != "[203.0.113.12]" {
+		t.Errorf("private answer inside allowedPrivateCidrs not stripped: %s %v", dns.RcodeToString[m.Rcode], addrs(m))
+	}
+	if b := f.stats.Snapshot().Callers["alpha"].Blocked; b["mixed.alpha.test:53"] != 1 {
 		t.Errorf("rebinding not counted: %v", b)
 	}
 }
