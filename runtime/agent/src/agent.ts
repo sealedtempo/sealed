@@ -344,7 +344,13 @@ export class Agent {
     });
     // In the background: a blocked RPC must not delay boot (every settlement and stale reservation reads again).
     void this.refreshSpendLimit(log);
-    this.poller = new AppHealthPoller(ctx.apps, { ledger: this.ledger, log, intervalSec: s.pollIntervalSec, probe: this.deps.probe });
+    this.poller = new AppHealthPoller(ctx.apps, {
+      ledger: this.ledger,
+      log,
+      intervalSec: s.pollIntervalSec,
+      probe: this.deps.probe,
+      billable: () => !this.paymentNeeded(),
+    });
     this.settler = new Settler({
       ledger: this.ledger,
       payer,
@@ -458,11 +464,17 @@ export class Agent {
     });
   }
 
+  /** Whether the routes show the payment-needed page. */
+  paymentNeeded(): boolean {
+    return this.store?.state.payments.paymentNeeded === true;
+  }
+
   /**
    * reserved_for_fees (D-048): what settlement will still take from the spend limit before `windowEnd`, the end of
    * the limit's period (review M5: the whole window, not only the next settlement). Unpaid legs, the open period so
-   * far, app-hours of heartbeat apps until the window ends, the network fee allowance per app transaction of the
-   * next settlement, and the later settlements' transactions at twice the last network fee seen.
+   * far, app-hours of heartbeat apps until the window ends (none while the payment-needed page is shown, when no
+   * app-hour is billed, payments-7), the network fee allowance per app transaction of the next settlement, and the
+   * later settlements' transactions at twice the last network fee seen.
    */
   feeReserve(windowEnd?: number, now = this.clock.now()): bigint {
     const ctx = this.ctx;
@@ -470,7 +482,7 @@ export class Agent {
     if (!ctx || !ledger) return 0n;
     const intervalSec = ctx.config.settlement.intervalMinutes * 60;
     const end = windowEnd ?? this.budget?.windowEnd(now) ?? now + intervalSec;
-    const horizon = Math.max(0, end - now);
+    const horizon = this.paymentNeeded() ? 0 : Math.max(0, end - now);
     const apps = new Set<string>();
     let total = 0n;
     // Legs the last settlement found it cannot pay (over the cap, another token, an app outside the deployment) are
