@@ -18,8 +18,11 @@ import (
 // Release asset URL rule (D-046, integration brief item 18). A release of
 // app <appId> (the slug, for example crm) at version <v> (the manifest's
 // release_version, else upstream.version: the version hashed into
-// releaseId) is the GitHub Release tagged <appId>-v<v> under
-// catalog.release_asset_base, holding:
+// releaseId) is the GitHub Release tagged <appId>-v<t> under
+// catalog.release_asset_base, where <t> is <v> without a leading "v" or
+// "V" before a digit (TagVersion: v1.58.2 is tagged coding-agent-v1.58.2,
+// never coding-agent-vv1.58.2; 10.0.11 is tagged crm-v10.0.11). The asset
+// names keep <v> exactly. The release holds:
 //
 //	<appId>-<v>.bundle.tar             the bundle; sha256 is the onchain bundleHash
 //	<appId>-<v>.bundle.tar.sig         cosign signature
@@ -43,15 +46,34 @@ var (
 // GitHub renames asset names that contain characters other than letters,
 // digits, ".", "_" and "-" (a "+" build suffix included), so such a version
 // would publish a bundle at a different URL than the one verifiers fetch.
+// A version may start with "v" or "V" only before a digit (v1.58.2, whose
+// tag drops that letter); any other leading v would give a <appId>-vv... or
+// <appId>-vV... tag.
 func CheckReleaseVersion(version string) error {
 	if !releaseVersionRe.MatchString(version) {
 		return fmt.Errorf("release version %q must match %s to name release assets (set release_version without +)", version, releaseVersionRe)
 	}
+	if (version[0] == 'v' || version[0] == 'V') && TagVersion(version) == version {
+		return fmt.Errorf("release version %q starts with %q but not before a digit, so its tag would read <appId>-v%s; set release_version", version, version[:1], version)
+	}
 	return nil
 }
 
-// ReleaseTag is the GitHub Release tag of an app version: <appId>-v<version>.
-func ReleaseTag(slug, version string) string { return slug + "-v" + version }
+// TagVersion is a release version as its tag names it: without one leading
+// "v" or "V" when a digit follows, so the tag's own "v" is never doubled.
+// Versions are compared and hashed (releaseId) as they are; only the tag
+// changes. Two versions that differ only by that letter (1.2.3 and v1.2.3)
+// share a tag, so an app can release only one of them.
+func TagVersion(version string) string {
+	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') && version[1] >= '0' && version[1] <= '9' {
+		return version[1:]
+	}
+	return version
+}
+
+// ReleaseTag is the GitHub Release tag of an app version:
+// <appId>-v<TagVersion(version)>.
+func ReleaseTag(slug, version string) string { return slug + "-v" + TagVersion(version) }
 
 // BundleAssetName is the bundle's asset name: <appId>-<version>.bundle.tar.
 func BundleAssetName(slug, version string) string { return slug + "-" + version + ".bundle.tar" }

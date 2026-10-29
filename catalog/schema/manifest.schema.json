@@ -16,7 +16,7 @@
     "name": { "type": "string", "minLength": 1, "maxLength": 64 },
     "category": { "enum": ["ai", "data", "crm", "developer", "internal-tools", "infrastructure"] },
     "description": { "type": "string", "minLength": 1, "maxLength": 500 },
-    "release_version": { "type": "string", "pattern": "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$", "description": "Version passed to AppRegistry.publishRelease and hashed into releaseId. Defaults to upstream.version; bump it when only the packaging changes." },
+    "release_version": { "type": "string", "pattern": "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$", "description": "Version passed to AppRegistry.publishRelease and hashed into releaseId. Defaults to upstream.version; bump it when only the packaging changes. The release tag is <id>-v<version> with a leading v before a digit dropped (v1.58.2 is tagged <id>-v1.58.2); lint refuses + and any other leading v (D-046)." },
     "upstream": {
       "type": "object",
       "additionalProperties": false,

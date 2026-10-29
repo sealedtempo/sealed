@@ -75,6 +75,19 @@ func TestFixturesAreClean(t *testing.T) {
 	}
 }
 
+// TestLeadingVVersionIsReleasable: a version such as v1.58.2 (coding-agent,
+// llm-gateway, internal-tools) is tagged <appId>-v1.58.2 since composer
+// 1.4.0, so lint no longer needs a release_version without the v.
+func TestLeadingVVersionIsReleasable(t *testing.T) {
+	for _, v := range []string{"v1.0.0", "V2", "v3.20.251-lts"} {
+		dir := copyApp(t, "notes")
+		edit(t, filepath.Join(dir, "manifest.yaml"), "release_version: 1.0.0-sealed.1", "release_version: "+v)
+		if n := codes(LintApp(dir, Options{RequireSBOM: true}), Error)[CodeReleaseVersion]; n != 0 {
+			t.Errorf("%s: %d release-version errors", v, n)
+		}
+	}
+}
+
 func TestLintFindsProblems(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -173,6 +186,9 @@ func TestLintFindsProblems(t *testing.T) {
 		}, CodeLicenseException, Error},
 		{"version with a build suffix", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "manifest.yaml"), "release_version: 1.0.0-sealed.1", "release_version: 1.0.0+sealed.1")
+		}, CodeReleaseVersion, Error},
+		{"version with a leading v before a letter", func(t *testing.T, d string) {
+			edit(t, filepath.Join(d, "manifest.yaml"), "release_version: 1.0.0-sealed.1", "release_version: vnext")
 		}, CodeReleaseVersion, Error},
 		{"absolute done file", func(t *testing.T, d string) {
 			edit(t, filepath.Join(d, "manifest.yaml"), "license_exclusions: []", "license_exclusions: []\nbootstrap: {service: notes-web, done_file: /var/lib/notes/uploads/.done}")

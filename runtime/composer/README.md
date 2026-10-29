@@ -82,17 +82,19 @@ At build time every `images[].ref` in the bundled `manifest.yaml` is set to `<ca
 
 ### Release assets (D-046)
 
-`NewReleaseAssets(base, appId, version)` applies the rule. `base` is `catalog.release_asset_base` (`https://github.com/sealedtempo/sealed/releases/download`), `appId` the slug and `version` the version hashed into releaseId, used literally (so `v2.52.0` gives the tag `crm-vv2.52.0`).
+`NewReleaseAssets(base, appId, version)` applies the rule. `base` is `catalog.release_asset_base` (`https://github.com/sealedtempo/sealed/releases/download`), `appId` the slug and `version` the version hashed into releaseId. The tag is `<appId>-v<tagVersion>`, where `tagVersion` (`TagVersion`) is the version without one leading `v` or `V` that a digit follows, so the tag's own `v` is never doubled: `v1.58.2` is tagged `coding-agent-v1.58.2` (composer 1.3.0 and earlier gave `coding-agent-vv1.58.2`), `V2` is tagged `<appId>-v2`, and `10.0.11` is tagged `crm-v10.0.11`. Asset names keep the version exactly as hashed into releaseId.
 
 | asset | URL |
 |---|---|
-| bundle | `<base>/<appId>-v<version>/<appId>-<version>.bundle.tar` |
+| bundle | `<base>/<appId>-v<tagVersion>/<appId>-<version>.bundle.tar` |
 | cosign signature | the bundle URL plus `.sig` |
 | cosign certificate | the bundle URL plus `.crt` |
 | SLSA provenance | the bundle URL plus `.intoto.jsonl` |
-| SBOM of an image | `<base>/<appId>-v<version>/sbom.<image>.spdx.json` (the bundle's `sbom/<image>.spdx.json`; GitHub asset names cannot contain `/`) |
+| SBOM of an image | `<base>/<appId>-v<tagVersion>/sbom.<image>.spdx.json` (the bundle's `sbom/<image>.spdx.json`; GitHub asset names cannot contain `/`) |
 
-The version must match `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`: GitHub renames asset names with other characters (a `+` build suffix included), which would publish the bundle at a URL nobody fetches. Lint reports such versions. `FetchBundle(ctx, client, url, bundleHash, cache)` downloads a bundle (redirects followed, at most 64 MiB), accepts it only when its sha256 equals the onchain bundleHash (else `*BundleHashMismatchError`, the key broker's `bundle_hash_mismatch`), loads it in canonical form and stores it in a content-addressed `BundleCache`; `DirCache` re-hashes every entry on read, so a corrupted file is a miss.
+For example coding-agent `v1.58.2`: `<base>/coding-agent-v1.58.2/coding-agent-v1.58.2.bundle.tar`.
+
+The version must match `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`: GitHub renames asset names with other characters (a `+` build suffix included), which would publish the bundle at a URL nobody fetches. A leading `v` or `V` must be followed by a digit (`vnext` would be tagged `<appId>-vvnext`). Lint reports such versions, and every fetcher refuses them. Two versions that differ only by the leading `v` (`1.2.3` and `v1.2.3`) share one tag, so an app can release only one of them; release CI's pr-check reports the second as already released. `FetchBundle(ctx, client, url, bundleHash, cache)` downloads a bundle (redirects followed, at most 64 MiB), accepts it only when its sha256 equals the onchain bundleHash (else `*BundleHashMismatchError`, the key broker's `bundle_hash_mismatch`), loads it in canonical form and stores it in a content-addressed `BundleCache`; `DirCache` re-hashes every entry on read, so a corrupted file is a miss.
 
 ### Manifest
 

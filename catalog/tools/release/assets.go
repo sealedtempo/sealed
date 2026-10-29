@@ -47,17 +47,10 @@ func (a AssetNames) All() []string {
 
 // CheckReleaseVersion rejects versions that cannot be released under the asset URL rule
 // (composer.CheckReleaseVersion: GitHub renames asset names with other characters than letters, digits, ".",
-// "-" and "_", "+" included). A leading "v" is rejected too: the tag would read <appId>-vv<...>, forever,
-// because the version is part of releaseId.
-func CheckReleaseVersion(version string) error {
-	if err := composer.CheckReleaseVersion(version); err != nil {
-		return err
-	}
-	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') && version[1] >= '0' && version[1] <= '9' {
-		return fmt.Errorf("release version %q starts with %q; set release_version without it (the tag would be <appId>-v%s)", version, version[:1], version)
-	}
-	return nil
-}
+// "-" and "_", "+" included, and a leading "v" or "V" must be followed by a digit). A version such as v1.58.2
+// is released: its tag drops the leading v (composer.ReleaseTag, coding-agent-v1.58.2, never
+// coding-agent-vv1.58.2), and the asset names and releaseId keep the version as it is.
+func CheckReleaseVersion(version string) error { return composer.CheckReleaseVersion(version) }
 
 // Assets computes the release names for an app version.
 func Assets(d Defaults, app, version string, images []string) (AssetNames, error) {

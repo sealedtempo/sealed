@@ -42,11 +42,16 @@ go test ./catalog/tools/release/                       # unit, script and workfl
 
 ## Release assets (D-046)
 
-`<release_asset_base>/<appId>-v<version>/` holds `<appId>-<version>.bundle.tar` and, next to it, `.sig`,
+`<release_asset_base>/<appId>-v<tagVersion>/` holds `<appId>-<version>.bundle.tar` and, next to it, `.sig`,
 `.crt`, `.sigstore.json` and `.intoto.jsonl`; `sbom.<image>.spdx.json` and `scan.<image>.json` (GitHub
 release assets cannot contain `/`; inside the bundle they are `sbom/<image>.spdx.json` and `scan/<image>.json`);
-and `<appId>-<version>.release.json`. A version may not start with `v` followed by a digit (the tag would
-read `<appId>-vv...`) or contain `+` (GitHub renames such assets).
+and `<appId>-<version>.release.json`. `tagVersion` is the version without one leading `v` or `V` that a digit
+follows (composer `TagVersion`, since composer 1.4.0), so the tag's `v` is never doubled: coding-agent `v1.58.2`
+is released as `coding-agent-v1.58.2` with `coding-agent-v1.58.2.bundle.tar`, and needs no `release_version`.
+Asset names and releaseId keep the version as it is. A version may not contain `+` (GitHub renames such
+assets) or start with `v` before anything but a digit (`vnext` would be tagged `<appId>-vvnext`). `1.2.3` and
+`v1.2.3` share the tag `<appId>-v1.2.3`, so once one is released, pr-check refuses the other ("already
+released").
 
 ## Waivers (`catalog/apps/<id>/waivers.yaml`)
 

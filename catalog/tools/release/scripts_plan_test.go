@@ -85,11 +85,27 @@ func TestPlanReleasesScriptOnAnvil(t *testing.T) {
 	// misreading its fields.
 	writeFile(t, changed, "catalog/apps/notes/egress.yaml\n")
 	np := filepath.Join(root, CatalogDir, "notes/manifest.yaml")
-	writeFile(t, np, strings.Replace(readFile(t, np), "release_version: 1.0.0-sealed.1", "release_version: v1.0.0", 1))
+	orig := readFile(t, np)
+	writeFile(t, np, strings.Replace(orig, "release_version: 1.0.0-sealed.1", "release_version: vnext", 1))
 	r = runScriptIn(t, root, "plan-releases.sh", env, "pr-check", "--changed", changed)
-	if r.code != 0 || strings.Contains(f.calls(t), "gh release view v1.0.0") || !strings.Contains(r.output, "starts with \"v\"") {
+	if r.code != 0 || strings.Contains(f.calls(t), "gh release view vnext") || !strings.Contains(r.output, "starts with \"v\"") {
 		t.Fatalf("pr-check with a version problem: %d\n%s", r.code, r.output)
 	}
+	// v1.0.0 is tagged notes-v1.0.0 (one v), the tag of 1.0.0 too: once 1.0.0 is released, the other
+	// spelling cannot be, and pr-check says so instead of letting the release job find the tag taken.
+	writeFile(t, np, strings.Replace(orig, "release_version: 1.0.0-sealed.1", "release_version: v1.0.0", 1))
+	r = runScriptIn(t, root, "plan-releases.sh", env, "pr-check", "--changed", changed)
+	if r.code != 0 || !strings.Contains(r.output, "ok   notes: notes-v1.0.0 is not released yet") {
+		t.Fatalf("pr-check v1.0.0: %d\n%s", r.code, r.output)
+	}
+	if err := os.MkdirAll(filepath.Join(f.state, "gh/notes-v1.0.0/assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r = runScriptIn(t, root, "plan-releases.sh", env, "pr-check", "--changed", changed)
+	if r.code != 1 || !strings.Contains(r.output, "notes v1.0.0 is already released (notes-v1.0.0); bump release_version") {
+		t.Fatalf("pr-check v1.0.0 after 1.0.0: %d\n%s", r.code, r.output)
+	}
+	writeFile(t, np, orig)
 	// Unbuilt images make --strict fail in release mode.
 	p := filepath.Join(root, CatalogDir, "llm-gateway/manifest.yaml")
 	writeFile(t, p, strings.Replace(readFile(t, p), "sha256:"+strings.Repeat("2", 64), zeroDigest, 1))
