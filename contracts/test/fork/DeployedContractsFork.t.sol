@@ -265,17 +265,20 @@ contract DeployedContractsForkTest is Test {
         return r;
     }
 
-    /// @dev splitAmount is a pure helper for offchain callers. Above 10000 bps it reverts with Panic(0x11) (the
-    ///      treasury part underflows) on both builds; payments never reach it, since AppRegistry caps shares at 5000.
+    /// @dev splitAmount is a pure helper for offchain callers and does not cap shareBps: once
+    ///      amount * shareBps / 10000 exceeds the amount it reverts with Panic(0x11) on both builds (the treasury
+    ///      part underflows). Payments never reach it, since AppRegistry caps shares at 5000.
     function _checkSplit(Sys memory fresh, uint256 amount, uint16 bps) internal view {
+        bool overflows = amount * bps / 10_000 > amount;
         try live.splitter.splitAmount(amount, bps) returns (uint256 mLive, uint256 tLive) {
             (uint256 mFresh, uint256 tFresh) = fresh.splitter.splitAmount(amount, bps);
             assertEq(mLive, mFresh, "splitAmount maintainer");
             assertEq(tLive, tFresh, "splitAmount treasury");
+            assertEq(mLive, amount * bps / 10_000, "maintainer part rounds down");
             assertEq(mLive + tLive, amount, "split sums to the amount");
-            assertLe(bps, 10_000, "splitAmount accepted a share above 100%");
+            assertFalse(overflows, "splitAmount returned a maintainer part above the amount");
         } catch (bytes memory liveErr) {
-            assertGt(bps, 10_000, "splitAmount reverted for a share up to 100%");
+            assertTrue(overflows, "splitAmount reverted although the maintainer part fits");
             try fresh.splitter.splitAmount(amount, bps) {
                 revert("fresh build accepted what the deployed one rejected");
             } catch (bytes memory freshErr) {

@@ -254,7 +254,7 @@ nor time. Method 2 needs a report_data v2 binding first (contract review, crypto
 ```bash
 make deps          # forge soldeer install (from soldeer.lock)
 make build
-make test          # 386 tests, no network: unit, fuzz (256 runs), invariants (128 runs x depth 64), scripts, audit
+make test          # 388 tests, no network: unit, fuzz (256 runs), invariants (128 runs x depth 64), scripts, audit
 make test-ci       # FOUNDRY_PROFILE=ci: fuzz 1000 runs, invariants 256 runs x depth 100
 make test-invariant-deep  # FOUNDRY_PROFILE=deep: invariants 1000 runs x depth 256, seed 0x5ea1ed, 2 threads
 make test-fork     # 13 tests against Tempo mainnet (TEMPO_RPC_URL or https://rpc.tempo.xyz)
@@ -283,7 +283,7 @@ revert). Suites:
 | `test/script/Scripts.t.sol` | 9: Deploy, RegisterCatalog (idempotent, appId check, `_pending` refused before sending), Transfer/AcceptOwnership in-process |
 | `test/script/CatalogMainnet.t.sol` | 2: pins every field of `catalog/catalog.mainnet.json` and registers it on a fresh deployment |
 | `test/Integration.t.sol` | 1: whole lifecycle including an incident revoke |
-| `test/audit/*` | 27: every PoC of the contract review replayed; fixed findings assert the fix, acknowledged ones pin the documented behavior |
+| `test/audit/*` | 29: every PoC of the contract review replayed; fixed findings assert the fix, acknowledged ones pin the documented behavior; `AuditInvariants.t.sol` pins two behaviors the invariant work surfaced (splitAmount above a full share, a withheld heartbeat accepted after re-approval) |
 | `test/fork/TempoMainnetFork.t.sol` | 8: real pathUSD and USDC.e through FeeSplitter, TIP-403 checks |
 | `test/fork/DeployedContractsFork.t.sol` | 5: the deployed mainnet contracts: runtime code equals this source built with the recorded constructor arguments, configuration equals `deployments/tempo-mainnet.json`, pure helpers agree with a fresh build (fuzzed), live solvency and catalog sanity, and a 54-step lifecycle with the same outcome on the deployed contracts and on a fresh build |
 
