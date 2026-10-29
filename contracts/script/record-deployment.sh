@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Merge transaction hashes, block numbers, gas and fees from a forge broadcast file into a deployments file.
+# Merge transaction hashes, block numbers, gas and fees from a forge broadcast file into a deployments file, and
+# each contract's ABI from abi/<Name>.json (spec 4.8).
 #
 #   script/record-deployment.sh deployments/tempo-mainnet.json broadcast/Deploy.s.sol/4217/run-latest.json
 #
 # Deploy.s.sol writes addresses and constructor arguments during the script run, before anything is sent, so it
-# cannot know transaction hashes. Run this right after a successful `--broadcast`. Safe to re-run.
+# cannot know transaction hashes. Run this right after a successful `--broadcast`, after `make abi` from the same
+# build (make deploy-mainnet does both). Safe to re-run. ABI_DIR (default: the abi directory next to this script)
+# must hold an ABI for every contract in the file; when the directory does not exist (a copy of the contracts
+# without abi/, as in the release script tests) no ABI is recorded.
 set -euo pipefail
 
 dep="${1:?usage: record-deployment.sh <deployments.json> <run-latest.json>}"
@@ -34,5 +38,21 @@ jq --slurpfile run "$run" '
   | .totalGasUsed = ([.transactions[].gasUsed] | add)
   | .totalFeeUsd = ([.transactions[].feeUsd] | add)
 ' "$dep" > "$tmp"
+
+abi_dir="${ABI_DIR:-$(cd "$(dirname "$0")/.." && pwd)/abi}"
+if [ -d "$abi_dir" ]; then
+  abis="$(mktemp "${dep}.abi.XXXXXX")"
+  echo '{}' >"$abis"
+  for name in $(jq -r '.contracts | keys[]' "$tmp"); do
+    [ -f "$abi_dir/$name.json" ] || { rm -f "$tmp" "$abis"; echo "missing $abi_dir/$name.json (make abi)" >&2; exit 1; }
+    jq --arg n "$name" --slurpfile a "$abi_dir/$name.json" '. + {($n): $a[0]}' "$abis" >"$abis.new"
+    mv "$abis.new" "$abis"
+  done
+  jq --slurpfile abis "$abis" '.contracts |= with_entries(.value.abi = $abis[0][.key])' "$tmp" >"$tmp.new"
+  mv "$tmp.new" "$tmp"
+  rm -f "$abis"
+else
+  echo "no ABI directory $abi_dir: ABIs not recorded" >&2
+fi
 mv "$tmp" "$dep"
 echo "recorded $(jq '.transactions | length' "$dep") transactions into $dep (total fee \$$(jq '.totalFeeUsd' "$dep"))"
