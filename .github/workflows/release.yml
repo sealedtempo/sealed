@@ -1,7 +1,9 @@
-# Release job (spec 6.8, D-046, D-038), on merge to main: for every app whose bundle inputs changed (or the
-# apps given to a manual run) and whose release_version is not released yet:
-#   1. plan: only registered apps (OWNER registers with scripts/release/register-apps.sh, never CI), every
-#      image built and pinned, a releasable version;
+# Release job (spec 6.8, D-046, D-038), on merge to main: for every registered app whose release_version is
+# not onchain yet (or the apps given to a manual run):
+#   1. plan from the onchain state, not from the push diff, so a push whose run the single-slot concurrency
+#      group dropped is released by the next run (supply-6): only registered apps (OWNER registers them with
+#      contracts/script/RegisterCatalog.s.sol and contracts/catalog/catalog.mainnet.json, never CI), every
+#      image built and pinned, a releasable version; a push run skips apps that are not ready yet;
 #   2. mirror the app's upstream images to the catalog registry, digest for digest;
 #   3. build: every built image (manifest `source: build:`) must carry the cosign signature of images.yml on
 #      main (supply-3), then Syft SBOM and Grype scan per image from the catalog registry, the waivers gate,
@@ -61,19 +63,18 @@ jobs:
         id: plan
         env:
           EVENT: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
           APPS: ${{ inputs.apps }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+        # A push plans every app whose release_version is not onchain (the chain is the record of what is
+        # released), never the diff to github.event.before: that diff misses a push whose run was dropped
+        # while another one waited in the concurrency group (supply-6).
         run: |
           if [ "$EVENT" = workflow_dispatch ]; then
             sel=(--apps "$APPS")
-          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            git diff --name-only "$BEFORE" HEAD >"$RUNNER_TEMP/changed.txt"
-            sel=(--changed "$RUNNER_TEMP/changed.txt")
           else
-            sel=(--apps all)
+            sel=(--apps all --skip-unready)
           fi
           scripts/release/plan-releases.sh release "${sel[@]}" --out "$RUNNER_TEMP/plan.json"
           {

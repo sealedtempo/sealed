@@ -13,9 +13,9 @@ import (
 	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
-// The release workflow's publish job against GitHub Releases it did not create (supply-1) and the onchain
-// signatureURI (G13), in the Actions emulator of workflowsim_test.go with the real contracts on a local
-// Tempo node.
+// The release workflow's publish job against GitHub Releases it did not create (supply-1), the onchain
+// signatureURI (G13) and the plan from onchain state (supply-6), in the Actions emulator of
+// workflowsim_test.go with the real contracts on a local Tempo node.
 
 const (
 	mainWorkflowRef = "sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main"
@@ -139,6 +139,44 @@ func evilTree(t *testing.T) string {
 	writeFile(t, filepath.Join(root, CatalogDir, "notes", "egress.yaml"),
 		"version: 1\ndefault_allow: [\"api.example.com:443\", \"exfil.attacker.example:443\"]\ncustomer_additions_allowed: true\nnotes: \"x\"\n")
 	return root
+}
+
+// supply-6: a push plans from the onchain state, not from the push diff. notes 1.0.0-sealed.1 is not
+// onchain because the run of the push that changed it was dropped by the concurrency group; the next push
+// only touches a README. Its run must still plan notes, and skip llm-gateway (not registered) with a notice
+// instead of failing.
+func TestReleasePlanFromOnchainState(t *testing.T) {
+	r := newReleaseSimRig(t)
+	root := withScripts(t, fixtureRepo(t))
+	gitRun(t, root, "init", "-q", "-b", "main")
+	gitRun(t, root, "add", "-A")
+	gitRun(t, root, "commit", "-q", "-m", "notes 1.0.0-sealed.1 (its run was dropped)")
+	before := gitRun(t, root, "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(root, CatalogDir, "notes", "README.md"), "notes\n")
+	gitRun(t, root, "add", "-A")
+	gitRun(t, root, "commit", "-q", "-m", "docs only")
+	push := r.sim(root, mainWorkflowRef)
+	push.ctx["github"].(map[string]any)["event_name"] = "push"
+	push.ctx["github"].(map[string]any)["event"] = map[string]any{"before": before}
+	plan, err := push.runJobErr("plan", nil)
+	if err != nil || plan["count"] != "1" || plan["apps"] != "notes" {
+		t.Fatalf("BUG supply-6: a push must plan every registered app whose version is not onchain: %v %v", plan, err)
+	}
+	mustContain(t, r.f.calls(t), "gh release view "+notesTag)
+
+	// Once notes is onchain (and on GitHub), the next push plans nothing.
+	bh := composer.SHA256([]byte("notes bundle"))
+	if out, err := exec.Command("cast", "send", r.c.registry, "publishRelease(bytes32,string,bytes32,bytes32,bytes32,string,string)",
+		composer.AppID("notes").Hex(), "1.0.0-sealed.1", bh.Hex(), bh.Hex(), bh.Hex(), "https://example.invalid/p", "https://example.invalid/s",
+		"--private-key", devOps, "--rpc-url", r.c.rpc, "--tempo.fee-token", alphaUSD).CombinedOutput(); err != nil {
+		t.Fatalf("publishRelease: %v %s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(r.f.state, "gh", notesTag, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if plan = push.runJob("plan", nil); plan["count"] != "0" {
+		t.Fatalf("a released version is not planned again: %v", plan)
+	}
 }
 
 // supply-1 (ported from the verifier's TestSupply1PrePublishedReleaseWins, inverted): a GitHub Release
