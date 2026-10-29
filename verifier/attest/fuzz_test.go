@@ -247,6 +247,48 @@ func FuzzVerifyQuote(f *testing.F) {
 	})
 }
 
+// FuzzVerifyQuoteByte changes one byte of a verifying quote at a time, so
+// every run reaches the full verification (random mutation of whole quotes
+// mostly stops at the parser). No single-byte change may still verify.
+func FuzzVerifyQuoteByte(f *testing.F) {
+	policy := fuzzPolicy(f)
+	verifiers := []*Verifier{
+		fuzzVerifier(f, filepath.Join("testdata", "gcp", "pcs"), policy),
+		fuzzVerifier(f, filepath.Join("testdata", "pcs", "v5_sample"), DefaultTCBPolicy()),
+	}
+	var originals [][]byte
+	for _, q := range fuzzQuoteFiles(f) {
+		for _, v := range verifiers {
+			if _, err := v.VerifyQuote(context.Background(), q); err == nil {
+				originals = append(originals, q)
+				break
+			}
+		}
+	}
+	if len(originals) < 2 {
+		f.Fatalf("only %d recorded quotes verify offline", len(originals))
+	}
+	for i := range originals {
+		for _, pos := range []uint16{0, 100, 700, 1000, 1350, 2000, 3000, 4000, 4900} {
+			f.Add(uint8(i), pos, byte(' '))
+		}
+	}
+	f.Fuzz(func(t *testing.T, which uint8, pos uint16, val byte) {
+		orig := originals[int(which)%len(originals)]
+		i := int(pos) % len(orig)
+		if orig[i] == val {
+			return
+		}
+		m := bytes.Clone(orig)
+		m[i] = val
+		for _, v := range verifiers {
+			if res, err := v.VerifyQuote(context.Background(), m); err == nil {
+				t.Fatalf("byte %d of quote %d set from 0x%02x to 0x%02x still verifies (FMSPC %s, TCB %s)", i, int(which)%len(originals), orig[i], val, res.FMSPC, res.TCBStatus)
+			}
+		}
+	})
+}
+
 func fuzzEventLogs(tb testing.TB) [][]byte {
 	var out [][]byte
 	if b, err := os.ReadFile(filepath.Join("testdata", "gcp", "eventlog.json")); err == nil {
