@@ -259,9 +259,13 @@ jobs:
           echo "state=$state" >>"$GITHUB_OUTPUT"
       # Onchain publication uses the bundle the public release serves. A re-run after a published release
       # (for example after a failed transaction) takes that release's own release.json and bundle.
+      # A tag names the version without a leading v (composer.TagVersion), so 1.2.3 and v1.2.3 share one tag:
+      # a published release of the other spelling must fail this run, not be published under this version.
       - name: Fetch the bundle by its public URL (D-046)
         env:
           STATE: ${{ steps.gh.outputs.state }}
+          TAG: ${{ matrix.tag }}
+          VERSION: ${{ matrix.version }}
           BUNDLE: ${{ matrix.assets.bundle }}
           RELEASE_JSON: ${{ matrix.assets.releaseJson }}
           BASE_URL: ${{ matrix.assets.baseUrl }}
@@ -269,10 +273,14 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/public"
           if [ "$STATE" = exists ]; then
-            curl -fsSL --proto '=https' -o "$RUNNER_TEMP/public/release.json" "$BASE_URL/$RELEASE_JSON"
+            curl -fsSL --proto '=https' -o "$RUNNER_TEMP/public/release.json" "$BASE_URL/$RELEASE_JSON" ||
+              { echo "::error::release $TAG is already published without $RELEASE_JSON: another spelling of $VERSION (1.2.3 and v1.2.3 share a tag) owns it; set release_version"; exit 1; }
           else
             cp "$RUNNER_TEMP/release/dist/$RELEASE_JSON" "$RUNNER_TEMP/public/release.json"
           fi
+          published="$(jq -r .version "$RUNNER_TEMP/public/release.json")"
+          [ "$published" = "$VERSION" ] ||
+            { echo "::error::release $TAG serves version $published, this run publishes $VERSION (1.2.3 and v1.2.3 share a tag); set release_version"; exit 1; }
           hash="$(jq -r .bundleHash "$RUNNER_TEMP/public/release.json")"
           scripts/release/github-release.sh fetch --url "$BASE_URL/$BUNDLE" --sha256 "$hash" --out "$RUNNER_TEMP/public/$BUNDLE"
           sealed-release info --bundle "$RUNNER_TEMP/public/$BUNDLE" >"$RUNNER_TEMP/public/info.json"

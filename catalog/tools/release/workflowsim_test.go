@@ -14,7 +14,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // A small GitHub Actions emulator for the release workflow: it runs the real `run:` scripts of
@@ -150,6 +150,17 @@ func readKV(t *testing.T, p string) map[string]any {
 // runJob runs one job with the given matrix entry (nil for none) and returns its outputs.
 func (s *simulator) runJob(name string, matrix map[string]any) map[string]any {
 	s.t.Helper()
+	outs, err := s.runJobErr(name, matrix)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return outs
+}
+
+// runJobErr runs a job like runJob and returns the first failing step's error and output instead of failing
+// the test, for the paths where the workflow must stop.
+func (s *simulator) runJobErr(name string, matrix map[string]any) (map[string]any, error) {
+	s.t.Helper()
 	job, ok := s.wf.Jobs[name]
 	if !ok {
 		s.t.Fatalf("no job %s", name)
@@ -219,7 +230,7 @@ func (s *simulator) runJob(name string, matrix map[string]any) map[string]any {
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			s.t.Fatalf("job %s step %q failed: %v\n%s", name, label, err, out)
+			return nil, fmt.Errorf("job %s step %q failed: %v\n%s", name, label, err, out)
 		}
 		if st.ID != "" {
 			steps[st.ID] = map[string]any{"outputs": readKV(s.t, outFile)}
@@ -234,7 +245,7 @@ func (s *simulator) runJob(name string, matrix map[string]any) map[string]any {
 	for k, v := range job.Outputs {
 		outs[k] = s.expand(ctx, v)
 	}
-	return outs
+	return outs, nil
 }
 
 func (s *simulator) useAction(ctx map[string]any, st simStep) {
@@ -423,6 +434,20 @@ func TestReleaseWorkflowEndToEnd(t *testing.T) {
 	}
 	if readFile(t, filepath.Join(f.state, "gh", tag, "assets", "notes-1.0.0-sealed.1.bundle.tar")) != bundle {
 		t.Fatal("a re-run must not replace the public bundle")
+	}
+
+	// Another spelling of the same version (v1.0.0-sealed.1 for 1.0.0-sealed.1) has the same tag. Release mode must
+	// fail on the published release of the other spelling instead of publishing nothing and passing (rc-composer).
+	other := map[string]any{}
+	for k, v := range entry {
+		other[k] = v
+	}
+	other["version"] = "v" + toStr(entry["version"])
+	if _, err := sim.runJobErr("publish", other); err == nil || !strings.Contains(err.Error(), "serves version 1.0.0-sealed.1, this run publishes v1.0.0-sealed.1") {
+		t.Fatalf("publish of another spelling under a published tag: %v", err)
+	}
+	if err := readJSONFile(filepath.Join(f.state, "gh", tag, "assets", "notes-1.0.0-sealed.1.release.json"), &doc); err != nil || doc.Onchain.TxHash != firstTx {
+		t.Fatalf("the published release must stay as it was: %+v %v", doc.Onchain, err)
 	}
 
 	// The next plan sees a complete release and plans nothing.
