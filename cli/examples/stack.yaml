@@ -16,6 +16,8 @@ customer: "0x00000000000000000000000000000000000000c1"
 # Optional: zone (default <region>-a), machineType (default c3-standard-8), dataDiskGb (default 50),
 # salt (default derived from project and name only), bootBucket (default <project>-sealed-boot, created by
 # sealed bootstrap).
+# machineType must have a registered image, measured on that shape: today only c3-standard-8 (D-083). The key
+# broker would refuse a VM of any other type at first boot, so sealed deploy refuses it first.
 # The salt picks the data disk key and the enclave signer (D-058): keep it across upgrades (new releases or a
 # changed config) and the new stack opens the same disk; a new salt means a fresh disk. sealed deploy --replace
 # upgrades a running VM in place and keeps its data disk.

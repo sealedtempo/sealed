@@ -16,11 +16,13 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/sealedtempo/sealed/cli/internal/settings"
 	"github.com/sealedtempo/sealed/cli/internal/token"
 )
 
@@ -100,7 +102,6 @@ type Settl struct {
 var (
 	nameRe    = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}[a-z0-9]$`)
 	zoneRe    = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+-[a-z]$`)
-	mtRe      = regexp.MustCompile(`^c3-standard-(4|8|22|44|88|176)$|^c4-standard-(2|4|8|16|32|48|96|144|192)$`)
 	gceImgRe  = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`)
 	bucketRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$`)
 	appIDRe   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -175,8 +176,9 @@ func (s *StackFile) normalize() error {
 	if !zoneRe.MatchString(s.Zone) || !strings.HasPrefix(s.Zone, s.Region+"-") {
 		return fmt.Errorf("zone %q is not a zone of %s", s.Zone, s.Region)
 	}
-	if s.MachineType != "" && !mtRe.MatchString(s.MachineType) {
-		return fmt.Errorf("machineType %q is not a TDX machine type (c3-standard-* or c4-standard-*)", s.MachineType)
+	if s.MachineType != "" && !slices.Contains(settings.RegisteredMachineTypes, s.MachineType) {
+		return fmt.Errorf("machineType %q has no registered Sealed OS image: each image is measured on one machine shape, so the key broker would refuse a VM of another type at first boot (D-083); use %s",
+			s.MachineType, strings.Join(settings.RegisteredMachineTypes, " or "))
 	}
 	if s.DataDiskGB != 0 && (s.DataDiskGB < 10 || s.DataDiskGB > 65536) {
 		return fmt.Errorf("dataDiskGb must be between 10 and 65536")

@@ -2,10 +2,13 @@ package deploy
 
 import (
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
 	"github.com/sealedtempo/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // VMTag opens 80 and 443 in the bootstrap firewall.
@@ -45,7 +48,7 @@ var requiredMetadata = map[string]string{
 type InstanceParams struct {
 	Project, Region, Zone string
 	Names                 ResourceNames
-	MachineType           string
+	MachineType           string // one of settings.RegisteredMachineTypes (D-083)
 	BootImage             string // measured OS image
 	SystemDiskImage       string // dstack-data GPT image
 	SharedDiskImage       string // per-deployment dstack shared disk
@@ -56,16 +59,61 @@ type InstanceParams struct {
 	// DebugLogSA is set only for a debug image (spec 5.8): the VM then gets this log writer identity with
 	// DebugLogScopes. Production VMs never have a service account.
 	DebugLogSA string
+	// TEE is cloud.tee of the defaults, which picks the confidentialInstanceType. Empty is intel-tdx, the only TEE
+	// settings.Load accepts.
+	TEE string
 }
 
 func diskType(zone string) string { return "zones/" + zone + "/diskTypes/pd-balanced" }
+
+// ImageMachineTypes are the machine types a PlatformRegistry OS image entry was measured on: the build metadata of
+// its version (<sealed OS version>+<type>.<type>, written by runtime/images/dstack-os/tools/osimage). A version
+// without build metadata, like the simulator images of local test chains, names none.
+func ImageMachineTypes(version string) []string {
+	_, meta, ok := strings.Cut(version, "+")
+	if !ok || meta == "" {
+		return nil
+	}
+	return strings.Split(meta, ".")
+}
+
+// CheckMachineType refuses a machine type whose VM the key broker would deny at first boot (D-083): one that is not
+// a registered machine type of cloud.machine_family, or one the stack's image entry was not measured on. The broker
+// compares the quote with the image's measurements, and RTMR0 follows the machine shape (D-070).
+func CheckMachineType(machineType string, img *chain.Image, cloud settings.Cloud) error {
+	if !slices.Contains(cloud.MachineTypes(), machineType) {
+		return fmt.Errorf("machine type %q is not a %s machine type with a registered image (%s, D-083)",
+			machineType, cloud.MachineFamily, strings.Join(cloud.MachineTypes(), ", "))
+	}
+	if img == nil {
+		return nil
+	}
+	if measured := ImageMachineTypes(img.Version); len(measured) > 0 && !slices.Contains(measured, machineType) {
+		return fmt.Errorf("image %s %s was measured on %s, not on machine type %s, so the key broker would refuse the VM at first boot (D-083): set machineType to one of those, or image.id to the entry measured on %s",
+			img.Name, img.Version, strings.Join(measured, ", "), machineType, machineType)
+	}
+	return nil
+}
+
+// confidentialInstanceType maps cloud.tee to Compute Engine's confidentialInstanceType ("" is intel-tdx).
+func confidentialInstanceType(tee string) (string, error) {
+	if tee == "" {
+		tee = settings.TEEIntelTDX
+	}
+	return settings.ConfidentialInstanceType(tee)
+}
 
 // BuildInstance returns the instance resource. A production VM never gets a service account (the list is
 // explicitly empty, so no scopes either); a debug VM gets only the log writer identity with the logging.write
 // scope. Both turn OS Login, the serial port and its logging off, block project SSH keys, and require TDX with
 // host maintenance TERMINATE. Secure boot stays off because dstack's UKI is not signed for the default db; the
-// vTPM stays on because dstack mixes its key into the instance id.
+// vTPM stays on because dstack mixes its key into the instance id. An unknown TEE panics, because settings.Load
+// refuses every other cloud.tee: a VM is never built without confidential compute.
 func BuildInstance(p InstanceParams) *gcp.Instance {
+	confidentialType, err := confidentialInstanceType(p.TEE)
+	if err != nil {
+		panic(err)
+	}
 	t := true
 	variant, description, accounts := "production", "Sealed confidential deployment ", []gcp.ServiceAccount{}
 	if p.DebugLogSA != "" {
@@ -116,7 +164,7 @@ func BuildInstance(p InstanceParams) *gcp.Instance {
 		}},
 		ServiceAccounts:            accounts,
 		Scheduling:                 &gcp.Scheduling{OnHostMaintenance: "TERMINATE", AutomaticRestart: &t},
-		ConfidentialInstanceConfig: &gcp.ConfidentialInstanceConfig{ConfidentialInstanceType: "TDX"},
+		ConfidentialInstanceConfig: &gcp.ConfidentialInstanceConfig{ConfidentialInstanceType: confidentialType},
 		ShieldedInstanceConfig:     &gcp.ShieldedInstanceConfig{EnableSecureBoot: false, EnableVtpm: true, EnableIntegrityMonitoring: true},
 	}
 }
@@ -165,8 +213,11 @@ func checkInstance(in *gcp.Instance, debugLogSA string) []string {
 			problems = append(problems, "the debug VM is not labeled "+VariantLabel+"=debug")
 		}
 	}
-	if in.ConfidentialInstanceConfig == nil || in.ConfidentialInstanceConfig.ConfidentialInstanceType != "TDX" {
-		problems = append(problems, "confidential compute TDX is not on")
+	if want, _ := confidentialInstanceType(""); in.ConfidentialInstanceConfig == nil || in.ConfidentialInstanceConfig.ConfidentialInstanceType != want {
+		problems = append(problems, "confidential compute "+want+" is not on")
+	}
+	if mt := path.Base(in.MachineType); !slices.Contains(settings.RegisteredMachineTypes, mt) {
+		problems = append(problems, fmt.Sprintf("machine type %q has no registered image (D-083: %s)", mt, strings.Join(settings.RegisteredMachineTypes, ", ")))
 	}
 	if in.Scheduling == nil || in.Scheduling.OnHostMaintenance != "TERMINATE" {
 		problems = append(problems, "onHostMaintenance is not TERMINATE")
