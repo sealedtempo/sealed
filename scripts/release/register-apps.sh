@@ -13,7 +13,8 @@
 # The catalog file comes from catalog/apps/*/manifest.yaml (catalog/tools/release catalog-json): slug = id,
 # name, licenseSpdx = upstream.license_spdx, maintainerShareBps, metadataURI = <repo>/tree/main/<app dir>,
 # maintainer = payout_address unless it is ${MAINTAINER_DEFAULT_ADDRESS}. --images adds platform images in
-# RegisterCatalog's format (addImage); leave it out to register apps only.
+# RegisterCatalog's format (addImage): the measurements file runtime/images/dstack-os/import-and-measure.sh writes
+# ({"images": [...], "sealed": {...}}) or a bare JSON array of image entries. Leave it out to register apps only.
 #
 # Environment (OWNER_PRIVATE_KEY, MAINTAINER_DEFAULT_ADDRESS and TEMPO_RPC_URL are read from SEALED_ENV,
 # default ../.env next to the repository, when they are not already set; nothing is printed):
@@ -96,7 +97,16 @@ CATALOG_REL="catalog/.register-apps.$$.json"
 add_cleanup "rm -f '$CONTRACTS_DIR/$CATALOG_REL'"
 args=()
 [ -n "$APPS" ] && args+=(--apps "$APPS")
-[ -n "$IMAGES" ] && args+=(--images "$IMAGES")
+if [ -n "$IMAGES" ]; then
+	# catalog-json takes a bare array; the image measurement file is an object holding one under "images".
+	[ -f "$IMAGES" ] || die "--images: $IMAGES not found" 2
+	images_list="$(mktemp)"
+	add_cleanup "rm -f '$images_list'"
+	jq -e 'if type == "array" then . elif type == "object" and (.images | type) == "array" then .images
+		else error("want a JSON array of images or an object with an images array") end' "$IMAGES" >"$images_list" ||
+		die "--images: $IMAGES is neither a JSON array of RegisterCatalog images nor an image measurements file" 2
+	args+=(--images "$images_list")
+fi
 release_tool catalog-json ${args[@]+"${args[@]}"} >"$CONTRACTS_DIR/$CATALOG_REL"
 
 pending=()
