@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // EgressPolicy is a release's egress.yaml (INTERFACES section 7).
@@ -154,8 +155,15 @@ func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 			return HostPort{}, fmt.Errorf("%q: invalid host label %q (lowercase letters, digits and hyphens only)", s, l)
 		}
 	}
-	if _, err := strconv.Atoi(labels[len(labels)-1]); err == nil {
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
 		return HostPort{}, fmt.Errorf("%q: numeric top-level label", s)
+	}
+	// sealed-egress parses every allow entry again when it starts and exits
+	// on one it refuses, so the stack would never boot. Its parser is the
+	// last word: it also refuses wildcards over an ICANN public suffix
+	// (*.co.uk), which the label rules above let through.
+	if _, err := policy.ParseEntry(s); err != nil {
+		return HostPort{}, fmt.Errorf("%q: sealed-egress refuses it: %v", s, err)
 	}
 	return hp, nil
 }
