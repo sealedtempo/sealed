@@ -48,6 +48,8 @@ export type PayerConfig = {
   attestIntervalSeconds: number
   allowedCallers: string[]
   reportIntervalSeconds: number
+  /** STATE_DIR: made private (0700, this process's user) at boot, see state-dir.ts. */
+  stateDir: string
   /** Where the day's debits are kept so a restart does not reset the budget. */
   spendStateFile: string
   /** The channel journal (recovery of orphaned deposits). */
@@ -177,6 +179,7 @@ export function loadPayerConfig(env: NodeJS.ProcessEnv = process.env): PayerConf
       .map((s) => s.trim())
       .filter(Boolean),
     reportIntervalSeconds: intEnv(env, 'SPEND_REPORT_INTERVAL_SECONDS', 60),
+    stateDir,
     spendStateFile: env.SPEND_STATE_FILE ?? join(stateDir, 'spend-state.json'),
     channelJournalFile: join(stateDir, 'channels.json'),
     sessionStoreFile: join(stateDir, 'session-store.json'),
