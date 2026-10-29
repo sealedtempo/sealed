@@ -6,7 +6,7 @@ Your data stays in your cloud account. Apps run in confidential VMs, we have no 
 
 Limits: confidential VMs do not stop physical attacks on the server, bugs inside apps, or a cloud provider with physical access.
 
-This document describes the system as built on `ws/integration` after merge C (composer 1.3.0), including the hardening decisions D-058 to D-069 and D-073. Byte-level formats are in [INTERFACES.md](INTERFACES.md); the fragment and composed-stack contract is [runtime/composer/README.md](../runtime/composer/README.md), which wins where the two differ. Decisions are cited as D-0xx.
+This document describes the system as built on `ws/integration` after merge C and the release-candidate round (composer 1.4.0), including the hardening decisions D-058 to D-069 and D-073. Byte-level formats are in [INTERFACES.md](INTERFACES.md); the fragment and composed-stack contract is [runtime/composer/README.md](../runtime/composer/README.md), which wins where the two differ. Decisions are cited as D-0xx.
 
 ## Actors
 
@@ -206,7 +206,7 @@ Caddy terminates TLS inside the VM with keys generated there. Hostnames are `<ro
 
 - `gate` routes: Caddy runs `forward_auth sealed-agent:7070` with `uri /v1/gate?route=<route>`. The agent answers 200 for a valid `sealed_gate` cookie (HMAC-SHA256 with a per-boot key, 12 hours, `HttpOnly; Secure; SameSite=Lax`) or for Basic auth as user `sealed` whose password matches the bcrypt hash released by the key broker; a Basic success sets the cookie (a 303 for browser navigations). Otherwise 401 with a Basic challenge, 429 under brute force, and 503 `starting` until the app's bootstrap job has finished, so no app is reachable half configured.
 - Caddy strips the gate's own Basic credentials and the `sealed_gate` cookie before proxying, so an app's own `Authorization` header (for example a Bearer token) passes untouched and no app can replay the gate cookie.
-- `bearer-passthrough` (only llm-gateway `gateway`): LiteLLM bearer keys go straight to the gateway; anything else on that route is gated.
+- `bearer-passthrough` (only llm-gateway `gateway`): Caddy asks the gate in bearer mode (`/v1/gate?route=<route>&bearer=1`, composer 1.4.0, review C-6), which holds bearer requests with 503 `starting` while the keys are not released or the gateway's bootstrap runs, then passes them with their `Authorization` header unchanged, so LiteLLM checks every key itself; anything else on that route is gated.
 - `public`: only `attest` and the relay's `relay` route. A manifest cannot turn the gate off for any other route; the composer rejects it.
 - `attest` proxies `sealed-agent:7070/attest`, which returns a fresh quote over `sha256("sealed/attest/v1" || nonce || tlsPubKeyHash || enclaveSigner)`, so a caller learns that the TLS key it is talking to belongs to the attested VM.
 - The relay route sets `on_attest_host: true`: the relay's `/v1` API is served on its attest host, the same origin and certificate as `/attest` (D-045).

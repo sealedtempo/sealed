@@ -35,7 +35,7 @@ The bundle contains exactly `manifest.yaml`, `compose.fragment.yaml`, `egress.ya
 Required fields: `schema`, `id`, `name`, `category`, `description`, `upstream {repo, version, license_spdx, source_url}`, `maintainer {name, payout_address}`, `maintainer_share_bps`, `compose_fragment: compose.fragment.yaml`, `egress_policy: egress.yaml`, `primary_service`, `images`, `resources {cpu, memory_gb, disk_gb}`, `routes`, `healthcheck`, `metering {unit, source}`, `secrets`, `telemetry_off_env`, `license_exclusions`. Optional: `release_version`, `telemetry_none_reason`, `license_exceptions`, `bootstrap`, `notes`. The schema is `catalog/schema/manifest.schema.json`; the composer validates it strictly.
 
 - `id`: lowercase slug; `appId = keccak256(id)`. Reserved: `sealed`, `sealed-*`, `caddy`, `gate`, `localhost`.
-- `release_version`: the version hashed into releaseId, default `upstream.version`. Bump it when only the packaging changes (for example `2.1.0-sealed.2`). It must match `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$` (no `+`), because GitHub renames release assets with other characters. A version is used literally in the release tag (`<id>-v<version>`), so a version that already starts with `v` gives `<id>-vv...`.
+- `release_version`: the version hashed into releaseId, default `upstream.version`. Bump it when only the packaging changes (for example `2.1.0-sealed.2`). It must match `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$` (no `+`), because GitHub renames release assets with other characters. A version is used literally in releaseId and in the asset names. The release tag is `<id>-v<tagVersion>`, where `tagVersion` drops one leading `v` or `V` that a digit follows, so `v1.58.2` is tagged `<id>-v1.58.2`, never `<id>-vv1.58.2` (`composer.TagVersion`). Any other leading `v` (`vnext`) is refused, and `1.2.3` and `v1.2.3` share one tag, so an app can release only one of them.
 - `maintainer.payout_address`: your Tempo address, or `${MAINTAINER_DEFAULT_ADDRESS}` for seed apps. The onchain value registered at `registerApp` is what pays; see Payouts.
 - `maintainer_share_bps`: 2000 (20%) is the platform default. The contract allows at most 5000.
 
@@ -161,7 +161,7 @@ A release that later proves harmful is revoked onchain with `revokeRelease`: eve
 ## Releases
 
 - Any change to an app's packaging is a new release with a new `release_version`. AppRegistry rejects a version the app already used and a bundleHash it already published, even after a revocation (CR-5).
-- Assets of a release, under the tag `<id>-v<version>`: `<id>-<version>.bundle.tar`, its `.sigstore.json` (cosign bundle), `.sig` and `.crt`, `.intoto.jsonl` (SLSA provenance), and `sbom.<image>.spdx.json` per image (D-046).
+- Assets of a release, under the tag `<id>-v<tagVersion>` (above): `<id>-<version>.bundle.tar`, its `.sigstore.json` (cosign bundle), `.sig` and `.crt`, `.intoto.jsonl` (SLSA provenance), and `sbom.<image>.spdx.json` per image (D-046).
 - `sealed release build <id>` packs your checkout into the deterministic bundle (sorted ustar, mtime 0, uid and gid 0, LF endings) and prints `bundleHash`, `egressPolicyHash`, `sbomHash` and `releaseId`, the exact `publishRelease` arguments. `sealed release build <id> --check <version|latest>` rebuilds a published release (with the SBOMs and scans from the published bundle, since CI generates them) and requires the result to equal the onchain bundleHash byte for byte. Anyone can run it.
 
 ## Payouts

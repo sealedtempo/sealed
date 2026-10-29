@@ -15,10 +15,12 @@ import (
 	"time"
 
 	keybroker "github.com/sealed-dev/sealed/key-broker"
+	"github.com/sealed-dev/sealed/runtime/caddy"
 	"github.com/sealed-dev/sealed/runtime/composer"
 	"github.com/sealed-dev/sealed/runtime/egress/policy"
 	verify "github.com/sealed-dev/sealed/verifier"
 	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealed-dev/sealed/verifier/httpapi"
 )
 
 // root is the repository root, relative to this package directory (go test runs in it).
@@ -329,4 +331,94 @@ func TestXFAMIsNotClaimedPinned(t *testing.T) {
 	if !strings.Contains(read(t, "key-broker/pcs.go"), "not pinned (deferred)") {
 		t.Error("key-broker/pcs.go no longer says XFAM is not pinned; if it is pinned now, update the docs and this test")
 	}
+}
+
+// TestReleaseTagRuleDocumented: the release tag drops a leading v before a digit (composer.TagVersion), so the docs
+// must give the tag as <appId>-v<tagVersion> and must not promise a <id>-vv... tag or a v-prefixed bundle directory.
+func TestReleaseTagRuleDocumented(t *testing.T) {
+	if got := composer.ReleaseTag("coding-agent", "v1.58.2"); got != "coding-agent-v1.58.2" {
+		t.Fatalf("ReleaseTag(coding-agent, v1.58.2) = %s; update the docs with the rule", got)
+	}
+	s7 := section(t, read(t, "docs/INTERFACES.md"), "7")
+	mustContain(t, "INTERFACES.md section 7", s7, "| tag | `<appId>-v<tagVersion>` |", "`<base>/<appId>-v<tagVersion>/<appId>-<version>.bundle.tar`",
+		"`TagVersion`", "`coding-agent-v1.58.2`", "`vnext`")
+	for _, f := range []string{"docs/INTERFACES.md", "docs/MAINTAINERS.md", "docs/VERIFY.md", "README.md"} {
+		text := read(t, f)
+		for _, stale := range []string{"-vv...", "<id>-v<version>", "<app>-v<version>/", "<appId>-v<version>/", "refuses a leading `v`"} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%s still says %q; the tag is <appId>-v<tagVersion> (composer.TagVersion)", f, stale)
+			}
+		}
+	}
+	mustContain(t, "MAINTAINERS.md", read(t, "docs/MAINTAINERS.md"), "<id>-v<tagVersion>")
+}
+
+// TestBearerGateDocumented: composer 1.4.0's bearer-passthrough handles ask the gate's bearer mode; the docs must say
+// so and must not keep the old "does not ask the gate" residual.
+func TestBearerGateDocumented(t *testing.T) {
+	tmpl := read(t, "runtime/caddy/Caddyfile.tmpl")
+	if !strings.Contains(tmpl, "GateBearerQuery") || caddy.GateBearerQuery != "bearer=1" {
+		t.Fatal("the Caddy template no longer asks the gate's bearer mode; update the docs and this test")
+	}
+	s14 := section(t, read(t, "docs/INTERFACES.md"), "14")
+	mustContain(t, "INTERFACES.md section 14", s14, "uri /v1/gate?route=<route>&"+caddy.GateBearerQuery)
+	for _, f := range []string{"docs/INTERFACES.md", "docs/THREAT_MODEL.md", "docs/ARCHITECTURE.md"} {
+		text := read(t, f)
+		for _, stale := range []string{"does not ask the gate", "does not call it yet", "go straight to the app", "skip the bootstrap hold"} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%s still says %q; bearer requests wait for the gate's bearer mode (review C-6)", f, stale)
+			}
+		}
+	}
+}
+
+// TestPayerStateDocumented: the payer's state directory is a data-disk bind made private by envexec.
+func TestPayerStateDocumented(t *testing.T) {
+	doc := read(t, "docs/INTERFACES.md")
+	mustContain(t, "INTERFACES.md section 14", section(t, doc, "14"), composer.PayerStateDir, "/mnt/sealed-data/_mpp-payer/state", `"private"`, `user: "1000:1000"`)
+	mustContain(t, "INTERFACES.md section 15", section(t, doc, "15"), "/mnt/sealed-data/_mpp-payer/state", "envexec private")
+	if strings.Contains(doc, "no persistent mount") || strings.Contains(doc, "mounts no persistent volume") {
+		t.Error("INTERFACES.md still says the payer has no persistent mount")
+	}
+}
+
+// TestVerifierdLimitsDocumented: sealed-verifierd reads at most httpapi.MaxBodyBytes and reports its composer version
+// and body limit on /healthz; the platform api routes in front of it accept no more.
+func TestVerifierdLimitsDocumented(t *testing.T) {
+	if httpapi.MaxBodyBytes != 8<<20 {
+		t.Fatalf("sealed-verifierd's body limit is %d bytes; the docs say 8 MiB", httpapi.MaxBodyBytes)
+	}
+	s10 := section(t, read(t, "docs/INTERFACES.md"), "10")
+	mustContain(t, "INTERFACES.md section 10", s10, "composerVersion, liveFetch, maxBodyBytes}", `"code":"body_too_large"`, "8388608",
+		"evidence bundle (at most 8 MiB")
+	if strings.Contains(s10, "16 MiB") {
+		t.Error("INTERFACES.md section 10 still names 16 MiB; the api and Caddy take sealed-verifierd's 8 MiB")
+	}
+}
+
+// TestBrokerBootstrapEnvDocumented: the bootstrap's optional broker variables and the Cloud Run concurrency in
+// key_broker.tf appear in INTERFACES.md section 16.
+func TestBrokerBootstrapEnvDocumented(t *testing.T) {
+	s16 := section(t, read(t, "docs/INTERFACES.md"), "16")
+	for _, name := range quoted(t, read(t, "key-broker/cmd/key-broker/main.go"), "var bootstrapOptionalEnv = []string{", "}") {
+		mustContain(t, "INTERFACES.md section 16", s16, "`"+name+"`")
+	}
+	m := regexp.MustCompile(`max_instance_request_concurrency\s*=\s*([0-9]+)`).FindStringSubmatch(read(t, "infra/terraform/customer-bootstrap/key_broker.tf"))
+	if m == nil {
+		t.Fatal("key_broker.tf sets no max_instance_request_concurrency")
+	}
+	mustContain(t, "INTERFACES.md section 16", s16, "request concurrency "+m[1])
+}
+
+// TestPlatformSideFailuresDocumented: every settlement reason the agent defers under D-073 is named in section 11.
+func TestPlatformSideFailuresDocumented(t *testing.T) {
+	s11 := section(t, read(t, "docs/INTERFACES.md"), "11")
+	reasons := quoted(t, read(t, "runtime/agent/src/payments/settler.ts"), "PLATFORM_SIDE_FAILURES: ReadonlySet<string> = new Set([", "]);")
+	if len(reasons) < 3 {
+		t.Fatalf("found %d platform-side reasons", len(reasons))
+	}
+	for _, r := range reasons {
+		mustContain(t, "INTERFACES.md section 11", s11, "`"+r+"`")
+	}
+	mustContain(t, "INTERFACES.md section 11", s11, "`rpc_error`", "`deferredSince`")
 }
