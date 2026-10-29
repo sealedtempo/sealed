@@ -3,9 +3,10 @@
 #   1. plan: only registered apps (OWNER registers with scripts/release/register-apps.sh, never CI), every
 #      image built and pinned, a releasable version;
 #   2. mirror the app's upstream images to the catalog registry, digest for digest;
-#   3. build: Syft SBOM and Grype scan per image from the catalog registry, the waivers gate, the bundle with
-#      `sealed release build` (checked byte for byte against the composer library), the release-mode lint,
-#      and cosign keyless signing through GitHub OIDC (Fulcio certificate, Rekor entry);
+#   3. build: every built image (manifest `source: build:`) must carry the cosign signature of images.yml on
+#      main (supply-3), then Syft SBOM and Grype scan per image from the catalog registry, the waivers gate,
+#      the bundle with `sealed release build` (checked byte for byte against the composer library), the
+#      release-mode lint, and cosign keyless signing through GitHub OIDC (Fulcio certificate, Rekor entry);
 #   4. SLSA build provenance for every bundle with slsa-github-generator;
 #   5. publish: a GitHub Release named <appId>-v<version> with the bundle, .sig, .crt, .sigstore.json,
 #      .intoto.jsonl, SBOMs, scans and release.json, fetched back by its public URL and checked against
@@ -120,6 +121,16 @@ jobs:
           TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      # supply-3: a built image's digest is released only if images.yml on main signed it.
+      - name: Built images are signed by images.yml on main
+        env:
+          REFS: ${{ toJSON(matrix.imageRefs) }}
+          GH_REPO: ${{ github.repository }}
+          SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
+        run: |
+          while IFS= read -r ref; do
+            scripts/release/verify-image.sh --ref "$ref"
+          done < <(jq -r '.[] | select(.built) | .ref' <<<"$REFS")
       # SBOM and scan of exactly what VMs pull: <registry>/<name>@<digest>.
       - name: SBOM, Grype and waivers
         env:

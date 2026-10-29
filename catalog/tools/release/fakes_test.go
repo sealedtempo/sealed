@@ -97,23 +97,52 @@ cat "$FAKE_GRYPE_REPORT"
 `
 
 // fakeCosign copies $FAKE_SIGSTORE_BUNDLE, or writes a structurally valid Sigstore v0.3 bundle for the blob
-// (right digest, a placeholder certificate, a Rekor entry) when it is not set.
+// (right digest, a placeholder certificate, a Rekor entry) when it is not set. Like Fulcio in GitHub Actions,
+// it names the signer https://github.com/$GITHUB_WORKFLOW_REF when that is set (in fakeIdentity, which
+// real bundles carry inside the certificate), and verify-blob then checks the identity, the issuer and the
+// blob's digest the way cosign does. Images: `sign <ref>` records the signer under $FAKE_STATE/cosign, and
+// `verify` accepts only that identity (tests sign with fakeSignImage).
 const fakeCosign = `#!/usr/bin/env bash
 set -euo pipefail
 echo "cosign $*" >>"$FAKE_LOG"
+key() { printf '%s' "$1" | tr '/:@' '___'; }
+flag() { local want="$1" prev=""; shift; for a in "$@"; do [ "$prev" = "$want" ] && { printf '%s' "$a"; return; }; prev="$a"; done; }
+last() { local l=""; for a in "$@"; do l="$a"; done; printf '%s' "$l"; }
 case "$1" in
 sign-blob)
-  out=""; prev=""; blob=""
-  for a in "$@"; do [ "$prev" = --bundle ] && out="$a"; prev="$a"; blob="$a"; done
+  out="$(flag --bundle "$@")"; blob="$(last "$@")"
   if [ -n "${FAKE_SIGSTORE_BUNDLE:-}" ]; then cp "$FAKE_SIGSTORE_BUNDLE" "$out"; exit 0; fi
   d="$(openssl dgst -sha256 -binary "$blob" | base64 | tr -d '\n')"
-  printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"certificate":{"rawBytes":"MIIBfake"},"tlogEntries":[{"logIndex":"424242","integratedTime":"1761667200"}]},"messageSignature":{"messageDigest":{"algorithm":"SHA2_256","digest":"%s"},"signature":"c2lnbmF0dXJl"}}' "$d" >"$out" ;;
+  id=""; [ -n "${GITHUB_WORKFLOW_REF:-}" ] && id="https://github.com/$GITHUB_WORKFLOW_REF"
+  printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","fakeIdentity":"%s","verificationMaterial":{"certificate":{"rawBytes":"MIIBfake"},"tlogEntries":[{"logIndex":"424242","integratedTime":"1761667200"}]},"messageSignature":{"messageDigest":{"algorithm":"SHA2_256","digest":"%s"},"signature":"c2lnbmF0dXJl"}}' "$id" "$d" >"$out" ;;
 verify-blob)
   [ "${FAKE_VERIFY_FAIL:-0}" = 1 ] && { echo "none of the expected identities matched" >&2; exit 1; }
-  exit 0 ;;
+  sb="$(flag --bundle "$@")"; blob="$(last "$@")"
+  id="$(jq -r '.fakeIdentity // empty' "$sb")"
+  [ -n "$id" ] || exit 0
+  [ "$id" = "$(flag --certificate-identity "$@")" ] && [ "$(flag --certificate-oidc-issuer "$@")" = https://token.actions.githubusercontent.com ] ||
+    { echo "none of the expected identities matched what was in the certificate, got subjects [$id]" >&2; exit 1; }
+  [ "$(jq -r .messageSignature.messageDigest.digest "$sb")" = "$(openssl dgst -sha256 -binary "$blob" | base64 | tr -d '\n')" ] ||
+    { echo "error verifying bundle: invalid signature when validating ASN.1 encoded signature" >&2; exit 1; } ;;
+sign)
+  ref="$(last "$@")"
+  mkdir -p "$FAKE_STATE/cosign"
+  printf '%s' "https://github.com/${GITHUB_WORKFLOW_REF:-}" >"$FAKE_STATE/cosign/$(key "$ref")" ;;
+verify)
+  ref="$(last "$@")"; f="$FAKE_STATE/cosign/$(key "$ref")"
+  [ -f "$f" ] || { echo "Error: no signatures found" >&2; exit 1; }
+  [ "$(cat "$f")" = "$(flag --certificate-identity "$@")" ] && [ "$(flag --certificate-oidc-issuer "$@")" = https://token.actions.githubusercontent.com ] ||
+    { echo "Error: no matching signatures: none of the expected identities matched what was in the certificate, got subjects [$(cat "$f")]" >&2; exit 1; }
+  echo "[]" ;;
 *) exit 2 ;;
 esac
 `
+
+// fakeSignImage records a cosign image signature by identity for the fake cosign's verify.
+func (f *fakeEnv) fakeSignImage(t *testing.T, ref, identity string) {
+	t.Helper()
+	writeFile(t, filepath.Join(f.state, "cosign", strings.NewReplacer("/", "_", ":", "_", "@", "_").Replace(ref)), identity)
+}
 
 // fakeGh keeps releases as directories: $FAKE_STATE/gh/<tag>/{draft,assets/,notes}.
 const fakeGh = `#!/usr/bin/env bash

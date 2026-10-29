@@ -92,10 +92,12 @@ type PlannedRelease struct {
 	Problem   string     `json:"problem,omitempty"` // set when the app cannot be released as is
 }
 
-// ImageRef is one image of a planned release.
+// ImageRef is one image of a planned release. Built is set for images this repository builds (manifest
+// `source: build:...`); the release job requires images.yml's signature on them (supply-3).
 type ImageRef struct {
-	Name string `json:"name"`
-	Ref  string `json:"ref"`
+	Name  string `json:"name"`
+	Ref   string `json:"ref"`
+	Built bool   `json:"built,omitempty"`
 }
 
 // Plan lists the releases for the given app ids (all top-level apps when ids is empty and all is set).
@@ -127,7 +129,8 @@ func Plan(d Defaults, apps []App, ids []string, all bool) ([]PlannedRelease, err
 			Images: []string{}, ImageRefs: []ImageRef{}, Unbuilt: []string{}}
 		for _, img := range a.Manifest.Images {
 			p.Images = append(p.Images, img.Name)
-			p.ImageRefs = append(p.ImageRefs, ImageRef{Name: img.Name, Ref: d.Registry + "/" + img.Name + "@" + img.Digest})
+			p.ImageRefs = append(p.ImageRefs, ImageRef{Name: img.Name, Ref: d.Registry + "/" + img.Name + "@" + img.Digest,
+				Built: strings.HasPrefix(img.Source, "build:")})
 			if img.Unbuilt() {
 				p.Unbuilt = append(p.Unbuilt, img.Name)
 			}

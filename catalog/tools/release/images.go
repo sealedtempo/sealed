@@ -454,10 +454,12 @@ type ScanApp struct {
 }
 
 // ScanImage is one image to scan. Mirrored images are scanned at their upstream source by digest (the
-// same bytes the mirror serves); built images at the catalog registry. Unbuilt images have no digest yet.
+// same bytes the mirror serves); built images at the catalog registry, after the scan checks images.yml's
+// signature on them (Built, supply-3). Unbuilt images have no digest yet.
 type ScanImage struct {
 	Name    string `json:"name"`
 	Ref     string `json:"ref,omitempty"`
+	Built   bool   `json:"built,omitempty"`
 	Unbuilt bool   `json:"unbuilt,omitempty"`
 	Blocked string `json:"blocked,omitempty"`
 }
@@ -484,7 +486,7 @@ func ScanMatrix(set *ImageSet, root string, apps []string) []ScanApp {
 			case img.Unbuilt():
 				si.Unbuilt = true
 			case strings.HasPrefix(img.Source, "build:"):
-				si.Ref = set.Registry + "/" + img.Name + "@" + img.Digest
+				si.Ref, si.Built = set.Registry+"/"+img.Name+"@"+img.Digest, true
 			default:
 				m := upstream[img.Name+"@"+img.Digest]
 				si.Ref, si.Blocked = m.From, m.Blocked
