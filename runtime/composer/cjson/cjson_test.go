@@ -142,6 +142,7 @@ func TestMapOrderIndependence(t *testing.T) {
 }
 
 func FuzzCanonicalize(f *testing.F) {
+	addVectorSeeds(f)
 	for _, s := range []string{`{"a":[1,2,{"b":null}]}`, `"x\u00e9"`, `[true,false]`, `{"b":1,"a":2}`} {
 		f.Add([]byte(s))
 	}
