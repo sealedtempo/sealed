@@ -20,7 +20,7 @@ CONTRACTS := PlatformRegistry AppRegistry OracleSignatureVerifier DeploymentRegi
 # Toolchain pin. Older releases run Tempo T4 rules: forks read token policy ids as 0 and CREATE gas is ~2.3x mainnet.
 FOUNDRY_VERSION := 1.8.6
 
-.PHONY: help foundry-check deps build test test-ci test-fork local-e2e catalog-check rehearse-catalog deploy-mainnet \
+.PHONY: help foundry-check deps build test test-ci test-invariant-deep test-fork local-e2e catalog-check rehearse-catalog deploy-mainnet \
 	record-mainnet verify-mainnet fee-token-pref estimate-mainnet abi coverage gas-report fmt fmt-check clean
 
 help:
@@ -28,6 +28,7 @@ help:
 	@echo "build           forge build"
 	@echo "test            unit, fuzz, invariant and script tests (no network)"
 	@echo "test-ci         same with the ci profile (fuzz 1000 runs, invariant depth 100)"
+	@echo "test-invariant-deep  invariant suites with the deep profile (1000 runs x depth 256, seed $(INVARIANT_SEED))"
 	@echo "test-fork       fork tests against Tempo mainnet (TEMPO_RPC_URL or $(TEMPO_PUBLIC_RPC_URL))"
 	@echo "local-e2e       full flow on a local anvil --network tempo node"
 	@echo "catalog-check   preflight of $(CATALOG_FILE) against ../catalog/apps manifests (read only)"
@@ -54,6 +55,12 @@ test:
 
 test-ci:
 	FOUNDRY_PROFILE=ci forge test --no-match-path 'test/fork/*'
+
+# Long invariant campaign with a fixed seed, so a failure reproduces. Two test threads, one invariant worker each.
+INVARIANT_SEED ?= 0x5ea1ed
+test-invariant-deep: foundry-check
+	FOUNDRY_PROFILE=deep forge test --match-path 'test/invariant/*' --fuzz-seed $(INVARIANT_SEED) \
+		--threads 2 --invariant-workers 1
 
 test-fork: foundry-check
 	forge test --match-path 'test/fork/*' -vv
