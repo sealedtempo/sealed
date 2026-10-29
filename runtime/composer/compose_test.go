@@ -805,7 +805,8 @@ func TestStackInfo(t *testing.T) {
 	if si.Apps[0].Volumes == nil || len(si.Apps[0].Volumes) != 0 {
 		t.Fatalf("gateway volumes must be an empty list: %+v", si.Apps[0].Volumes)
 	}
-	want := []string{"/mnt/sealed-data/_caddy/data", "/mnt/sealed-data/notes/pgdata", "/mnt/sealed-data/notes/uploads"}
+	// With llm-gateway the payer's state directory is listed too (fix-payments).
+	want := []string{"/mnt/sealed-data/_caddy/data", "/mnt/sealed-data/_mpp-payer/state", "/mnt/sealed-data/notes/pgdata", "/mnt/sealed-data/notes/uploads"}
 	if si.DataRoot != "/mnt/sealed-data" || strings.Join(si.DataDirs, " ") != strings.Join(want, " ") {
 		t.Fatalf("dataDirs %v", si.DataDirs)
 	}
