@@ -4,21 +4,28 @@
 // the report's fee: a leg paid short (the customer can pay first with any amount) is topped up with
 // the shortfall, so it is never settled for less.
 //
-// Billing fails closed. Anything that keeps due fees from being paid counts as a failure: a chain
-// read error (the customer controls the VPC firewall and can block the RPC), a deployment that is
-// still not registered (measured from the oldest unpaid report, so blocking the platform API does
-// not help either), a reverted estimate or transaction, a leg that cannot be topped up. Failures that
-// last the grace period switch Caddy to the measured payment-needed Caddyfile; a Closed deployment
-// (terminal) switches at once. The next successful settlement restores the normal Caddyfile. Only
-// limits the operator sets onchain are deferrals: the daily cap, and legs above a lowered
-// per-payment cap (reported as overCap, never paid at that cap).
+// Billing fails closed on the customer's side. A failure there counts toward the grace period: a
+// missing, revoked or expired access key, an exhausted limit, too little balance, a reverted estimate
+// or transaction, a leg that cannot be topped up, and a chain read error (the customer chooses the RPC
+// and controls the VPC firewall, so it can block the RPC). Failures that last the grace period switch
+// Caddy to the measured payment-needed Caddyfile; a Closed deployment (terminal) switches at once. The
+// next successful settlement restores the normal Caddyfile. Only limits the operator sets onchain are
+// deferrals: the daily cap, and legs above a lowered per-payment cap (reported as overCap, never paid
+// at that cap).
+//
+// D-073: a platform outage never puts a customer on the payment-needed page. What only the platform
+// can do defers settlement instead: rebuilding this boot's ledger from its stored reports, accepting a
+// report, registering the deployment (the oracle and the ops key do, from the agent's evidence). While
+// nothing but those fails, settlement records deferredSince and the grace period does not run: none
+// starts, and one a customer-side failure started stands still until settlement resumes. Deferred fees
+// are paid once the platform is back. A tick that pays every leg it can try shows the customer's side
+// works, so it ends a customer-side failure streak even during a deferral.
 //
 // D-062: a report is paid only once the platform has accepted it, so every paid period is among the
 // stored reports the agent rebuilds its ledger from after a disk rollback. Each tick first rebuilds
 // (the agent reads the platform's stored reports), cuts nothing while this boot's ledger is not yet
 // rebuilt, saves a cut report before it leaves the VM, and voids a report the platform refuses as
-// overlapping a stored one. A report that cannot be submitted is a failure like any other, so blocking
-// the platform API does not stop billing from failing closed.
+// overlapping a stored one. Reports the platform has accepted are paid even while it is unreachable.
 import type { Hex } from "@sealed/core";
 import type { CaddySwitch } from "../caddy.js";
 import type { PlatformClient } from "../evidence.js";
@@ -41,11 +48,12 @@ export interface SpendRecorder {
 }
 
 /**
- * Failures on the platform's side (D-073): the platform api's stored reports could not be read (D-062) or it has
- * not accepted a report yet, so nothing may be paid. Settlement is deferred and the grace period does not run;
- * only failures on the customer's side (key, limit, balance, a reverted payment) count toward it.
+ * Failures on the platform's side (D-073): the platform api's stored reports could not be read (D-062), it has not
+ * accepted a report yet, or it has not registered the deployment onchain (the oracle registers it from the agent's
+ * evidence, which an unreachable api never gets). Settlement is deferred and the grace period does not run; only
+ * failures on the customer's side (key, limit, balance, a reverted payment, the customer's RPC) count toward it.
  */
-export const PLATFORM_SIDE_FAILURES: ReadonlySet<string> = new Set(["ledger_unverified", "usage_not_submitted"]);
+export const PLATFORM_SIDE_FAILURES: ReadonlySet<string> = new Set(["ledger_unverified", "usage_not_submitted", "deployment_not_registered"]);
 
 /** A transaction with no receipt after this long is no longer looked for; what was counted for it stays counted. */
 export const PENDING_GIVE_UP_SEC = 6 * 3600;
@@ -334,8 +342,11 @@ export class Settler {
     else if (deployment === "unknown") {
       outcome = "failed";
       apps = [{ app: "*", result: "failed", reason: "rpc_error" }];
-    } else if (deployment === "none") outcome = "deployment_not_registered";
-    else {
+    } else if (deployment === "none") {
+      // Nothing can be paid before the platform registers the deployment (D-073: deferred, the platform's side).
+      outcome = "deployment_not_registered";
+      apps = [{ app: "*", result: "failed", reason: "deployment_not_registered" }];
+    } else {
       try {
         apps = await this.payApps(now, unpaid.filter((e) => e.submitted));
       } catch (err) {
@@ -352,21 +363,21 @@ export class Settler {
     status.lastOutcome = apps.find((a) => a.result === "failed")?.reason ?? outcome;
     const failures = apps.filter((a) => a.result === "failed");
     const customerSide = failures.some((a) => !PLATFORM_SIDE_FAILURES.has(a.reason));
-    const deferred = failures.length > 0 && !customerSide && outcome !== "deployment_closed" && outcome !== "deployment_not_registered";
+    const paidSome = apps.some((a) => a.result === "paid");
+    const deferred = failures.length > 0 && !customerSide && outcome !== "deployment_closed";
     if (deferred) {
       // D-073: a platform outage defers settlement; the grace period is paused, never started by it.
       status.deferredSince ??= now;
+      // Every leg the customer's side could be asked to pay was paid: its failure streak is over, so the outage
+      // cannot keep a customer who fixed their key, limit or balance on the payment-needed page either.
+      if (paidSome) status.failingSince = null;
     } else {
       this.resumeGrace(now);
-      if (outcome === "deployment_closed") status.failingSince ??= now;
-      else if (outcome === "deployment_not_registered") {
-        const oldest = Math.min(...unpaid.map((e) => e.createdAt));
-        status.failingSince = status.failingSince === null ? oldest : Math.min(status.failingSince, oldest);
-      } else if (customerSide) status.failingSince ??= now;
+      if (outcome === "deployment_closed" || customerSide) status.failingSince ??= now;
       else status.failingSince = null;
     }
-    if (apps.some((a) => a.result === "paid")) status.lastPaidAt = now;
-    await this.updateGate(now, outcome === "deployment_closed", ledger.unpaid().length === 0 || apps.some((a) => a.result === "paid"));
+    if (paidSome) status.lastPaidAt = now;
+    await this.updateGate(now, outcome === "deployment_closed", ledger.unpaid().length === 0 || paidSome);
     await this.d.save();
     return { at: now, reportCut, submitted, outcome, apps, paymentNeeded: status.paymentNeeded };
   }

@@ -7,10 +7,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CallerAllowlist } from '../src/caller-allowlist.js'
+import { ChannelJournal } from '../src/channel-journal.js'
+import { ChannelRecovery, type EscrowChain } from '../src/channel-recovery.js'
 import { loadPayerConfig } from '../src/config.js'
 import { CompletionAccumulator } from '../src/openai.js'
 import { SpendGuard } from '../src/spend-guard.js'
-import { SpendReporter } from '../src/spend-reporter.js'
+import { SpendReporter, spendSnapshot } from '../src/spend-reporter.js'
 import { fetchWithPeerKey, tlsPubKeyHash } from '../src/tls-capture.js'
 
 describe('completion accumulator', () => {
@@ -74,7 +76,7 @@ describe('spend reporter', () => {
     const reporter = new SpendReporter({
       agentUrl: 'http://sealed-agent:7070',
       intervalSeconds: 60,
-      snapshot: () => ({ mode: 'access-key', currency: '0x20c0000000000000000000000000000000000000', counters: guard.counters(), relay: { attested: true, checkedAt: 1, sessionsAvailable: true } }),
+      snapshot: () => ({ mode: 'access-key', currency: '0x20c0000000000000000000000000000000000000', counters: guard.counters(), relay: { attested: true, checkedAt: 1, sessionsAvailable: true }, recovery: { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0 } }),
       fetch: async (url, init) => {
         sent.push({ url, body: JSON.parse(String(init.body)) })
         return new Response(null, { status: 204 })
@@ -95,8 +97,57 @@ describe('spend reporter', () => {
     })
     expect(await withRecovery.send()).toBe(true)
     expect(Object.keys(sent[1].body.recovery).sort()).toEqual(['failures', 'recovered', 'requestCloses', 'withdrawals'])
-    const failing = new SpendReporter({ agentUrl: 'http://x', intervalSeconds: 60, snapshot: () => ({ mode: 'm', currency: 'c', counters: guard.counters(), relay: { attested: false, sessionsAvailable: false } }), fetch: async () => new Response(null, { status: 500 }) })
+    const failing = new SpendReporter({ agentUrl: 'http://x', intervalSeconds: 60, snapshot: () => ({ mode: 'm', currency: 'c', counters: guard.counters(), relay: { attested: false, sessionsAvailable: false }, recovery: { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0 } }), fetch: async () => new Response(null, { status: 500 }) })
     expect(await failing.send()).toBe(false)
+  })
+
+  // ws/fix-payments kept the ChannelRecovery counters in the payer; main.ts now builds every report with spendSnapshot,
+  // whose sources include the recovery (a required field, so the snapshot cannot leave it out).
+  it('reports what the running payer holds, the channel recovery counters included', async () => {
+    const guard = new SpendGuard(2_000_000n)
+    guard.reserve(700n, 'deposit')
+    const channelId = ('0x' + '01'.padStart(64, '0')) as `0x${string}`
+    const payee = ('0x' + 'ab'.repeat(20)) as `0x${string}`
+    const journal = new ChannelJournal(undefined, () => 0)
+    journal.recordOpen({
+      channelId,
+      chainId: 4217,
+      escrow: '0x4d50500000000000000000000000000000000000',
+      descriptor: { payer: ('0x' + '11'.repeat(20)) as `0x${string}`, payee, operator: payee, token: '0x20c0000000000000000000000000000000000000', salt: channelId, authorizedSigner: ('0x' + '22'.repeat(20)) as `0x${string}`, expiringNonceHash: channelId },
+      deposit: 500_000n,
+    })
+    // An orphaned channel: the sweep asks to close it, so requestCloses becomes 1.
+    const chain: EscrowChain = {
+      state: async () => ({ deposit: 500_000n, settled: 0n, closeRequestedAt: 0 }),
+      gracePeriod: async () => 900,
+      prepare: async () => ({ feeCap: 100n, send: async () => ({ status: 'success', closeRequestedAt: 1_000 }) }),
+    }
+    const recovery = new ChannelRecovery({ journal, chain, liveChannels: () => new Set<string>(), guard, now: () => 1_000 })
+    await recovery.sweep()
+    const gate = { isOpen: () => true, state: () => ({ checkedAt: 990, stackHash: '0x' + 'cd'.repeat(32) }) }
+    const snapshot = spendSnapshot({ mode: 'access-key', currency: '0x20c0000000000000000000000000000000000000', guard, gate, relay: { sessionsAvailable: () => false }, recovery })
+    expect(snapshot).toEqual({
+      mode: 'access-key',
+      currency: '0x20c0000000000000000000000000000000000000',
+      counters: guard.counters(),
+      relay: { attested: true, checkedAt: 990, stackHash: '0x' + 'cd'.repeat(32), sessionsAvailable: false },
+      recovery: { requestCloses: 1, withdrawals: 0, recovered: '0', failures: 0 },
+    })
+    const sent: any[] = []
+    const reporter = new SpendReporter({
+      agentUrl: 'http://sealed-agent:7070',
+      intervalSeconds: 60,
+      snapshot: () => spendSnapshot({ mode: 'access-key', currency: '0x20c0000000000000000000000000000000000000', guard, gate, relay: { sessionsAvailable: () => false }, recovery }),
+      fetch: async (url, init) => {
+        sent.push(JSON.parse(String(init.body)))
+        return new Response(null, { status: 204 })
+      },
+    })
+    expect(await reporter.send()).toBe(true)
+    expect(sent[0].recovery).toEqual({ requestCloses: 1, withdrawals: 0, recovered: '0', failures: 0 })
+    // main.ts reports through spendSnapshot with the payer's own ChannelRecovery.
+    const main = readFileSync(join(import.meta.dirname, '../src/main.ts'), 'utf8')
+    expect(main).toMatch(/snapshot: \(\) => spendSnapshot\(\{[^}]*\brecovery\b[^}]*\}\)/)
   })
 })
 

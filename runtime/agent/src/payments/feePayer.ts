@@ -135,6 +135,16 @@ export interface TempoFeePayerOptions {
  */
 export const BASE_GAS_FLOOR = 600_000n;
 export const PER_LINE_GAS_FLOOR = 1_300_000n;
+/** Lowest gas limit of a settlement transaction off mainnet (headroom on local Tempo nodes); mainnet uses the floors above. */
+export const LOCAL_MIN_GAS = 5_000_000n;
+
+/**
+ * Fee units the settler reserves for a transaction of `gas` at `price` attodollars per gas: gas * price / 1e12,
+ * doubled for base fee movement, rounded up.
+ */
+export function feeUnitsReserved(gas: bigint, price: bigint): bigint {
+  return (gas * price * 2n + 999_999_999_999n) / 1_000_000_000_000n;
+}
 
 export class TempoFeePayer implements FeePayer {
   readonly mode: SettlementMode;
@@ -265,8 +275,7 @@ export class TempoFeePayer implements FeePayer {
 
   async feeReserve(lines: PaymentLine[]): Promise<bigint> {
     const [gas, price] = await Promise.all([this.gasFor(lines), this.client.getGasPrice()]);
-    // Fee units = gas * attodollars-per-gas / 1e12, doubled for base fee movement.
-    return (gas * price * 2n + 999_999_999_999n) / 1_000_000_000_000n;
+    return feeUnitsReserved(gas, price);
   }
 
   async budget(reserve: bigint): Promise<Budget> {

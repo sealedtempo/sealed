@@ -1,5 +1,8 @@
 // A fake key broker implementing INTERFACES 9 over the simulator's quotes, using @sealed/core for
-// report_data, RTMR3 replay and HPKE. It runs the checks that do not need a chain.
+// report_data, RTMR3 replay and HPKE. It runs the checks that do not need a chain. The disk key and
+// signer seed are derived as the real broker does (D-058, key-broker/kms.go KeyMessage):
+// HMAC-SHA256(key, tag || customer (20 bytes) || salt (32 bytes)) with the v2 tags, so a stack upgrade
+// that keeps the config salt keeps both.
 import { createHmac, randomBytes } from "node:crypto";
 import {
   bytesToHex,
@@ -29,18 +32,33 @@ export interface FakeBrokerOptions {
   hmacKey?: Buffer;
 }
 
+/** The real broker's domain tags (key-broker/kms.go DiskKeyTag, SignerSeedTag; D-058 replaced the v1 deploymentId tags). */
+export const DISK_KEY_TAG = "sealed/disk/v2";
+export const SIGNER_SEED_TAG = "sealed/signer/v2";
+
 export interface FakeBroker extends TestServer {
   releases: number;
   denials: string[];
-  derive(tag: string, deploymentId: Hex): Hex;
+  /** HMAC(key, tag || customer || salt), as key-broker DeriveKeys. */
+  derive(tag: string, customer: Hex, salt: Hex): Hex;
+  /** What every release carried, in order (the agent wipes its copy of the disk key after the unlock). */
+  released: { stackHash: Hex; deploymentId: Hex; diskKey: Hex; signerSeed: Hex }[];
+}
+
+/** The MAC input of one derived key: tag || customer (20 bytes) || salt (32 bytes) (key-broker KeyMessage). */
+export function keyMessage(tag: string, customer: Hex, salt: Hex): Buffer {
+  const c = hexToBytes(customer);
+  const s = hexToBytes(salt);
+  if (c.length !== 20 || s.length !== 32) throw new Error("customer must be 20 bytes and salt 32 bytes");
+  return Buffer.concat([Buffer.from(tag), Buffer.from(c), Buffer.from(s)]);
 }
 
 export async function startFakeBroker(opts: FakeBrokerOptions): Promise<FakeBroker> {
   const hmacKey = opts.hmacKey ?? randomBytes(32);
   const nonces = new Map<string, number>();
-  const state = { releases: 0, denials: [] as string[] };
-  const derive = (tag: string, id: Hex): Hex =>
-    bytesToHex(new Uint8Array(createHmac("sha256", hmacKey).update(Buffer.concat([Buffer.from(tag), Buffer.from(hexToBytes(id))])).digest()));
+  const state = { releases: 0, denials: [] as string[], released: [] as FakeBroker["released"] };
+  const derive = (tag: string, customer: Hex, salt: Hex): Hex =>
+    bytesToHex(new Uint8Array(createHmac("sha256", hmacKey).update(keyMessage(tag, customer, salt)).digest()));
   const deny = (reason: string, detail = "") => {
     state.denials.push(reason);
     return { status: 403, body: { decision: "denied", reason, detail } };
@@ -83,13 +101,12 @@ export async function startFakeBroker(opts: FakeBrokerOptions): Promise<FakeBrok
         void configHash(r.config);
         const stack = computeStackHash(r.appCompose);
         const id = computeDeploymentId(cfg.customer as Hex, stack, cfg.salt);
-        const plaintext = canonicalize({
-          secrets: opts.secrets,
-          diskKey: derive("sealed/disk/v1", id),
-          signerSeed: derive("sealed/signer/v1", id),
-        });
+        // D-058: (customer, salt), not the deploymentId, so an upgraded stack keeps its disk and signer.
+        const keys = { diskKey: derive(DISK_KEY_TAG, cfg.customer as Hex, cfg.salt), signerSeed: derive(SIGNER_SEED_TAG, cfg.customer as Hex, cfg.salt) };
+        const plaintext = canonicalize({ secrets: opts.secrets, ...keys });
         const { enc, ciphertext } = await sealKbRelease(hexToBytes(r.ephemeralPub), hexToBytes(r.nonce), utf8(plaintext));
         state.releases++;
+        state.released.push({ stackHash: stack, deploymentId: id, ...keys });
         return { status: 200, body: { stackHash: stack, deploymentId: id, enc: bytesToHex(enc), ciphertext: bytesToHex(ciphertext) } };
       })();
     }
@@ -103,6 +120,9 @@ export async function startFakeBroker(opts: FakeBrokerOptions): Promise<FakeBrok
     },
     get denials() {
       return state.denials;
+    },
+    get released() {
+      return state.released;
     },
   };
 }

@@ -16,6 +16,7 @@ import {
   measurementsHash,
   releaseId as computeReleaseId,
   SIM_MEASUREMENTS,
+  TEMPO_MAINNET_ID,
   tempoChain,
 } from "@sealed/core";
 import {
@@ -37,10 +38,11 @@ import { http, parseEventLogs } from "viem";
 import { Abis, Account, Addresses, createClient } from "viem/tempo";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type RunningSimulator, startSimulator } from "../sim/simulator.js";
-import { Agent } from "../src/agent.js";
+import { Agent, LOCAL_MAX_GAS_PRICE, NETWORK_FEE_ALLOWANCE, networkFeeAllowance } from "../src/agent.js";
 import { DstackClient } from "../src/dstack.js";
 import { localRequest, parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
+import { feeUnitsReserved, LOCAL_MIN_GAS } from "../src/payments/feePayer.js";
 import { fixedTlsKey } from "../src/tls.js";
 import { type FakeBroker, startFakeBroker } from "./helpers/fakeBroker.js";
 import { startFakeCaddy, type FakeCaddy } from "./helpers/fakeCaddy.js";
@@ -170,5 +172,38 @@ describe.skipIf(!enabled)("sealed-agent end to end on a local Tempo node", () =>
     expect(ev?.args.payer.toLowerCase()).toBe(customer);
     expect(platform.usage.length).toBe(1);
     expect(agent.store?.state.payments.lastOutcome).toBe("settled");
+  });
+
+  // The devnet found local settlements far above the mainnet allowance of 0.01 USD per transaction: off mainnet every
+  // settlement transaction has the LOCAL_MIN_GAS floor, and the settler sends one only when its reserve for that gas
+  // fits the limit. reserved_for_fees must cover that reserve, or the payer can take what settlement then lacks.
+  it("off mainnet, reserved_for_fees covers what the settler itself reserves for a transaction at the local gas floor", async () => {
+    const allowance = networkFeeAllowance(node.chainId);
+    expect(allowance).toBe(feeUnitsReserved(LOCAL_MIN_GAS, LOCAL_MAX_GAS_PRICE));
+    expect(networkFeeAllowance(TEMPO_MAINNET_ID)).toBe(NETWORK_FEE_ALLOWANCE);
+    // The settlement above paid a real network fee on this node; it is within the allowance.
+    expect(BigInt(agent.budget?.state.networkFeePerTx ?? "0")).toBeGreaterThan(0n);
+    expect(BigInt(agent.budget?.state.networkFeePerTx ?? "0")).toBeLessThanOrEqual(allowance);
+    // A new leg, cut but not yet paid: the settler's own estimate for it (the real TempoFeePayer, at this gas price).
+    const ep = parseEndpoint(`http://127.0.0.1:${agent.port}`);
+    expect((await localRequest(ep, "/v1/usage-events", { body: { app: "llm-gateway", unit: "tokens", quantity: 500_000 }, headers: fromPeer(IPS.llm) })).status).toBe(202);
+    const ledger = agent.ledger;
+    if (!ledger || !agent.payer) throw new Error("no ledger or payer");
+    await ledger.closePeriod(clock.now());
+    const [leg] = ledger.unpaid().filter((e) => e.app === "llm-gateway");
+    if (!leg) throw new Error("no unpaid leg");
+    const settlerReserve = await agent.payer.feeReserve([{ appId: leg.appId, amount: leg.fee, usageHash: leg.usageHash, paid: 0n }]);
+    expect(settlerReserve).toBeGreaterThanOrEqual(feeUnitsReserved(LOCAL_MIN_GAS, await node.client.getGasPrice()));
+    expect(settlerReserve).toBeGreaterThan(NETWORK_FEE_ALLOWANCE);
+    expect(allowance).toBeGreaterThanOrEqual(settlerReserve);
+    // The next settlement alone (a window that ends now: no app-hours or later settlements to come) keeps the legs'
+    // fees plus the settler's reserve for the transaction that pays them.
+    const now = clock.now();
+    const fees = ledger.unpaid().reduce((sum, e) => sum + e.fee, 0n) + ["crm", "llm-gateway"].reduce((sum, a) => sum + ledger.openFee(a), 0n);
+    expect(new Set(ledger.unpaid().map((e) => e.app))).toEqual(new Set(["llm-gateway"]));
+    expect(agent.feeReserve(now, now)).toBeGreaterThanOrEqual(fees + settlerReserve);
+    // And the leg is paid at the next settlement.
+    const next = await agent.settle();
+    expect(next.apps).toEqual([expect.objectContaining({ app: "llm-gateway", result: "paid" })]);
   });
 });

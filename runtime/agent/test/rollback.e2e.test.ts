@@ -179,13 +179,21 @@ describe("D-062: a data disk rolled back to an older copy bills no leg twice", (
     now += 3600;
     const blind = await third.settle(now);
     expect(blind).toMatchObject({ outcome: "failed", reportCut: false, apps: [{ app: "*", result: "failed", reason: "ledger_unverified" }] });
-    // D-073: a platform outage defers settlement; the grace period does not run.
+    // D-073: a platform outage defers settlement; the grace period does not run, however long the outage lasts.
+    const deferredAt = now;
     expect(third.store?.state.payments.failingSince).toBeNull();
-    expect(third.store?.state.payments.deferredSince).toBe(now);
+    expect(third.store?.state.payments.deferredSince).toBe(deferredAt);
     expect(payer.paid).toHaveLength(paidBefore);
+    now += 3 * 86_400; // three times the 24 h grace period
+    const still = await third.settle(now);
+    expect(still).toMatchObject({ paymentNeeded: false, apps: [{ app: "*", result: "failed", reason: "ledger_unverified" }] });
+    expect(third.store?.state.payments).toMatchObject({ failingSince: null, deferredSince: deferredAt, paymentNeeded: false });
 
-    // The platform is back: the rebuild drops U1 again, keeps the new usage and bills only that.
+    // The platform is back. A health report before the next settlement says since when settlement waits.
     platform.down = false;
+    const health = await third.reportHealth(now);
+    expect(health.body.payments).toMatchObject({ deferredSince: deferredAt, failingSince: null, paymentNeeded: false, lastOutcome: "ledger_unverified" });
+    // The rebuild drops U1 again, keeps the new usage and bills only that.
     now += 3600;
     const back = await third.settle(now);
     expect(back.apps).toEqual([expect.objectContaining({ app: "llm-gateway", result: "paid" })]);
@@ -197,6 +205,8 @@ describe("D-062: a data disk rolled back to an older copy bills no leg twice", (
     expect(storedTokens()).toBe(1_750_000n);
     expect(paidTotal()).toBe(storedFees());
     expect(third.store?.state.payments.failingSince).toBeNull();
+    expect(third.store?.state.payments.deferredSince).toBeUndefined();
+    expect((await third.reportHealth(now)).body.payments).toMatchObject({ deferredSince: null });
   });
 
   it("a disk copy that boots twice at once (a clone) cannot bill a period twice: the overlapping report is void", async () => {

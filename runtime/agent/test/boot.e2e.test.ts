@@ -35,7 +35,7 @@ import { localRequest, parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
 import type { AgentSettings } from "../src/settings.js";
 import { ServedCertSource } from "../src/tls.js";
-import { type FakeBroker, startFakeBroker } from "./helpers/fakeBroker.js";
+import { DISK_KEY_TAG, type FakeBroker, SIGNER_SEED_TAG, startFakeBroker } from "./helpers/fakeBroker.js";
 import { startFakeCaddy, type FakeCaddy } from "./helpers/fakeCaddy.js";
 import { FakePayer } from "./helpers/fakePayer.js";
 import { type FakePlatform, startFakePlatform } from "./helpers/fakePlatform.js";
@@ -113,13 +113,24 @@ describe("sealed-agent boot flow", () => {
   });
 
   const expectedDeploymentId = () => computeDeploymentId(CUSTOMER, stackHash(appCompose), config.salt as Hex);
-  const expectedSigner = () => enclaveSignerAddress(broker.derive("sealed/signer/v1", expectedDeploymentId()));
+  // D-058: the real broker derives the seed from (customer, salt), not from the deploymentId.
+  const expectedSigner = () => enclaveSignerAddress(broker.derive(SIGNER_SEED_TAG, CUSTOMER, config.salt as Hex));
 
   it("retried the denied release, then derived the enclave signer from the released seed", () => {
     expect(broker.denials).toContain("stack_not_approved");
     expect(broker.releases).toBe(1);
     expect(agent.ctx?.deploymentId).toBe(expectedDeploymentId());
     expect(agent.enclaveSigner).toBe(expectedSigner());
+  });
+
+  // The fake broker stood in with the v1 tags over the deploymentId long after the Go broker moved to v2 (D-058).
+  it("releases the keys the Go key broker derives: HMAC(tag || customer || salt) with the v2 tags", () => {
+    // key-broker DeriveKeys with LocalHMAC(32 bytes of 0x03), this customer and salt 0x5a..5a (computed with the
+    // Go package, key-broker/kms.go).
+    expect(broker.derive(DISK_KEY_TAG, CUSTOMER, config.salt as Hex)).toBe("0x85f2cff6f6088cc35e76ccdf4f84f023c244967fa1b38e1033b0ef69f1e515af");
+    expect(broker.derive(SIGNER_SEED_TAG, CUSTOMER, config.salt as Hex)).toBe("0xd79225e931ea052b0cc4e1af0a1b6b6342349c86b16f9ae23739b52b994c2a45");
+    expect(broker.released[0]).toMatchObject({ deploymentId: expectedDeploymentId(), diskKey: broker.derive(DISK_KEY_TAG, CUSTOMER, config.salt as Hex) });
+    expect([DISK_KEY_TAG, SIGNER_SEED_TAG]).toEqual(["sealed/disk/v2", "sealed/signer/v2"]);
   });
 
   it("wrote app secrets, the payer key and the ready flag, and reports healthy", async () => {
@@ -246,6 +257,41 @@ describe("sealed-agent boot flow", () => {
     expect(platform.evidence.length).toBe(2);
     expect(platform.evidence[1]?.nonce2).not.toBe(platform.evidence[0]?.nonce2);
     expect(agent.ledger?.totals().metered).toBe(200_833n);
+  });
+
+  // D-058: an upgraded stack (new releases, same config salt) is a new deployment with the same disk key and signer,
+  // so the access key the customer authorized stays valid; a new salt gives a fresh disk and signer.
+  it("a stack upgrade with the same salt keeps the enclave signer and the disk key; a new salt does not", async () => {
+    const before = { deploymentId: agent.ctx?.deploymentId, signer: agent.enclaveSigner, diskKey: broker.released.at(-1)?.diskKey };
+    const bootWith = async (next: ReturnType<typeof makeConfig>) => {
+      await agent.stop();
+      await sim.close();
+      config = next;
+      appCompose = makeAppCompose(config);
+      await writeFile(join(dir, "config.json"), JSON.stringify(config, null, 2));
+      sim = await startSimulator({ appCompose, socket: join(dir, "dstack.sock") });
+      settings = testSettings(dir, { dstackEndpoint: sim.endpoint });
+      agent = newAgent();
+      await agent.boot();
+      await agent.evidence;
+    };
+    const upgraded = makeConfig({
+      endpoints: { keyBroker: broker.url, platformApi: platform.url },
+      apps: [
+        { id: "crm", releaseId: `0x${"c2".repeat(32)}` },
+        { id: "llm-gateway", releaseId: `0x${"11".repeat(32)}` },
+      ],
+    });
+    await bootWith(upgraded);
+    expect(agent.ctx?.deploymentId).toBe(expectedDeploymentId());
+    expect(agent.ctx?.deploymentId).not.toBe(before.deploymentId);
+    expect(broker.released.at(-1)?.deploymentId).toBe(agent.ctx?.deploymentId);
+    expect(agent.enclaveSigner).toBe(before.signer);
+    expect(broker.released.at(-1)?.diskKey).toBe(before.diskKey);
+    await bootWith({ ...upgraded, salt: `0x${"5b".repeat(32)}` });
+    expect(agent.enclaveSigner).toBe(expectedSigner());
+    expect(agent.enclaveSigner).not.toBe(before.signer);
+    expect(broker.released.at(-1)?.diskKey).not.toBe(before.diskKey);
   });
 
   // Review finding: re-attestation could start a second retry loop while one was still retrying.
