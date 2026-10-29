@@ -516,3 +516,24 @@ func tail(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestDockerChecksBuildThisTree: scripts/docker-checks/run.sh builds the
+// composer, sealed-egress and sealed-init it checks from SRC_REF. Its default
+// was ws/int-composer while that branch was ahead; after the merge the default
+// silently checked composer 1.2.0 without the D-063 and D-064 fixes. The
+// default is now HEAD, and the script names no workstream branch.
+func TestDockerChecksBuildThisTree(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "docker-checks", "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if !strings.Contains(src, "\nSRC_REF=${SRC_REF:-HEAD}\n") {
+		t.Error("run.sh: the SRC_REF default is not HEAD")
+	}
+	for i, line := range strings.Split(src, "\n") {
+		if code, _, _ := strings.Cut(line, "#"); strings.Contains(code, "ws/") {
+			t.Errorf("run.sh:%d names a workstream branch: %s", i+1, strings.TrimSpace(line))
+		}
+	}
+}

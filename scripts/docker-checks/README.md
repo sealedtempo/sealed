@@ -6,7 +6,7 @@ Real-Docker checks of sealed-egress and the per-app network layout (D-041, INTER
 colima start --cpu 4 --memory 6 --disk 60 --vm-type vz   # or any local Docker engine
 scripts/docker-checks/run.sh                 # under 2 minutes with warm build caches
 scripts/docker-checks/run.sh --keep          # leave the stack (project sealed-dc) running
-SRC_REF=HEAD scripts/docker-checks/run.sh    # egress, envexec and composer from another ref
+SRC_REF=<ref> scripts/docker-checks/run.sh   # egress, envexec and composer from another ref (default HEAD)
 ```
 
 Needs docker with buildx and compose, go, git, jq, python3, and internet access from the Docker VM to example.com, example.org and 8.8.8.8. The host-rules checks run the composer's `pre_launch_script` in the Docker VM through `nsenter` from a privileged container and remove the rules again at the end, so use a disposable local VM, not a shared host.

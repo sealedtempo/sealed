@@ -15,7 +15,7 @@
 #   --skip-stock     do not build the unpatched Dockerfiles first
 # env:
 #   SRC_REF   git ref for runtime/egress, runtime/envexec and the composer
-#             (default ws/int-composer, else HEAD)
+#             (default HEAD, the commit this script is checked out at)
 #   WORK      scratch directory (default: a new mktemp -d)
 #   HOST_PORT port of the 0.0.0.0 listener that stands for dstack's 8090 (default 47090)
 #
@@ -42,9 +42,9 @@ for arg in "$@"; do
   esac
 done
 
-if [ -z "${SRC_REF:-}" ]; then
-  if git -C "$REPO" rev-parse -q --verify ws/int-composer >/dev/null; then SRC_REF=ws/int-composer; else SRC_REF=HEAD; fi
-fi
+# The checks test the tree they are in. (They used to prefer ws/int-composer while that branch was ahead; since it
+# merged, that default built composer 1.2.0 without the D-063 and D-064 fixes.)
+SRC_REF=${SRC_REF:-HEAD}
 WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/sealed-docker-checks.XXXXXX")}
 mkdir -p "$WORK"
 LOG="$WORK/log"
