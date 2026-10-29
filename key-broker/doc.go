@@ -23,12 +23,16 @@
 //  9. stack_recompute: runtime/composer recomputes appCompose byte for byte from the config and the releases'
 //     bundles, fetched by the release asset URL rule and checked against the onchain bundleHash
 //     (bundle_hash_mismatch, compose_mismatch)
-//  10. stack_approved: DeploymentRegistry.isStackApproved(customer, stackHash) (stack_not_approved)
-//  11. approval_releases: the approval's releaseIds equal config.apps[].releaseId as a set, and its imageId equals
+//  10. chain again: the approval reads are pinned to the current head, which must also be within the bound
+//     (503 chain_stale), so the bundle fetches and the compose cannot age the approval read (kb-2)
+//  11. stack_approved: DeploymentRegistry.isStackApproved(customer, stackHash) (stack_not_approved)
+//  12. approval_releases: the approval's releaseIds equal config.apps[].releaseId as a set, and its imageId equals
 //     config.imageId and the request's imageId (stack_not_approved)
 //
 // Only then does it read the secrets the stack's manifests name (same_as only where the source secret lists the
 // referencing app in share_with), derive diskKey and signerSeed from (customer, salt) with the Cloud KMS HMAC key,
-// and seal them to the ephemeral X25519 key with HPKE. Every decision, allowed or not, is written to the decision
+// and seal them to the ephemeral X25519 key with HPKE. Right before the seal the head of the approval reads must
+// still be within the bound (503 chain_stale), so every chain read the release depends on is at most MaxHeadAge old
+// when the release is decided. Every decision, allowed or not, is written to the decision
 // log with its reason, checks and hashes; an allowed release is only answered after its log entry was written.
 package keybroker
