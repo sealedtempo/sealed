@@ -133,7 +133,8 @@ A plain list is accepted too. Lint rejects waivers without an expiry or with one
 ```sh
 go run ./runtime/composer/cmd/sealed-compose lint --app-dir catalog/apps/<id>
 go run ./runtime/composer/cmd/sealed-compose lint --catalog catalog/apps            # cross-app rules: routes, same_as
-syft <registry>/<image>@sha256:<digest> -o spdx-json=catalog/apps/<id>/sbom/<image>.spdx.json
+bash -c '. scripts/release/syft-env.sh; sealed_syft_files "$1" -o "spdx-json=$2"' _ \
+  registry:<registry>/<image>@sha256:<digest> catalog/apps/<id>/sbom/<image>.spdx.json   # release lint's syft settings
 grype sbom:catalog/apps/<id>/sbom/<image>.spdx.json --fail-on critical
 go run ./runtime/composer/cmd/sealed-compose lint --app-dir catalog/apps/<id> --require-sbom   # release mode
 go run ./runtime/composer/cmd/sealed-compose compose --config runtime/composer/testdata/config.json \

@@ -86,7 +86,7 @@ func TestCatalogWorkflowEndToEnd(t *testing.T) {
 		t.Fatal("the unbuilt gateway image is not scanned")
 	}
 	art := filepath.Join(sim.artifacts, "scan-notes")
-	for _, f := range []string{"summary/notes-web.summary.json", "summary/postgres.summary.json", "sbom/postgres.spdx.json", "scan/notes-web.json"} {
+	for _, f := range []string{"summary/notes-web.summary.json", "summary/postgres.summary.json", "sbom/postgres.spdx.json", "files/postgres.spdx.json", "scan/notes-web.json"} {
 		if !fileExists(filepath.Join(art, f)) {
 			t.Fatalf("%s missing from the scan artifact", f)
 		}
