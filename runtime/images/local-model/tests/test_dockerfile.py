@@ -79,7 +79,18 @@ class LocalModelDockerfileTest(unittest.TestCase):
         self.assertIn("> /out/licenses/README", run)
         # The texts match the toolchain: the builder is Go 1.27.3, checked in the build.
         self.assertTrue(GO_BASE.startswith("golang:1.27.3-"))
-        self.assertIn('test "$(go version)" = "go version go1.27.3 linux/amd64"', run)
+        self.assertIn('test "$(go env GOVERSION)" = "go1.27.3"', run)
+
+    def test_gate_cross_compiles_on_the_build_machine(self):
+        """images-preflight: the gate stage was FROM --platform=linux/amd64, so on an arm64 machine
+        the Go toolchain ran under amd64 emulation and crashed ("fatal error: found pointer to free
+        object"). It runs on $BUILDPLATFORM and cross-compiles for linux/amd64, the platform of the
+        Ollama stages; on the amd64 CI runner nothing changes."""
+        self.assertIn("FROM --platform=$BUILDPLATFORM ${GO_BASE} AS gate", self.text)
+        self.assertIn("FROM --platform=linux/amd64 ${OLLAMA_BASE} AS cpu", self.text)
+        run = " ".join(" ".join(self.by_name["gate"].all("RUN")).split())
+        self.assertIn("CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ", run)
+        self.assertNotIn("go version go1.27.3 linux/", run)
 
     def test_gate_build_fails_on_non_stdlib_imports(self):
         run = " ".join(" ".join(self.by_name["gate"].all("RUN")).split())
