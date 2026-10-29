@@ -12,7 +12,7 @@ script and test live in `key-broker/third_party/`; keep the two copies identical
 | `<module path>/` | The `LICENSE*`, `LICENCE*`, `COPYING*`, `COPYRIGHT*`, `NOTICE*`, `PATENTS*` and `AUTHORS*` files at the root of every linked module, byte for byte from the module cache |
 | `<module path>/<dir>/` | The same kinds of file found in a linked package's own directory or a parent below the module root. Today: `go-ethereum/metrics/LICENSE` (BSD-2-Clause-Views, from rcrowley/go-metrics, audit F4) and `go-ethereum/crypto/keccak/LICENSE` (BSD-3-Clause, The Go Authors) |
 | `go/` | The Go distribution's `LICENSE` and `PATENTS` (the standard library is linked) |
-| `github.com/sealed-dev/sealed/` | This repository's `LICENSE` (Apache-2.0) |
+| `github.com/sealedtempo/sealed/` | This repository's `LICENSE` (Apache-2.0) |
 
 The module set is `go list -deps` of `./verifier/cmd/sealed-verifierd` for the target the build stage sets once
 with `ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64`, so it is exactly what the binary links (29 modules on 2026-10-28, with

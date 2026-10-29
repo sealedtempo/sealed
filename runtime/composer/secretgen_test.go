@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/catalog/schema"
+	"github.com/sealedtempo/sealed/catalog/schema"
 )
 
 func TestGenerateSecret(t *testing.T) {

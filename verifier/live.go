@@ -16,9 +16,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
-	"github.com/sealed-dev/sealed/verifier/internal/strictjson"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/verifier/internal/strictjson"
 )
 
 // LiveOptions extend Options for a live attestation.

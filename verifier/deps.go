@@ -14,8 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // ChainReader is the onchain state the verifier reads. *chain.Client implements it.

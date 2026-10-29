@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // BundleInfo is the publishRelease input of one bundle plus the derived ids.

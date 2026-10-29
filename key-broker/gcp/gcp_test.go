@@ -12,9 +12,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/gcp"
-	"github.com/sealed-dev/sealed/key-broker/internal/gcpfake"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/gcp"
+	"github.com/sealedtempo/sealed/key-broker/internal/gcpfake"
 )
 
 const keyVersion = "projects/cust-proj-1/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb/cryptoKeyVersions/1"

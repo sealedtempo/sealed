@@ -8,10 +8,10 @@ description: >-
   and forwards to a LiteLLM instance that reaches Tinfoil, Phala and NEAR AI only through
   attestation-verified, key-pinned channels. Operated by the platform; OWNER approves its stack.
 upstream:
-  repo: https://github.com/sealed-dev/sealed
+  repo: https://github.com/sealedtempo/sealed
   version: 0.1.0
   license_spdx: Apache-2.0
-  source_url: https://github.com/sealed-dev/sealed/tree/main/runtime/relay
+  source_url: https://github.com/sealedtempo/sealed/tree/main/runtime/relay
 maintainer:
   name: Sealed
   payout_address: ${MAINTAINER_DEFAULT_ADDRESS}

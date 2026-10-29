@@ -33,9 +33,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sealed-dev/sealed/cli/internal/app"
-	"github.com/sealed-dev/sealed/cli/internal/licenses"
-	"github.com/sealed-dev/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/cli/internal/app"
+	"github.com/sealedtempo/sealed/cli/internal/licenses"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
 )
 
 // DefaultTargets are the platforms the CLI is released for.

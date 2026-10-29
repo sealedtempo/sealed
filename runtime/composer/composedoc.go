@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/caddy"
+	"github.com/sealedtempo/sealed/runtime/caddy"
 )
 
 // Compose config names (top-level "configs" with inline content).

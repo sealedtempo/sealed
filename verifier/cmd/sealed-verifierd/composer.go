@@ -1,8 +1,8 @@
 package main
 
 import (
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/bundles"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/bundles"
 )
 
 // newComposer wires runtime/composer (brief item 19): bundles are fetched by the release asset URL rule (D-046)

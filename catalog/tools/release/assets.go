@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // AssetNames are the GitHub Release tag and asset file names of one app release (D-046, brief item 18):

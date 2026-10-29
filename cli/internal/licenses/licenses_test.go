@@ -66,7 +66,7 @@ func TestCollectTheCLI(t *testing.T) {
 				t.Errorf("%v: go-ethereum %s missing", target, name)
 			}
 		}
-		if _, ok := set.Module("github.com/sealed-dev/sealed"); ok {
+		if _, ok := set.Module("github.com/sealedtempo/sealed"); ok {
 			t.Fatal("the main module is listed as third-party")
 		}
 		for _, m := range set.Modules {

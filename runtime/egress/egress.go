@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/egress/auth"
-	"github.com/sealed-dev/sealed/runtime/egress/dnsfilter"
-	"github.com/sealed-dev/sealed/runtime/egress/limits"
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
-	"github.com/sealed-dev/sealed/runtime/egress/proxy"
-	"github.com/sealed-dev/sealed/runtime/egress/stats"
-	"github.com/sealed-dev/sealed/runtime/egress/upstream"
+	"github.com/sealedtempo/sealed/runtime/egress/auth"
+	"github.com/sealedtempo/sealed/runtime/egress/dnsfilter"
+	"github.com/sealedtempo/sealed/runtime/egress/limits"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress/proxy"
+	"github.com/sealedtempo/sealed/runtime/egress/stats"
+	"github.com/sealedtempo/sealed/runtime/egress/upstream"
 )
 
 // DefaultAuthDir is where proxy credentials for proxyAuth callers are

@@ -18,7 +18,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // EDNSSize is the UDP payload size advertised upstream (DNS flag day 2020).

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
-	"github.com/sealed-dev/sealed/runtime/composer"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // coreDist returns node and the built @sealed/core entry point, or skips (fails with SEALED_REQUIRE_NODE=1).

@@ -29,7 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	"github.com/sealed-dev/sealed/internal/localtempo"
+	"github.com/sealedtempo/sealed/internal/localtempo"
 )
 
 // Anvil's default dev keys (mnemonic "test test ... junk"). Public; local use only.

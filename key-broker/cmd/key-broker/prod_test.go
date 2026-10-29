@@ -14,9 +14,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/gcpfake"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/gcpfake"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
 )
 
 // These tests run only in the production build, the one the image ships.

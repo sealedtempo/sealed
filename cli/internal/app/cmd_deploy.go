@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sealed-dev/sealed/cli/internal/deploy"
+	"github.com/sealedtempo/sealed/cli/internal/deploy"
 )
 
 func runDeploy(ctx context.Context, args []string, e *Env) error {

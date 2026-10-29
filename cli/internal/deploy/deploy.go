@@ -15,14 +15,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/cli/internal/bundles"
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
-	"github.com/sealed-dev/sealed/cli/internal/registry"
-	"github.com/sealed-dev/sealed/cli/internal/secrets"
-	"github.com/sealed-dev/sealed/cli/internal/settings"
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/bundles"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/registry"
+	"github.com/sealedtempo/sealed/cli/internal/secrets"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // Compute is the part of the Compute Engine API a deploy uses. *gcp.Compute implements it.

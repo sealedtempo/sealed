@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/sealed-dev/sealed/cli/internal/fatimg"
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/fatimg"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
 )
 
 // ImageAPI is what GCEShared needs from Compute Engine and Cloud Storage.

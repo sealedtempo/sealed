@@ -8,8 +8,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	verify "github.com/sealed-dev/sealed/verifier"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	verify "github.com/sealedtempo/sealed/verifier"
 )
 
 // ErrReleaseMismatch is returned when the onchain release and the config or the bundle disagree.

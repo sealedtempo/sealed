@@ -14,12 +14,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/bundles"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
 )
 
 // config is the daemon configuration from flags, with defaults from the environment.

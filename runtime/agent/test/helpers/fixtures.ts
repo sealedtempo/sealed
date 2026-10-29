@@ -152,7 +152,7 @@ export function makeAppCompose(config: Config, o: { stack?: unknown; omit?: stri
     configs,
     services: {
       "crm-server": {
-        image: `ghcr.io/sealed-dev/twenty@sha256:${"00".repeat(32)}`,
+        image: `ghcr.io/sealedtempo/twenty@sha256:${"00".repeat(32)}`,
         entrypoint: ["/sealed/bin/envexec", "--app", "crm", "--secret", "APP_SECRET", "--", "/app/start"],
         user: "1000:1000",
         volumes: [
@@ -161,11 +161,11 @@ export function makeAppCompose(config: Config, o: { stack?: unknown; omit?: stri
         ],
       },
       "crm-db": {
-        image: `ghcr.io/sealed-dev/postgres@sha256:${"00".repeat(32)}`,
+        image: `ghcr.io/sealedtempo/postgres@sha256:${"00".repeat(32)}`,
         volumes: ["/mnt/sealed-data/crm/db:/var/lib/postgresql/data", "/etc/passwd:/etc/passwd:ro"],
       },
       "sealed-agent": {
-        image: `ghcr.io/sealed-dev/sealed-agent@sha256:${"00".repeat(32)}`,
+        image: `ghcr.io/sealedtempo/sealed-agent@sha256:${"00".repeat(32)}`,
         volumes: [
           { type: "bind", source: "/mnt/sealed-data", target: "/mnt/sealed-data", bind: { propagation: "rshared" } },
           ...["_gate", ...config.apps.map((a) => a.id), "sealed-mpp-payer"].map((o) => secretsVolume(o, false)),

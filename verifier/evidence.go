@@ -9,9 +9,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // evidenceFields are the decoded byte fields of a bundle.

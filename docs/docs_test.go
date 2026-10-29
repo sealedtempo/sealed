@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/runtime/caddy"
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/runtime/caddy"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
 )
 
 // root is the repository root, relative to this package directory (go test runs in it).
@@ -421,4 +421,53 @@ func TestPlatformSideFailuresDocumented(t *testing.T) {
 		mustContain(t, "INTERFACES.md section 11", s11, "`"+r+"`")
 	}
 	mustContain(t, "INTERFACES.md section 11", s11, "`rpc_error`", "`deferredSince`")
+}
+
+// TestRepositoryNamedSealedtempo: the Go module, the registry, the release asset base and every first-party repo
+// reference name the published repository, sealedtempo/sealed. The placeholder owner of the build (D-005, D-028)
+// must not come back in any tracked text file.
+func TestRepositoryNamedSealedtempo(t *testing.T) {
+	if !strings.HasPrefix(read(t, "go.mod"), "module github.com/sealedtempo/sealed\n") {
+		t.Error("go.mod does not name the module github.com/sealedtempo/sealed")
+	}
+	defaults := read(t, "config/defaults.yaml")
+	mustContain(t, "config/defaults.yaml", defaults, "registry: ghcr.io/sealedtempo\n", "release_asset_base: https://github.com/sealedtempo/sealed/releases/download\n")
+	for _, app := range []string{"scraper", "inference-relay"} {
+		mustContain(t, "catalog/apps/"+app+"/manifest.yaml", read(t, "catalog/apps/"+app+"/manifest.yaml"), "repo: https://github.com/sealedtempo/sealed\n")
+	}
+	placeholder := "sealed" + "-dev"
+	text := map[string]bool{".go": true, ".ts": true, ".mjs": true, ".js": true, ".json": true, ".yaml": true, ".yml": true, ".md": true,
+		".py": true, ".sh": true, ".tf": true, ".hcl": true, ".toml": true, ".txt": true, ".sol": true, ".example": true, "": true}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "node_modules", "dependencies", ".git", "tmp", "out", "dist", "cache", "broadcast", ".terraform", "__pycache__":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		ext := filepath.Ext(path)
+		if !text[ext] && !strings.HasPrefix(d.Name(), "Dockerfile") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 8<<20 {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(b), placeholder) {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("%s names %s; the repository and registry are sealedtempo", rel, placeholder)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 func requireJQ(t *testing.T) {

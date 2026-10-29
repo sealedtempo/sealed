@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 	"go.yaml.in/yaml/v3"
 )
 

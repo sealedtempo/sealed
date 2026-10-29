@@ -13,11 +13,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/sealed-dev/sealed/cli/internal/registry"
-	"github.com/sealed-dev/sealed/cli/internal/testchain"
-	"github.com/sealed-dev/sealed/cli/internal/testkit"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/registry"
+	"github.com/sealedtempo/sealed/cli/internal/testchain"
+	"github.com/sealedtempo/sealed/cli/internal/testkit"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // testnetChainID is a chain other than mainnet's 4217 (Tempo's public testnet uses this id).

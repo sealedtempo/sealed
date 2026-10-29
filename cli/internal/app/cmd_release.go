@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sealed-dev/sealed/cli/internal/deploy"
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/cli/internal/deploy"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 const releaseUsage = `Usage:

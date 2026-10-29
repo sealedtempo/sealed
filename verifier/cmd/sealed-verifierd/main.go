@@ -14,10 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
 )
 
 // composerFactory builds the stack composer (composer.go). Tests replace it; nil leaves the daemon without a

@@ -13,10 +13,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // chainCallTimeout bounds each RPC read.

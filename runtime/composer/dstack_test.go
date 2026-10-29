@@ -8,7 +8,7 @@ import (
 	"hash"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // These reproduce runtime/composer/testdata/dstack/vectors.py (dstack v0.6.1

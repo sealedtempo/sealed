@@ -12,7 +12,7 @@ import (
 	"testing"
 	"testing/cryptotest"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
 )
 
 var updateVectors = flag.Bool("update", false, "rewrite testdata/hpke-kb-release-vector.json")

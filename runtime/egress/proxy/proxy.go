@@ -28,10 +28,10 @@ import (
 	"github.com/stripe/smokescreen/pkg/smokescreen/conntrack"
 	"github.com/stripe/smokescreen/pkg/smokescreen/hostport"
 
-	"github.com/sealed-dev/sealed/runtime/egress/auth"
-	"github.com/sealed-dev/sealed/runtime/egress/limits"
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
-	"github.com/sealed-dev/sealed/runtime/egress/stats"
+	"github.com/sealedtempo/sealed/runtime/egress/auth"
+	"github.com/sealedtempo/sealed/runtime/egress/limits"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress/stats"
 )
 
 // DenyMessage is appended to every 403 body.

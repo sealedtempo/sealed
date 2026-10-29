@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 const fixtures = "../testdata/apps"

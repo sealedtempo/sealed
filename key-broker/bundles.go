@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // Bundle fetch errors. ErrBundleHashMismatch answers bundle_hash_mismatch, ErrBundleInvalid compose_mismatch; any

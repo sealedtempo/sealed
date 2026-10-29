@@ -24,7 +24,7 @@ COPY --from=build --chown=root:root /out /app
 WORKDIR /app
 USER node
 EXPOSE 8080 8100
-LABEL org.opencontainers.image.source="https://github.com/sealed-dev/sealed" \
+LABEL org.opencontainers.image.source="https://github.com/sealedtempo/sealed" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.title="sealed inference relay"
 ENTRYPOINT ["node"]

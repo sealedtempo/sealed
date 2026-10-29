@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // NonceResponse is the GET /v1/nonce body.

@@ -17,14 +17,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/internal/anviltest"
-	"github.com/sealed-dev/sealed/verifier/internal/catalogtest"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/internal/anviltest"
+	"github.com/sealedtempo/sealed/verifier/internal/catalogtest"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // composedWorld is one deployment of a stack composed from real release bundles on a local chain.

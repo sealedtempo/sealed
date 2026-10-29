@@ -391,7 +391,7 @@ Callers without an allowlist stay in the config, so traffic from those addresses
 
 ## 13. Code layout and shared packages
 
-Go (one module at the public repo root, `github.com/sealed-dev/sealed`, `go 1.26.0`, built with the installed toolchain):
+Go (one module at the public repo root, `github.com/sealedtempo/sealed`, `go 1.26.0`, built with the installed toolchain):
 
 | package | path | owns |
 |---|---|---|

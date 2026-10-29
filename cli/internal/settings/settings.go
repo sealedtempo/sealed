@@ -18,8 +18,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sealed-dev/sealed/cli/internal/embedded"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/embedded"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // Defaults is the part of config/defaults.yaml the CLI reads.

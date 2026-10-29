@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/caddy"
+	"github.com/sealedtempo/sealed/runtime/caddy"
 )
 
 // Tests for composer 1.4.0: sealed-mpp-payer's state on the data disk

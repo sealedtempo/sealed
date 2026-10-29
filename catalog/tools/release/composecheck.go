@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // ComposeTemplate is the composer's own fixture config. Its owner keeps it valid for the current composer

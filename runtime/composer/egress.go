@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // EgressPolicy is a release's egress.yaml (INTERFACES section 7).

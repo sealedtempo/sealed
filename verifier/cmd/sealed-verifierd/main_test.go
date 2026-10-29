@@ -15,12 +15,12 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/bundles"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/internal/anviltest"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/internal/anviltest"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
 )
 
 func envMap(m map[string]string) func(string) string { return func(k string) string { return m[k] } }

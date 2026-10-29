@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // serveFrom runs one request through the handler as if it came from remote (host:port), with optional headers.

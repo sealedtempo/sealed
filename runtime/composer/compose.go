@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/caddy"
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/caddy"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // Result is a composed stack. Every byte slice is deterministic for the same

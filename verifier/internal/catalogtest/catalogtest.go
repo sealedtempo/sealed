@@ -17,9 +17,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/verifier/bundles"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // Registry is the catalog registry the bundles are built for (config/defaults.yaml catalog.registry).

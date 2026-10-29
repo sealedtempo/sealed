@@ -8,10 +8,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/cli/internal/bootstrap"
-	"github.com/sealed-dev/sealed/cli/internal/embedded"
-	"github.com/sealed-dev/sealed/cli/internal/settings"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/bootstrap"
+	"github.com/sealedtempo/sealed/cli/internal/embedded"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 func runBootstrap(ctx context.Context, args []string, e *Env) error {

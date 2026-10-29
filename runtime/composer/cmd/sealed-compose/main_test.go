@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 const apps = "../../testdata/apps"

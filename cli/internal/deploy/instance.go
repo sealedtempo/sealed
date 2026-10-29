@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
 )
 
 // VMTag opens 80 and 443 in the bootstrap firewall.

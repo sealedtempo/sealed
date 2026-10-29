@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/cli/internal/embedded"
+	"github.com/sealedtempo/sealed/cli/internal/embedded"
 )
 
 // The key broker's environment contract (review-ws-key-broker F5): the Cloud Run env the bootstrap renders must be

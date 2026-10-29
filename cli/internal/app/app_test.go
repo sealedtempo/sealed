@@ -20,13 +20,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/sealed-dev/sealed/cli/internal/deploy"
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
-	"github.com/sealed-dev/sealed/cli/internal/registry"
-	"github.com/sealed-dev/sealed/cli/internal/secrets"
-	"github.com/sealed-dev/sealed/cli/internal/settings"
-	"github.com/sealed-dev/sealed/cli/internal/testkit"
-	"github.com/sealed-dev/sealed/cli/internal/token"
+	"github.com/sealedtempo/sealed/cli/internal/deploy"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/registry"
+	"github.com/sealedtempo/sealed/cli/internal/secrets"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/cli/internal/testkit"
+	"github.com/sealedtempo/sealed/cli/internal/token"
 )
 
 // harness runs the CLI in-process against fakes.

@@ -18,7 +18,7 @@ import (
 
 	"github.com/google/go-tdx-guest/verify/trust"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 func main() {

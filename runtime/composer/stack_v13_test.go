@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // Tests for the composer 1.3.0 hardening (D-059, D-061, D-063, D-064,

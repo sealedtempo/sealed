@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 
-	"github.com/sealed-dev/sealed/verifier/internal/anviltest"
+	"github.com/sealedtempo/sealed/verifier/internal/anviltest"
 )
 
 // TestAnvilViews deploys the real contracts into a local Tempo node and reads every view the verifier uses.

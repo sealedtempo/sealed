@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 func TestBundleTarIsByteIdenticalAcrossRuns(t *testing.T) {

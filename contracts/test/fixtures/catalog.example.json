@@ -9,7 +9,7 @@
       "rtmr1": "0x3bfe3670f5877ddf7697d62d663134779752eeea9d94c2d5e47aa6408ad9c0460f36c48d4a1a2d0e6801b242367d75d3",
       "rtmr2": "0x67dea61da0c84f9784474aad2d6d224df02aaddf9c137b5de2f1d7947432543496d0cf2561d4e9a7cb10463c13dd2172",
       "isDebug": false,
-      "sourceURI": "https://github.com/sealed-dev/sealed/tree/main/runtime"
+      "sourceURI": "https://github.com/sealedtempo/sealed/tree/main/runtime"
     }
   ],
   "apps": [
@@ -18,35 +18,35 @@
       "name": "LLM Gateway",
       "licenseSpdx": "MIT",
       "maintainerShareBps": 2000,
-      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/llm-gateway"
+      "metadataURI": "https://github.com/sealedtempo/sealed/tree/main/apps/llm-gateway"
     },
     {
       "slug": "scraper",
       "name": "Scraper",
       "licenseSpdx": "Apache-2.0",
       "maintainerShareBps": 2000,
-      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/scraper"
+      "metadataURI": "https://github.com/sealedtempo/sealed/tree/main/apps/scraper"
     },
     {
       "slug": "crm",
       "name": "CRM (EspoCRM)",
       "licenseSpdx": "AGPL-3.0-or-later",
       "maintainerShareBps": 2000,
-      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/crm"
+      "metadataURI": "https://github.com/sealedtempo/sealed/tree/main/apps/crm"
     },
     {
       "slug": "coding-agent",
       "name": "Coding Agent (OpenHands)",
       "licenseSpdx": "MIT",
       "maintainerShareBps": 2000,
-      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/coding-agent"
+      "metadataURI": "https://github.com/sealedtempo/sealed/tree/main/apps/coding-agent"
     },
     {
       "slug": "internal-tools",
       "name": "Internal Tools",
       "licenseSpdx": "Apache-2.0",
       "maintainerShareBps": 2000,
-      "metadataURI": "https://github.com/sealed-dev/sealed/tree/main/apps/internal-tools"
+      "metadataURI": "https://github.com/sealedtempo/sealed/tree/main/apps/internal-tools"
     }
   ]
 }

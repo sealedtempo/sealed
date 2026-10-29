@@ -21,8 +21,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/runtime/composer/lint"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/lint"
 )
 
 func main() {

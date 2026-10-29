@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sealed-dev/sealed/cli/internal/bootstrap"
-	"github.com/sealed-dev/sealed/cli/internal/bundles"
-	"github.com/sealed-dev/sealed/cli/internal/deploy"
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
-	"github.com/sealed-dev/sealed/cli/internal/registry"
-	"github.com/sealed-dev/sealed/cli/internal/secrets"
-	"github.com/sealed-dev/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/cli/internal/bootstrap"
+	"github.com/sealedtempo/sealed/cli/internal/bundles"
+	"github.com/sealedtempo/sealed/cli/internal/deploy"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/registry"
+	"github.com/sealedtempo/sealed/cli/internal/secrets"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
 )
 
 // Version is the CLI version.

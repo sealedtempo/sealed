@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/cli/internal/app"
-	"github.com/sealed-dev/sealed/cli/internal/licenses"
+	"github.com/sealedtempo/sealed/cli/internal/app"
+	"github.com/sealedtempo/sealed/cli/internal/licenses"
 )
 
 func testOptions(t *testing.T, targets ...string) *options {

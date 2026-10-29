@@ -10,10 +10,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/sealed-dev/sealed/cli/internal/deploy"
-	"github.com/sealed-dev/sealed/cli/internal/secrets"
-	"github.com/sealed-dev/sealed/cli/internal/token"
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/cli/internal/deploy"
+	"github.com/sealedtempo/sealed/cli/internal/secrets"
+	"github.com/sealedtempo/sealed/cli/internal/token"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 const secretsUsage = `Usage:

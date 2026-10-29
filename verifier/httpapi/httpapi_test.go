@@ -17,13 +17,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/bundles"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 type offline struct{}

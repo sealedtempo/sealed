@@ -16,11 +16,11 @@ import (
 
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
 
-	"github.com/sealed-dev/sealed/runtime/egress/auth"
-	"github.com/sealed-dev/sealed/runtime/egress/limits"
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
-	"github.com/sealed-dev/sealed/runtime/egress/stats"
-	"github.com/sealed-dev/sealed/runtime/egress/upstream"
+	"github.com/sealedtempo/sealed/runtime/egress/auth"
+	"github.com/sealedtempo/sealed/runtime/egress/limits"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress/stats"
+	"github.com/sealedtempo/sealed/runtime/egress/upstream"
 )
 
 func readRequest(t *testing.T, raw string) *http.Request {

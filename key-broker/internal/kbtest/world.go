@@ -13,11 +13,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"golang.org/x/crypto/bcrypt"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/anvil"
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
-	"github.com/sealed-dev/sealed/verifier/attest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/anvil"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // Test accounts. Customer is the broker's bootstrap customer; both are anvil dev accounts so they can sign on anvil.

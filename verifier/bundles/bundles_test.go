@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/bundles"
 )
 
 func TestAssetRule(t *testing.T) {

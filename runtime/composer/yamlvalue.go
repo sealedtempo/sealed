@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 	"go.yaml.in/yaml/v3"
 )
 

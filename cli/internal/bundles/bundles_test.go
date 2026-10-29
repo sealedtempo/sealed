@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/cli/internal/bundles"
-	"github.com/sealed-dev/sealed/cli/internal/testkit"
-	verify "github.com/sealed-dev/sealed/verifier"
+	"github.com/sealedtempo/sealed/cli/internal/bundles"
+	"github.com/sealedtempo/sealed/cli/internal/testkit"
+	verify "github.com/sealedtempo/sealed/verifier"
 )
 
 func TestAssetURL(t *testing.T) {

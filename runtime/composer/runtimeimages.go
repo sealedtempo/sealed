@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // Version is the composer version. It must equal config.composerVersion.

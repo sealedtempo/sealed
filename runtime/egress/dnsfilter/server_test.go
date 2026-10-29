@@ -10,11 +10,11 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/sealed-dev/sealed/runtime/egress/internal/dnstest"
-	"github.com/sealed-dev/sealed/runtime/egress/limits"
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
-	"github.com/sealed-dev/sealed/runtime/egress/stats"
-	"github.com/sealed-dev/sealed/runtime/egress/upstream"
+	"github.com/sealedtempo/sealed/runtime/egress/internal/dnstest"
+	"github.com/sealedtempo/sealed/runtime/egress/limits"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress/stats"
+	"github.com/sealedtempo/sealed/runtime/egress/upstream"
 )
 
 var (

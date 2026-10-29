@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/internal/localtempo"
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/internal/localtempo"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // Tests of scripts/release against a local Tempo node (anvil --network tempo) with the real contracts,

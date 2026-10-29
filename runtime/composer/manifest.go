@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
-	"github.com/sealed-dev/sealed/catalog/schema"
+	"github.com/sealedtempo/sealed/catalog/schema"
 )
 
 // Manifest is a catalog app manifest (catalog/schema/manifest.schema.json).

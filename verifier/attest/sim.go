@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // Simulated quote format (INTERFACES.md section 15): ASCII "SEALEDSIM1" followed by CJSON of simQuoteBody.

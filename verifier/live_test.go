@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // attestServer serves GET /attest like sealed-agent behind Caddy, binding the key of its own TLS certificate.

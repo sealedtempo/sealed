@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
-	"github.com/sealed-dev/sealed/verifier/attest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // TestHTTPAPI drives the broker over HTTP like sealed-agent's HttpKeyBroker.

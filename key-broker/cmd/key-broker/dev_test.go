@@ -20,8 +20,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
 )
 
 func TestDevOptionsNeedDevSimEnv(t *testing.T) {

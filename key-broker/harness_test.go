@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/anvil"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
-	"github.com/sealed-dev/sealed/verifier/attest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/anvil"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // harness is a broker over a world.

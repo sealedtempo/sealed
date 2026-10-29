@@ -1,4 +1,4 @@
-module github.com/sealed-dev/sealed
+module github.com/sealedtempo/sealed
 
 go 1.26.0
 

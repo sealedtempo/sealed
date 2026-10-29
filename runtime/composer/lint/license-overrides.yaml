@@ -78,12 +78,12 @@ overrides:
       vndee/llm-sandbox is MIT. In the LiteLLM images (same base as google-crc32c).
     evidence: https://github.com/vndee/llm-sandbox/blob/0.3.39/LICENSE
     reviewed: 2026-10-28
-  - purl: pkg:golang/github.com/sealed-dev/sealed
+  - purl: pkg:golang/github.com/sealedtempo/sealed
     any_version: true
     license: Apache-2.0
     reason: >-
       This repository's own Go module, the main module of every Go binary we ship. syft lists it
       without a license, and without a version when the build has no VCS data. The repository
       LICENSE is Apache-2.0.
-    evidence: https://github.com/sealed-dev/sealed/blob/main/LICENSE
+    evidence: https://github.com/sealedtempo/sealed/blob/main/LICENSE
     reviewed: 2026-10-28

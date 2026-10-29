@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	verify "github.com/sealed-dev/sealed/verifier"
+	verify "github.com/sealedtempo/sealed/verifier"
 )
 
 // TestTextReportEscapesControlCharacters: details carry bundle, /attest and chain strings; none may drive the

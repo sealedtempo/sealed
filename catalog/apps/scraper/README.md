@@ -127,7 +127,7 @@ registrable domain, so other sites reached with `same_domain: false` wait the sa
 - One Crawlee `Configuration` per run with a non-persistent `MemoryStorage`; `CRAWLEE_PERSIST_STORAGE=false`
   is forced at start. Results go straight to Postgres.
 - TLS certificates are always verified (`ignoreSslErrors: false`).
-- An honest bot: `User-Agent: SealedScraper/1.0 (+https://github.com/sealed-dev/sealed/tree/main/catalog/apps/scraper)`,
+- An honest bot: `User-Agent: SealedScraper/1.0 (+https://github.com/sealedtempo/sealed/tree/main/catalog/apps/scraper)`,
   no generated browser headers, no fingerprinting, no retries or session rotation to get around 401, 403
   or 429 (Crawlee's blocked status codes are turned off, so these are fetched exactly once).
 - A final status of 400 or more is a failed page (`HTTP 404`). 4xx is not retried, 5xx is retried twice,

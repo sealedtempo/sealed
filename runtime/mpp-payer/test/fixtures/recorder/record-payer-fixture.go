@@ -22,17 +22,19 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 type offline struct{}
 
-func (offline) Get(string) (map[string][]string, []byte, error) { return nil, nil, errors.New("offline") }
+func (offline) Get(string) (map[string][]string, []byte, error) {
+	return nil, nil, errors.New("offline")
+}
 
 func jsonTags(v any) []string {
 	var out []string
@@ -98,12 +100,12 @@ func main() {
 		ExpectedAppIDs        []string               `json:"expectedAppIds"`
 	}
 	info := map[string]any{
-		"base":           "http://" + ln.Addr().String(),
-		"relayOwner":     "0x" + fmt.Sprintf("%x", owner.Bytes()),
-		"requestFields":  jsonTags(liveReqShape{}),
-		"optionFields":   jsonTags(httpapi.RequestOptions{}),
-		"reportFields":   jsonTags(verify.Report{}),
-		"checkFields":    jsonTags(verify.Check{}),
+		"base":          "http://" + ln.Addr().String(),
+		"relayOwner":    "0x" + fmt.Sprintf("%x", owner.Bytes()),
+		"requestFields": jsonTags(liveReqShape{}),
+		"optionFields":  jsonTags(httpapi.RequestOptions{}),
+		"reportFields":  jsonTags(verify.Report{}),
+		"checkFields":   jsonTags(verify.Check{}),
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(info)
 	go func() { _, _ = io.Copy(io.Discard, os.Stdin); os.Exit(0) }()

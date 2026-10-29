@@ -17,10 +17,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"go.yaml.in/yaml/v3"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/anvil"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/anvil"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 const testKeyVersion = "projects/cust-proj-1/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1"

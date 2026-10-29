@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // Docker tests (D-063): the composed stack must start under docker compose,

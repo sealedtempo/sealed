@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // testdata/syft-image/image.spdx.json is syft's own output for a synthetic
@@ -192,7 +192,7 @@ func TestSyftImageLicenses(t *testing.T) {
 	// they are warnings.
 	fs = runSBOM(t, raw, nil, []LicenseOverride{}, true)
 	wantMissing := []string{
-		"aurelio-sdk@0.0.19", "github.com/sealed-dev/sealed@UNKNOWN", "google-crc32c@1.8.0", "llm-sandbox@0.3.39", "map-stream@0.1.0", "pause-stream@0.0.11",
+		"aurelio-sdk@0.0.19", "github.com/sealedtempo/sealed@UNKNOWN", "google-crc32c@1.8.0", "llm-sandbox@0.3.39", "map-stream@0.1.0", "pause-stream@0.0.11",
 	}
 	if got := fieldsOf(fs, CodeSBOMNoLicense, Error); !reflect.DeepEqual(got, wantMissing) {
 		t.Errorf("no-license errors: got %q, want %q", got, wantMissing)

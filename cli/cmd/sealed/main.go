@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/sealed-dev/sealed/cli/internal/app"
+	"github.com/sealedtempo/sealed/cli/internal/app"
 )
 
 func main() {

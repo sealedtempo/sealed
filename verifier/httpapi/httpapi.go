@@ -30,9 +30,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/bundles"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // MaxBodyBytes bounds request bodies: 8 MiB (8388608 bytes). An evidence bundle with a full compose is well under

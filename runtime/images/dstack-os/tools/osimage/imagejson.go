@@ -16,7 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // catalogImage is one entry of the "images" array contracts/script/RegisterCatalog.s.sol reads. The script uses

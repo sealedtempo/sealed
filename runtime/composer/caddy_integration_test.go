@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/caddy"
+	"github.com/sealedtempo/sealed/runtime/caddy"
 )
 
 // TestCaddyfileWithRealCaddy runs the generated Caddyfiles in a real Caddy

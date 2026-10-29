@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
 )
 
 // memStore is an in-memory Secret Manager.

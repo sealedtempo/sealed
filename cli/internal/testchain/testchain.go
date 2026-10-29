@@ -29,8 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	"github.com/sealed-dev/sealed/internal/localtempo"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/internal/localtempo"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // Anvil's default dev keys (mnemonic "test test ... junk"). Public; local use only.

@@ -16,11 +16,11 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/cli/internal/bundles"
-	"github.com/sealed-dev/sealed/cli/internal/registry"
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/bundles"
+	"github.com/sealedtempo/sealed/cli/internal/registry"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 var aliasRe = regexp.MustCompile(`^dep_[0-9A-Za-z]{8}$`)

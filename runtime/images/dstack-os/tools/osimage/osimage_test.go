@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // makePE builds a small, valid PE32+ image with two sections, a certificate table and trailing data, so every

@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strconv"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
 )
 
 // DefaultSecretManagerEndpoint is the Secret Manager REST API.

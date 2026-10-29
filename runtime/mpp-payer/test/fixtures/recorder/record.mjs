@@ -44,8 +44,8 @@ const cases = [
 ]
 proc.stdin.end()
 const fixture = {
-  recordedFrom: 'ws/verifier 91022b1: the real verifier/httpapi handler (simulated quotes, fixture chain with OWNER approval of an inference-relay stack); the payer side is RelayAttestationGate from this branch',
-  recordedAt: '2026-10-28',
+  recordedFrom: process.env.RECORDED_FROM ?? 'the real verifier/httpapi handler of this checkout (simulated quotes, fixture chain with OWNER approval of an inference-relay stack); the payer side is RelayAttestationGate from this checkout',
+  recordedAt: new Date().toISOString().slice(0, 10),
   verifierd: { requestFields: info.requestFields, optionFields: info.optionFields, reportFields: info.reportFields, checkFields: info.checkFields },
   cases,
 }

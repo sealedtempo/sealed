@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // TestTDConfigFields (F7): MRCONFIGID and MROWNERCONFIG must be zero (they are on GCE and on dstack on GCP); XFAM and

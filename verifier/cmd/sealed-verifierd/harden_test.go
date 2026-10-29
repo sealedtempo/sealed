@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
 )
 
 // D-061 and review V-1: the in-VM sidecar (--stack-config) serves only its allowed clients and, by default, never

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
 )
 
 func postRelease(t testing.TB, url string, body []byte, hdr map[string]string) (int, keybroker.Denial, http.Header) {

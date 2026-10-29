@@ -20,8 +20,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/cli/internal/token"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/token"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // DefaultKeyBrokerImage is the key broker image bootstrap deploys: the sealed-key-broker entry of

@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/verifier/internal/anviltest"
+	"github.com/sealedtempo/sealed/verifier/internal/anviltest"
 )
 
 // abiSignatures lists every function (with its outputs), event and error of an ABI, sorted.

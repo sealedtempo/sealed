@@ -30,7 +30,7 @@ WORKDIR /app
 USER node
 EXPOSE 8090
 HEALTHCHECK --interval=10s --timeout=3s --retries=6 CMD ["node", "-e", "fetch('http://127.0.0.1:8090/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
-LABEL org.opencontainers.image.source="https://github.com/sealed-dev/sealed" \
+LABEL org.opencontainers.image.source="https://github.com/sealedtempo/sealed" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.title="sealed-mpp-payer"
 ENTRYPOINT ["node"]

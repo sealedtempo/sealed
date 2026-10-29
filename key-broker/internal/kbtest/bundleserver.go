@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/runtime/composer"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // BundleServer serves release bundles at the release asset URL rule's paths, like GitHub release downloads.

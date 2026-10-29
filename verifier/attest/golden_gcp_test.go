@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // gcpDir holds the real capture of the runtime spike: dstack 0.6.1 (upstream image, D-016: never register it) on

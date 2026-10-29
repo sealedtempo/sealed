@@ -24,7 +24,7 @@ import (
 
 	"github.com/google/go-tdx-guest/pcs"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 const measurementSchema = "sealed-os-measurement/v1"

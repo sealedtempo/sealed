@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
-	"github.com/sealed-dev/sealed/verifier/attest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // TestChainFreshness (F3, D-060): a head block older than the bound (a lagging or stuck RPC that could hide a

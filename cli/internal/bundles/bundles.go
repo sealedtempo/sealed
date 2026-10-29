@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	verify "github.com/sealed-dev/sealed/verifier"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	verify "github.com/sealedtempo/sealed/verifier"
 )
 
 // MaxBundleSize bounds a download. Bundles hold manifests, SBOMs and scans, a few MiB at most.

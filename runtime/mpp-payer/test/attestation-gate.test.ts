@@ -191,7 +191,7 @@ describe('relay attestation gate', () => {
 
 describe('payee from the real composer output', () => {
   // test/fixtures/relay-app-compose.json: `sealed-compose compose --fill-release-ids
-  // --allow-missing-sbom --print app-compose` (composer 1.3.0) over catalog/apps/inference-relay as
+  // --allow-missing-sbom --print app-compose` (composer 1.4.0) over catalog/apps/inference-relay as
   // it is (without Privatemode, D-055), with the relay route on the attest host (on_attest_host), an
   // OWNER config with only that app, mainnet contracts and USDC.e as feeToken.
   const composed = readFileSync(join(import.meta.dirname, 'fixtures/relay-app-compose.json'), 'utf8')

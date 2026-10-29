@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/cli/internal/settings"
-	"github.com/sealed-dev/sealed/cli/internal/testkit"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/cli/internal/testkit"
 )
 
 // unbuiltNotes copies the composer's notes fixture with its first image digest set to the all-zero placeholder.

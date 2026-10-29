@@ -21,7 +21,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sealed-dev/sealed/cli/internal/token"
+	"github.com/sealedtempo/sealed/cli/internal/token"
 )
 
 // StackSchema is the stack file schema id.

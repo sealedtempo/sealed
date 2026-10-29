@@ -25,8 +25,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/egress"
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // DefaultConfigPath is where the composer mounts the measured egress config.

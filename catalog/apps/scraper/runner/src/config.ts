@@ -4,7 +4,7 @@ import { DEFAULT_MAX_PAGE_BYTES } from './limits.js';
 import type { LogLevel } from './log.js';
 
 export const ROBOTS_PRODUCT_TOKEN = 'SealedScraper';
-export const DEFAULT_USER_AGENT = `${ROBOTS_PRODUCT_TOKEN}/1.0 (+https://github.com/sealed-dev/sealed/tree/main/catalog/apps/scraper)`;
+export const DEFAULT_USER_AGENT = `${ROBOTS_PRODUCT_TOKEN}/1.0 (+https://github.com/sealedtempo/sealed/tree/main/catalog/apps/scraper)`;
 
 export interface Config {
   host: string;

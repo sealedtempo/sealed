@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/egress"
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 type syncBuffer struct {

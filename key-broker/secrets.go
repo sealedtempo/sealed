@@ -16,7 +16,7 @@ import (
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // Secret Manager naming (INTERFACES.md section 9).

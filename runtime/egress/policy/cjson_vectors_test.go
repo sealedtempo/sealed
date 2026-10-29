@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // The shared CJSON vectors (INTERFACES section 1) are owned by the composer.

@@ -11,7 +11,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // Config is what the customer sets at bootstrap (spec 5.7, 8.4). The platform never sets any of it.

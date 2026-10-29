@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer"
 )
 
 // DefaultReleaseAssetBase is catalog.release_asset_base of config/defaults.yaml (TestDefaultBaseMatchesDefaults

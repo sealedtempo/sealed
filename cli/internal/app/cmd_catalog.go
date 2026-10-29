@@ -9,10 +9,10 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sealed-dev/sealed/cli/internal/bundles"
-	"github.com/sealed-dev/sealed/cli/internal/registry"
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/bundles"
+	"github.com/sealedtempo/sealed/cli/internal/registry"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 // ReleaseView is one release as the catalog commands show it.

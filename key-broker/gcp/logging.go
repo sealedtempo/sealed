@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"time"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
 )
 
 // DefaultLoggingEndpoint is the Cloud Logging REST API.

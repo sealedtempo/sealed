@@ -7,7 +7,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
 )
 
 // Store is the customer's secret store (Secret Manager). Values are write-only from the CLI: it never reads them

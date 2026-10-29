@@ -15,11 +15,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
-	"github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/attest"
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
 )
 
 // App is one app of the stack.
@@ -146,7 +146,7 @@ func (Composer) Compose(_ context.Context, in verify.ComposeInput) (*verify.Comp
 	configHash := sha256.Sum256(canon)
 	services := map[string]any{}
 	for _, r := range in.Releases {
-		services[r.App] = map[string]any{"image": fmt.Sprintf("ghcr.io/sealed-dev/%s@sha256:%x", r.App, r.BundleHash)}
+		services[r.App] = map[string]any{"image": fmt.Sprintf("ghcr.io/sealedtempo/%s@sha256:%x", r.App, r.BundleHash)}
 	}
 	compose, err := cjson.Marshal(map[string]any{
 		"configs":  map[string]any{"sealed-config": map[string]any{"content": string(canon)}},

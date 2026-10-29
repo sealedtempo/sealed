@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sealed-dev/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 )
 
 // ConfigSchema is the public deployment config schema id (INTERFACES section 5).

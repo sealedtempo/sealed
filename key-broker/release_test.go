@@ -20,10 +20,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/google/go-tdx-guest/abi"
 
-	keybroker "github.com/sealed-dev/sealed/key-broker"
-	"github.com/sealed-dev/sealed/key-broker/internal/kbtest"
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/verifier/attest"
+	keybroker "github.com/sealedtempo/sealed/key-broker"
+	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // allowedChecks is the pipeline order. customer and config_chain run before stack_recompute, so the cheap checks

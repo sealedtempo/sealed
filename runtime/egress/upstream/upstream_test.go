@@ -11,7 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/sealed-dev/sealed/runtime/egress/internal/dnstest"
+	"github.com/sealedtempo/sealed/runtime/egress/internal/dnstest"
 )
 
 func addr(t *testing.T, s string) netip.AddrPort {

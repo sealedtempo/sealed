@@ -24,8 +24,8 @@ func TestDefaultOverrides(t *testing.T) {
 		"pkg:pypi/google-crc32c@1.8.0":                                                                             "Apache-2.0",
 		"pkg:pypi/aurelio-sdk@0.0.19":                                                                              "MIT",
 		"pkg:pypi/llm-sandbox@0.3.39":                                                                              "MIT",
-		"pkg:golang/github.com/sealed-dev/sealed":                                                                  "Apache-2.0",
-		"pkg:golang/github.com/sealed-dev/sealed@v0.0.0-20261028165302-d4455a891137%2Bdirty":                       "Apache-2.0",
+		"pkg:golang/github.com/sealedtempo/sealed":                                                                 "Apache-2.0",
+		"pkg:golang/github.com/sealedtempo/sealed@v0.0.0-20261028165302-d4455a891137%2Bdirty":                      "Apache-2.0",
 	} {
 		o := set.lookup([]string{purl})
 		if o == nil || o.License != license {
@@ -39,7 +39,7 @@ func TestDefaultOverrides(t *testing.T) {
 	if o := set.lookup([]string{"pkg:golang/github.com/ethereum/go-ethereum@v1.17.10"}); !o.allow["BSD-2-Clause-Views"] {
 		t.Errorf("%+v", o)
 	}
-	for _, miss := range []string{"pkg:npm/map-stream@0.1.1", "pkg:npm/pause-stream", "pkg:golang/github.com/ethereum/go-ethereum@v1.17.11", "pkg:golang/github.com/sealed-dev/sealed-extra@v1"} {
+	for _, miss := range []string{"pkg:npm/map-stream@0.1.1", "pkg:npm/pause-stream", "pkg:golang/github.com/ethereum/go-ethereum@v1.17.11", "pkg:golang/github.com/sealedtempo/sealed-extra@v1"} {
 		if o := set.lookup([]string{miss}); o != nil {
 			t.Errorf("%s: unexpected override %s", miss, o.PURL)
 		}

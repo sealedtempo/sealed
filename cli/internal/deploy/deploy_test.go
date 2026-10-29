@@ -14,14 +14,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/cli/internal/embedded"
-	"github.com/sealed-dev/sealed/cli/internal/fatimg"
-	"github.com/sealed-dev/sealed/cli/internal/gcp"
-	"github.com/sealed-dev/sealed/cli/internal/settings"
-	"github.com/sealed-dev/sealed/cli/internal/testkit"
-	"github.com/sealed-dev/sealed/cli/internal/token"
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/cli/internal/embedded"
+	"github.com/sealedtempo/sealed/cli/internal/fatimg"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
+	"github.com/sealedtempo/sealed/cli/internal/settings"
+	"github.com/sealedtempo/sealed/cli/internal/testkit"
+	"github.com/sealedtempo/sealed/cli/internal/token"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
 type fakeCompute struct {

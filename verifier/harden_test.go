@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	verify "github.com/sealed-dev/sealed/verifier"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
+	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
 )
 
 func failedSorted(rep *verify.Report) []string {

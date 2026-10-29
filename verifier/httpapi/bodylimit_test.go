@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealed-dev/sealed/runtime/composer"
-	"github.com/sealed-dev/sealed/verifier/bundles"
-	"github.com/sealed-dev/sealed/verifier/httpapi"
-	"github.com/sealed-dev/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/httpapi"
+	"github.com/sealedtempo/sealed/verifier/internal/fixture"
 )
 
 // sendBody posts body to url, with Content-Length or chunked (no length known up front).

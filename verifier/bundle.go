@@ -7,9 +7,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/sealed-dev/sealed/verifier/chain"
-	"github.com/sealed-dev/sealed/verifier/internal/hexb"
-	"github.com/sealed-dev/sealed/verifier/internal/strictjson"
+	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/verifier/internal/strictjson"
 )
 
 // Schemas this package understands.

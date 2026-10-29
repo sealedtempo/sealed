@@ -17,7 +17,7 @@ import (
 	"github.com/google/go-tdx-guest/verify"
 	"github.com/google/go-tdx-guest/verify/trust"
 
-	"github.com/sealed-dev/sealed/verifier/attest"
+	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
 // intelRootFingerprint is the SHA-256 of the Intel SGX Root CA's DER encoding.

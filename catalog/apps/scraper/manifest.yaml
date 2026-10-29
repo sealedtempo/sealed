@@ -8,10 +8,10 @@ description: >-
   app's own Postgres. Pages are fetched only through sealed-egress, so the scraper reaches only
   the sites you add.
 upstream:
-  repo: https://github.com/sealed-dev/sealed
+  repo: https://github.com/sealedtempo/sealed
   version: 0.1.0
   license_spdx: Apache-2.0
-  source_url: https://github.com/sealed-dev/sealed/tree/main/catalog/apps/scraper/runner
+  source_url: https://github.com/sealedtempo/sealed/tree/main/catalog/apps/scraper/runner
 maintainer:
   name: Sealed
   payout_address: ${MAINTAINER_DEFAULT_ADDRESS}

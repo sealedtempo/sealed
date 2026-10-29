@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sealed-dev/sealed/verifier/internal/strictjson"
+	"github.com/sealedtempo/sealed/verifier/internal/strictjson"
 )
 
 // DstackRuntimeEventType is the event_type of dstack runtime (RTMR3) events.

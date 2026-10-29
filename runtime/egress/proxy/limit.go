@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sealed-dev/sealed/runtime/egress/policy"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // tooManyConns is written to a client that is over its connection share,
