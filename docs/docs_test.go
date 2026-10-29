@@ -1,7 +1,9 @@
 // Package docs_test checks that the public docs name what the code does: the composer version and golden stackHash,
 // the key broker's reason codes and key tags, the verifier's checks, the in-VM network layout, the agent's local API
 // and exact health fields, the payer's error types, the access-key selectors, and that every Go test the threat model
-// and the README cite exists. The docs carry no em-dashes.
+// and the README cite exists. It also keeps the pre-publish review's wording fixes: no tracked text file carries an
+// em-dash or a phrase BUILD_SPEC 1.2 rule 12 bans, no Markdown file presents an AI review as an audit, and the docs do
+// not claim release signature checks, name-scoped deployer addresses or an old composer version.
 package docs_test
 
 import (
@@ -779,4 +781,30 @@ func TestStatusNamesCurrentComposer(t *testing.T) {
 	if len(counts) != 1 {
 		t.Errorf("the README and the threat model give different devnet assertion counts: %v", counts)
 	}
+}
+
+// TestPrePublishWording: claims the pre-publish review found false stay out of the public docs.
+func TestPrePublishWording(t *testing.T) {
+	stale := []struct{ file, text, why string }{
+		{"docs/THREAT_MODEL.md", "from a chain head that is at most 60 seconds old (D-060); the platform", "kb-2: the approval is read at a head checked again before the seal"},
+		{"docs/THREAT_MODEL.md", "every check of one decision reads one pinned block", "kb-2: the approval is read at a fresh head"},
+		{"docs/INTERFACES.md", "every chain read is pinned to one block", "kb-2: the approval is read at a fresh head"},
+		{"docs/INTERFACES.md", "every later read is pinned to that block", "kb-2: the approval is read at a fresh head"},
+		{"docs/INTERFACES.md", "only inside `allowedPrivateCidrs`, and", "runtime-1: private addresses only for the caller's own IP-literal entries"},
+		{"docs/ARCHITECTURE.md", "dials private ranges only inside the config's `allowedVpcRanges`", "runtime-1: private addresses only for the caller's own IP-literal entries"},
+		{"docs/THREAT_MODEL.md", "A fresh review of the hardened code is still open", "status: the pre-publish review ran"},
+		{"README.md", "fresh security review of the hardened", "status: the pre-publish review ran"},
+		{"README.md", "will be recorded", "status: describe what is true now"},
+	}
+	for _, s := range stale {
+		if strings.Contains(read(t, s.file), s.text) {
+			t.Errorf("%s still says %q (%s)", s.file, s.text, s.why)
+		}
+	}
+	tm := read(t, "docs/THREAT_MODEL.md")
+	mustContain(t, "THREAT_MODEL.md", tm, "both when it reads the approval and when it seals the secrets", "IP-literal allow entry of that caller inside `allowedVpcRanges`",
+		"not by a third party; no external audit has been done")
+	mustContain(t, "INTERFACES.md section 12", section(t, read(t, "docs/INTERFACES.md"), "12"), "one of the caller's own allow entries", "every private address too")
+	mustContain(t, "INTERFACES.md section 11", section(t, read(t, "docs/INTERFACES.md"), "11"), "the settlement's outcome is `partial`")
+	mustContain(t, "contracts/README.md", read(t, "contracts/README.md"), "This is not a third-party audit; no external audit has been done.")
 }
