@@ -135,7 +135,7 @@ contract CatalogInvariantTest is Test {
             );
             if (g.everDeactivated) assertFalse(apps.isApprovableRelease(g.id), "deactivated release approvable");
             assertEq(apps.appOfRelease(g.id), g.appId, "appOfRelease");
-            assertEq(handler.ghostByVersion(g.appId, g.versionHash), g.id, "model version index");
+            assertEq(apps.releaseByVersion(g.appId, g.version), g.id, "releaseByVersion never cleared");
             assertEq(apps.releaseByBundle(g.appId, g.bundleHash), g.id, "releaseByBundle never cleared");
         }
     }

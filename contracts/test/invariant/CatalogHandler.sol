@@ -34,7 +34,7 @@ contract CatalogHandler is Test {
     struct GRelease {
         bytes32 id;
         bytes32 appId;
-        bytes32 versionHash;
+        string version;
         bytes32 bundleHash;
         S status;
         bool everDeactivated;
@@ -315,7 +315,7 @@ contract CatalogHandler is Test {
         try apps.publishRelease(appId, version, bundleHash, bytes32(0), bytes32(0), "", "") returns (bytes32 got) {
             _expect(expected, true, "publishRelease");
             if (got != id) _mismatch("publishRelease returned another id");
-            _releases.push(GRelease(id, appId, vh, bundleHash, S.Active, false));
+            _releases.push(GRelease(id, appId, version, bundleHash, S.Active, false));
             _releaseIndex[id] = _releases.length;
             _appReleases[appId].push(id);
             ghostByVersion[appId][vh] = id;
