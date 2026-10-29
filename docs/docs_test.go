@@ -5,9 +5,11 @@
 package docs_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -58,6 +60,81 @@ func mustContain(t *testing.T, where, text string, wants ...string) {
 	}
 }
 
+// trackedFiles lists the repository's tracked files, relative to root, from `git ls-files`. In a tree without git
+// metadata (an exported copy) it falls back to every file outside the dependency, build and cache directories.
+func trackedFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	if out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output(); err == nil && len(out) > 0 {
+		for _, f := range strings.Split(string(out), "\x00") {
+			if f != "" {
+				files = append(files, filepath.FromSlash(f))
+			}
+		}
+		return files
+	}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "node_modules", "dependencies", ".git", "tmp", "out", "dist", "cache", "broadcast", ".terraform", "__pycache__":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		files = append(files, rel)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+// textOf returns a tracked file's bytes, or nil when it is not a text file to check: missing from the work tree,
+// not a regular file, over 8 MiB, or binary (a NUL byte in its first 8000 bytes, git's own test).
+func textOf(t *testing.T, rel string) []byte {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 8<<20 {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
+		return nil
+	}
+	return b
+}
+
+func hasSegment(rel, seg string) bool {
+	for _, s := range strings.Split(filepath.ToSlash(rel), "/") {
+		if s == seg {
+			return true
+		}
+	}
+	return false
+}
+
+// upstream reports a file whose text is not ours: an SPDX document (syft output) or an upstream license text under
+// a LICENSES directory.
+func upstream(rel string) bool {
+	base := filepath.Base(rel)
+	return strings.HasSuffix(base, ".spdx.json") || strings.HasSuffix(base, ".spdx") || hasSegment(rel, "LICENSES")
+}
+
 func TestNoEmDashes(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
 	if err != nil {
@@ -74,6 +151,48 @@ func TestNoEmDashes(t *testing.T) {
 				t.Errorf("%s:%d has an em-dash", filepath.Base(f), i+1)
 			}
 		}
+	}
+}
+
+var spaces = regexp.MustCompile(`\s+`)
+
+// TestNoThirdPartyAuditClaim: every review of this code so far was done by AI review agents, and no external audit
+// has been done (review policy-2). No tracked Markdown file may present a review as an audit or as independent:
+// "independent audit", "independent auditor", "independent review", "auditor", "audited" or "audited by", and
+// "third-party audit", "external audit" or "security audit" unless negated ("not a third-party audit", "no external
+// audit"). "license audit" and test paths such as `test/audit/` stay allowed.
+func TestNoThirdPartyAuditClaim(t *testing.T) {
+	claim := regexp.MustCompile(`(?i)\bindependent (audit|review)\w*|\bauditors?\b|\baudited\b|\b(third[- ]party|external|security) audit\w*`)
+	negated := regexp.MustCompile(`(?i)\b(not an?|no|never an?|without an?)\s+$`)
+	license := regexp.MustCompile(`(?i)license[- ]$`)
+	checked := 0
+	for _, rel := range trackedFiles(t) {
+		if filepath.Ext(rel) != ".md" || upstream(rel) {
+			continue
+		}
+		b := textOf(t, rel)
+		if b == nil {
+			continue
+		}
+		checked++
+		text := spaces.ReplaceAllString(string(b), " ")
+		for _, loc := range claim.FindAllStringIndex(text, -1) {
+			m := strings.ToLower(text[loc[0]:loc[1]])
+			before := text[max(0, loc[0]-16):loc[0]]
+			switch {
+			case strings.HasPrefix(m, "audited") && license.MatchString(before):
+				continue
+			case strings.HasPrefix(m, "third") || strings.HasPrefix(m, "external") || strings.HasPrefix(m, "security"):
+				if negated.MatchString(before) {
+					continue
+				}
+			}
+			t.Errorf("%s says %q (...%s...): the reviews were AI agent reviews, not an audit", filepath.ToSlash(rel), text[loc[0]:loc[1]],
+				text[max(0, loc[0]-40):min(len(text), loc[1]+40)])
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("checked only %d Markdown files", checked)
 	}
 }
 

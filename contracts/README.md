@@ -174,10 +174,10 @@ allowed. The digest is the EIP-712 digest itself: no re-hashing, no EIP-191 pref
 
 ## Contract review (2026-10-28)
 
-Three independent auditor agents (logic and state machine, funds and FeeSplitter, attestation and signatures)
-reviewed the contracts. The two medium issues and the cheap low ones are fixed, and a verification pass over the
-fixes added `topUpFees` (item 7); every PoC is replayed in `test/audit/`. Changes against the original interface
-spec, all small:
+Three AI review agents (fresh Claude Code subagents, one lens each: logic and state machine, funds and FeeSplitter,
+attestation and signatures) reviewed the contracts. This is not a third-party audit; no external audit has been done.
+The two medium issues and the cheap low ones are fixed, and a verification pass over the fixes added `topUpFees`
+(item 7); every PoC is replayed in `test/audit/`. Changes against the original interface spec, all small:
 
 1. FeeSplitter dedupes usage per `(deploymentId, usageHash, appId)` (spec: per `(usageHash, appId)`) and
    `usagePaid` returns the amount paid. A usageHash already names its deployment, so honest flows are unchanged.
