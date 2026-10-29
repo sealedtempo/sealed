@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sealedtempo/sealed/runtime/composer"
 	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/bundles"
 	"github.com/sealedtempo/sealed/verifier/chain"
 	"github.com/sealedtempo/sealed/verifier/internal/anviltest"
@@ -69,7 +71,7 @@ func TestConfigSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.RPCURL != "https://rpc.example" || c.Listen != ":9999" || c.ChainID != 4217 || len(c.TCBPolicy.AllowedStatuses) != 2 ||
-		c.MaxInFlight != 8 || c.LiveHosts != nil || c.LivePrivate {
+		c.MaxInFlight != 8 || c.LiveHosts != nil || c.LivePrivate || !slices.Equal(c.AllowedXFAM, attest.DefaultAllowedXFAM()) {
 		t.Fatalf("%+v", c)
 	}
 	c, err = loadConfig(append([]string{"--live-allowed-hosts", " *.sslip.io, relay.example.com ,", "--max-in-flight", "3"}, addrFlags...), envMap(nil), io.Discard)
@@ -116,13 +118,18 @@ func TestConfigSources(t *testing.T) {
 	}
 
 	defaults := filepath.Join(dir, "defaults.yaml")
-	os.WriteFile(defaults, []byte("tcb_policy:\n  allowed_statuses: [UpToDate]\n"), 0o644)
+	os.WriteFile(defaults, []byte("tcb_policy:\n  allowed_statuses: [UpToDate]\ntdx:\n  allowed_xfam: [\"0x600e7\"]\n"), 0o644)
 	c, err = loadConfig(append([]string{"--defaults", defaults}, addrFlags...), envMap(nil), io.Discard)
-	if err != nil || len(c.TCBPolicy.AllowedStatuses) != 1 {
+	if err != nil || len(c.TCBPolicy.AllowedStatuses) != 1 || !slices.Equal(c.AllowedXFAM, []uint64{0x600e7}) {
 		t.Fatalf("defaults file: %v %+v", err, c)
 	}
+	// A defaults file without tdx.allowed_xfam cannot turn the XFAM check off (D-077).
+	os.WriteFile(defaults, []byte("tcb_policy:\n  allowed_statuses: [UpToDate]\n"), 0o644)
+	if _, err := loadConfig(append([]string{"--defaults", defaults}, addrFlags...), envMap(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "tdx.allowed_xfam") {
+		t.Fatalf("defaults file without tdx.allowed_xfam: %v", err)
+	}
 	repoDefaults := filepath.Join("..", "..", "..", "config", "defaults.yaml")
-	if _, err := loadConfig(append([]string{"--defaults", repoDefaults}, addrFlags...), envMap(nil), io.Discard); err != nil {
+	if c, err := loadConfig(append([]string{"--defaults", repoDefaults}, addrFlags...), envMap(nil), io.Discard); err != nil || !slices.Equal(c.AllowedXFAM, attest.DefaultAllowedXFAM()) {
 		t.Fatalf("repo defaults: %v", err)
 	}
 	for _, bad := range [][]string{{"--chain-id", "x"}, {"--collateral-ttl", "-1s"}, {"--platform-registry", "nope"}, {"extra"},

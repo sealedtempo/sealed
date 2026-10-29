@@ -202,7 +202,22 @@ func (s *session) checkQuote(raw []byte) {
 		s.rep.fail(CheckTDAttributes, err.Error(), data)
 		return
 	}
-	s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits", data)
+	// XFAM is pinned by allowlist (tdx.allowed_xfam, D-077). A simulated quote carries none; it passes the quote
+	// check only when the verification opted in (AcceptSimulated), as the key broker skips it for dev builds too.
+	if s.quote.Simulated {
+		s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits; simulated quote, no XFAM checked", data)
+		return
+	}
+	var allowed []string
+	for _, v := range s.deps.Quotes.AllowedXFAM() {
+		allowed = append(allowed, fmt.Sprintf("0x%x", v))
+	}
+	data["allowedXfam"] = allowed
+	if err := s.deps.Quotes.CheckXFAM(s.quote); err != nil {
+		s.rep.fail(CheckTDAttributes, err.Error(), data)
+		return
+	}
+	s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits; XFAM in tdx.allowed_xfam", data)
 }
 
 // checkImage compares the quote's measurements with PlatformRegistry and requires an approved non-debug image.

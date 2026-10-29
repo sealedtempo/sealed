@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/go-tdx-guest/pcs"
@@ -23,6 +24,9 @@ type VerifierOptions struct {
 	Getter trust.HTTPSGetter
 	// TCBPolicy decides which TCB statuses pass. A zero policy is replaced by DefaultTCBPolicy.
 	TCBPolicy TCBPolicy
+	// AllowedXFAM is the XFAM allowlist CheckXFAM applies (config/defaults.yaml tdx.allowed_xfam, D-077). Empty
+	// means DefaultAllowedXFAM.
+	AllowedXFAM []uint64
 	// Now is the time certificates, CRLs and collateral are checked against; nil means time.Now.
 	Now func() time.Time
 	// TrustedRoots replaces the embedded Intel SGX Root CA (tests only).
@@ -61,6 +65,10 @@ func NewVerifier(o VerifierOptions) (*Verifier, error) {
 	if err := o.TCBPolicy.Validate(); err != nil {
 		return nil, err
 	}
+	if len(o.AllowedXFAM) == 0 {
+		o.AllowedXFAM = DefaultAllowedXFAM()
+	}
+	o.AllowedXFAM = slices.Clone(o.AllowedXFAM)
 	if o.Getter == nil {
 		g, err := NewCachingGetter(CacheOptions{})
 		if err != nil {

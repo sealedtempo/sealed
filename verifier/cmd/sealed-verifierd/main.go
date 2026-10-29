@@ -76,7 +76,7 @@ func newServer(ctx context.Context, c *config, log *slog.Logger) (*httpapi.Serve
 	if err != nil {
 		return nil, err
 	}
-	quotes, err := attest.NewVerifier(attest.VerifierOptions{AllowSimulated: c.AllowSimulated, Getter: getter, TCBPolicy: c.TCBPolicy})
+	quotes, err := attest.NewVerifier(attest.VerifierOptions{AllowSimulated: c.AllowSimulated, Getter: getter, TCBPolicy: c.TCBPolicy, AllowedXFAM: c.AllowedXFAM})
 	if err != nil {
 		return nil, err
 	}

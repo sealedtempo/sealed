@@ -42,6 +42,13 @@ attestation_methods: {ORACLE_SIG_V1: 1, ZK_DCAP_V1: 2}
 tcb_policy:
   allowed_statuses: [UpToDate, SWHardeningNeeded]
 
+# TD settings the host chooses and no register measures (D-077). The key broker
+# and the verifier refuse a quote whose XFAM (little-endian u64) is not listed.
+# 0x602e7 is what C3 produced on every capture (c3-standard-4, c3-standard-8).
+# TD_ATTRIBUTES is checked by rule in code, not listed here.
+tdx:
+  allowed_xfam: ["0x602e7"]
+
 # Network layout inside a deployment VM (section 5.4).
 network:
   apps_subnet: 172.30.0.0/24
