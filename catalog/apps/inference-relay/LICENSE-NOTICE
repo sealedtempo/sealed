@@ -1,5 +1,9 @@
 inference-relay license notice
 
+The upstream license texts are in LICENSES/, byte for byte as they are at the pinned tag. Each
+text below names the file, then the upstream repository, ref, path and git blob hash it was
+taken from (runtime/relay/test/license-texts.test.ts checks the hashes).
+
 First-party code
   runtime/relay (relay front and provider sidecars): Apache-2.0, this repository.
 
@@ -10,8 +14,15 @@ Images
                    ghcr.io/berriai/litellm-database:v1.106.5 with /app/enterprise and the
                    litellm_enterprise package (proprietary "BerriAI Enterprise license") deleted and
                    the image flattened, so no layer contains them. No LITELLM_LICENSE is ever set.
-                   Source: https://github.com/BerriAI/litellm/tree/v1.106.5
-  postgres         PostgreSQL 16.15, PostgreSQL License (D-021).
+                   License: MIT (root LICENSE of BerriAI/litellm; everything outside enterprise/)
+                   Text:    LICENSES/litellm-v1.106.5-LICENSE
+                            (BerriAI/litellm v1.106.5 LICENSE, git blob 3bfef5bae9b48c334acf426d5b7f21bc1913aab9)
+                   Source:  https://github.com/BerriAI/litellm/tree/v1.106.5
+                            commit 2569eb88694ce148dea5f324f240f79d256af8ae
+  postgres         PostgreSQL 16.15, PostgreSQL License (D-021). The upstream image, unchanged.
+                   Text:    LICENSES/postgresql-16.15-COPYRIGHT
+                            (postgres/postgres REL_16_15 COPYRIGHT, git blob 0a397648dcd3c2177acc58bd7daecd11ad64be62)
+                   Source:  https://www.postgresql.org/ftp/source/v16.15/
 
 Privatemode
   Not shipped (D-055). The privatemode-proxy image's upstream license (edgelesssys/privatemode-public)
