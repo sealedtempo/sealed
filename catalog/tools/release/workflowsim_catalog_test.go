@@ -55,7 +55,7 @@ func TestCatalogWorkflowEndToEnd(t *testing.T) {
 			"secrets": map[string]any{},
 			"vars":    map[string]any{},
 		},
-		ifs:  map[string]bool{"github.event_name == 'pull_request'": true, "always()": true},
+		ifs:  map[string]bool{"github.event_name == 'pull_request'": true, "always()": true, "matrix.app != 'sealed-runtime'": true},
 		skip: map[string]bool{"Schema and composer lint tests": true, "Composer golden and compose tests": true},
 	}
 	lint := sim.runJob("lint", nil)

@@ -5,7 +5,8 @@
 #
 # Images that are still unbuilt (all-zero digest) cannot be scanned on a pull request: the runtime image
 # workflow builds them after merge, scans them, and opens the pin PR, which runs this workflow in full.
-# Every Monday the whole catalog is rescanned, because new CVEs appear without any change here.
+# Every Monday the whole catalog and the runtime images (Caddy, the sidecars and the key broker, scanned as
+# the sealed-runtime entry) are rescanned, because new CVEs appear without any change here.
 name: catalog
 on:
   pull_request:
@@ -91,6 +92,9 @@ jobs:
               APPS=""  # the gate itself changed: scan every app
             else
               APPS="$(sed -n 's#^catalog/apps/\([^/]*\)/.*#\1#p' "$CHANGED" | sort -u | paste -sd, -)"
+              # A sidecar pin change scans the runtime images (supply-5). extra-images.json and
+              # runtime-waivers.yaml are under catalog/tools/release/, which scans everything.
+              if grep -qx 'runtime/composer/runtime-images.json' "$CHANGED"; then APPS="${APPS:+$APPS,}sealed-runtime"; fi
               [ -n "$APPS" ] || APPS=none
             fi
           fi
@@ -165,6 +169,7 @@ jobs:
           exit "$failed"
       # Licenses of every SBOM package (D-021, D-050), enterprise paths and license_exclusions, with the SBOMs.
       - name: Catalog lint with the SBOMs
+        if: matrix.app != 'sealed-runtime'
         env:
           APP: ${{ matrix.app }}
           DIR: ${{ matrix.dir }}
