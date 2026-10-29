@@ -167,7 +167,7 @@ export class Agent {
   /** Spec 5.6 steps 1-4. Resolves once secrets are written and the agent reports healthy. */
   async boot(): Promise<void> {
     const s = this.deps.settings;
-    const { config, json } = await readPublicConfig(s.configPath);
+    const { config, json } = await readPublicConfig(s.configPath, { devSim: s.devSim });
     requireHttpsEndpoints(config.endpoints, s.devSim);
     const defaults = this.deps.defaults ?? (await loadDefaults(s.defaultsPath, { testOverrides: s.testOverrides }));
     const dstack = this.deps.dstack ?? new DstackClient(parseEndpoint(s.dstackEndpoint));

@@ -32,7 +32,7 @@ describe("key release answers the agent must refuse", () => {
     const appCompose = makeAppCompose(config);
     sim = await startSimulator({ appCompose, socket: join(dir, "dstack.sock") });
     dstack = new DstackClient(parseEndpoint(sim.endpoint));
-    const { config: c, json } = parsePublicConfig(canonicalize(config));
+    const { config: c, json } = parsePublicConfig(canonicalize(config), { devSim: true });
     ctx = buildContext({ config: c, configJson: json, appCompose, defaults });
   });
   afterAll(async () => {

@@ -12,6 +12,7 @@ import {
   configHash,
   decodeSimQuote,
   deploymentId as computeDeploymentId,
+  devSimSealedConfigSchema,
   enclaveSignerAddress,
   eventLogHash,
   evidenceBundleSchema,
@@ -159,7 +160,8 @@ describe("sealed-agent boot flow", () => {
   it("submitted an evidence bundle (after one retry) whose quote binds stack, config, signer, nonce2 and attestedAt", async () => {
     await agent.evidence;
     expect(platform.evidence.length).toBe(1);
-    const b = evidenceBundleSchema.parse(platform.evidence[0]);
+    // The tests' endpoints are plain http on loopback, which only dev sim mode accepts.
+    const b = evidenceBundleSchema.extend({ config: devSimSealedConfigSchema }).parse(platform.evidence[0]);
     expect(b.stackHash).toBe(stackHash(appCompose));
     expect(b.appCompose).toBe(appCompose);
     expect(b.configHash).toBe(configHash(config));
