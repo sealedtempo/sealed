@@ -500,8 +500,14 @@ func (p *Plan) ApprovalInstructions(registryAddr common.Address, rpcURL, feeToke
 	}
 	fmt.Fprintf(&b, "Approve exactly this stack with your wallet, in the console or with Foundry:\n")
 	fmt.Fprintf(&b, "  stackHash  %s\n  releaseIds %s\n  imageId    %s\n", p.Result.StackHash.Hex(), strings.Join(ids, ","), p.Stack.Image.ID)
+	// Provider API keys live in the RPC URL's path, query or credentials, so only its scheme and host are printed.
+	rpcArg := rpcURL
+	if shown := chain.RedactURL(rpcURL); shown != strings.TrimRight(rpcURL, "/") {
+		rpcArg = `"$TEMPO_RPC_URL"`
+		fmt.Fprintf(&b, "  (set TEMPO_RPC_URL to the RPC this run used, %s with its path and query, which are not shown)\n", shown)
+	}
 	fmt.Fprintf(&b, "  cast send %s 'approveStack(bytes32,bytes32[],bytes32,uint64)' %s '[%s]' %s 0 --rpc-url %s --tempo.fee-token %s\n",
-		lowerHex(registryAddr), p.Result.StackHash.Hex(), strings.Join(ids, ","), p.Stack.Image.ID, rpcURL, feeToken)
+		lowerHex(registryAddr), p.Result.StackHash.Hex(), strings.Join(ids, ","), p.Stack.Image.ID, rpcArg, feeToken)
 	fmt.Fprintf(&b, "Then run sealed deploy again. Nothing was created.\n")
 	return b.String()
 }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -222,6 +223,8 @@ func (f *fakeShared) Ensure(_ context.Context, name string, _ map[string][]byte)
 type fakeTerraform struct {
 	calls [][]string
 	dir   string
+	// rpc, when set, is the tempo_rpc_url output.
+	rpc string
 }
 
 func (f *fakeTerraform) Stream(_ context.Context, dir string, _ []string, args ...string) error {
@@ -231,16 +234,20 @@ func (f *fakeTerraform) Stream(_ context.Context, dir string, _ []string, args .
 
 func (f *fakeTerraform) Capture(_ context.Context, dir string, _ []string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
-	return []byte(`{
+	rpc := f.rpc
+	if rpc == "" {
+		rpc = "https://rpc.tempo.xyz"
+	}
+	return []byte(strings.Replace(`{
  "project_id": {"value": "acme-prod-4417"}, "region": {"value": "us-central1"},
  "customer_address": {"value": "0x00000000000000000000000000000000000000c1"},
  "deployer_service_account": {"value": "sealed-deployer@acme-prod-4417.iam.gserviceaccount.com"},
  "key_broker_service_account": {"value": "sealed-key-broker@acme-prod-4417.iam.gserviceaccount.com"},
  "key_broker_url": {"value": "https://sealed-key-broker-xyz-uc.a.run.app"},
  "subnetwork": {"value": "sealed-subnet"}, "boot_bucket": {"value": "acme-prod-4417-sealed-boot"},
- "tempo_rpc_url": {"value": "https://rpc.tempo.xyz"}, "debug_log_service_account": {"value": ""},
+ "tempo_rpc_url": {"value": "RPC"}, "debug_log_service_account": {"value": ""},
  "kms_key_version": {"value": "projects/acme-prod-4417/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1"}
-}`), nil
+}`, `"RPC"`, strconv.Quote(rpc), 1)), nil
 }
 
 // --- verify ---
@@ -812,14 +819,15 @@ func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
 		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
 		"--key-broker-image", "ghcr.io/sealedtempo/key-broker@sha256:" + strings.Repeat("ab", 32)}
 	for name, tc := range map[string]struct {
-		env  map[string]string
-		args []string
-		want string
+		env   map[string]string
+		args  []string
+		want  string
+		shown string // the RPC as the command prints it: never its path or query
 	}{
-		"default":       {want: "https://rpc.tempo.xyz"},
-		"--rpc":         {args: []string{"--rpc", "https://tempo.customer-node.example/rpc"}, want: "https://tempo.customer-node.example/rpc"},
-		"TEMPO_RPC_URL": {env: map[string]string{"TEMPO_RPC_URL": "https://tempo.customer-node.example/env"}, want: "https://tempo.customer-node.example/env"},
-		"--tempo-rpc":   {args: []string{"--rpc", "https://reader.example", "--tempo-rpc", "https://broker.customer.example"}, want: "https://broker.customer.example"},
+		"default":       {want: "https://rpc.tempo.xyz", shown: "https://rpc.tempo.xyz."},
+		"--rpc":         {args: []string{"--rpc", "https://tempo.customer-node.example/rpc"}, want: "https://tempo.customer-node.example/rpc", shown: "https://tempo.customer-node.example (path and query not shown)."},
+		"TEMPO_RPC_URL": {env: map[string]string{"TEMPO_RPC_URL": "https://tempo.customer-node.example/env"}, want: "https://tempo.customer-node.example/env", shown: "https://tempo.customer-node.example (path and query not shown)."},
+		"--tempo-rpc":   {args: []string{"--rpc", "https://reader.example", "--tempo-rpc", "https://broker.customer.example"}, want: "https://broker.customer.example", shown: "https://broker.customer.example."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
@@ -837,7 +845,7 @@ func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
 			if vars["tempo_rpc_url"] != tc.want || vars["chain_id"] != float64(4217) || vars["enable_debug_logging"] != false {
 				t.Fatalf("vars %v", vars)
 			}
-			if !strings.Contains(errs, "The key broker will read Tempo chain 4217 through "+tc.want) {
+			if !strings.Contains(errs, "The key broker will read Tempo chain 4217 through "+tc.shown) {
 				t.Fatalf("effective RPC not shown: %s", errs)
 			}
 		})
@@ -855,6 +863,36 @@ func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
 	json.Unmarshal(b, &vars)
 	if vars["enable_debug_logging"] != true {
 		t.Fatalf("--debug-logging: %v", vars)
+	}
+}
+
+// TestBootstrapNeverPrintsTheRPCKey: a keyed Tempo RPC reaches the key broker's variables in full, but
+// bootstrap prints only its scheme and host, in the plan, the summary and the JSON.
+func TestBootstrapNeverPrintsTheRPCKey(t *testing.T) {
+	const keyed = "https://tempo.provider.example/v2/FAKEAPIKEY0123456789"
+	args := []string{"--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
+		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
+		"--key-broker-image", "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32), "--tempo-rpc", keyed}
+	for _, mode := range [][]string{{"--plan"}, {"--yes"}, {"--yes", "--json"}} {
+		h := newHarness(t)
+		h.tf.rpc = keyed
+		work := filepath.Join(h.dir, "work")
+		code, out, errs := h.run(append(append([]string{"bootstrap", "--work-dir", work}, mode...), args...)...)
+		if code != ExitOK {
+			t.Fatalf("%v: %d %s", mode, code, errs)
+		}
+		if strings.Contains(out+errs, "FAKEAPIKEY0123456789") {
+			t.Fatalf("%v: bootstrap printed the RPC API key:\n%s\n%s", mode, out, errs)
+		}
+		if !strings.Contains(errs, "through https://tempo.provider.example (path and query not shown)") {
+			t.Errorf("%v: the effective RPC host is not shown: %s", mode, errs)
+		}
+		var vars map[string]any
+		b, _ := os.ReadFile(filepath.Join(work, "terraform.tfvars.json"))
+		json.Unmarshal(b, &vars)
+		if vars["tempo_rpc_url"] != keyed {
+			t.Fatalf("%v: the broker must still get the full RPC: %v", mode, vars["tempo_rpc_url"])
+		}
 	}
 }
 

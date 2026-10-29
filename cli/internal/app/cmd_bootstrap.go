@@ -105,7 +105,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 		return usagef("not a terminal: pass --yes to apply without confirmation, or --plan to only plan")
 	}
 	e.errorf("Bootstrapping project %s in %s for wallet %s. Module and state: %s\n", p.Project, p.Region, p.Customer, workDir)
-	e.errorf("The key broker will read Tempo chain %d through %s.\n", p.ChainID, p.TempoRPC)
+	e.errorf("The key broker will read Tempo chain %d through %s.\n", p.ChainID, showRPC(p.TempoRPC))
 	if p.FeeSplitter != "" || p.FeeToken != "" {
 		e.errorf("It requires FeeSplitter %s and fee token %s in every config (not mainnet's).\n", orMainnet(p.FeeSplitter), orMainnet(p.FeeToken))
 	}
@@ -132,7 +132,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 			"token": tok, "project": out.Project, "region": out.Region, "deployerAccount": out.DeployerAccount,
 			"keyBrokerUrl": out.KeyBrokerURL, "customer": out.Customer, "subnetwork": out.Subnetwork,
 			"keyBrokerServiceAccount": out.KeyBrokerSA, "kmsKeyVersion": out.KMSKeyVersion, "bootBucket": out.BootBucket,
-			"tempoRpc": out.TempoRPC, "debugLogServiceAccount": out.DebugLogSA,
+			"tempoRpc": redactedRPC(out.TempoRPC), "debugLogServiceAccount": out.DebugLogSA,
 		})
 	}
 	e.printf("\nYour project is ready.\n\n")
@@ -141,7 +141,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	e.printf("  Key broker account %s\n", out.KeyBrokerSA)
 	e.printf("  KMS HMAC key       %s\n", out.KMSKeyVersion)
 	if out.TempoRPC != "" {
-		e.printf("  Key broker RPC     %s\n", out.TempoRPC)
+		e.printf("  Key broker RPC     %s\n", showRPC(out.TempoRPC))
 	}
 	if out.DebugLogSA != "" {
 		e.printf("  Debug log writer   %s (debug VMs only)\n", out.DebugLogSA)
@@ -178,6 +178,23 @@ func brokerFees(p *bootstrap.Params, s *settings.Settings) error {
 		return usagef("the deployments file for chain %d names no config.feeToken: pass --fee-token (SEALED_FEE_TOKEN), or the key broker would require mainnet's USDC.e", s.ChainID)
 	}
 	return nil
+}
+
+// showRPC prints an RPC URL without its path, query or credentials, where provider API keys live.
+func showRPC(u string) string {
+	r := chain.RedactURL(u)
+	if r != strings.TrimRight(u, "/") {
+		return r + " (path and query not shown)"
+	}
+	return r
+}
+
+// redactedRPC is the scheme and host of an RPC URL, or empty.
+func redactedRPC(u string) string {
+	if u == "" {
+		return ""
+	}
+	return chain.RedactURL(u)
 }
 
 func orMainnet(a string) string {

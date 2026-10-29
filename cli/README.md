@@ -47,7 +47,7 @@ there or in `--state-bucket`, and runs `terraform init` and `apply` with your to
 a key broker image that is not pinned by digest or still has the all-zero placeholder. The key broker reads Tempo
 through `--tempo-rpc`, else the RPC the command was given (`--rpc` or `TEMPO_RPC_URL`), else the public RPC; the
 RPC and chain are printed before Terraform runs and the RPC again in the summary, so your choice is never replaced
-silently. The broker's Cloud Run environment is fixed by `modules/key-broker-env` and checked against the broker's
+silently; only its scheme and host are printed, never the path, query or credentials, where provider API keys live. The broker's Cloud Run environment is fixed by `modules/key-broker-env` and checked against the broker's
 own parser (see the module README). The broker checks every config's FeeSplitter and fee token against its
 settings, which default to mainnet's: when the deployments file names other ones, bootstrap passes them
 (`SEALED_FEE_SPLITTER`, `SEALED_FEE_TOKEN`), and it stops when the registries are not mainnet's and the file names no
@@ -82,7 +82,8 @@ Reads `stack.yaml` (`sealed-deploy/v1`, see `examples/stack.yaml`), resolves eac
 sslip hostnames are part of the config), composes the stack with `runtime/composer`, and checks: the image is
 approved and not debug; `isStackApproved` and the approval's releases and image equal the stack's (D-014); every
 required secret has a value. Until your wallet approved exactly that stackHash it prints the `approveStack`
-arguments and stops (exit 3) without creating anything else. Then it builds the dstack shared disk (FAT volume
+arguments and stops (exit 3) without creating anything else; its `cast send` line reads an RPC URL with a path or
+query from `$TEMPO_RPC_URL` instead of printing it. Then it builds the dstack shared disk (FAT volume
 `DSTACKSHR` with `app-compose.json`, `.sys-config.json`, `.instance_info`) as an image through the boot bucket,
 creates the `sealed-<name>-data` disk (kept across redeploys) and the VM: TDX, host maintenance TERMINATE, no
 service account and so no scopes, `enable-oslogin=FALSE`, `serial-port-enable=FALSE`,
