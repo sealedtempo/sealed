@@ -73,3 +73,39 @@ func TestDockerfile(t *testing.T) {
 		}
 	}
 }
+
+// TestDockerfileShipsGoLicense: envexec links the Go standard library
+// (BSD-3-Clause), so the sealed-init image must carry Go's LICENSE and
+// PATENTS (license audit F3; images-preflight found the image shipped no
+// license file). Copying only Go's files is enough while envexec imports no
+// other module; a new dependency needs a license collector like egress's.
+func TestDockerfileShipsGoLicense(t *testing.T) {
+	b, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	final := text[strings.LastIndex(text, "\nFROM "):]
+	if !strings.Contains(final, "COPY --from=build /out/licenses/ /licenses/") {
+		t.Error("the final stage does not copy /out/licenses/ to /licenses/")
+	}
+	for _, f := range []string{`"$(go env GOROOT)/LICENSE"`, `"$(go env GOROOT)/PATENTS"`} {
+		if !strings.Contains(text, f+" ") && !strings.Contains(text, f+"\n") {
+			t.Errorf("the build stage does not copy %s into /out/licenses/go", f)
+		}
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{with .Module}}{{if not .Main}}{{.Path}}{{end}}{{end}}{{end}}", "./runtime/envexec")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	if mods := strings.TrimSpace(string(out)); mods != "" {
+		t.Errorf("envexec links modules besides the standard library, so Go's license files are not enough: %s", mods)
+	}
+}

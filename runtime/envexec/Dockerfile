@@ -1,5 +1,6 @@
-# sealed-init image: the static envexec binary on an empty base. sealed-init
-# runs "/envexec install /sealed/bin" to copy it into the shared volume.
+# sealed-init image: the static envexec binary on an empty base, with Go's
+# license files in /licenses/go. sealed-init runs "/envexec install /sealed/bin"
+# to copy it into the shared volume.
 # Build from the repository root:
 #   docker buildx build --platform linux/amd64 -f runtime/envexec/Dockerfile .
 # The build stage runs on the build machine and cross-compiles for the
@@ -14,7 +15,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 COPY runtime/envexec ./runtime/envexec
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o /out/envexec ./runtime/envexec
+# envexec links only the Go standard library (dockerfile_test.go checks this), whose BSD-3-Clause
+# notice and patent grant a binary redistribution must carry (license audit F3).
+RUN mkdir -p /out/licenses/go \
+ && cp "$(go env GOROOT)/LICENSE" "$(go env GOROOT)/PATENTS" /out/licenses/go/
 
 FROM scratch
 COPY --from=build /out/envexec /envexec
+COPY --from=build /out/licenses/ /licenses/
 ENTRYPOINT ["/envexec"]
