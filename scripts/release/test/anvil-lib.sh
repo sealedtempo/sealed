@@ -41,10 +41,11 @@ TREASURY=0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc
 PATH_USD=0x20c0000000000000000000000000000000000000
 ALPHA_USD=0x20c0000000000000000000000000000000000001
 
-# start_anvil: sets NODE (and AP, its port).
+# start_anvil [chain id]: sets NODE (and AP, its port). The chain id defaults to anvil's 31337.
 start_anvil() {
 	AP="$(free_port)"
-	anvil --network tempo --hardfork T12 --host 127.0.0.1 --port "$AP" --gas-limit 500000000 >"$WORK/anvil.log" 2>&1 &
+	anvil --network tempo --hardfork T12 --host 127.0.0.1 --port "$AP" --gas-limit 500000000 ${1:+--chain-id "$1"} \
+		>"$WORK/anvil.log" 2>&1 &
 	PIDS+=($!)
 	NODE="http://127.0.0.1:$AP"
 	for _ in $(seq 1 100); do cast chain-id --rpc-url "$NODE" >/dev/null 2>&1 && return 0; sleep 0.1; done
@@ -65,7 +66,8 @@ deploy_contracts() {
 		cat "$WORK/deploy.log"
 		fail "deploy"
 	}
-	(cd "$C" && script/record-deployment.sh deployments/test.json broadcast/Deploy.s.sol/31337/run-latest.json) >/dev/null
+	(cd "$C" && script/record-deployment.sh deployments/test.json \
+		"broadcast/Deploy.s.sol/$(cast chain-id --rpc-url "$NODE")/run-latest.json") >/dev/null
 	DEP="$C/deployments/test.json"
 	# shellcheck disable=SC2034
 	AR="$(jq -r .contracts.AppRegistry.address "$DEP")"
