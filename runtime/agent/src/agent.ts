@@ -314,8 +314,12 @@ export class Agent {
       log.warn("could not read the FeeSplitter per-payment cap, using the defaults until the next settlement", errorFields(err));
     }
 
+    // A stopped agent writes nothing more to its disk: stop() saves the final state itself. A debounced save that
+    // fired later would put this agent's old state over whatever the next boot on the same disk saved since.
     let saveTimer: NodeJS.Timeout | undefined;
+    this.abort.signal.addEventListener("abort", () => clearTimeout(saveTimer), { once: true });
     const scheduleSave = () => {
+      if (this.abort.signal.aborted) return;
       saveTimer ??= setTimeout(() => {
         saveTimer = undefined;
         void store.save().catch((err) => log.error("state save failed", errorFields(err)));
