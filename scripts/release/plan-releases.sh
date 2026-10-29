@@ -9,7 +9,10 @@
 #   - AppRegistry.appExists: an unregistered app fails the plan (OWNER registers apps with register-apps.sh);
 #   - AppRegistry.releaseByVersion: an app whose version is already onchain is complete and dropped, unless its
 #     GitHub Release is missing, which fails (a public release must back every onchain bundleHash);
-#   - the GitHub Release state of the tag (none, draft, published), passed on to the publish job.
+#   - the GitHub Release state of the tag (none, draft, published), passed on to the publish job. A draft or
+#     release that github-actions[bot] did not create fails the plan. A release that is published on GitHub
+#     but absent onchain is planned as "published-not-onchain" with a warning: the publish job uses it only
+#     if its bundle is the one that run built, or is signed by release.yml on main (supply-1).
 # Writes {"include": [...planned releases with githubRelease...]} to --out, plus "count".
 #
 # pr-check: for apps whose bundle inputs a pull request changes, fails when the tag of their version already
@@ -89,6 +92,19 @@ for ((i = 0; i < n; i++)); do
 			fail=1
 		fi
 		continue
+	fi
+	if [ "$gh_state" != none ]; then
+		who="$(bash "$GH" author --tag "$tag")" || die "cannot read the author of GitHub Release $tag"
+		if [ "$who" != "github-actions[bot]" ]; then
+			printf '::error title=release-not-ci::GitHub Release %s (%s) was created by %s, not by the release workflow; check where it came from and delete it, or bump release_version\n' "$tag" "$gh_state" "$who"
+			fail=1
+			continue
+		fi
+	fi
+	if [ "$gh_state" = published ]; then
+		# supply-1: a release the publish job did not finish, or one planted under the tag. Not a normal plan.
+		printf '::warning title=published-not-onchain::%s %s: GitHub Release %s is published but absent onchain; the publish job uses it only if its bundle is the bundle that run built, or is signed by release.yml on main\n' "$app" "$version" "$tag"
+		gh_state=published-not-onchain
 	fi
 	log "plan $app $version ($tag, GitHub Release: $gh_state)"
 	entries+=("$(jq -c --arg s "$gh_state" '. + {githubRelease: $s}' <<<"$p")")

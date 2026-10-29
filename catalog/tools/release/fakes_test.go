@@ -144,7 +144,9 @@ func (f *fakeEnv) fakeSignImage(t *testing.T, ref, identity string) {
 	writeFile(t, filepath.Join(f.state, "cosign", strings.NewReplacer("/", "_", ":", "_", "@", "_").Replace(ref)), identity)
 }
 
-// fakeGh keeps releases as directories: $FAKE_STATE/gh/<tag>/{draft,assets/,notes}.
+// fakeGh keeps releases as directories: $FAKE_STATE/gh/<tag>/{draft,assets/,notes,author}. The author is
+// $FAKE_GH_AUTHOR (default github-actions[bot], the release job's GITHUB_TOKEN) when the release is
+// created, and github-actions[bot] for a release directory a test made without an author file.
 const fakeGh = `#!/usr/bin/env bash
 set -euo pipefail
 echo "gh $*" >>"$FAKE_LOG"
@@ -154,10 +156,14 @@ tag="${3:-}"
 case "$1 $2" in
 "release view")
   [ -d "$root/$tag" ] || { echo "release not found" >&2; exit 1; }
-  if [ -f "$root/$tag/draft" ]; then echo true; else echo false; fi ;;
+  case " $* " in
+  *" --json author "*) if [ -f "$root/$tag/author" ]; then cat "$root/$tag/author"; else echo "github-actions[bot]"; fi ;;
+  *) if [ -f "$root/$tag/draft" ]; then echo true; else echo false; fi ;;
+  esac ;;
 "release create")
   [ ! -d "$root/$tag" ] || { echo "already exists" >&2; exit 1; }
   mkdir -p "$root/$tag/assets"
+  printf '%s\n' "${FAKE_GH_AUTHOR:-github-actions[bot]}" >"$root/$tag/author"
   shift 3
   draft=0
   while [ $# -gt 0 ]; do
@@ -180,7 +186,7 @@ case "$1 $2" in
     --draft=false) rm -f "$root/$tag/draft"; shift ;;
     --notes-file) cp "$2" "$root/$tag/notes"; shift 2 ;;
     --latest=false) shift ;;
-    --repo) shift 2 ;;
+    --repo|--target) shift 2 ;;
     *) echo "fake gh: unknown $1" >&2; exit 2 ;;
     esac
   done ;;
