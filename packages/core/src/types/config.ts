@@ -45,6 +45,31 @@ const gInt = z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_
 const gBool = z.boolean().nullish();
 const gStrList = z.array(gStr).nullish();
 
+/**
+ * map[string]V: an object (or null) whose every value decodes as `value`. Not z.record, which builds its output by
+ * assignment, so a "__proto__" key would set the prototype and vanish instead of being judged (and refused) as a key.
+ */
+function gMap<V>(value: z.ZodType<V>) {
+  return z.unknown().transform((v, ctx): Record<string, V> | undefined => {
+    if (v === null || v === undefined) return undefined;
+    if (typeof v !== "object" || Array.isArray(v)) {
+      ctx.addIssue({ code: "custom", message: "expected an object" });
+      return z.NEVER;
+    }
+    const out: [string, V][] = [];
+    for (const k of Object.keys(v)) {
+      const r = value.safeParse((v as Record<string, unknown>)[k]);
+      if (!r.success) {
+        for (const issue of r.error.issues) ctx.addIssue({ code: "custom", message: issue.message, path: [k, ...issue.path] });
+        return z.NEVER;
+      }
+      out.push([k, r.data]);
+    }
+    // Object.fromEntries defines own properties, "__proto__" included.
+    return Object.fromEntries(out);
+  }).optional();
+}
+
 const decodeSchema = z.strictObject({
   schema: gStr,
   chainId: gInt,
@@ -53,8 +78,8 @@ const decodeSchema = z.strictObject({
   imageId: gStr,
   composerVersion: gStr,
   apps: z.array(z.strictObject({ id: gStr, releaseId: gStr }).nullish()).nullish(),
-  hostnames: z.strictObject({ scheme: gStr, ip: gStr, domains: z.record(z.string(), gStr).nullish() }).nullish(),
-  egressAdditions: z.record(z.string(), gStrList).nullish(),
+  hostnames: z.strictObject({ scheme: gStr, ip: gStr, domains: gMap(gStr) }).nullish(),
+  egressAdditions: gMap(gStrList),
   allowedVpcRanges: gStrList,
   endpoints: z.strictObject({ keyBroker: gStr, platformApi: gStr, tempoRpc: gStr, relay: gStr, relayAttest: gStr }).nullish(),
   contracts: z.strictObject({ platformRegistry: gStr, appRegistry: gStr, deploymentRegistry: gStr, feeSplitter: gStr }).nullish(),
@@ -89,7 +114,7 @@ interface GoConfig {
 const s = (v: string | null | undefined) => v ?? "";
 const strList = (v: readonly (string | null | undefined)[] | null | undefined) => (v ?? []).map(s);
 const strMap = <V, W>(v: Record<string, V> | null | undefined, f: (x: V) => W): Record<string, W> =>
-  Object.fromEntries(Object.entries(v ?? {}).map(([k, x]) => [k, f(x)]));
+  Object.fromEntries(Object.keys(v ?? {}).map((k) => [k, f((v as Record<string, V>)[k] as V)]));
 
 function toGo(d: Decoded): GoConfig {
   const h = d.hostnames;
