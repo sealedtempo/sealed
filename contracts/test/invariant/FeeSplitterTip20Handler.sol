@@ -10,8 +10,9 @@ import {ITIP20, ITIP403, Tip20} from "../utils/Tip20.sol";
 
 /// @notice Drives a FeeSplitter that holds two real TIP-20 tokens (the Tempo precompile, local genesis AlphaUSD and
 ///         BetaUSD), each bound to its own TIP-403 blacklist. Besides payments, top-ups, withdrawals and admin
-///         changes it blacklists and unblacklists payers, recipients and FeeSplitter itself, and pauses the
-///         tokens, so token transfers fail inside payFees, topUpFees and withdraw.
+///         changes it blacklists and unblacklists payers, recipients and FeeSplitter itself, pauses the tokens,
+///         revokes payer allowances and drains payer balances, so token transfers fail inside payFees, topUpFees
+///         and withdraw in every way a TIP-20 transfer can fail.
 ///         Every call is checked on its own: a success moves exactly `amount` from the payer to FeeSplitter and
 ///         credits exactly floor(amount * share / 10000) to the maintainer (0 if it can never withdraw) and the
 ///         rest to the treasury, and no other credit moves; a failure reverts with the token's own error and
@@ -34,6 +35,8 @@ contract FeeSplitterTip20Handler is Test {
     address[] internal _maintainerPool;
     address[] internal _treasuryPool;
     address[] internal _blockable;
+    address[] internal _allPayers;
+    address internal immutable _sink;
 
     mapping(address token => mapping(address account => bool)) public blocked;
     mapping(address token => bool) public tokenPaused;
@@ -86,6 +89,7 @@ contract FeeSplitterTip20Handler is Test {
         splitter = splitter_;
         apps = apps_;
         owner = owner_;
+        _sink = makeAddr("tip20-drain-sink");
         for (uint256 i; i < tokens_.length; ++i) {
             tokens.push(tokens_[i]);
         }
@@ -94,6 +98,8 @@ contract FeeSplitterTip20Handler is Test {
             _payers[deploymentIds_[i]] = payers_[i];
             _blockable.push(payers_[i][0]);
             _blockable.push(payers_[i][1]);
+            _allPayers.push(payers_[i][0]);
+            _allPayers.push(payers_[i][1]);
         }
         for (uint256 i; i < appIds_.length; ++i) {
             appIds.push(appIds_[i]);
@@ -208,13 +214,13 @@ contract FeeSplitterTip20Handler is Test {
         ITIP20 token = tokens[tokenSeed % tokens.length];
         uint256 credit = ghostCredit[address(token)][account];
         if (credit == 0) return;
-        bytes4 expectedError = _transferError(token, address(splitter), account);
+        uint8 expectedErrors = _transferErrors(token, address(splitter), account, credit, false);
         bytes32 before = _snapshot(token);
         uint256 balanceBefore = token.balanceOf(account);
 
         vm.prank(account);
         try splitter.withdraw(address(token)) {
-            if (expectedError != bytes4(0)) _mismatch("withdraw succeeded through a token failure");
+            if (expectedErrors != 0) _mismatch("withdraw succeeded through a token failure");
             if (token.balanceOf(account) != balanceBefore + credit) {
                 splitMismatch = true;
                 lastMismatch = "withdraw paid a different amount than the credit";
@@ -223,7 +229,7 @@ contract FeeSplitterTip20Handler is Test {
             ghostWithdrawn[address(token)] += credit;
             calls["withdraw"]++;
         } catch (bytes memory reason) {
-            _checkFailure(expectedError, reason, "withdraw");
+            _checkFailure(expectedErrors, reason, "withdraw");
             if (_snapshot(token) != before || token.balanceOf(account) != balanceBefore) {
                 dirtyRevert = true;
                 lastMismatch = "failed withdraw changed state";
@@ -279,6 +285,37 @@ contract FeeSplitterTip20Handler is Test {
         else splitter.unpause();
         splitterPaused = pause;
         calls[pause ? "splitterPause" : "splitterUnpause"]++;
+    }
+
+    /// @dev Revokes or restores a payer's allowance to FeeSplitter (approve itself may fail on a paused token).
+    function setAllowance(uint256 payerSeed, uint256 tokenSeed, uint256 mode) external {
+        address payer = _allPayers[payerSeed % _allPayers.length];
+        ITIP20 token = tokens[tokenSeed % tokens.length];
+        uint256 amount = mode % 3 == 0 ? 0 : mode % 3 == 1 ? bound(mode, 0, 3_000_000) : type(uint256).max;
+        vm.prank(payer);
+        try token.approve(address(splitter), amount) {
+            calls[amount == type(uint256).max ? "allowanceRestored" : "allowanceCut"]++;
+        } catch {}
+    }
+
+    /// @dev Moves most of a payer's balance away, or mints it a new one (either may fail on a paused token or a
+    ///      blocked account).
+    function setBalance(uint256 payerSeed, uint256 tokenSeed, uint256 mode) external {
+        address payer = _allPayers[payerSeed % _allPayers.length];
+        ITIP20 token = tokens[tokenSeed % tokens.length];
+        if (mode % 2 == 0) {
+            uint256 balance = token.balanceOf(payer);
+            uint256 keep = bound(mode, 0, 2_000_000);
+            if (balance <= keep) return;
+            vm.prank(payer);
+            try token.transfer(_sink, balance - keep) {
+                calls["balanceDrained"]++;
+            } catch {}
+        } else {
+            try token.mint(payer, FUNDING) {
+                calls["balanceRefilled"]++;
+            } catch {}
+        }
     }
 
     // ------------------------------------------------------------------------------------------------------
@@ -369,7 +406,7 @@ contract FeeSplitterTip20Handler is Test {
         address maintainer;
         address treasury;
         uint256 maintainerAmount;
-        bytes4 expectedError;
+        uint8 expectedErrors;
         bytes32 snapshot;
         uint256 payerBefore;
         uint256 splitterBefore;
@@ -399,8 +436,8 @@ contract FeeSplitterTip20Handler is Test {
         (c.maintainer, bps) = apps.payoutInfo(appId);
         c.treasury = splitter.treasury();
         c.maintainerAmount = cannotWithdraw(c.maintainer) ? 0 : c.amount * bps / 10_000;
-        c.expectedError =
-            splitterPaused ? Pausable.EnforcedPause.selector : _transferError(token, c.payer, address(splitter));
+        c.expectedErrors =
+            splitterPaused ? E_SPLITTER_PAUSED : _transferErrors(token, c.payer, address(splitter), c.amount, true);
         c.snapshot = _snapshot(token);
         c.payerBefore = token.balanceOf(c.payer);
         c.splitterBefore = token.balanceOf(address(splitter));
@@ -428,7 +465,7 @@ contract FeeSplitterTip20Handler is Test {
 
     function _paid(PayCall memory c, uint8) internal {
         string memory what = c.topUp ? "topUpFees" : "payFees";
-        if (c.expectedError != bytes4(0)) _mismatch(string.concat(what, " succeeded through a failure"));
+        if (c.expectedErrors != 0) _mismatch(string.concat(what, " succeeded through a failure"));
         uint256 treasuryAmount = c.amount - c.maintainerAmount;
         if (treasuryAmount < c.maintainerAmount) _splitFail("maintainer got more than the treasury");
         if (c.token.balanceOf(c.payer) + c.amount != c.payerBefore) _splitFail("payer did not pay exactly amount");
@@ -461,7 +498,7 @@ contract FeeSplitterTip20Handler is Test {
 
     function _payFailed(PayCall memory c, bytes memory reason, uint8 payerIndex) internal {
         string memory what = c.topUp ? "topUpFees" : "payFees";
-        _checkFailure(c.expectedError, reason, what);
+        _checkFailure(c.expectedErrors, reason, what);
         if (
             _snapshot(c.token) != c.snapshot || c.token.balanceOf(c.payer) != c.payerBefore
                 || c.token.balanceOf(address(splitter)) != c.splitterBefore
@@ -478,23 +515,48 @@ contract FeeSplitterTip20Handler is Test {
         calls[string.concat(what, "Failed")]++;
     }
 
-    /// @dev The error a transfer of `token` from `from` to `to` reverts with now, or 0 if it goes through.
-    function _transferError(ITIP20 token, address from, address to) internal view returns (bytes4) {
-        if (tokenPaused[address(token)]) return Tip20.CONTRACT_PAUSED;
-        if (blocked[address(token)][from] || blocked[address(token)][to]) return Tip20.POLICY_FORBIDS;
-        return bytes4(0);
+    uint8 internal constant E_SPLITTER_PAUSED = 1;
+    uint8 internal constant E_TOKEN_PAUSED = 2;
+    uint8 internal constant E_POLICY = 4;
+    uint8 internal constant E_ALLOWANCE = 8;
+    uint8 internal constant E_BALANCE = 16;
+    /// @dev TIP-20 `InsufficientAllowance()` and `InsufficientBalance(uint256,uint256,address)`.
+    bytes4 internal constant INSUFFICIENT_ALLOWANCE = 0x13be252b;
+    bytes4 internal constant INSUFFICIENT_BALANCE = bytes4(keccak256("InsufficientBalance(uint256,uint256,address)"));
+
+    /// @dev Every failure a transfer of `amount` of `token` from `from` to `to` meets now (0 if it goes through).
+    ///      `pulled` is a transferFrom by FeeSplitter, which also needs the allowance.
+    function _transferErrors(ITIP20 token, address from, address to, uint256 amount, bool pulled)
+        internal
+        view
+        returns (uint8 errors)
+    {
+        if (tokenPaused[address(token)]) errors |= E_TOKEN_PAUSED;
+        if (blocked[address(token)][from] || blocked[address(token)][to]) errors |= E_POLICY;
+        if (pulled && token.allowance(from, address(splitter)) < amount) errors |= E_ALLOWANCE;
+        if (token.balanceOf(from) < amount) errors |= E_BALANCE;
     }
 
-    function _checkFailure(bytes4 expectedError, bytes memory reason, string memory what) internal {
-        if (expectedError == bytes4(0)) {
+    function _errorBit(bytes4 selector) internal pure returns (uint8) {
+        if (selector == Pausable.EnforcedPause.selector) return E_SPLITTER_PAUSED;
+        if (selector == Tip20.CONTRACT_PAUSED) return E_TOKEN_PAUSED;
+        if (selector == Tip20.POLICY_FORBIDS) return E_POLICY;
+        if (selector == INSUFFICIENT_ALLOWANCE) return E_ALLOWANCE;
+        if (selector == INSUFFICIENT_BALANCE) return E_BALANCE;
+        return 0;
+    }
+
+    /// @dev A failure must be one the model expects. The token may check its conditions in any order, so any of
+    ///      several applicable errors is accepted.
+    function _checkFailure(uint8 expectedErrors, bytes memory reason, string memory what) internal {
+        if (expectedErrors == 0) {
             _mismatch(string.concat(what, " reverted without a token failure"));
             return;
         }
         // forge-lint: disable-next-line(unsafe-typecast)
-        bytes4 got = bytes4(reason);
-        // A paused token that also blocks the account may report either failure.
-        bool alsoBlocked = expectedError == Tip20.CONTRACT_PAUSED && got == Tip20.POLICY_FORBIDS;
-        if (got != expectedError && !alsoBlocked) _mismatch(string.concat(what, " reverted with another error"));
+        uint8 bit = _errorBit(bytes4(reason));
+        if (bit == 0 || expectedErrors & bit == 0) _mismatch(string.concat(what, " reverted with another error"));
+        else calls[string.concat(what, "-error-", vm.toString(bit))]++;
     }
 
     /// @dev Hash of everything a payment or withdrawal could touch for `token`.

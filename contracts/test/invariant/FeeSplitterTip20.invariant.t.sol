@@ -83,7 +83,7 @@ contract FeeSplitterTip20InvariantTest is SealedTest {
         }
 
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](18);
+        bytes4[] memory selectors = new bytes4[](20);
         selectors[0] = FeeSplitterTip20Handler.payFees.selector;
         selectors[1] = FeeSplitterTip20Handler.payFees.selector;
         selectors[2] = FeeSplitterTip20Handler.topUpFees.selector;
@@ -102,6 +102,8 @@ contract FeeSplitterTip20InvariantTest is SealedTest {
         selectors[15] = FeeSplitterTip20Handler.directTransferAndSweep.selector;
         selectors[16] = FeeSplitterTip20Handler.warp.selector;
         selectors[17] = FeeSplitterTip20Handler.retryFailed.selector;
+        selectors[18] = FeeSplitterTip20Handler.setAllowance.selector;
+        selectors[19] = FeeSplitterTip20Handler.setBalance.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -178,12 +180,19 @@ contract FeeSplitterTip20InvariantTest is SealedTest {
             else if (action == 10) handler.setMaintainer(seed >> 8, seed >> 16);
             else if (action == 11) handler.setMaintainerShare(seed >> 8, seed >> 16);
             else if (action == 12) handler.setTreasury(seed >> 8);
+            else if (seed % 3 == 0) handler.setAllowance(seed >> 8, seed >> 16, seed >> 24);
+            else if (seed % 3 == 1) handler.setBalance(seed >> 8, seed >> 16, seed >> 24);
             else handler.warp(seed >> 8);
         }
         invariant_creditsMatchModel();
         invariant_legsMatchModel();
         invariant_handlerPredictionsHeld();
-        string[12] memory paths = [
+        string[17] memory paths = [
+            "payFees-error-2",
+            "payFees-error-4",
+            "payFees-error-8",
+            "payFees-error-16",
+            "withdraw-error-4",
             "payFees",
             "payFeesFailed",
             "topUpFees",
