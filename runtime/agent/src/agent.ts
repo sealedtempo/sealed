@@ -36,10 +36,11 @@ import { Gate, type GateDecision, type GateRequest, type GateRoute } from "./gat
 import { HttpKeyBroker, type KeyBroker, type ReleasedKeys, releaseKeys } from "./keyRelease.js";
 import { createLogger, errorFields, type Logger } from "./log.js";
 import { AppHealthPoller, type Probe } from "./metering/appHealth.js";
-import { emptyLedgerState, Ledger, LedgerUnverifiedError, TooManyReportsError, type VerifiedReport } from "./metering/ledger.js";
+import { Ledger, LedgerUnverifiedError, TooManyReportsError, type VerifiedReport } from "./metering/ledger.js";
 import { UsageLimiter, UsageLimitError } from "./metering/limits.js";
 import { emptyBudgetState, SpendBudget } from "./payments/budget.js";
 import { type FeePayer, feeUnitsReserved, LOCAL_MIN_GAS, TempoFeePayer } from "./payments/feePayer.js";
+import { MAX_PREVIOUS_DEPLOYMENTS, ledgerApps, outstanding, switchDeployment } from "./payments/previous.js";
 import { type SettlementResult, Settler } from "./payments/settler.js";
 import { liveAttestation } from "./attest.js";
 import { dropPrivileges, parseRunAs } from "./privileges.js";
@@ -58,7 +59,7 @@ import { type ApiHandlers, createApiServer, listen, UsageRejected } from "./serv
 import type { AgentSettings } from "./settings.js";
 import { parseSpendReport, releaseRequestSchema, reserveRequestSchema, type SpendCounters } from "./spend.js";
 import { COMPOSE_CONFIGS, GATE_DEFAULTS, measuredConfigs, requireMeasured, type StackInfo } from "./stack.js";
-import { StateStore } from "./state.js";
+import { type PreviousDeployment, StateStore } from "./state.js";
 import { ServedCertSource, type TlsKeySource } from "./tls.js";
 import { createVolumeDirs, volumeDirsFromStack } from "./volumes.js";
 
@@ -88,6 +89,8 @@ export interface AgentDeps {
   gateVerify?: (password: Uint8Array, hash: string) => Promise<boolean>;
   /** Per-boot key for the gate cookie (tests fix it; production draws a random one at every boot). */
   gateKey?: Uint8Array;
+  /** How long stop() waits for the last settlement (payments-5); 0 skips it, like a VM that is cut off. */
+  finalSettleMs?: number;
 }
 
 /** Caddy's HTTPS port on its apps-network IP, where the agent reads the served certificate. */
@@ -121,6 +124,20 @@ export const RECOVERY_TXS_PER_WINDOW = 5n;
 export const ONCHAIN_LIMIT_MAX_AGE_SEC = 60;
 /** A ledger rebuild reads at most this many pages of stored reports (500 each) before it gives up (D-062). */
 export const MAX_REBUILD_PAGES = 2000;
+/**
+ * The last settlement at stop() gets this long (payments-5): Docker stops the agent 10 s after SIGTERM, so it cuts,
+ * reports and pays what it can before then. What it cannot finish stays on the disk for the next boot.
+ */
+export const FINAL_SETTLE_MS = 8_000;
+
+/** A deployment this disk ran before a same-salt upgrade, settled beside the current one (payments-5). */
+interface PreviousSettlement {
+  state: PreviousDeployment;
+  ledger: Ledger;
+  settler: Settler;
+  apps: string[];
+  rebuilding?: Promise<boolean>;
+}
 
 export class Agent {
   readonly clock: Clock;
@@ -141,6 +158,13 @@ export class Agent {
   private rebuilding?: Promise<boolean>;
   /** When the last ledger rebuild read the platform's stored reports (D-062). */
   private ledgerReadAt?: number;
+  /** Earlier deployments on this disk still owing something (payments-5). */
+  private previous: PreviousSettlement[] = [];
+  /** The routes show the payment-needed page because an earlier deployment needs payment (payments-5). */
+  private heldByPrevious = false;
+  private stopping = false;
+  private stopped = false;
+  private saveTimer?: NodeJS.Timeout;
   gate?: Gate;
   bootstrap?: BootstrapTracker;
   budget?: SpendBudget;
@@ -218,17 +242,19 @@ export class Agent {
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
     this.store = await StateStore.open(join(stateDir, "state.json"), this.clock.now());
     const store = this.store;
-    if (store.state.deploymentId !== undefined && store.state.deploymentId !== ctx.deploymentId) {
-      // D-058: a stack upgrade keeps the data disk and the enclave signer but is a new deployment. Its usage and
-      // payment status start fresh: the previous deployment's reports can only be paid under its own id.
+    // D-058: a stack upgrade keeps the data disk and the enclave signer but is a new deployment, with its own ledger.
+    // The previous deployment's usage can only be reported and paid under its own id, so its ledger and payment
+    // status are kept beside the new ones until it is paid (payments-5).
+    const switched = switchDeployment(store.state, ctx.deploymentId, this.clock.now());
+    if (switched.previous !== undefined) {
       log.warn("the agent state on the data disk belongs to another deployment; starting a new usage ledger", {
-        previous: store.state.deploymentId,
-        unpaidLegsLeft: store.state.ledger.reports.flatMap((r) => Object.values(r.payments)).filter((p) => p.status === "unpaid").length,
+        previous: switched.previous,
+        keptUntilPaid: switched.kept,
+        unpaidLegsKept: switched.keptUnpaidLegs,
+        restored: switched.restored,
       });
-      store.state.ledger = emptyLedgerState(this.clock.now());
-      store.state.payments = { failingSince: null, paymentNeeded: false };
     }
-    store.state.deploymentId = ctx.deploymentId;
+    for (const d of switched.dropped) log.error(`more than ${MAX_PREVIOUS_DEPLOYMENTS} earlier deployments owe fees; the oldest is dropped`, d);
     this.bootstrap = new BootstrapTracker(ctx.stack, s.dataMount, {
       log,
       now: () => this.clock.now() * 1000,
@@ -288,21 +314,7 @@ export class Agent {
     const store = this.store as StateStore;
     const s = this.deps.settings;
     const defaultCap = settlementDefaults(defaults).perPaymentCap;
-    const payer =
-      this.deps.payer?.(keys, ctx) ??
-      new TempoFeePayer({
-        mode: ctx.config.settlement.mode,
-        enclaveKey: keys.enclaveKey,
-        customer: ctx.customer,
-        chainId: ctx.config.chainId,
-        rpcUrl: ctx.config.endpoints.tempoRpc,
-        feeToken: ctx.config.feeToken as Address,
-        feeSplitter: ctx.config.contracts.feeSplitter as Address,
-        deploymentRegistry: ctx.config.contracts.deploymentRegistry as Address,
-        deploymentId: ctx.deploymentId,
-        // Headroom on local Tempo nodes in tests; mainnet uses the node's estimate and the per-line floors.
-        minGas: ctx.config.chainId === TEMPO_MAINNET_ID ? 0n : LOCAL_MIN_GAS,
-      });
+    const payer = this.feePayer(keys, ctx, ctx.deploymentId);
     this.payer = payer;
     // Reports must never be cut above the onchain cap, or a leg could never be paid: read it before
     // accepting usage, and refresh it at every settlement.
@@ -316,13 +328,14 @@ export class Agent {
       log.warn("could not read the FeeSplitter per-payment cap, using the defaults until the next settlement", errorFields(err));
     }
 
-    let saveTimer: NodeJS.Timeout | undefined;
     const scheduleSave = () => {
-      saveTimer ??= setTimeout(() => {
-        saveTimer = undefined;
+      // After stop() the last save is its own (no timer may write into a disk being torn down).
+      if (this.stopped) return;
+      this.saveTimer ??= setTimeout(() => {
+        this.saveTimer = undefined;
         void store.save().catch((err) => log.error("state save failed", errorFields(err)));
       }, 2000);
-      saveTimer.unref?.();
+      this.saveTimer.unref?.();
     };
     this.ledger = new Ledger(store.state.ledger, {
       deploymentId: ctx.deploymentId,
@@ -356,11 +369,14 @@ export class Agent {
       probe: this.deps.probe,
       billable: () => !this.paymentNeeded(),
     });
+    // While an earlier deployment needs payment, this deployment's own recovery does not open the routes (payments-5).
+    const caddy = this.caddy;
+    const gate = caddy && { apply: (v: Parameters<typeof caddy.apply>[0]) => caddy.apply(v === "normal" && this.previousNeedsPayment() ? "payment-needed" : v) };
     this.settler = new Settler({
       ledger: this.ledger,
       payer,
       platform: this.platform(),
-      gate: this.caddy,
+      gate,
       status: store.state.payments,
       graceSec: ctx.config.settlement.gracePeriodMinutes * 60,
       save: () => store.save(),
@@ -370,6 +386,69 @@ export class Agent {
       feeLimit: (now) => this.budget?.feeHeadroom(now),
       rebuild: () => this.rebuildLedger(log),
     });
+    for (const state of store.state.previous ?? []) {
+      const id = state.deploymentId as Hex;
+      const plog = log.child({ part: "settlement", previousDeployment: id });
+      const apps = ledgerApps(state.ledger, ctx.apps.map((a) => a.id));
+      const ledger = new Ledger(state.ledger, {
+        deploymentId: id,
+        apps,
+        schedule: ctx.schedule,
+        domain: usageDomain(ctx.config.contracts.feeSplitter as Address, ctx.config.chainId),
+        enclaveKey: keys.enclaveKey,
+        perPaymentCap: () => this.perPaymentCap,
+        onChange: scheduleSave,
+      });
+      // Its open period is cut only once the platform's stored reports for it are read (D-062).
+      ledger.holdForRebuild(this.clock.now());
+      let prev: PreviousSettlement | undefined;
+      const settler = new Settler({
+        ledger,
+        payer: this.feePayer(keys, ctx, id),
+        platform: this.platform(),
+        status: state.payments,
+        graceSec: ctx.config.settlement.gracePeriodMinutes * 60,
+        save: () => store.save(),
+        log: plog,
+        onPerPaymentCap: setCap,
+        spend: this.budget,
+        feeLimit: (now) => this.budget?.feeHeadroom(now),
+        rebuild: () => this.rebuildPrevious(prev as PreviousSettlement, plog),
+      });
+      prev = { state, ledger, settler, apps };
+      this.previous.push(prev);
+      plog.info("an earlier deployment on this disk still owes fees; it is settled under its own id until paid", { since: state.since, unpaidLegs: ledger.unpaid().length });
+    }
+  }
+
+  /** The FeePayer for a deployment of this disk: this one, or an earlier one still being settled (payments-5). */
+  private feePayer(keys: ReleasedKeys, ctx: DeploymentContext, deploymentId: Hex): FeePayer {
+    return (
+      this.deps.payer?.(keys, deploymentId === ctx.deploymentId ? ctx : { ...ctx, deploymentId }) ??
+      new TempoFeePayer({
+        mode: ctx.config.settlement.mode,
+        enclaveKey: keys.enclaveKey,
+        customer: ctx.customer,
+        chainId: ctx.config.chainId,
+        rpcUrl: ctx.config.endpoints.tempoRpc,
+        feeToken: ctx.config.feeToken as Address,
+        feeSplitter: ctx.config.contracts.feeSplitter as Address,
+        deploymentRegistry: ctx.config.contracts.deploymentRegistry as Address,
+        deploymentId,
+        // Headroom on local Tempo nodes in tests; mainnet uses the node's estimate and the per-line floors.
+        minGas: ctx.config.chainId === TEMPO_MAINNET_ID ? 0n : LOCAL_MIN_GAS,
+      })
+    );
+  }
+
+  /** The D-062 rebuild of an earlier deployment's ledger from the platform's stored reports for its id. */
+  private rebuildPrevious(p: PreviousSettlement, log: Logger): Promise<boolean> {
+    if (p.rebuilding) return p.rebuilding;
+    const r = this.readStoredReports(log, { deploymentId: p.state.deploymentId as Hex, ledger: p.ledger }).finally(() => {
+      if (p.rebuilding === r) p.rebuilding = undefined;
+    });
+    p.rebuilding = r;
+    return r;
   }
 
   /**
@@ -386,10 +465,11 @@ export class Agent {
     return p;
   }
 
-  private async readStoredReports(log: Logger): Promise<boolean> {
+  private async readStoredReports(log: Logger, of?: { deploymentId: Hex; ledger: Ledger }): Promise<boolean> {
     const ctx = this.ctx as DeploymentContext;
     const keys = this.keys as ReleasedKeys;
-    const ledger = this.ledger as Ledger;
+    const ledger = of?.ledger ?? (this.ledger as Ledger);
+    const deploymentId = (of?.deploymentId ?? ctx.deploymentId).toLowerCase() as Hex;
     const platform = this.platform();
     const domain = usageDomain(ctx.config.contracts.feeSplitter as Address, ctx.config.chainId);
     const signer = keys.enclaveSigner.toLowerCase();
@@ -400,10 +480,10 @@ export class Agent {
     try {
       for (let page = 0; platform.usageReports; page++) {
         if (page >= MAX_REBUILD_PAGES) throw new Error(`more than ${MAX_REBUILD_PAGES} pages of stored usage reports`);
-        const read = await signUsageReportsRead(ctx.deploymentId, this.clock.now(), keys.enclaveKey);
+        const read = await signUsageReportsRead(deploymentId, this.clock.now(), keys.enclaveKey);
         let raw: unknown;
         try {
-          raw = await platform.usageReports(ctx.deploymentId, read, cursor);
+          raw = await platform.usageReports(deploymentId, read, cursor);
         } catch (err) {
           // Not registered (yet): the platform cannot hold a report for it.
           if (err instanceof HttpError && err.status === 404) break;
@@ -411,9 +491,9 @@ export class Agent {
         }
         const parsed = usageReportsPageSchema.safeParse(raw);
         if (!parsed.success) throw new Error("the platform's stored usage reports page is malformed");
-        if (parsed.data.deploymentId.toLowerCase() !== ctx.deploymentId) throw new Error("the platform answered for another deployment");
+        if (parsed.data.deploymentId.toLowerCase() !== deploymentId) throw new Error("the platform answered for another deployment");
         for (const e of parsed.data.reports) {
-          const v = await verifyStoredReport(e, ctx.deploymentId, domain, signer, known);
+          const v = await verifyStoredReport(e, deploymentId, domain, signer, known);
           if (v) verified.push(v);
           else rejected++;
         }
@@ -432,7 +512,7 @@ export class Agent {
     }
     const wasVerified = ledger.verified;
     const r = ledger.adopt(verified, cursor);
-    this.ledgerReadAt = this.clock.now();
+    if (!of) this.ledgerReadAt = this.clock.now();
     if (!wasVerified || r.adopted > 0 || r.droppedUsage > 0 || rejected > 0) {
       const fields = { adopted: r.adopted, confirmed: r.confirmed, droppedUsage: r.droppedUsage, keptUsage: r.keptUsage, rejected, signedThrough: r.signedThrough };
       if (r.adopted > 0 || r.droppedUsage > 0) log.warn("the platform holds signed reports this state did not (a rolled back data disk?); merged them, usage they cover is not billed again", fields);
@@ -469,9 +549,14 @@ export class Agent {
     });
   }
 
-  /** Whether the routes show the payment-needed page. */
+  /** Whether the routes show the payment-needed page: this deployment, or an earlier one on this disk, needs payment. */
   paymentNeeded(): boolean {
-    return this.store?.state.payments.paymentNeeded === true;
+    return this.store?.state.payments.paymentNeeded === true || this.previousNeedsPayment();
+  }
+
+  /** An earlier deployment on this disk is past its grace period with fees unpaid (payments-5). */
+  private previousNeedsPayment(): boolean {
+    return this.previous.some((p) => p.state.payments.paymentNeeded);
   }
 
   /**
@@ -511,13 +596,30 @@ export class Agent {
       if (fee > 0n) apps.add(a.id);
       total += fee;
     }
+    // Earlier deployments on this disk (payments-5): their unpaid legs and the period still open, one transaction each.
+    let previousTxs = 0;
+    for (const p of this.previous) {
+      const skip = p.state.payments.unpayable ?? {};
+      const owing = new Set<string>();
+      for (const e of p.ledger.unpaid()) {
+        if (skip[`${e.usageHash}:${e.app}`]) continue;
+        total += e.fee;
+        owing.add(e.app);
+      }
+      for (const app of p.apps) {
+        const fee = p.ledger.openFee(app);
+        if (fee > 0n) owing.add(app);
+        total += fee;
+      }
+      previousTxs += owing.size;
+    }
     const later = BigInt(Math.max(0, Math.ceil(horizon / intervalSec) - 1) * accruing);
     const seen = this.budget?.state.networkFeePerTx;
     // Later transactions are counted at what they will pay (not at the next one's reserve): twice the last network
     // fee, or the mainnet allowance until one is seen (a floor-sized guess for every settlement of a short local
     // interval would leave the payer nothing before the first payment).
     const perTx = seen !== undefined ? 2n * BigInt(seen) : NETWORK_FEE_ALLOWANCE;
-    return total + networkFeeAllowance(ctx.config.chainId) * BigInt(apps.size) + later * perTx;
+    return total + networkFeeAllowance(ctx.config.chainId) * BigInt(apps.size + previousTxs) + later * perTx;
   }
 
   /**
@@ -594,9 +696,69 @@ export class Agent {
   }
 
   async settle(now = this.clock.now()): Promise<SettlementResult> {
+    // The oldest debt first: earlier deployments on this disk, then this one (payments-5).
+    await this.settlePrevious(now);
     const result = await (this.settler as Settler).tick(now);
+    await this.holdForPrevious();
     await this.refreshSpendLimit(this.log);
-    return result;
+    return this.previousNeedsPayment() ? { ...result, paymentNeeded: true } : result;
+  }
+
+  /**
+   * One settlement for each earlier deployment (payments-5): cut and report its open period, pay its legs. One that
+   * is fully reported and paid is dropped, and so is one that is Closed onchain, since FeeSplitter takes no fee for a
+   * closed deployment.
+   */
+  private async settlePrevious(now: number): Promise<void> {
+    for (const p of [...this.previous]) {
+      let r: SettlementResult;
+      try {
+        r = await p.settler.tick(now);
+      } catch (err) {
+        this.log.warn("settlement of an earlier deployment failed", { previousDeployment: p.state.deploymentId, ...errorFields(err) });
+        continue;
+      }
+      const closed = r.outcome === "deployment_closed";
+      const done = p.ledger.verified && !outstanding(p.ledger.state);
+      if (!closed && !done) continue;
+      if (closed && !done) {
+        const unpaid = p.ledger.unpaid();
+        this.log.error("an earlier deployment on this disk is closed onchain with fees unpaid; they can no longer be paid", {
+          previousDeployment: p.state.deploymentId,
+          unpaidLegs: unpaid.length,
+          unpaid: unpaid.reduce((s, e) => s + e.fee, 0n).toString(),
+        });
+      } else {
+        this.log.info("an earlier deployment on this disk is reported and paid", { previousDeployment: p.state.deploymentId });
+      }
+      this.previous = this.previous.filter((x) => x !== p);
+      const store = this.store as StateStore;
+      const kept = (store.state.previous ?? []).filter((x) => x !== p.state);
+      if (kept.length > 0) store.state.previous = kept;
+      else delete store.state.previous;
+      await store.save().catch((err) => this.log.error("state save failed", errorFields(err)));
+    }
+  }
+
+  /** Keeps the routes on the payment-needed page while an earlier deployment needs payment, and lifts that hold. */
+  private async holdForPrevious(): Promise<void> {
+    const own = this.store?.state.payments.paymentNeeded === true;
+    try {
+      if (this.previousNeedsPayment()) {
+        // Re-applied every tick: Caddy restarts from the normal Caddyfile.
+        if (!this.heldByPrevious) this.log.warn("an earlier deployment on this disk needs payment; the routes show the payment-needed page");
+        this.heldByPrevious = true;
+        await this.caddy?.apply("payment-needed");
+      } else if (this.heldByPrevious) {
+        this.heldByPrevious = false;
+        if (!own) {
+          await this.caddy?.apply("normal");
+          this.log.info("the earlier deployment's fees are paid, app routes restored");
+        }
+      }
+    } catch (err) {
+      this.log.error("could not update Caddy routes", errorFields(err));
+    }
   }
 
   async reportHealth(now = this.clock.now()) {
@@ -611,7 +773,8 @@ export class Agent {
       egress,
       payments: {
         mode: ctx.config.settlement.mode,
-        paymentNeeded: st.paymentNeeded,
+        // What the routes show: also true while an earlier deployment on this disk needs payment (payments-5).
+        paymentNeeded: st.paymentNeeded || this.previousNeedsPayment(),
         failingSince: st.failingSince,
         // D-073: settlement waits for the platform (its stored reports, a report it has not accepted, registration).
         deferredSince: st.deferredSince ?? null,
@@ -625,6 +788,7 @@ export class Agent {
         ledger_verified: (this.ledger as Ledger).verified,
         ...(this.ledgerReadAt !== undefined ? { ledger_verifiedAt: this.ledgerReadAt } : {}),
         ledger_signedThrough: (this.ledger as Ledger).state.signedThrough ?? 0,
+        ...this.previousFields(),
         ...(this.budget?.snapshot(now) ?? {}),
         ...this.spend,
       },
@@ -635,6 +799,13 @@ export class Agent {
       void this.attest();
     }
     return sent;
+  }
+
+  /** Health fields for earlier deployments on this disk that still owe fees (payments-5); none when there are none. */
+  private previousFields(): Record<string, string | number | boolean> {
+    if (this.previous.length === 0) return {};
+    const unpaid = this.previous.reduce((s, p) => s + p.ledger.totals().unpaid, 0n);
+    return { previous_deployments: this.previous.length, previous_unpaid: unpaid.toString(), previous_paymentNeeded: this.previousNeedsPayment() };
   }
 
   /** A fresh evidence bundle without submitting it (sealed verify tests, debugging). */
@@ -761,8 +932,19 @@ export class Agent {
   }
 
   async stop(): Promise<void> {
+    const first = !this.stopping;
+    this.stopping = true;
     this.abort.abort(new Error("agent stopping"));
     await Promise.allSettled(this.loops);
+    // payments-5: one bounded last settlement, so the open period is cut, reported and paid before the VM goes away
+    // (D-068: the last period settles before closeDeployment). Whatever does not finish stays on the disk.
+    const finalMs = this.deps.finalSettleMs ?? FINAL_SETTLE_MS;
+    if (first && finalMs > 0 && this.settler && this.ledger?.verified) {
+      await withTimeout(this.settle(), finalMs).catch((err) => this.log.warn("the last settlement before stopping did not finish", errorFields(err)));
+    }
+    this.stopped = true;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = undefined;
     await this.store?.save().catch(() => undefined);
     await this.bcrypt?.close();
     await new Promise<void>((ok) => {
