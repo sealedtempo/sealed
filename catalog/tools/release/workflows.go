@@ -34,6 +34,9 @@ var KnownActions = map[string]ActionPin{
 	"sigstore/cosign-installer":    {"6f9f17788090df1f26f669e9d70d6ae9567deba6", "v4.1.2"},
 	"anchore/sbom-action":          {"66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c", "v0.24.3"},
 	"anchore/scan-action":          {"27805bf3b4e84b4a5c980df22ed233c00390a439", "v7.4.2"},
+	// Looked up 2026-10-29; v2.4.0 (2026-09-16) is the newest release. ci.yml passes an explicit compose
+	// version and checks the installed plugin's sha256, because the action itself verifies no checksum.
+	"docker/setup-compose-action": {"54042514f505b273907334ae2b9cdbb9a0213c1a", "v2.4.0"},
 }
 
 // TagReferences are reusable workflows that must be referenced by a vX.Y.Z tag. The SLSA generator fails
