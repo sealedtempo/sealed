@@ -116,7 +116,7 @@ Every development switch needs `SEALED_DEV_SIM=1`, and reports produced from sim
 
 You need a Google Cloud project with C3 Intel TDX quota, a Tempo wallet holding USDC.e, and the `sealed` CLI (`go build -o sealed ./cli/cmd/sealed`).
 
-1. Bootstrap your project with your own credentials (Cloud Shell works). This creates the VPC, firewall rules, a Cloud KMS HMAC key, the key broker on Cloud Run with its own service account, and a deployer service account that the platform may impersonate only to create, start, stop and delete `sealed-*` VMs, disks and addresses. It prints a connection token.
+1. Bootstrap your project with your own credentials (Cloud Shell works). This creates the VPC, firewall rules, a Cloud KMS HMAC key, the key broker on Cloud Run with its own service account, and a deployer service account that the platform may impersonate to create, start, stop and delete `sealed-*` VMs and disks and to manage static IP addresses. Google Cloud cannot limit the address permissions by name, so they cover every address in the project: use a project that runs nothing but Sealed. It prints a connection token.
 
    ```sh
    sealed bootstrap --project <project> --region us-central1 --customer-address <your wallet> --platform-sa <platform service account> --plan

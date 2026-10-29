@@ -733,3 +733,27 @@ func TestReleaseSignaturesNotClaimedChecked(t *testing.T) {
 	mustContain(t, "VERIFY.md", doc, "does not check the cosign signature or the SLSA provenance")
 	mustContain(t, "THREAT_MODEL.md", read(t, "docs/THREAT_MODEL.md"), "No component checks release signatures.", "anchored by the OPS key and the release CI")
 }
+
+// TestDeployerScopeDocumented: the deployer's address permissions carry no name condition, because Google Cloud
+// cannot scope addresses by name, and it may set the metadata of sealed-* VMs (reviews kb-5 and kb-4). The docs must
+// not say its rights stop at sealed-* addresses, and must say what setMetadata lets it do.
+func TestDeployerScopeDocumented(t *testing.T) {
+	iam := read(t, "infra/terraform/customer-bootstrap/modules/iam/main.tf")
+	project := quoted(t, iam, "deployer_project_permissions = sort([", "])")
+	named := quoted(t, iam, "deployer_named_permissions = sort([", "])")
+	tm, readme := read(t, "docs/THREAT_MODEL.md"), read(t, "README.md")
+	if strings.Contains(strings.Join(project, " "), "compute.addresses.") {
+		for _, f := range []string{"README.md", "docs/THREAT_MODEL.md", "docs/ARCHITECTURE.md", "docs/INTERFACES.md"} {
+			if strings.Contains(read(t, f), "`sealed-*` VMs, disks and addresses") {
+				t.Errorf("%s says the deployer's rights stop at sealed-* addresses; its address permissions are project-wide", f)
+			}
+		}
+		mustContain(t, "THREAT_MODEL.md", tm, "cover every address in the project", "a project of its own")
+		mustContain(t, "README.md", readme, "cover every address in the project")
+	}
+	for _, p := range named {
+		if p == "compute.instances.setMetadata" {
+			mustContain(t, "THREAT_MODEL.md", tm, "`compute.instances.setMetadata`", "`serial-port-enable`", "`ssh-keys`")
+		}
+	}
+}
