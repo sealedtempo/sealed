@@ -112,10 +112,20 @@ func TestClientAddr(t *testing.T) {
 	}
 }
 
+// TestLimitKey (kb-6): IPv6 clients count per /48, the prefix one site usually gets, so a host that rotates through
+// the 65536 /64s of its own /48 still shares one bucket.
 func TestLimitKey(t *testing.T) {
-	if limitKey("2001:db8:1:2:3:4:5:6") != "2001:db8:1:2::/64" || limitKey("2001:db8:1:2:ffff::1") != "2001:db8:1:2::/64" ||
-		limitKey("203.0.113.7") != "203.0.113.7" || limitKey("x") != "x" {
-		t.Fatal("limit keys")
+	for addr, want := range map[string]string{
+		"2001:db8:1:2:3:4:5:6": "2001:db8:1::/48",
+		"2001:db8:1:2:ffff::1": "2001:db8:1::/48",
+		"2001:db8:1:ffff::1":   "2001:db8:1::/48",
+		"2001:db8:2::1":        "2001:db8:2::/48",
+		"203.0.113.7":          "203.0.113.7",
+		"x":                    "x",
+	} {
+		if got := limitKey(addr); got != want {
+			t.Errorf("limitKey(%s) = %s, want %s", addr, got, want)
+		}
 	}
 }
 

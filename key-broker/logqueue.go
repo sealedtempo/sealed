@@ -14,13 +14,18 @@ const (
 	junkQueueSize   = 64
 )
 
-// logQueue writes decisions that do not gate an answer (every denial and error) in the background, so a slow
-// Cloud Logging never holds a release slot or a request. Allowed releases are not queued: they are answered only
-// after their entry was written.
+// MaxLogBatch bounds the decisions of one background write when the decision log takes batches (BatchLog).
+const MaxLogBatch = 32
+
+// logQueue writes decisions that do not gate an answer in the background, so a slow Cloud Logging never holds a
+// release slot or a request: junk, and denials and errors of requests whose quote did not verify. Allowed releases
+// and denials of a verified quote are not queued (writeNow): no flood of junk quotes can crowd them out (kb-6).
 type logQueue struct {
 	log     DecisionLog
 	op      *slog.Logger
 	timeout time.Duration
+	// batch is how many queued decisions one write takes: MaxLogBatch when log is a BatchLog, else 1.
+	batch int
 
 	denials chan *Decision
 	junk    chan *Decision
@@ -37,8 +42,11 @@ type logQueue struct {
 }
 
 func newLogQueue(log DecisionLog, op *slog.Logger, timeout time.Duration) *logQueue {
-	q := &logQueue{log: log, op: op, timeout: timeout, denials: make(chan *Decision, denialQueueSize),
+	q := &logQueue{log: log, op: op, timeout: timeout, batch: 1, denials: make(chan *Decision, denialQueueSize),
 		junk: make(chan *Decision, junkQueueSize), stop: make(chan struct{}), done: make(chan struct{})}
+	if _, ok := log.(BatchLog); ok {
+		q.batch = MaxLogBatch
+	}
 	q.cond = sync.NewCond(&q.mu)
 	go q.run()
 	return q
@@ -78,46 +86,96 @@ func (q *logQueue) enqueue(d *Decision, junk bool) {
 func (q *logQueue) run() {
 	defer close(q.done)
 	for {
-		select { // denials first
-		case d := <-q.denials:
-			q.write(d)
-			continue
-		default:
+		d, ok := q.next(true)
+		if !ok {
+			return
 		}
+		batch := []*Decision{d}
+		for len(batch) < q.batch {
+			d, ok := q.next(false)
+			if !ok {
+				break
+			}
+			batch = append(batch, d)
+		}
+		q.write(batch)
+	}
+}
+
+// next takes a queued decision, denials first. With wait it blocks until one is queued; once the queue is stopped it
+// returns false when both channels are empty.
+func (q *logQueue) next(wait bool) (*Decision, bool) {
+	select {
+	case d := <-q.denials:
+		return d, true
+	default:
+	}
+	select {
+	case d := <-q.denials:
+		return d, true
+	case d := <-q.junk:
+		return d, true
+	default:
+	}
+	if !wait {
+		return nil, false
+	}
+	select {
+	case d := <-q.denials:
+		return d, true
+	case d := <-q.junk:
+		return d, true
+	case <-q.stop:
 		select {
 		case d := <-q.denials:
-			q.write(d)
+			return d, true
 		case d := <-q.junk:
-			q.write(d)
-		case <-q.stop:
-			for {
-				select {
-				case d := <-q.denials:
-					q.write(d)
-				case d := <-q.junk:
-					q.write(d)
-				default:
-					return
-				}
-			}
+			return d, true
+		default:
+			return nil, false
 		}
 	}
 }
 
-func (q *logQueue) write(d *Decision) {
+// takeSuppressed hands the count of dropped decisions to the next entry written.
+func (q *logQueue) takeSuppressed(d *Decision) {
 	q.mu.Lock()
 	d.Suppressed, q.suppressed = q.suppressed, 0
 	q.mu.Unlock()
+}
+
+func (q *logQueue) write(batch []*Decision) {
+	q.takeSuppressed(batch[0])
 	ctx, cancel := context.WithTimeout(context.Background(), q.timeout)
-	err := q.log.Write(ctx, d)
+	var err error
+	if bl, ok := q.log.(BatchLog); ok && len(batch) > 1 {
+		err = bl.WriteBatch(ctx, batch)
+	} else {
+		err = q.log.Write(ctx, batch[0])
+	}
+	cancel()
+	if err != nil {
+		for _, d := range batch {
+			q.op.Error("decision log write failed", "err", err, "requestId", d.RequestID, "decision", d.Decision, "reason", d.Reason)
+		}
+	}
+	q.mu.Lock()
+	q.pending -= len(batch)
+	q.cond.Broadcast()
+	q.mu.Unlock()
+}
+
+// writeNow writes d before returning, for a denial or error of a request whose TDX quote verified (kb-6). Such
+// attempts need a real TDX VM, so they are few, and their entry must not be dropped by a full queue. The answer waits
+// for the write but does not depend on it: a failed write is reported on the operational log, and the denial stands.
+func (q *logQueue) writeNow(ctx context.Context, d *Decision) {
+	q.takeSuppressed(d)
+	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), q.timeout)
+	err := q.log.Write(lctx, d)
 	cancel()
 	if err != nil {
 		q.op.Error("decision log write failed", "err", err, "requestId", d.RequestID, "decision", d.Decision, "reason", d.Reason)
 	}
-	q.mu.Lock()
-	q.pending--
-	q.cond.Broadcast()
-	q.mu.Unlock()
 }
 
 // flush waits until every queued decision was written, or ctx ends.

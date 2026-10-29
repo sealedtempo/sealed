@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,58 @@ func TestLoggingSink(t *testing.T) {
 	}
 	if got := gcp.CloudRunResource("p1-abcde", "r", func(string) string { return "" }); got.Type != "global" {
 		t.Fatalf("resource off Cloud Run %+v", got)
+	}
+}
+
+// TestLoggingSinkBatch (kb-6): WriteBatch sends many decisions in one entries:write call, with partialSuccess, and
+// splits the batch when it would exceed MaxBatchBytes. Single writes keep partialSuccess off.
+func TestLoggingSinkBatch(t *testing.T) {
+	f, ts := setup(t)
+	l, err := gcp.NewLoggingSink("cust-proj-1", "", gcp.CloudRunResource("cust-proj-1", "us-central1", func(string) string { return "" }), ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Endpoint = f.URL
+	mk := func(i int, detail string) *keybroker.Decision {
+		return &keybroker.Decision{Time: time.Unix(1_800_000_000, 0), RequestID: fmt.Sprintf("req%03d", i),
+			Decision: keybroker.DecisionDenied, Reason: keybroker.ReasonQuoteInvalid, HTTPStatus: 403, Detail: detail}
+	}
+	var small []*keybroker.Decision
+	for i := range keybroker.MaxLogBatch {
+		small = append(small, mk(i, "junk quote"))
+	}
+	if err := l.WriteBatch(context.Background(), small); err != nil {
+		t.Fatal(err)
+	}
+	if f.LoggingCalls != 1 || len(f.Entries()) != keybroker.MaxLogBatch || !f.PartialSuccess[0] {
+		t.Fatalf("%d calls, %d entries, partialSuccess %v; want one call with %d entries", f.LoggingCalls, len(f.Entries()), f.PartialSuccess, keybroker.MaxLogBatch)
+	}
+	if e := f.Entries()[3]; e["insertId"] != small[3].RequestID || e["jsonPayload"].(map[string]any)["reason"] != keybroker.ReasonQuoteInvalid {
+		t.Fatalf("entry %v", e)
+	}
+
+	// Six entries of 1 MiB each do not fit in one 4 MiB call.
+	var big []*keybroker.Decision
+	for i := range 6 {
+		big = append(big, mk(i, strings.Repeat("x", 1<<20)))
+	}
+	calls := f.LoggingCalls
+	if err := l.WriteBatch(context.Background(), big); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.LoggingCalls - calls; n < 2 || n > 3 || len(f.Entries()) != keybroker.MaxLogBatch+6 {
+		t.Fatalf("%d calls, %d entries for 6 MiB of entries", n, len(f.Entries()))
+	}
+
+	if err := l.Write(context.Background(), mk(0, "one")); err != nil {
+		t.Fatal(err)
+	}
+	if f.PartialSuccess[len(f.PartialSuccess)-1] {
+		t.Fatal("a single write set partialSuccess")
+	}
+	f.LoggingDown = true
+	if err := l.WriteBatch(context.Background(), small[:2]); err == nil {
+		t.Fatal("a refused batch reported success")
 	}
 }
 

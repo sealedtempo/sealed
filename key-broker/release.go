@@ -156,8 +156,9 @@ func (s *session) check(ctx context.Context) (*ReleaseResponse, *stop) {
 	return s.release(rctx)
 }
 
-// finish records the decision. An allowed release is answered only after its entry was written; every other
-// decision is written in the background, junk in truncated form (D-066).
+// finish records the decision. An allowed release is answered only after its entry was written. A denial or error
+// of a request whose TDX quote verified is written before the answer too, so a flood of junk quotes cannot drop it
+// from the queue (kb-6). Every other decision is written in the background, junk in truncated form (D-066).
 func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, st *stop) *Outcome {
 	out := &Outcome{Decision: s.d}
 	if st != nil {
@@ -171,13 +172,17 @@ func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, 
 	s.d.DurationMS = b.deps.Now().Sub(s.start).Milliseconds()
 
 	if out.Status != http.StatusOK {
-		if s.junk {
+		switch {
+		case s.junk:
 			s.d.truncate()
-		} else {
-			b.deps.OpLog.Info("release decision", "requestId", s.d.RequestID, "decision", s.d.Decision, "reason", s.d.Reason,
-				"stackHash", s.d.Hashes.StackHash, "simulated", s.d.Simulated, "durationMs", s.d.DurationMS)
+			b.logs.enqueue(s.d, true)
+		case s.quote != nil:
+			b.opLog(s.d)
+			b.logs.writeNow(ctx, s.d)
+		default:
+			b.opLog(s.d)
+			b.logs.enqueue(s.d, false)
 		}
-		b.logs.enqueue(s.d, s.junk)
 		return out
 	}
 
@@ -193,9 +198,17 @@ func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, 
 		s.d.Decision, s.d.Reason, s.d.Detail, s.d.HTTPStatus, s.d.Released = DecisionError, ReasonLogFailed, detail, http.StatusServiceUnavailable, nil
 		out.Status, out.Body = http.StatusServiceUnavailable, &Denial{Decision: DecisionError, Reason: ReasonLogFailed, Detail: detail}
 	}
-	b.deps.OpLog.Info("release decision", "requestId", s.d.RequestID, "decision", s.d.Decision, "reason", s.d.Reason,
-		"stackHash", s.d.Hashes.StackHash, "simulated", s.d.Simulated, "durationMs", s.d.DurationMS)
+	b.opLog(s.d)
 	return out
+}
+
+// opLog writes the operational line of a non-junk decision to Cloud Run stdout: the identifiers of the attempt,
+// never a secret. It stays even when the decision log dropped or failed the entry (kb-6).
+func (b *Broker) opLog(d *Decision) {
+	h := d.Hashes
+	b.deps.OpLog.Info("release decision", "requestId", d.RequestID, "decision", d.Decision, "reason", d.Reason,
+		"stackHash", h.StackHash, "quoteHash", h.QuoteHash, "measurementsHash", h.MeasurementsHash, "eventLogHash", h.EventLogHash,
+		"deploymentId", h.DeploymentID, "customer", h.Customer, "remote", d.Remote, "simulated", d.Simulated, "durationMs", d.DurationMS)
 }
 
 func (s *session) pass(name, detail string, data map[string]any) {
