@@ -88,7 +88,10 @@ RUN set -eux; \
       php8.4-cli php8.4-pgsql php8.4-gd php8.4-zip php8.4-xml php8.4-mbstring php8.4-curl \
       php8.4-intl php8.4-bcmath php8.4-opcache \
       nodejs ca-certificates; \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log; \
+    # apt, dpkg and ldconfig record the build time (or inode times) in these files, which gave every
+    # build a new digest, so the workflow's no-cache rebuild check failed (images-preflight).
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log /var/log/alternatives.log \
+           /var/cache/ldconfig/aux-cache; \
     # Debian's default site, docroot and logs are not used (apache-sealed.conf).
     rm -rf /var/www/html /etc/apache2/sites-enabled/* /var/log/apache2/*; \
     test "$(id -u www-data):$(id -g www-data)" = "33:33"

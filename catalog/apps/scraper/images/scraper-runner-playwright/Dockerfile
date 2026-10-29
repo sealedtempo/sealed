@@ -25,13 +25,20 @@ RUN pnpm install --frozen-lockfile --ignore-workspace
 COPY catalog/apps/scraper/runner/tsconfig.json catalog/apps/scraper/runner/tsconfig.build.json ./
 COPY catalog/apps/scraper/runner/src ./src
 RUN pnpm run build
+# pnpm writes the install time into node_modules/.modules.yaml (prunedAt) and
+# .pnpm-workspace-state-v1.json (lastValidatedTimestamp), so every build had a new digest and the
+# workflow's no-cache rebuild check failed (images-preflight). Neither file is read at run time.
 RUN mkdir /app \
  && cp package.json pnpm-lock.yaml /app/ \
  && cd /app \
  && pnpm install --frozen-lockfile --ignore-workspace --prod \
+ && rm -f /app/node_modules/.modules.yaml /app/node_modules/.pnpm-workspace-state-v1.json \
  && cp -r /src/catalog/apps/scraper/runner/dist /app/dist
 
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS rootfs
+# apt, dpkg and ldconfig record the build time (or inode times) in their logs and in ldconfig's
+# aux-cache; shipped in the image, those files gave every build a new digest, so the workflow's
+# no-cache rebuild check failed (images-preflight). They are removed with the package lists.
 RUN rm -rf /ms-playwright/chromium-* /ms-playwright/chromium_headless_shell-* /ms-playwright/webkit-* /ms-playwright/ffmpeg-* \
  && ls -d /ms-playwright/firefox-* \
  && chmod -R go-w /ms-playwright \
@@ -39,7 +46,8 @@ RUN rm -rf /ms-playwright/chromium-* /ms-playwright/chromium_headless_shell-* /m
  && apt-get install -y --no-install-recommends tini=0.19.0-1 \
  && apt-get purge -y git openssh-client \
  && npm uninstall --global yarn \
- && rm -rf /var/lib/apt/lists/* /root/.npm /tmp/*
+ && rm -rf /var/lib/apt/lists/* /root/.npm /tmp/* \
+ && rm -f /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache
 COPY --from=build /app /app
 
 FROM scratch

@@ -23,12 +23,19 @@ RUN corepack install && pnpm install --frozen-lockfile --filter "@sealed/agent..
 COPY config/defaults.yaml config/defaults.yaml
 COPY packages/core packages/core
 COPY runtime/agent runtime/agent
+# pnpm writes the install time into node_modules/.modules.yaml (prunedAt) and
+# .pnpm-workspace-state-v1.json (lastValidatedTimestamp), so every build had a new digest and the
+# workflow's no-cache rebuild check failed (images-preflight). Neither file is read at run time.
 RUN pnpm --filter @sealed/core build \
  && pnpm --filter @sealed/agent build \
- && pnpm --filter @sealed/agent deploy --prod --legacy /out
+ && pnpm --filter @sealed/agent deploy --prod --legacy /out \
+ && rm -f /out/node_modules/.modules.yaml /out/node_modules/.pnpm-workspace-state-v1.json
 
 FROM ${NODE_IMAGE} AS runtime
 # Debian packages come from a dated snapshot so the pinned versions stay installable.
+# apt, dpkg and ldconfig record the build time (or inode times) in their logs and in ldconfig's
+# aux-cache; shipped in the image, those files gave every build a new digest, so the workflow's
+# no-cache rebuild check failed (images-preflight). They are removed with the package lists.
 ARG DEBIAN_SNAPSHOT=20261027T000000Z
 RUN printf '%s\n' \
       "Types: deb" \
@@ -53,6 +60,7 @@ RUN printf '%s\n' \
       mount=2.38.1-5+deb12u3 \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* \
+ && rm -f /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache \
  && groupadd --system --gid 10001 sealed \
  && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin sealed
 

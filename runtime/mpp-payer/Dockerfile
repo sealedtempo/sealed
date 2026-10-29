@@ -11,11 +11,15 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 WORKDIR /src
 COPY . .
+# pnpm writes the install time into node_modules/.modules.yaml (prunedAt) and
+# .pnpm-workspace-state-v1.json (lastValidatedTimestamp), so every build had a new digest and the
+# workflow's no-cache rebuild check failed (images-preflight). Neither file is read at run time.
 RUN pnpm install --frozen-lockfile --filter @sealed/mpp-payer... \
  && pnpm --filter @sealed/mpp-payer build \
  && pnpm --filter @sealed/mpp-payer deploy --legacy --prod /out \
  && test -f /out/dist/main.js \
- && rm -rf /out/test /out/src
+ && rm -rf /out/test /out/src \
+ && rm -f /out/node_modules/.modules.yaml /out/node_modules/.pnpm-workspace-state-v1.json
 
 FROM docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
 ENV NODE_ENV=production \

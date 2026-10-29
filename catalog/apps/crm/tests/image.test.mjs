@@ -16,6 +16,10 @@ import { parse } from "yaml";
 
 import { parsePhpConfig } from "./lib/fake-espocrm.mjs";
 
+// RUN instructions with comment lines dropped and continuation lines joined, as BuildKit reads them.
+const runInstructions = (dockerfileText) =>
+  dockerfileText.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n").replace(/\\\n/g, " ").split("\n").filter((l) => /^RUN\s/.test(l));
+
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const imageDir = join(appDir, "images/espocrm");
 const script = join(imageDir, "sealed-espocrm.sh");
@@ -282,6 +286,19 @@ describe("Dockerfile", () => {
     assert.ok(dockerfile.includes(`org.opencontainers.image.base.digest="${base.split("@")[1]}"`));
     assert.equal(dockerfile.match(/snapshot\.debian\.org\/archive\/debian\/\$\{DEBIAN_SNAPSHOT\} trixie main/g).length, 2);
     assert.match(dockerfile, /rm -f \/etc\/apt\/sources\.list\.d\/debian\.sources/);
+  });
+
+  // images-preflight: apt, dpkg and ldconfig write the build time (or inode times) into their logs
+  // and ldconfig's aux-cache; left in the runtime stage they gave every build a new digest, so the
+  // runtime image workflow's no-cache rebuild check failed.
+  test("removes the apt, dpkg and ldconfig files that record the build time", () => {
+    const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+    const runs = runInstructions(runtime).filter((l) => /apt-get install/.test(l));
+    assert.equal(runs.length, 1);
+    const install = runs[0].indexOf("apt-get install");
+    for (const f of ["/var/log/apt ", "/var/log/dpkg.log", "/var/log/alternatives.log", "/var/cache/ldconfig/aux-cache"]) {
+      assert.ok(runs[0].indexOf(f) > install, f);
+    }
   });
 
   test("checks the EspoCRM release against its sha256 and version", () => {
