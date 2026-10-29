@@ -10,24 +10,63 @@ directory together with `terraform.tfvars.json`, runs `terraform init` and `appl
 | resource | name | notes |
 |---|---|---|
 | APIs | compute, secretmanager, cloudkms, run, iam, iamcredentials, artifactregistry, logging, storage | never disabled on destroy |
-| VPC and subnet | `sealed-vpc`, `sealed-subnet` (10.42.0.0/24) | no auto subnets, IPv4 only, no private Google access (VMs have no identity) |
+| VPC and subnet | `sealed-vpc`, `sealed-subnet` (10.42.0.0/24) | no auto subnets, IPv4 only, no private Google access (VMs have no identity); the subnet's description is the connection binding (below) |
 | firewall | `sealed-allow-web-ingress`, `sealed-deny-ingress`, `sealed-allow-egress`, `sealed-deny-egress` | ingress tcp 80 and 443 to VMs tagged `sealed-vm` only; egress tcp 443, tcp and udp 53 only; everything else denied, SSH included |
 | KMS | key ring `sealed`, key `sealed-kb-hmac` (HMAC_SHA256) | `deletion_policy = PREVENT` and `prevent_destroy`: losing or rotating it makes every data disk unreadable, so the broker pins version 1; authoritative key policy, only the key broker may use it |
 | key broker | Cloud Run `sealed-key-broker`, service account `sealed-key-broker` | image pinned by digest (ghcr.io pulled through the Artifact Registry remote repository `sealed-ghcr`, digest unchanged); `secretAccessor` with an IAM condition on `projects/<number>/secrets/sealed-*`; `logging.logWriter` for its decision log; no SSH; one instance by default (single-use nonces); 1 vCPU, 1 GiB with `GOMEMLIMIT=768MiB`; request timeout 120 s (above the broker's longest release request: 10 s body read, 90 s release deadline, 15 s decision log write); up to 80 concurrent requests per instance (the broker bounds its own work and answers 429 itself); invoker IAM off because VMs have no identity, every release is gated by the TDX quote and the onchain approval; authoritative empty policy on its service account |
-| deployer | service account `sealed-deployer` | custom role `sealedDeployer` (create, start, stop, delete, get instances; create, delete, use disks; use images) granted only with a condition on `sealed-*` instance and disk names in the region's zones and `sealed-*` images of the project; `sealedDeployerAddresses` (static IPs and operation polling, which IAM Conditions cannot scope by name); `sealedSubnetUser` on `sealed-subnet` only; authoritative policy: `serviceAccountTokenCreator` for the platform service account and nothing else |
-| boot bucket | `<project>-sealed-boot` | private staging for the dstack shared disk image `sealed deploy` builds; objects expire after 7 days |
+| deployer | service account `sealed-deployer` | custom role `sealedDeployer` (create, start, stop, delete, get instances; create, delete, use disks; create, get, delete and use images) granted only with a condition on `sealed-*` instance and disk names in the region's zones and `sealed-*` images of the project; `sealedDeployerAddresses` (static IPs and zone, region and global operation polling, which IAM Conditions cannot scope by name); `sealedSubnetUser` on `sealed-subnet` only (use it, attach external IPs, read its binding); `roles/storage.objectAdmin` on the staging bucket only; authoritative policy: `serviceAccountTokenCreator` for the platform service account and nothing else |
+| boot bucket | `<project>-sealed-boot` | private staging for the dstack shared disk image `sealed deploy` builds and for the OS release tarballs `sealed bootstrap` imports; objects expire after 7 days; the deployer has no access |
+| staging bucket | `<project>-sealed-staging` | private staging for the shared disk images the platform publishes with the deployer's token (D-074); uniform access, public access prevention enforced, objects deleted after 1 day |
 | debug log writer (optional) | service account `sealed-debug-logs` | only with `enable_debug_logging = true` (`sealed bootstrap --debug-logging`); `logging.logWriter` and nothing else; authoritative empty policy on the account, so the deployer can never attach it; see "Debug VMs" below |
 
 The deployer cannot read secrets, change the key broker or its key, act as any service account, attach one to a VM,
-use OS Login or IAP, or read the serial port (P4). `scripts/iam-checks/check.sh` checks this against a live project.
+use OS Login or IAP, or call `getSerialPortOutput` (P4). `scripts/iam-checks/check.sh` checks this against a live
+project.
 
 Known limits:
 
-- Static IPs are not name-conditionable, so the deployer can create and release any regional static IP in the
-  project. Use a dedicated project.
-- `compute.instances.setMetadata` is needed to create VMs with metadata, so the deployer can edit metadata of
-  `sealed-*` VMs (for example add `ssh-keys`). The production image has no SSH daemon, no getty and the firewall
-  drops port 22, so this does not open a shell.
+- Sealed needs a dedicated project. Static IPs and operations are not name-conditionable, so the deployer's address
+  rights are project-wide: it can reserve, attach and release any regional static IP in the project, not only
+  `sealed-*` ones.
+- `compute.instances.setMetadata` is needed to create VMs with metadata, so the deployer can edit the metadata of
+  `sealed-*` VMs at any time: it can set `serial-port-enable` to TRUE, which turns on the interactive serial
+  console, and add `ssh-keys`. The production image has no SSH daemon, no getty and no login, and the firewall
+  drops port 22, so this does not open a shell, but the serial console then shows the VM's console output.
+  `check.sh` warns about it. The `compute.disableSerialPortAccess` organization policy blocks the serial console
+  for the whole project.
+- The deployer can create and delete `sealed-*` images (D-074), including the boot and system disk images
+  `sealed bootstrap` creates. A replaced boot image measures differently, so the key broker refuses it. Running
+  `sealed bootstrap` again restores a deleted image and refuses one that does not match the release.
+
+### Connection binding
+
+The description of `sealed-subnet` is exactly
+
+```
+sealed-binding/v1 customer=<customer_address, lowercase> key_broker=<the key broker's Cloud Run URL>
+```
+
+The platform reads it with the deployer's token (`compute.subnetworks.get`, granted on this subnet only) and refuses
+a connection when the wallet or the key broker URL differ from the connecting wallet's session and its connection
+token, so no other wallet can register this project. The deployer cannot change it, and Compute Engine sets a
+subnet's description only when the subnet is created. The `connection_binding` output shows it.
+
+### Boot and system disk images (D-075)
+
+After the apply, `sealed bootstrap` creates the images every deployment in this project boots from, with the
+customer's own credentials:
+
+- `sealed-dstack-os-<version>` and `sealed-dstack-os-debug-<version>` (the version with dots as dashes, for example
+  `sealed-dstack-os-0-6-1-s1`), imported from the OS image release assets
+  `<release asset base>/os-image-v<version>/<name>-<version>-gce.tar.gz`. Each tarball's sha256 must match the
+  release's `<name>-<version>-hashes.txt` before it is uploaded to the boot bucket and imported.
+- `sealed-dstack-data-v1`, the dstack system disk: a 10 MiB GPT disk with one partition named `dstack-data`, the
+  disk `sgdisk -o -n 1:0:0 -c 1:dstack-data` makes and `runtime/images/dstack-os/import-and-measure.sh` boots with.
+  The CLI builds it itself.
+
+It is idempotent: an image that exists and was made from the same tarball (its description carries the sha256) is
+kept, and one made from different bytes stops the bootstrap. `--os-image-version` picks the release and
+`--no-os-images` skips the step.
 
 ## Inputs
 
@@ -101,9 +140,9 @@ customer's own credentials, and `scripts/iam-checks/check.sh` fails on any other
 ## Outputs
 
 `project_id`, `project_number`, `region`, `customer_address`, `network`, `subnetwork`, `subnetwork_self_link`,
-`vm_tag`, `deployer_service_account`, `key_broker_service_account`, `key_broker_url`, `tempo_rpc_url`, `chain_id`,
-`key_broker_env`, `key_broker_image`, `kms_key`, `kms_key_version`, `secret_prefix`, `boot_bucket`,
-`debug_log_service_account` (empty unless enabled).
+`connection_binding`, `vm_tag`, `deployer_service_account`, `key_broker_service_account`, `key_broker_url`,
+`tempo_rpc_url`, `chain_id`, `key_broker_env`, `key_broker_image`, `kms_key`, `kms_key_version`, `secret_prefix`,
+`boot_bucket`, `staging_bucket`, `debug_log_service_account` (empty unless enabled).
 
 ## Tests
 

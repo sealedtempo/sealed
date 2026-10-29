@@ -1,7 +1,9 @@
 # Deployer service account (spec 8.4, P4). The platform impersonates it to
-# create, start, stop and delete sealed-* instances, disks and static IPs in
-# the sealed subnet. It holds no other role: it cannot read secrets, change the
-# key broker, act as any service account or open a shell.
+# create, start, stop and delete sealed-* instances, disks, images and static
+# IPs in the sealed subnet, to read the connection binding on that subnet, and
+# to stage shared disks in the staging bucket (D-074). It holds no other role:
+# it cannot read secrets, change the key broker, act as any service account or
+# open a shell.
 
 resource "google_service_account" "deployer" {
   account_id   = local.deployer_sa_id
@@ -23,7 +25,7 @@ resource "google_project_iam_custom_role" "deployer_named" {
   project     = var.project_id
   role_id     = "sealedDeployer"
   title       = "Sealed deployer (sealed-* instances, disks, images)"
-  description = "Create, start, stop and delete sealed-* instances and disks. Granted only with a name condition."
+  description = "Create, start, stop and delete sealed-* instances, disks and images. Granted only with a name condition."
   permissions = module.iam.deployer_named_permissions
 }
 
@@ -61,7 +63,7 @@ resource "google_project_iam_custom_role" "subnet_user" {
   project     = var.project_id
   role_id     = "sealedSubnetUser"
   title       = "Sealed subnet user"
-  description = "Attach VMs and external IPs to the sealed subnet. Granted on that subnet only."
+  description = "Read the sealed subnet's connection binding and attach VMs and external IPs to it. Granted on that subnet only."
   permissions = module.iam.deployer_subnet_permissions
 }
 

@@ -58,13 +58,25 @@ locals {
   # zonal disks named sealed-* in the region's zones, and images named
   # sealed-* in this project, match. No permission here can attach a service
   # account (compute.instances.setServiceAccount and iam.serviceAccounts.actAs
-  # are absent), open OS Login or IAP, or read the serial port.
+  # are absent), open OS Login or IAP, or call getSerialPortOutput.
+  # compute.instances.setMetadata, which creating a VM with metadata needs,
+  # also lets the deployer set serial-port-enable and ssh-keys on a sealed-*
+  # VM at any time (a known limit; check.sh warns about it).
+  #
+  # The image permissions let the platform publish a deployment's
+  # sealed-<name>-shared image in this project (D-074). They also let it
+  # delete or replace the sealed-* boot and system disk images bootstrap
+  # creates; a replaced boot image measures differently, so the key broker
+  # refuses it.
   deployer_named_permissions = sort([
     "compute.disks.create",
     "compute.disks.delete",
     "compute.disks.get",
     "compute.disks.setLabels",
     "compute.disks.use",
+    "compute.images.create",
+    "compute.images.delete",
+    "compute.images.get",
     "compute.images.useReadOnly",
     "compute.instances.create",
     "compute.instances.delete",
@@ -87,22 +99,32 @@ locals {
 
   # Static IPs and operations do not support name conditions, so these are
   # granted on the project without one. They cannot read data, attach
-  # identities or open a shell (documented in the build note and README).
+  # identities or open a shell, but they cover every regional static IP in
+  # the project, not only sealed-* ones: the deployer can reserve, attach and
+  # release any of them. Sealed needs a dedicated project (README, Known
+  # limits). globalOperations.get follows image imports (D-074).
   deployer_project_permissions = sort([
     "compute.addresses.create",
     "compute.addresses.delete",
     "compute.addresses.get",
     "compute.addresses.use",
+    "compute.globalOperations.get",
     "compute.regionOperations.get",
     "compute.zoneOperations.get",
   ])
 
   # Granted on the sealed subnet only (resource-level IAM), so VMs can only be
-  # created in that subnet.
+  # created in that subnet. subnetworks.get reads the connection binding in
+  # the subnet's description.
   deployer_subnet_permissions = sort([
+    "compute.subnetworks.get",
     "compute.subnetworks.use",
     "compute.subnetworks.useExternalIp",
   ])
+
+  # Granted on the <project>-sealed-staging bucket only (D-074): the platform
+  # uploads shared disk tarballs there and imports them as sealed-* images.
+  deployer_staging_role = "roles/storage.objectAdmin"
 
   # Authoritative policy of the deployer service account: the platform
   # service account may mint tokens for it, and nobody else holds any role on
@@ -169,6 +191,10 @@ output "deployer_project_permissions" {
 
 output "deployer_subnet_permissions" {
   value = local.deployer_subnet_permissions
+}
+
+output "deployer_staging_role" {
+  value = local.deployer_staging_role
 }
 
 output "deployer_sa_policy" {

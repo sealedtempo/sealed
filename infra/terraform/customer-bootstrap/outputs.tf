@@ -28,6 +28,11 @@ output "subnetwork_self_link" {
   value = google_compute_subnetwork.sealed.self_link
 }
 
+output "connection_binding" {
+  description = "The description of sealed-subnet: the wallet and key broker the platform must match."
+  value       = google_compute_subnetwork.sealed.description
+}
+
 output "vm_tag" {
   description = "Network tag that opens 80 and 443 on a VM."
   value       = local.vm_tag
@@ -78,6 +83,11 @@ output "secret_prefix" {
 output "boot_bucket" {
   description = "Bucket sealed deploy stages shared disk images in (empty when not created)."
   value       = var.create_boot_bucket ? google_storage_bucket.boot[0].name : ""
+}
+
+output "staging_bucket" {
+  description = "Bucket the platform stages shared disk images in with the deployer's token (D-074)."
+  value       = google_storage_bucket.staging.name
 }
 
 output "debug_log_service_account" {

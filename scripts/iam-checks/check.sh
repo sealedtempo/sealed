@@ -6,6 +6,8 @@
 # key broker service and the sealed VMs, and checks that the key broker refuses a VM without a TDX quote.
 # Production VMs must have no service account. The one exception is a debug VM (label sealed-variant=debug):
 # exactly the optional sealed-debug-logs log writer with only the logging.write scope (spec 5.8).
+# As the deployer it reads the connection binding on the sealed subnet, which must name the key broker (and
+# --customer-address when given). WARN lines name what IAM cannot prevent; they do not fail the run.
 #
 # By default it changes nothing: denials are probed with testIamPermissions and read-only calls. With
 # --attempt-mutations it also tries real changes as the deployer (update the key broker, attach a service
@@ -19,17 +21,20 @@
 #
 # Usage:
 #   scripts/iam-checks/check.sh --project <id> [--region us-central1] [--platform-sa <email>]
-#                               [--instance sealed-<name> --zone <zone>] [--attempt-mutations]
+#                               [--customer-address 0x...] [--instance sealed-<name> --zone <zone>]
+#                               [--attempt-mutations]
 set -uo pipefail
 
-PROJECT="" REGION="us-central1" PLATFORM_SA="" INSTANCE="" ZONE="" ATTEMPT=0
+PROJECT="" REGION="us-central1" PLATFORM_SA="" INSTANCE="" ZONE="" ATTEMPT=0 CUSTOMER=""
 DEPLOYER="" KEY_BROKER_NAME="sealed-key-broker" SUBNET="sealed-subnet" NETWORK="sealed-vpc"
 
 # Permissions the deployer may hold, by grant. Keep in sync with infra/terraform/customer-bootstrap/modules/iam
 # (scripts/iam-checks/policy_test.go checks it).
-NAMED_ALLOWED="compute.disks.create compute.disks.delete compute.disks.get compute.disks.setLabels compute.disks.use compute.images.useReadOnly compute.instances.create compute.instances.delete compute.instances.get compute.instances.setLabels compute.instances.setMetadata compute.instances.setTags compute.instances.start compute.instances.stop"
-PROJECT_ALLOWED="compute.addresses.create compute.addresses.delete compute.addresses.get compute.addresses.use compute.regionOperations.get compute.zoneOperations.get"
-SUBNET_ALLOWED="compute.subnetworks.use compute.subnetworks.useExternalIp"
+NAMED_ALLOWED="compute.disks.create compute.disks.delete compute.disks.get compute.disks.setLabels compute.disks.use compute.images.create compute.images.delete compute.images.get compute.images.useReadOnly compute.instances.create compute.instances.delete compute.instances.get compute.instances.setLabels compute.instances.setMetadata compute.instances.setTags compute.instances.start compute.instances.stop"
+PROJECT_ALLOWED="compute.addresses.create compute.addresses.delete compute.addresses.get compute.addresses.use compute.globalOperations.get compute.regionOperations.get compute.zoneOperations.get"
+SUBNET_ALLOWED="compute.subnetworks.get compute.subnetworks.use compute.subnetworks.useExternalIp"
+# The deployer's only Cloud Storage role, on the staging bucket only (D-074).
+STAGING_ROLES="roles/storage.objectAdmin"
 # Probed on the project as the deployer: none may be granted.
 FORBIDDEN_PROJECT="iam.serviceAccounts.actAs iam.serviceAccounts.getAccessToken compute.instances.setServiceAccount compute.instances.osLogin compute.instances.osAdminLogin compute.projects.setCommonInstanceMetadata compute.instances.getSerialPortOutput iap.tunnelInstances.accessViaIAP secretmanager.versions.access secretmanager.secrets.list run.services.update run.services.get resourcemanager.projects.setIamPolicy cloudkms.cryptoKeyVersions.useToSign compute.firewalls.create compute.firewalls.update compute.networks.update storage.objects.get storage.objects.create iam.roles.update"
 # Probed on every service account: none may be granted.
@@ -40,7 +45,7 @@ KB_ROLES="roles/logging.logWriter roles/secretmanager.secretAccessor"
 DEBUG_ROLES="roles/logging.logWriter"
 DEBUG_SCOPES="https://www.googleapis.com/auth/logging.write"
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +53,7 @@ while [ $# -gt 0 ]; do
     --region) REGION="$2"; shift 2 ;;
     --platform-sa) PLATFORM_SA="$2"; shift 2 ;;
     --deployer-sa) DEPLOYER="$2"; shift 2 ;;
+    --customer-address) CUSTOMER="$(printf '%s' "$2" | tr 'A-F' 'a-f')"; shift 2 ;;
     --instance) INSTANCE="$2"; shift 2 ;;
     --zone) ZONE="$2"; shift 2 ;;
     --attempt-mutations) ATTEMPT=1; shift ;;
@@ -62,10 +68,12 @@ done
 [ -n "$DEPLOYER" ] || DEPLOYER="sealed-deployer@${PROJECT}.iam.gserviceaccount.com"
 KB_SA="sealed-key-broker@${PROJECT}.iam.gserviceaccount.com"
 DEBUG_SA="sealed-debug-logs@${PROJECT}.iam.gserviceaccount.com"
+STAGING_BUCKET="${PROJECT}-sealed-staging" BOOT_BUCKET="${PROJECT}-sealed-boot"
 [ -n "$ZONE" ] || ZONE="${REGION}-a"
 
-PASS=0 FAIL=0 SKIP=0
+PASS=0 FAIL=0 SKIP=0 WARN=0
 pass() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$*"; }
+warn() { WARN=$((WARN + 1)); printf 'WARN  %s\n' "$*"; }
 # unreadable CODE WHAT: a read as you that IAM refused is skipped (run as a project owner or viewer for it).
 unreadable() {
   if [ "$1" = 403 ]; then skip "cannot read $2 as $(gcloud config get-value account 2>/dev/null || echo you): run as a project owner or viewer for this check"; else fail "read $2: HTTP $1"; fi
@@ -92,7 +100,7 @@ CHAIN="$DEPLOYER"
 AS_DEPLOYER="$(gcloud auth print-access-token --impersonate-service-account="$CHAIN" 2>/dev/null)"
 if [ -z "$AS_DEPLOYER" ]; then
   fail "impersonate the deployer $DEPLOYER (chain $CHAIN): no token; run as the platform operator with --platform-sa"
-  echo "summary: $PASS passed, $FAIL failed, $SKIP skipped"
+  echo "summary: $PASS passed, $FAIL failed, $SKIP skipped, $WARN warnings"
   exit 1
 fi
 pass "impersonated the deployer $DEPLOYER"
@@ -102,6 +110,7 @@ CRM="https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT"
 IAMV1="https://iam.googleapis.com/v1/projects/$PROJECT"
 COMPUTE="https://compute.googleapis.com/compute/v1/projects/$PROJECT"
 SM="https://secretmanager.googleapis.com/v1/projects/$PROJECT"
+GCS="https://storage.googleapis.com/storage/v1/b"
 RUN="https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/services/$KEY_BROKER_NAME"
 KMS_KEY="projects/$PROJECT/locations/$REGION/keyRings/sealed/cryptoKeys/sealed-kb-hmac"
 
@@ -190,6 +199,18 @@ else
   fail "subnet $SUBNET IAM policy does not grant exactly sealedSubnetUser to the deployer"
 fi
 
+code="$(api GET "$GCS/$STAGING_BUCKET/iam?optionsRequestedPolicyVersion=3" "$ME")"
+if [ "$code" != 200 ]; then
+  unreadable "$code" "the IAM policy of the staging bucket $STAGING_BUCKET"
+else
+  staging_roles="$(jq -r --arg m "serviceAccount:$DEPLOYER" '[(.bindings // [])[] | select(.members | index($m)) | .role] | sort | join(" ")' "$TMP/body")"
+  if [ "$staging_roles" = "$STAGING_ROLES" ]; then
+    pass "staging bucket $STAGING_BUCKET: the deployer holds $STAGING_ROLES there and nothing else"
+  else
+    fail "staging bucket $STAGING_BUCKET: the deployer holds [$staging_roles], want [$STAGING_ROLES]"
+  fi
+fi
+
 code="$(api GET "https://cloudkms.googleapis.com/v1/$KMS_KEY:getIamPolicy?options.requestedPolicyVersion=3" "$ME")"
 if [ "$code" != 200 ]; then
   unreadable "$code" "the KMS key policy"
@@ -199,8 +220,10 @@ else
   fail "KMS key policy: $(jq -c '.bindings // []' "$TMP/body" 2>/dev/null)"
 fi
 
+KB_URI=""
 code="$(api GET "$RUN" "$ME")"
 if [ "$code" = 200 ]; then
+  KB_URI="$(jq -r '.uri // ""' "$TMP/body")"
   sa="$(jq -r '.template.serviceAccount // ""' "$TMP/body")"
   img="$(jq -r '.template.containers[0].image // ""' "$TMP/body")"
   case "$img" in *@sha256:????????????????????????????????????????????????????????????????) pinned=1 ;; *) pinned=0 ;; esac
@@ -242,6 +265,35 @@ if [ "$code" = 200 ] && [ "$(granted)" = "compute.addresses.create compute.zoneO
   pass "positive control: the impersonated deployer holds its own project permissions"
 else
   fail "positive control failed (HTTP $code, granted: $(granted)): the probes above may not run as the deployer"
+fi
+
+# The connection binding: the platform reads it as the deployer and refuses another wallet or key broker.
+code="$(api GET "$COMPUTE/regions/$REGION/subnetworks/$SUBNET" "$AS_DEPLOYER")"
+if [ "$code" = 200 ]; then
+  binding="$(jq -r '.description // ""' "$TMP/body")"
+  bound_customer="$(printf '%s' "$binding" | sed -nE 's#^sealed-binding/v1 customer=(0x[0-9a-f]{40}) key_broker=(https://[^ ]+)$#\1#p')"
+  bound_kb="$(printf '%s' "$binding" | sed -nE 's#^sealed-binding/v1 customer=(0x[0-9a-f]{40}) key_broker=(https://[^ ]+)$#\2#p')"
+  if [ -z "$bound_customer" ] || [ -z "$bound_kb" ]; then
+    fail "subnet $SUBNET carries no connection binding (description [$binding]): any wallet could register this project"
+  elif [ -n "$KB_URI" ] && [ "$bound_kb" != "$KB_URI" ]; then
+    fail "the connection binding names key broker $bound_kb, but $KEY_BROKER_NAME is $KB_URI"
+  elif [ -n "$CUSTOMER" ] && [ "$bound_customer" != "$CUSTOMER" ]; then
+    fail "the connection binding names wallet $bound_customer, want $CUSTOMER"
+  else
+    pass "the deployer reads the connection binding on $SUBNET: wallet $bound_customer, key broker $bound_kb"
+  fi
+else
+  fail "the deployer cannot read subnet $SUBNET (HTTP $code), so the platform cannot check the connection binding"
+fi
+
+# The boot bucket holds the OS images the customer's credentials stage; the deployer has no access to it.
+code="$(api GET "$GCS/$BOOT_BUCKET/iam/testPermissions?permissions=storage.objects.create&permissions=storage.objects.get&permissions=storage.objects.delete&permissions=storage.buckets.setIamPolicy" "$AS_DEPLOYER")"
+if [ "$code" = 404 ]; then
+  skip "no boot bucket $BOOT_BUCKET"
+elif [ "$code" = 200 ] && [ -z "$(granted)" ]; then
+  pass "deployer cannot read or write the boot bucket $BOOT_BUCKET"
+else
+  fail "deployer holds [$(granted)] on the boot bucket $BOOT_BUCKET (HTTP $code)"
 fi
 
 code="$(api GET "$SM/secrets?filter=name:sealed-&pageSize=250" "$ME")"
@@ -329,7 +381,7 @@ for vm in $instances; do
   fi
   code="$(api POST "$COMPUTE/zones/$ZONE/instances/$vm/testIamPermissions" "$AS_DEPLOYER" "$(json_perms $FORBIDDEN_INSTANCE)")"
   if [ "$code" = 200 ] && [ -z "$(granted)" ]; then
-    pass "deployer cannot attach a service account to $vm, log in, or read its serial port"
+    pass "deployer cannot attach a service account to $vm, log in or call getSerialPortOutput"
   else
     fail "deployer holds $(granted) on $vm (HTTP $code)"
   fi
@@ -392,5 +444,10 @@ else
   skip "key broker URL unknown"
 fi
 
-echo "summary: $PASS passed, $FAIL failed, $SKIP skipped"
+# --- 5. What IAM cannot prevent (known limits, infra/terraform/customer-bootstrap/README.md) --------------------
+
+warn "the deployer holds compute.instances.setMetadata on sealed-* VMs, so it can set serial-port-enable and add ssh-keys at any time; the image has no getty, login or SSH daemon, and the compute.disableSerialPortAccess org policy blocks the serial console"
+warn "the deployer's static IP rights are project-wide: it can reserve, attach and release any regional address in $PROJECT, not only sealed-* ones; use a dedicated project"
+
+echo "summary: $PASS passed, $FAIL failed, $SKIP skipped, $WARN warnings"
 [ "$FAIL" = 0 ]
