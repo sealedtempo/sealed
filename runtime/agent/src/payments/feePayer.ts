@@ -105,6 +105,32 @@ export interface FeePayer {
   spendLimit?(): Promise<SpendLimit | undefined>;
   /** The receipt of an earlier payment transaction, undefined while none is mined. */
   paymentReceipt?(txHash: Hex): Promise<PaymentReceipt | undefined>;
+  /** FeeSplitter.paused(): while the owner has paused it, payFees and topUpFees revert EnforcedPause (payments-4). */
+  splitterPaused?(): Promise<boolean>;
+}
+
+/** OpenZeppelin Pausable's EnforcedPause() selector, the revert of FeeSplitter.payFees and topUpFees while paused. */
+export const ENFORCED_PAUSE_SELECTOR = "0xd93c0665";
+
+/**
+ * Whether an estimate or payment error is FeeSplitter's EnforcedPause() revert: the selector as revert data (raw or
+ * in a message) or viem's decoded error name, anywhere in the error's cause chain.
+ */
+export function isEnforcedPause(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let e: unknown = err; typeof e === "object" && e !== null && !seen.has(e); e = (e as { cause?: unknown }).cause) {
+    seen.add(e);
+    const x = e as { data?: unknown; raw?: unknown; signature?: unknown; message?: unknown; shortMessage?: unknown; details?: unknown };
+    const decoded = typeof x.data === "object" && x.data !== null ? (x.data as { errorName?: unknown; data?: unknown }) : undefined;
+    if (decoded?.errorName === "EnforcedPause") return true;
+    for (const v of [x.data, decoded?.data, x.raw, x.signature]) {
+      if (typeof v === "string" && v.toLowerCase().startsWith(ENFORCED_PAUSE_SELECTOR)) return true;
+    }
+    for (const v of [x.message, x.shortMessage, x.details]) {
+      if (typeof v === "string" && (/\bEnforcedPause\(\)/.test(v) || v.toLowerCase().includes(ENFORCED_PAUSE_SELECTOR))) return true;
+    }
+  }
+  return false;
 }
 
 const tip20Abi = [
@@ -202,6 +228,10 @@ export class TempoFeePayer implements FeePayer {
       args: [this.o.feeToken],
     });
     return cfg.perPaymentCap;
+  }
+
+  async splitterPaused(): Promise<boolean> {
+    return this.client.readContract({ address: this.o.feeSplitter, abi: feeSplitterAbi, functionName: "paused" });
   }
 
   async dailyRemaining(): Promise<bigint> {
