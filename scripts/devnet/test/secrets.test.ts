@@ -13,6 +13,7 @@ secrets:
     generate: sk-hex32
   - name: APP_KEY
     generate: hex32
+    share_with: [app]
   - name: BYOK
     generate: none
     optional: true
@@ -46,6 +47,23 @@ secrets:
     same_as: other/K
 `);
     expect(() => planSecrets([app])).toThrow("same_as other/K");
+  });
+
+  it("refuses a same_as to a secret its app does not share with the referencing app (D-059)", () => {
+    const gw = (share: string) => bundle(`id: gw
+secrets:
+  - name: APP_KEY
+    generate: hex32
+${share}`);
+    const app = bundle(`id: app
+secrets:
+  - name: GW_KEY
+    generate: none
+    same_as: gw/APP_KEY
+`);
+    expect(() => planSecrets([gw(""), app])).toThrow("gw does not share APP_KEY with app");
+    expect(() => planSecrets([gw("    share_with: [other]\n"), app])).toThrow("share_with, D-059");
+    expect(planSecrets([gw("    share_with: [other, app]\n"), app]).expected.app?.GW_KEY).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("formats each generator", () => {
