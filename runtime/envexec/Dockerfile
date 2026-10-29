@@ -11,6 +11,13 @@ FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:7b072c590a326b9d2a43b
 ARG TARGETOS
 ARG TARGETARCH
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+# The Go LICENSE and PATENTS that the build copies to /licenses/go below must be Go 1.27.3's
+# texts byte for byte: the sha256 that runtime/images/local-model checks, of golang/go go1.27.3
+# LICENSE and PATENTS (the copies in catalog/apps/llm-gateway/LICENSES/).
+ARG GO_LICENSE_SHA256=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+ARG GO_PATENTS_SHA256=96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc
+RUN echo "$GO_LICENSE_SHA256  $(go env GOROOT)/LICENSE" | sha256sum -c - \
+ && echo "$GO_PATENTS_SHA256  $(go env GOROOT)/PATENTS" | sha256sum -c -
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY runtime/envexec ./runtime/envexec
