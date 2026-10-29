@@ -370,6 +370,52 @@ func TestLintCatalogSameAs(t *testing.T) {
 	}
 }
 
+// D-059: a same_as reference needs the source secret's share_with to list
+// the referencing app. Compose and sealed secrets refuse it; lint did not.
+func TestLintCatalogSameAsNeedsShareWith(t *testing.T) {
+	root := t.TempDir()
+	for _, app := range []string{"notes", "llm-gateway"} {
+		if err := os.Rename(copyApp(t, app), filepath.Join(root, app)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes, gw := filepath.Join(root, "notes"), filepath.Join(root, "llm-gateway")
+	edit(t, filepath.Join(notes, "manifest.yaml"), "telemetry_off_env:", "  - name: LLM_KEY\n    description: x\n    generate: none\n    same_as: llm-gateway/MASTER_KEY\ntelemetry_off_env:")
+	edit(t, filepath.Join(notes, "compose.fragment.yaml"), "x-sealed-secrets: [DB_PASSWORD]", "x-sealed-secrets: [DB_PASSWORD, LLM_KEY]")
+	manifest, err := os.ReadFile(filepath.Join(gw, "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), "share_with: [notes]") {
+		t.Fatalf("fixture changed: llm-gateway's MASTER_KEY no longer shares with notes:\n%s", manifest)
+	}
+	if fs, err := LintCatalog(root, Options{}); err != nil || HasErrors(fs) || codes(fs, Warning)[CodeSameAs] != 0 {
+		t.Fatalf("shared: %v %v", fs, err)
+	}
+	edit(t, filepath.Join(gw, "manifest.yaml"), "share_with: [notes]", "share_with: [crm]")
+	fs, _ := LintCatalog(root, Options{})
+	if codes(fs, Error)[CodeSameAs] != 1 || !hasMessage(fs, "llm-gateway does not share MASTER_KEY with notes") {
+		t.Fatalf("not shared: %v", fs)
+	}
+	// crm is not in this catalog: sharing with it is a warning, not an error.
+	if codes(fs, Warning)[CodeSameAs] != 1 || !hasMessage(fs, `shared with "crm", which is not a catalog app`) {
+		t.Fatalf("share_with an unknown app: %v", fs)
+	}
+	edit(t, filepath.Join(gw, "manifest.yaml"), "    share_with: [crm]\n", "")
+	if fs, _ := LintCatalog(root, Options{}); codes(fs, Error)[CodeSameAs] != 1 || codes(fs, Warning)[CodeSameAs] != 0 {
+		t.Fatalf("no share_with: %v", fs)
+	}
+}
+
+func hasMessage(fs []Finding, sub string) bool {
+	for _, f := range fs {
+		if strings.Contains(f.Message, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOSPackagesMayUseSystemLicenses(t *testing.T) {
 	// postgres.spdx.json lists busybox (pkg:apk, GPL-2.0-only); that is fine.
 	fs := LintApp(filepath.Join(fixtures, "notes"), Options{RequireSBOM: true})
