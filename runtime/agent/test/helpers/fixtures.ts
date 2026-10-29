@@ -9,13 +9,17 @@ import { normalizePeer } from "../../src/stack.js";
 
 export const CUSTOMER = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
 
-/** Fixed apps-network IPs (INTERFACES 6): sidecars, then app primaries from .16 in config order. */
+/**
+ * Fixed sidecar IPs as sealed-stack/v1 lists them (INTERFACES 6): the apps network for egress, agent, Caddy and the
+ * payer, the verifier network for sealed-verifierd (D-061, composer 1.3.0 and later), then app primaries from .16 in
+ * config order. golden.test.ts keeps the sidecars equal to the composer's golden stack.
+ */
 export const IPS = {
   egress: "172.30.0.2",
   agent: "172.30.0.3",
   caddy: "172.30.0.4",
   payer: "172.30.0.5",
-  verifierd: "172.30.0.6",
+  verifierd: "172.30.250.6",
   crm: "172.30.0.16",
   llm: "172.30.0.17",
   crmDb: "172.30.0.18",

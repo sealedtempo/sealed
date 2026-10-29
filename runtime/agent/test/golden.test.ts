@@ -23,7 +23,7 @@ import { type FakeBroker, startFakeBroker } from "./helpers/fakeBroker.js";
 import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
 import { FakePayer } from "./helpers/fakePayer.js";
 import { type FakePlatform, startFakePlatform } from "./helpers/fakePlatform.js";
-import { fromPeer, testPeerOf, testSettings } from "./helpers/fixtures.js";
+import { fromPeer, makeConfig, makeStackInfo, testPeerOf, testSettings } from "./helpers/fixtures.js";
 // The payer's own code builds the /v1/spend body (brief item 21: accept it as payments built it).
 import { SpendGuard } from "../../mpp-payer/src/spend-guard.js";
 import { SpendReporter, spendSnapshot } from "../../mpp-payer/src/spend-reporter.js";
@@ -63,6 +63,13 @@ describe("sealed-agent against the composer's golden stack", () => {
   const settings = settingsFromEnv(agentSvc.environment);
   const configTarget = (name: string) => agentSvc.configs.find((c) => c.source === name)?.target;
   const volumeTarget = (name: string) => agentSvc.volumes.find((v) => v.type === "volume" && v.source === name)?.target;
+
+  // Merge C (final): the unit tests' synthetic stack still put sealed-verifierd at 172.30.0.6 on the apps network, two
+  // composer versions after it moved to the verifier network (D-061).
+  it("the unit tests' synthetic stack places the sidecars where the composer does", async () => {
+    const stack = JSON.parse(await read("stack.json")) as { sidecars: Record<string, string> };
+    expect(makeStackInfo(makeConfig()).sidecars).toEqual(stack.sidecars);
+  });
 
   it("the composer's sealed-agent environment and mounts give the agent its paths", () => {
     expect(settings.configPath).toBe(configTarget("sealed-config"));
