@@ -1,9 +1,9 @@
 # Catalog release tooling
 
 `catalog/tools/release` is the Go command behind the catalog workflows (`.github/workflows/catalog.yml`,
-`images.yml`, `mirror.yml`, `release.yml`) and the scripts in `scripts/release/`. It reuses the composer
-(`runtime/composer`) for manifests, bundles and lint, so CI, `sealed release build` and the key broker agree
-byte for byte.
+`images.yml`, `images-pr.yml`, `mirror.yml`, `release.yml`) and the scripts in `scripts/release/`. It reuses
+the composer (`runtime/composer`) for manifests, bundles and lint, so CI, `sealed release build` and the key
+broker agree byte for byte.
 
 ```sh
 go run ./catalog/tools/release <command> [flags]      # from anywhere in the repository
@@ -14,7 +14,7 @@ go test ./catalog/tools/release/                       # unit, script and workfl
 
 | command | does |
 |---|---|
-| `images [--format json\|build-matrix\|mirror-matrix\|scan-matrix]` | every built and mirrored image; matrices for the workflows (`--changed`, `--all`, `--names`, `--apps`, `--fail-on-blocked`) |
+| `images [--format json\|build-matrix\|mirror-matrix\|scan-matrix]` | every built and mirrored image; matrices for the workflows (`--changed`, `--all`, `--names`, `--apps`, `--fail-on-blocked`; `--changed-only` leaves out the unbuilt images for the pull request check) |
 | `pin --scope catalog\|runtime --results <dir>` | write built digests into manifests (catalog) or `runtime-images.json` and `extra-images.json` (runtime); only the digest scalars change |
 | `waivers check --file --image --scan [--summary]` | the Grype gate: fails on a critical finding without a valid, unexpired waiver |
 | `waivers lint` | every `waivers.yaml` parses and validates |
@@ -39,6 +39,17 @@ go test ./catalog/tools/release/                       # unit, script and workfl
   without an entry fails, so an image cannot be skipped silently.
 - `extra-images.json`: digests of the `extra` images (same shape as `runtime-images.json`).
 - `runtime-waivers.yaml`: Grype waivers for sidecar and extra images.
+
+## Built images (D-028)
+
+`images.yml` builds each image on main, rebuilds it without cache (`scripts/release/build-image.sh
+--verify-reproducible`, which a manual run can turn off) and does not pin a digest whose rebuild differs,
+unless `images.yaml` records a `nonreproducible` reason. `images-pr.yml` runs the same check on pull requests
+that change a Dockerfile or an image directory, without pushing. So a build must not leave files whose
+contents carry the build time: `dockerfile_apt_test.go` requires every apt, dpkg or ldconfig RUN of a stage
+that reaches the image to end with `rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log
+/var/cache/ldconfig/aux-cache /var/cache/debconf/*-old /var/lib/dpkg/*-old`, and every copied pnpm tree to
+drop `node_modules/.modules.yaml` and `node_modules/.pnpm-workspace-state*.json`.
 
 ## Release assets (D-046)
 
@@ -71,7 +82,7 @@ A bare list of the same entries is still accepted (`waivers lint` warns).
 
 `go test ./catalog/tools/release/` runs the unit tests, the scripts against fake `crane`, `docker`, `syft`,
 `grype`, `cosign`, `gh` and `curl`, the publishRelease and registerApp scripts against a local Tempo node
-(`anvil --network tempo`) with the real contracts, and `catalog.yml`, `images.yml` and `release.yml` in a
-small Actions emulator (their real `run:` scripts, emulated actions). The chain tests need anvil, forge, cast,
-jq and `contracts/dependencies` (`make -C contracts deps`); `SEALED_REQUIRE_ANVIL=1` makes them fail instead
-of skipping.
+(`anvil --network tempo`) with the real contracts, and `catalog.yml`, `images.yml`, `images-pr.yml` and
+`release.yml` in a small Actions emulator (their real `run:` scripts, emulated actions). The chain tests need
+anvil, forge, cast, jq and `contracts/dependencies` (`make -C contracts deps`); `SEALED_REQUIRE_ANVIL=1` makes
+them fail instead of skipping.

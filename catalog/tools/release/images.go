@@ -410,6 +410,18 @@ func SelectBuilds(set *ImageSet, changed []string, all bool, names []string) []B
 	return out
 }
 
+// ChangedBuilds returns the builds whose inputs a changed file touches, by the rules of SelectBuilds but
+// without the unbuilt images it adds. The pull request check (images-pr.yml) builds these.
+func ChangedBuilds(set *ImageSet, changed []string) []BuildImage {
+	var out []BuildImage
+	for _, b := range set.Build {
+		if buildChanged(b, changed) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func buildChanged(b BuildImage, changed []string) bool {
 	for _, f := range changed {
 		f = strings.TrimSpace(f)
