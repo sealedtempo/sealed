@@ -115,7 +115,24 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version: "${{ env.GO_VERSION }}" }
+      # The pinned Caddy (runtime-images.json, by digest) for TestCaddyfileWithRealCaddy, which fails instead
+      # of skipping when SEALED_REQUIRE_CADDY=1 (runtime-3).
+      - name: Pinned Caddy binary
+        run: |
+          pin=runtime/composer/runtime-images.json
+          ref="$(jq -r '.images.caddy | (.source | sub(":[^:/]*$"; "")) + "@" + .digest' "$pin")"
+          version="$(jq -r '.images.caddy.source | sub("^.*:"; "") | sub("-.*$"; "")' "$pin")"
+          mkdir -p "$RUNNER_TEMP/caddy"
+          id="$(docker create --platform linux/amd64 "$ref")"
+          docker cp "$id:/usr/bin/caddy" "$RUNNER_TEMP/caddy/caddy"
+          docker rm "$id" >/dev/null
+          got="$("$RUNNER_TEMP/caddy/caddy" version)"
+          echo "caddy from $ref: $got"
+          case "$got" in "v$version "*) ;; *) echo "::error::$ref is not Caddy v$version: $got"; exit 1 ;; esac
       - name: Composer golden and compose tests
+        env:
+          SEALED_CADDY_BIN: ${{ runner.temp }}/caddy/caddy
+          SEALED_REQUIRE_CADDY: "1"
         run: go test -count=1 ./runtime/composer/... ./runtime/caddy/...
       # Every app alone and the customer stack, composed by the real composer, then docker compose config.
       - name: Compose lint
