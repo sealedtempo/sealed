@@ -135,26 +135,122 @@ func upstream(rel string) bool {
 	return strings.HasSuffix(base, ".spdx.json") || strings.HasSuffix(base, ".spdx") || hasSegment(rel, "LICENSES")
 }
 
-func TestNoEmDashes(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
-	if err != nil {
-		t.Fatal(err)
+var testSource = regexp.MustCompile(`(_test\.go|_test\.py|\.test\.[cm]?[jt]s)$|(^|/)test_[^/]*\.py$`)
+
+// detectorWords marks a line that searches for a string or lists banned ones.
+var detectorWords = regexp.MustCompile(`(?i)contains|index|includes|match|search|banned|forbidden`)
+
+// detector reports whether line, from a test source file, is a detector for needle: needle appears only inside quoted
+// literals, and the line searches for it or lists it as banned. Detectors in this file use escapes or split strings.
+func detector(rel, line, needle string) bool {
+	if !testSource.MatchString(filepath.ToSlash(rel)) || !detectorWords.MatchString(line) {
+		return false
 	}
-	files = append(files, filepath.Join(root, "README.md"))
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
+	quoted := make([]bool, len(line))
+	var q byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		quoted[i] = q != 0
+		switch {
+		case q != 0 && q != '`' && c == '\\' && i+1 < len(line):
+			quoted[i+1] = true
+			i++
+		case q != 0 && c == q:
+			q = 0
+		case q == 0 && (c == '"' || c == '\'' || c == '`'):
+			q = c
+		}
+	}
+	found := false
+	for off := 0; ; {
+		j := strings.Index(line[off:], needle)
+		if j < 0 {
+			return found
+		}
+		if !quoted[off+j] {
+			return false
+		}
+		found = true
+		off += j + len(needle)
+	}
+}
+
+// TestNoEmDashes: no tracked text file carries an em-dash (BUILD_SPEC 1.2 rule 12; review policy-7), not only the
+// docs. Binaries, SPDX documents, upstream license texts and testdata are skipped, and a test may name the character in
+// a detector.
+func TestNoEmDashes(t *testing.T) {
+	const dash = "\u2014"
+	files := trackedFiles(t)
+	seen := map[string]bool{}
+	for _, rel := range files {
+		if upstream(rel) || hasSegment(rel, "testdata") {
+			continue
+		}
+		b := textOf(t, rel)
+		if b == nil {
+			continue
+		}
+		seen[filepath.ToSlash(rel)] = true
+		if !bytes.Contains(b, []byte(dash)) {
+			continue
 		}
 		for i, line := range strings.Split(string(b), "\n") {
-			if strings.ContainsRune(line, '—') {
-				t.Errorf("%s:%d has an em-dash", filepath.Base(f), i+1)
+			if strings.Contains(line, dash) && !detector(rel, line, dash) {
+				t.Errorf("%s:%d has an em-dash", filepath.ToSlash(rel), i+1)
 			}
+		}
+	}
+	for _, want := range []string{"README.md", "docs/THREAT_MODEL.md", "docs/docs_test.go", "runtime/caddy/payment-needed.html", "catalog/apps/crm/README.md"} {
+		if !seen[want] {
+			t.Errorf("the scan did not read %s; the tracked file list is wrong", want)
 		}
 	}
 }
 
+// bannedPhrases are the product phrases BUILD_SPEC 1.2 rule 12 forbids, split so that this file is not a match.
+var bannedPhrases = []string{
+	"no " + "breaches",
+	"unbreak" + "able",
+	"zero-knowledge proof that data was never " + "exposed",
+	"zero knowledge proof that data was never " + "exposed",
+}
+
 var spaces = regexp.MustCompile(`\s+`)
+
+// TestBannedPhrases: no tracked text file uses a phrase BUILD_SPEC 1.2 rule 12 bans (review policy-7), in any case and
+// also across a line break. Binaries, SPDX documents and upstream license texts are skipped; a test may name a phrase
+// in a detector.
+func TestBannedPhrases(t *testing.T) {
+	for _, rel := range trackedFiles(t) {
+		if upstream(rel) {
+			continue
+		}
+		b := textOf(t, rel)
+		if b == nil {
+			continue
+		}
+		text := strings.ToLower(string(b))
+		lines := strings.Split(text, "\n")
+		flat := spaces.ReplaceAllString(text, " ")
+		for _, p := range bannedPhrases {
+			if !strings.Contains(flat, p) {
+				continue
+			}
+			onLines := 0
+			for i, line := range lines {
+				if n := strings.Count(line, p); n > 0 {
+					onLines += n
+					if !detector(rel, line, p) {
+						t.Errorf("%s:%d says %q (BUILD_SPEC 1.2 rule 12)", filepath.ToSlash(rel), i+1, p)
+					}
+				}
+			}
+			if strings.Count(flat, p) > onLines {
+				t.Errorf("%s says %q across a line break (BUILD_SPEC 1.2 rule 12)", filepath.ToSlash(rel), p)
+			}
+		}
+	}
+}
 
 // TestNoThirdPartyAuditClaim: every review of this code so far was done by AI review agents, and no external audit
 // has been done (review policy-2). No tracked Markdown file may present a review as an audit or as independent:
