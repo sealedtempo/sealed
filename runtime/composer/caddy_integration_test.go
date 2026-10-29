@@ -29,7 +29,8 @@ import (
 // the forward_auth gate (challenge, Basic success setting the cookie, the
 // cookie path keeping the app's own Authorization header, the gate's Basic
 // credentials never reaching the app, request bodies surviving the gate,
-// 503 while bootstrap runs, spoofed relay headers), bearer passthrough, the
+// 503 while bootstrap runs, spoofed relay headers), bearer passthrough
+// through the gate's bearer mode (held while bootstrap runs, review C-6), the
 // public attest route, the admin socket mode and the payment-needed switch,
 // and the relay route served on the attest host.
 func TestCaddyfileWithRealCaddy(t *testing.T) {
@@ -147,23 +148,37 @@ func TestCaddyfileWithRealCaddy(t *testing.T) {
 	}
 	noHit()
 
-	// Bearer passthrough on the gateway API; the gate is not asked.
-	calls := agent.count()
-	if resp = c.do("gateway", "GET", "/v1/models", map[string]string{"Authorization": "Bearer sk-123", "Cookie": "sealed_gate=valid-cookie"}, nil); resp.code != 200 || resp.body != "hello from gateway" {
-		t.Errorf("gateway bearer: %d %q", resp.code, resp.body)
+	// Bearer passthrough on the gateway API: the gate is asked in bearer mode
+	// only (review C-6), and the token and the request body reach the app
+	// unchanged; the gate cookie and spoofed relay headers do not.
+	if resp = c.do("gateway", "POST", "/v1/chat/completions", map[string]string{"Authorization": "Bearer sk-123", "Cookie": "sealed_gate=valid-cookie",
+		caddy.GateStripHeader: "1", "X-Sealed-Gate-Set-Cookie": "evil=1"}, []byte(`{"model":"m"}`)); resp.code != 200 || resp.body != "hello from gateway" || resp.header.Get("Set-Cookie") != "" {
+		t.Errorf("gateway bearer: %d %q set-cookie %q", resp.code, resp.body, resp.header.Get("Set-Cookie"))
 	}
-	expectHit(seen{method: "GET", path: "/v1/models", auth: "Bearer sk-123"})
-	if agent.count() != calls {
-		t.Error("bearer passthrough asked the gate")
+	expectHit(seen{method: "POST", path: "/v1/chat/completions", auth: "Bearer sk-123", body: `{"model":"m"}`})
+	if g := agent.last(); !g.bearer || g.route != "gateway" || g.uri != "/v1/chat/completions" || g.method != "POST" || g.auth != "Bearer sk-123" {
+		t.Errorf("bearer gate request %+v", g)
 	}
+	// While the gateway's bootstrap runs, Bearer requests are held like
+	// every other request (before C-6 they went straight to the app).
+	agent.setStarting("gateway", true)
+	if resp = c.do("gateway", "GET", "/v1/models", map[string]string{"Authorization": "Bearer sk-123"}, nil); resp.code != 503 || resp.body != "starting" {
+		t.Errorf("gateway bearer while starting: %d %q", resp.code, resp.body)
+	}
+	agent.setStarting("gateway", false)
+	// The agent's 401 for a Bearer header without a token reaches the client.
+	if resp = c.do("gateway", "GET", "/v1/models", map[string]string{"Authorization": "Bearer "}, nil); resp.code != 401 {
+		t.Errorf("gateway empty bearer: %d", resp.code)
+	}
+	noHit()
 	if resp = c.do("gateway", "GET", "/ui", nil, nil); resp.code != 401 {
 		t.Errorf("gateway UI without password: %d", resp.code)
 	}
 	if resp = c.do("gateway", "GET", "/admin/x", map[string]string{"Authorization": "Bearer sk-123"}, nil); resp.code != 401 {
 		t.Errorf("gated path must not accept bearer only: %d", resp.code)
 	}
-	if g := agent.last(); g.route != "gateway" {
-		t.Errorf("gate route %q", g.route)
+	if g := agent.last(); g.route != "gateway" || g.bearer {
+		t.Errorf("gate request %+v", g)
 	}
 	if resp = c.do("gateway", "GET", "/admin/x", map[string]string{"Authorization": basic}, nil); resp.code != 200 || resp.body != "hello from gateway-admin" {
 		t.Errorf("gateway admin with password: %d %q", resp.code, resp.body)
@@ -237,7 +252,10 @@ type fakeGateAgent struct {
 	starting map[string]bool
 }
 
-type gateCall struct{ path, route, uri, method, auth string }
+type gateCall struct {
+	path, route, uri, method, auth string
+	bearer                         bool
+}
 
 // seen is one request an upstream test server received; spoof holds any
 // internal gate relay header that reached it.
@@ -256,17 +274,38 @@ func newFakeGateAgent(hits chan<- seen) *fakeGateAgent {
 			return
 		}
 		route := req.URL.Query().Get("route")
+		bearer := req.URL.Query().Get("bearer") == "1"
+		if q := req.URL.RawQuery; bearer && q != "route="+route+"&"+caddy.GateBearerQuery {
+			http.Error(w, "unexpected gate query "+q, 500)
+			return
+		}
 		a.mu.Lock()
-		a.calls = append(a.calls, gateCall{req.URL.Path, route, req.Header.Get("X-Forwarded-Uri"), req.Header.Get("X-Forwarded-Method"), req.Header.Get("Authorization")})
+		a.calls = append(a.calls, gateCall{req.URL.Path, route, req.Header.Get("X-Forwarded-Uri"), req.Header.Get("X-Forwarded-Method"), req.Header.Get("Authorization"), bearer})
 		starting := a.starting[route]
 		a.mu.Unlock()
 		if b, _ := io.ReadAll(req.Body); len(b) > 0 {
 			http.Error(w, "the gate must not receive request bodies", 500)
 			return
 		}
+		// Like sealed-agent's ?bearer=1 (review C-6): only for the
+		// bearer-passthrough route, held while starting, then 200 for a
+		// Bearer token (the app checks it) with no cookie and no strip
+		// signal, 401 without one.
+		if bearer && route != "gateway" {
+			http.Error(w, "not a bearer-passthrough route", 403)
+			return
+		}
 		if starting {
 			w.WriteHeader(503)
 			fmt.Fprint(w, "starting")
+			return
+		}
+		if bearer {
+			if regexp.MustCompile(`(?i)^Bearer +\S`).MatchString(req.Header.Get("Authorization")) {
+				w.WriteHeader(200)
+			} else {
+				w.WriteHeader(401)
+			}
 			return
 		}
 		// Like sealed-agent: Basic with spaces or tabs, and on a 200 the

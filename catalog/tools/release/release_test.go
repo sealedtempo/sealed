@@ -70,14 +70,25 @@ func TestAssetsRule(t *testing.T) {
 	if len(a.All()) != 10 {
 		t.Fatalf("all assets: %v", a.All())
 	}
-	for _, bad := range []string{"v1.2.3", "V2", "1.0.0+build", "", "-1", strings.Repeat("1", 65), "1/2"} {
+	// A leading v that no digit follows would be doubled in the tag (<appId>-vvnext), so it is refused.
+	for _, bad := range []string{"vnext", "valkey9", "v", "Vv2", "vv1.2.3", "1.0.0+build", "", "-1", strings.Repeat("1", 65), "1/2"} {
 		if _, err := Assets(d, "x", bad, nil); err == nil {
 			t.Errorf("version %q must be rejected", bad)
 		}
 	}
-	for _, ok := range []string{"1.2.3", "0.1.0-sealed.1", "2026.10.28_1", "valkey9"} {
+	for _, ok := range []string{"1.2.3", "0.1.0-sealed.1", "2026.10.28_1", "9valkey", "v1.2.3", "V2"} {
 		if err := CheckReleaseVersion(ok); err != nil {
 			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	// A leading v before a digit is released without doubling the tag's v; the asset names and the
+	// version in releaseId stay literal (coding-agent v1.58.2, internal-tools v3.20.251-lts).
+	for version, tag := range map[string]string{"v1.58.2": "coding-agent-v1.58.2", "V2": "coding-agent-v2", "1.58.2": "coding-agent-v1.58.2"} {
+		a, err := Assets(d, "coding-agent", version, []string{"server"})
+		ra, err2 := composer.NewReleaseAssets(d.ReleaseAssetBase, "coding-agent", version)
+		if err != nil || err2 != nil || a.Tag != tag || a.Bundle != "coding-agent-"+version+".bundle.tar" || a.URL(a.Bundle) != ra.Bundle ||
+			a.ReleaseJSON != "coding-agent-"+version+".release.json" || a.BaseURL != d.ReleaseAssetBase+"/"+tag || strings.Contains(a.Tag, "vv") {
+			t.Errorf("%s: %+v %v %v", version, a, err, err2)
 		}
 	}
 }
@@ -106,9 +117,23 @@ func TestPlan(t *testing.T) {
 	if refs := notes.ImageRefs; len(refs) != 2 || refs[1].Ref != "ghcr.io/sealedtempo/postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b" {
 		t.Fatalf("image refs: %+v", refs)
 	}
-	// Unbuilt images and bad versions are problems; --strict turns them into a failure.
+	// A version with a leading v before a digit plans with a single v in its tag.
 	p := filepath.Join(root, CatalogDir, "notes/manifest.yaml")
-	writeFile(t, p, strings.Replace(readFile(t, p), "release_version: 1.0.0-sealed.1", "release_version: v1.0.0", 1))
+	orig := readFile(t, p)
+	writeFile(t, p, strings.Replace(orig, "release_version: 1.0.0-sealed.1", "release_version: v1.0.0", 1))
+	out.Reset()
+	if err := run([]string{"plan", "--root", root, "--apps", "notes", "--strict"}, &out, &errb); err != nil {
+		t.Fatal(err)
+	}
+	plan = nil
+	if err := json.Unmarshal([]byte(out.String()), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 1 || plan[0].Version != "v1.0.0" || plan[0].Tag != "notes-v1.0.0" || plan[0].Problem != "" || plan[0].Assets.Bundle != "notes-v1.0.0.bundle.tar" {
+		t.Fatalf("v1.0.0: %+v", plan)
+	}
+	// Unbuilt images and bad versions are problems; --strict turns them into a failure.
+	writeFile(t, p, strings.Replace(orig, "release_version: 1.0.0-sealed.1", "release_version: vnext", 1))
 	changed := filepath.Join(t.TempDir(), "changed.txt")
 	writeFile(t, changed, "catalog/apps/notes/manifest.yaml\nREADME.md\n")
 	out.Reset()
@@ -116,7 +141,7 @@ func TestPlan(t *testing.T) {
 	if err := run([]string{"plan", "--root", root, "--changed", changed}, &out, &errb); err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, errb.String(), "::warning file=catalog/apps/notes/manifest.yaml,title=release-plan::release version \"v1.0.0\"")
+	mustContain(t, errb.String(), "::warning file=catalog/apps/notes/manifest.yaml,title=release-plan::release version \"vnext\"")
 	if err := run([]string{"plan", "--root", root, "--changed", changed, "--strict"}, &out, &errb); err == nil {
 		t.Fatal("--strict must fail on a problem")
 	}

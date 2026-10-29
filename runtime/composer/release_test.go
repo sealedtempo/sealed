@@ -31,10 +31,21 @@ func TestReleaseAssetURLs(t *testing.T) {
 	if SBOMPath("twenty") != "sbom/twenty.spdx.json" {
 		t.Error(SBOMPath("twenty"))
 	}
-	// The version is used literally, as hashed into releaseId.
-	a, _ = NewReleaseAssets(testAssetBase, "internal-tools", "v3.20.251-lts")
-	if a.Bundle != testAssetBase+"/internal-tools-vv3.20.251-lts/internal-tools-v3.20.251-lts.bundle.tar" {
-		t.Errorf("literal version: %s", a.Bundle)
+	// A leading v before a digit is not doubled in the tag (it read
+	// internal-tools-vv3.20.251-lts before 1.4.0); the asset names keep the
+	// version literally, as hashed into releaseId.
+	for version, tag := range map[string]string{
+		"v3.20.251-lts": "internal-tools-v3.20.251-lts", "V2": "internal-tools-v2", "3.20.251": "internal-tools-v3.20.251",
+		"1.0.0-v2": "internal-tools-v1.0.0-v2", "0v1": "internal-tools-v0v1",
+	} {
+		a, err := NewReleaseAssets(testAssetBase, "internal-tools", version)
+		want := testAssetBase + "/" + tag + "/internal-tools-" + version + ".bundle.tar"
+		if err != nil || a.Tag != tag || a.Bundle != want || ReleaseTag("internal-tools", version) != tag || strings.Contains(a.Tag, "-vv") {
+			t.Errorf("%s: %+v %v, want %s", version, a, err, want)
+		}
+	}
+	if TagVersion("v1.58.2") != "1.58.2" || TagVersion("v") != "v" || TagVersion("1.58.2") != "1.58.2" {
+		t.Error("TagVersion")
 	}
 	for _, bad := range []struct{ base, slug, version string }{
 		{"ftp://example.com/x", "crm", "1.0.0"},
@@ -46,6 +57,11 @@ func TestReleaseAssetURLs(t *testing.T) {
 		{testAssetBase, "crm", "1.0.0+sealed.1"},
 		{testAssetBase, "crm", "1.0/0"},
 		{testAssetBase, "crm", ""},
+		// A leading v that no digit follows would double the tag's v.
+		{testAssetBase, "crm", "vnext"},
+		{testAssetBase, "crm", "v"},
+		{testAssetBase, "crm", "Vv1"},
+		{testAssetBase, "crm", "vv1.0.0"},
 	} {
 		if _, err := NewReleaseAssets(bad.base, bad.slug, bad.version); err == nil {
 			t.Errorf("%+v accepted", bad)

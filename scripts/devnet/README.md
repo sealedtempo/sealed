@@ -25,7 +25,7 @@ binaries (`PG_BIN`, default `/opt/homebrew/opt/postgresql@17/bin`), and the priv
 |---|---|
 | Tempo node | `anvil --network tempo --hardfork T12 --gas-limit 500000000` on a free port (mainnet's hardfork, D-053; `LOCAL_HARDFORK` of `@sealed/core`) |
 | contracts | `contracts/script/Deploy.s.sol` broadcast with forge (oracle signer = a local test key, FEE_TOKEN = the local node's pathUSD), `record-deployment.sh` |
-| release assets | a local HTTP server at `<base>/<appId>-v<version>/<appId>-<version>.bundle.tar` (D-046) |
+| release assets | a local HTTP server at `<base>/<appId>-v<tag version>/<appId>-<version>.bundle.tar` (D-046; the tag version drops a leading `v` before a digit, composer 1.4.0) |
 | key broker | `key-broker` dev build, `SEALED_DEV_SIM=1`, `--dev-allow-simulated`, in-memory secret store (`--dev-secrets-file`), file-backed HMAC key, JSON-lines decision log; `SEALED_FEE_SPLITTER` and `SEALED_FEE_TOKEN` name the local FeeSplitter and pathUSD (the broker refuses a config with others) |
 | sealed-verifierd | `--dev-allow-simulated`, the run's deployments file, the local asset base |
 | platform api | `services/api` `dist/main.js serve` as oracle and indexer, a throwaway PostgreSQL 17 cluster, ORACLE and OPS from anvil dev keys; its Google and Rekor endpoints point at a closed local port |

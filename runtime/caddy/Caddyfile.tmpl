@@ -12,7 +12,12 @@ app sees the request: when the agent's 200 carries
 X-Sealed-Gate-Strip-Authorization: 1 (it parsed Basic credentials of the
 gate user, in whatever form it accepts), and when the header matches the
 gate user's Basic prefix; any other Authorization header passes through.
-Clients cannot supply either relay header. The
+Clients cannot supply either relay header.
+Bearer-passthrough handles ask the agent in bearer mode
+(<gate path>?route=<route>&bearer=1, review C-6): 200 for a Bearer request
+once the keys are released and the app's bootstrap is done, 503 before, so
+these requests are held exactly like gated ones; the app checks the token,
+and the Authorization header reaches it unchanged. The
 sealed_gate cookie is removed from the Cookie header on every proxied app
 request, so no app can replay it against another app's route. Every app
 handle body is a route block, because inside a plain handle Caddy runs
@@ -98,6 +103,14 @@ same-named directives that have a matcher before those that have none.
 {{- if eq $r.Auth "bearer-passthrough"}}
 	handle @{{$r.ID}}_bearer {
 		route {
+			request_header -X-Sealed-Gate-Set-Cookie
+			request_header -X-Sealed-Gate-Strip-Authorization
+			forward_auth {{$.GateUpstream}} {
+				uri {{$.GatePath}}?route={{$r.Name}}&{{$.GateBearerQuery}}
+				transport http {
+					network_proxy none
+				}
+			}
 {{- template "cookie_strip_route" $.GateCookie}}
 			reverse_proxy {{$r.Upstream}} {
 				transport http {

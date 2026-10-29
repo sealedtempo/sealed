@@ -140,8 +140,33 @@ func TestRenderNormal(t *testing.T) {
 	if strings.Index(gw, "handle @r0") > strings.Index(gw, "handle @r1_bearer") {
 		t.Error("path route must precede the whole-host route")
 	}
-	if strings.Count(gw, "uri /v1/gate?route=gateway") != 2 {
+	if strings.Count(gw, "uri /v1/gate?route=gateway\n") != 2 {
 		t.Errorf("gateway: both the /ui route and non-bearer requests must be gated:\n%s", gw)
+	}
+	// Review C-6: Bearer requests ask the gate in bearer mode, so they are held
+	// until the keys are released and the app's bootstrap is done. The answer
+	// sets no cookie and strips nothing, so the app's own Authorization header
+	// passes; client copies of the relay headers are still removed first.
+	bearer := gw[strings.Index(gw, "handle @r1_bearer {"):]
+	bearer = bearer[:strings.Index(bearer, "\n\t}\n")]
+	order = []string{"route {", "request_header -X-Sealed-Gate-Set-Cookie", "request_header -X-Sealed-Gate-Strip-Authorization",
+		"forward_auth sealed-agent:7070 {\n\t\t\t\turi /v1/gate?route=gateway&" + GateBearerQuery + "\n", "network_proxy none",
+		`request_header Cookie "(^|;\s*)sealed_gate=[^;]*" ""`, "reverse_proxy llm-gateway-proxy:4000"}
+	last = 0
+	for _, o := range order {
+		i := strings.Index(bearer[last:], o)
+		if i < 0 {
+			t.Fatalf("%q missing or out of order in the bearer handle\n%s", o, bearer)
+		}
+		last += i + len(o)
+	}
+	for _, never := range []string{"copy_headers", " Set-Cookie", " -Authorization", "sealed_gate_basic"} {
+		if strings.Contains(bearer, never) {
+			t.Errorf("bearer handle has %q:\n%s", never, bearer)
+		}
+	}
+	if strings.Count(s, GateBearerQuery) != 1 {
+		t.Errorf("only the bearer-passthrough handle asks in bearer mode:\n%s", s)
 	}
 	// The public tools route has no gate.
 	if tools := site(t, s, "tools.34-1-2-3.sslip.io"); strings.Contains(tools, "forward_auth") || strings.Contains(tools, "sealed_gate_basic") {

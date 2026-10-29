@@ -178,6 +178,62 @@ func TestInstall(t *testing.T) {
 	}
 }
 
+// TestPrivateDir: the payer's state directory becomes 0700 for its owner,
+// and envexec refuses anything that is not a directory this uid owns.
+func TestPrivateDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix modes")
+	}
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	if err := os.Mkdir(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(state, 0o755); err != nil { // as sealed-agent creates it
+		t.Fatal(err)
+	}
+	euid := os.Geteuid()
+	if err := privateDir(state, euid); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(state); st.Mode().Perm() != 0o700 || st.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		t.Fatalf("mode %v, want 0700", st.Mode())
+	}
+	if err := privateDir(state, euid); err != nil { // idempotent
+		t.Fatal(err)
+	}
+	// Special bits go too.
+	if err := os.Chmod(state, 0o700|os.ModeSetgid); err == nil {
+		if err := privateDir(state, euid); err != nil {
+			t.Fatal(err)
+		}
+		if st, _ := os.Stat(state); st.Mode()&os.ModeSetgid != 0 {
+			t.Fatalf("setgid kept: %v", st.Mode())
+		}
+	}
+	// Another uid's directory is refused and left alone.
+	_ = os.Chmod(state, 0o755)
+	if err := privateDir(state, euid+1); err == nil || !strings.Contains(err.Error(), "owned by uid") {
+		t.Fatalf("foreign owner: %v", err)
+	}
+	if st, _ := os.Stat(state); st.Mode().Perm() != 0o755 {
+		t.Fatalf("foreign directory changed: %v", st.Mode())
+	}
+	// A symlink (even to a good directory), a file and a missing path are refused.
+	link := filepath.Join(dir, "link")
+	_ = os.Symlink(state, link)
+	file := filepath.Join(dir, "file")
+	_ = os.WriteFile(file, nil, 0o644)
+	for _, p := range []string{link, file, filepath.Join(dir, "missing")} {
+		if err := privateDir(p, euid); err == nil {
+			t.Errorf("%s: accepted", p)
+		}
+	}
+	if st, _ := os.Stat(state); st.Mode().Perm() != 0o755 {
+		t.Fatalf("followed the symlink: %v", st.Mode())
+	}
+}
+
 // TestBinaryExecs builds the real binary and checks it waits, exports only the
 // declared secrets and execs the command with the container's environment.
 func TestBinaryExecs(t *testing.T) {
@@ -220,6 +276,32 @@ func TestBinaryExecs(t *testing.T) {
 	cmd = exec.Command(bin, "--app", "crm", "--ready", ready, "--timeout", "300ms", "--", envBin)
 	if out, err := cmd.CombinedOutput(); err == nil || strings.Contains(string(out), "KEEP") {
 		t.Fatalf("expected failure before exec, got %v\n%s", err, out)
+	}
+
+	// private: the directory becomes 0700, then the command runs with the
+	// container's environment unchanged (no secrets, no ready gate).
+	state := filepath.Join(dir, "state")
+	_ = os.Mkdir(state, 0o755)
+	_ = os.Chmod(state, 0o755)
+	cmd = exec.Command(bin, "private", state, "--", envBin)
+	cmd.Env = []string{"KEEP=2", "PATH=" + os.Getenv("PATH")}
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "KEEP=2") {
+		t.Fatalf("private: %v\n%s", err, out)
+	}
+	if st, _ := os.Stat(state); st.Mode().Perm() != 0o700 {
+		t.Fatalf("private: mode %v", st.Mode())
+	}
+	// A refused directory stops the container before the command runs.
+	_ = os.Symlink(state, filepath.Join(dir, "state-link"))
+	cmd = exec.Command(bin, "private", filepath.Join(dir, "state-link"), "--", envBin)
+	cmd.Env = []string{"KEEP=3"}
+	if out, err := cmd.CombinedOutput(); err == nil || strings.Contains(string(out), "KEEP=3") {
+		t.Fatalf("private through a symlink: %v\n%s", err, out)
+	}
+	for _, bad := range [][]string{{"private"}, {"private", state}, {"private", state, "--"}, {"private", state, envBin}} {
+		if err := exec.Command(bin, bad...).Run(); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
 	}
 
 	// probe and install subcommands.

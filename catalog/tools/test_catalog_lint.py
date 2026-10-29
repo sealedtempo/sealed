@@ -78,5 +78,32 @@ class ComposerLintTest(unittest.TestCase):
             self.assertFalse([f for f in catalog_lint.errors_of(catalog_lint.composer_lint(app)) if f["code"] == "sbom-no-license"])
 
 
+def _tracked_files() -> list[str] | None:
+    """The repository's tracked files, or None outside a git work tree (a source archive)."""
+    git = shutil.which("git")
+    if not git:
+        return None
+    res = subprocess.run([git, "-C", catalog_lint.REPO_ROOT, "ls-files", "-z"], capture_output=True, timeout=60)
+    if res.returncode != 0:
+        return None
+    return [f for f in res.stdout.decode("utf-8", "surrogateescape").split("\0") if f]
+
+
+class RepositoryHygieneTest(unittest.TestCase):
+    """D-057 and D-069: build outputs never enter history. These tests write __pycache__ next to this file."""
+
+    def test_no_python_bytecode_is_tracked(self) -> None:
+        files = _tracked_files()
+        if files is None:
+            self.skipTest("not a git work tree")
+        self.assertIn("catalog/tools/test_catalog_lint.py", files)
+        bytecode = [f for f in files if "__pycache__/" in f or f.endswith((".pyc", ".pyo", ".pyd"))]
+        self.assertEqual(bytecode, [], "untrack them with git rm --cached and keep __pycache__/ in .gitignore")
+
+    def test_bytecode_here_is_ignored(self) -> None:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gitignore"), encoding="utf-8") as fh:
+            self.assertIn("__pycache__/", fh.read().split())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -180,16 +180,30 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri 
 		payerEnv["SEALED_SECRETS_DIR"] = SecretsRoot + "/" + svcPayer
 		payerEnv["SEALED_AGENT_URL"] = "http://" + svcAgent + ":" + strconv.Itoa(AgentPort)
 		payerEnv["SEALED_VERIFIERD_URL"] = "http://" + svcVerifierd + ":" + strconv.Itoa(VerifierdPort)
-		payerVolumes := []any{volumeMount(volReady, ReadyDir, true)}
+		payerEnv["STATE_DIR"] = PayerStateDir
+		payerVolumes := []any{
+			volumeMount(volReady, ReadyDir, true),
+			volumeMount(volBin, BinDir, true),
+			dataBind(payerDataApp, payerDataVolume, PayerStateDir, false),
+		}
 		for _, n := range payerSecrets {
 			payerVolumes = append(payerVolumes, secretBind(svcPayer, n))
 		}
 		// The payer reaches verifierd on the verifier network and everything
 		// else on apps. On SIGTERM it closes its relay session, which waits
 		// up to 30 s for the chain (mppx), so it gets more than Docker's
-		// default 10 s (D-067).
+		// default 10 s (D-067). Its state (the day's debits, the channel
+		// journal and the stored session channel) lives on the encrypted
+		// data disk, so it survives image updates and VM replacement
+		// (fix-payments). sealed-agent creates the directory for the numeric
+		// user that mounts it; envexec private makes it 0700 before the
+		// image's own command runs.
+		payerEntry := append([]any{EnvexecPath, "private", PayerStateDir, "--"}, toAny(payerCommand[:1])...)
 		services[svcPayer] = harden(map[string]any{
-			"image": img(imgPayer),
+			"image":      img(imgPayer),
+			"user":       PayerRunAs,
+			"entrypoint": payerEntry,
+			"command":    toAny(payerCommand[1:]),
 			"networks": map[string]any{
 				"apps":          map[string]any{"ipv4_address": PayerIP},
 				VerifierNetwork: map[string]any{"ipv4_address": PayerVerifierIP},
@@ -200,6 +214,7 @@ func buildComposeDoc(cfg *Config, apps []*plannedApp, routes []plannedRoute, ri 
 			"configs":           []any{configMount(cfgConfig, ConfigPath)},
 			"stop_grace_period": PayerStopGracePeriod,
 			"depends_on": dependsOn(map[string]string{
+				svcInit:      "service_completed_successfully",
 				svcAgent:     "service_healthy",
 				svcVerifierd: "service_started",
 			}),
@@ -638,8 +653,26 @@ func network(subnet, gateway, bridge string, internal, icc bool) map[string]any 
 }
 
 // PayerStopGracePeriod is sealed-mpp-payer's stop_grace_period (D-067: at
-// least 45 s, above mppx's 30 s confirmation wait for the closing voucher).
+// least 45 s, above mppx's 30 s confirmation wait for the closing voucher;
+// the payer exits by 38 s, fix-payments).
 const PayerStopGracePeriod = "60s"
+
+// sealed-mpp-payer's state on the data disk (fix-payments): the directory
+// /mnt/sealed-data/_mpp-payer/state is bound at PayerStateDir, the payer's
+// STATE_DIR, and belongs to PayerRunAs (the image's node user, uid 1000)
+// with mode 0700.
+const (
+	PayerStateDir   = "/var/lib/sealed-mpp-payer"
+	PayerRunAs      = "1000:1000"
+	payerDataApp    = "_mpp-payer"
+	payerDataVolume = "state"
+)
+
+// payerCommand is the sealed-mpp-payer image's ENTRYPOINT and CMD
+// (runtime/mpp-payer/Dockerfile). Compose drops an image's CMD when the
+// entrypoint is replaced, so the composer runs it after envexec private;
+// TestPayerCommandMatchesImage keeps the two equal.
+var payerCommand = []string{"node", "/app/dist/main.js"}
 
 // checkInlineConfigsWritable fails when a service that mounts an inline
 // (content) config is read_only. Compose injects such configs by copying a

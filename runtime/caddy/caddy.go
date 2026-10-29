@@ -65,6 +65,13 @@ const GateBasicRegexp = `^[Bb][Aa][Ss][Ii][Cc][ \t]+` + gateBasicPrefix
 // request's Authorization header before the app (value "1").
 const GateStripHeader = "X-Sealed-Gate-Strip-Authorization"
 
+// GateBearerQuery is added to the gate URI by bearer-passthrough handles
+// (<GatePath>?route=<route>&bearer=1, review C-6). sealed-agent then answers
+// 200 for a request with a Bearer token once the keys are released and the
+// route's app finished its bootstrap, 503 before, 401 without a token and
+// 403 for a route that is not bearer-passthrough. The app checks the token.
+const GateBearerQuery = "bearer=1"
+
 // Route is one upstream on a site. Path is "" for the whole host or a
 // prefix such as /api (matching /api and /api/*). Name is the manifest
 // route name, passed to the gate as ?route=<name>.
@@ -120,6 +127,7 @@ type view struct {
 	PaymentNeeded   bool
 	PaymentMessage  string
 	GateBasicRegexp string
+	GateBearerQuery string
 	GateCookie      string
 }
 
@@ -142,7 +150,7 @@ func Render(in Input, paymentNeeded bool) ([]byte, error) {
 		return nil, err
 	}
 	v := view{Input: in, PaymentNeeded: paymentNeeded, PaymentMessage: PaymentMessage,
-		GateBasicRegexp: GateBasicRegexp, GateCookie: DefaultGateCookie}
+		GateBasicRegexp: GateBasicRegexp, GateBearerQuery: GateBearerQuery, GateCookie: DefaultGateCookie}
 	for _, s := range in.Sites {
 		v.Sites = append(v.Sites, newSiteView(s.Host, s.Routes, false))
 	}

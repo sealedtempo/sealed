@@ -750,6 +750,9 @@ func buildStackInfo(cfg *Config, apps []*plannedApp, routes []plannedRoute, hasG
 		appList = append(appList, entry)
 	}
 	dataDirs := []string{DataPath(caddyDataApp, caddyDataVolume)}
+	if hasGateway {
+		dataDirs = append(dataDirs, DataPath(payerDataApp, payerDataVolume))
+	}
 	for _, a := range apps {
 		for _, v := range a.bundle.Fragment.Volumes {
 			dataDirs = append(dataDirs, DataPath(a.id, v))

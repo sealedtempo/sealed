@@ -1,6 +1,8 @@
 // The catalog's release asset host for the devnet. Bundles are served at exactly the URL the release asset rule
 // gives (D-046, integration brief item 18):
-//   <release_asset_base>/<appId>-v<release_version>/<appId>-<release_version>.bundle.tar
+//   <release_asset_base>/<appId>-v<tag version>/<appId>-<release_version>.bundle.tar
+// where the tag version is the release version without one leading v or V that a digit follows (composer 1.4.0
+// TagVersion: coding-agent v1.58.2 is tagged coding-agent-v1.58.2, not coding-agent-vv1.58.2).
 // The key broker, sealed-verifierd and the CLI each compute that URL with runtime/composer's NewReleaseAssets and
 // check sha256 against the onchain bundleHash, so a wrong path here fails the run.
 import { createHash } from "node:crypto";
@@ -9,8 +11,9 @@ import { createServer, type Server } from "node:http";
 /** The URL path of a bundle below the asset base (D-046). */
 export function bundleAssetPath(slug: string, version: string): string {
   if (!/^[a-z][a-z0-9-]{1,30}[a-z0-9]$/.test(slug)) throw new Error(`app id ${slug} is not a catalog slug`);
-  if (!/^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/.test(version)) throw new Error(`release version ${version} cannot name release assets`);
-  return `/${slug}-v${version}/${slug}-${version}.bundle.tar`;
+  if (!/^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/.test(version) || /^[vV](?![0-9])/.test(version)) throw new Error(`release version ${version} cannot name release assets`);
+  const tagVersion = /^[vV][0-9]/.test(version) ? version.slice(1) : version;
+  return `/${slug}-v${tagVersion}/${slug}-${version}.bundle.tar`;
 }
 
 export const sha256Hex = (b: Uint8Array) => `0x${createHash("sha256").update(b).digest("hex")}` as const;
