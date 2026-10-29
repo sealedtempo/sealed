@@ -204,11 +204,11 @@ class CheckImageTest(unittest.TestCase):
 
         violations, _ = self.scan(debug_tree, [], variant="prod")
         self.assertEqual({v["kind"] for v in violations}, {"variant"})
-        self.assertEqual(len(violations), 3)
+        self.assertEqual(len(violations), len(check_image.DEBUG_ONLY))
         shutil.rmtree(self.work)
         os.makedirs(self.work)
         violations, _ = self.scan(lambda root: write(root, "etc/hostname", b"dstack"), [], variant="debug")
-        self.assertEqual(len(violations), 3)
+        self.assertEqual(len(violations), len(check_image.DEBUG_ONLY))
 
 
 class ParserTest(unittest.TestCase):

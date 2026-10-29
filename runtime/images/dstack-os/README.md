@@ -96,8 +96,8 @@ TDX quota:
 ```bash
 runtime/images/dstack-os/import-and-measure.sh \
   --project P --zone us-central1-a --bucket gs://P-sealed-images \
-  --tarball sealed-dstack-os-0.6.1-s1-gce.tar.gz \
-  --identity sealed-dstack-os-0.6.1-s1-identity.tar.gz \
+  --tarball sealed-dstack-os-0.6.1-s2-gce.tar.gz \
+  --identity sealed-dstack-os-0.6.1-s2-identity.tar.gz \
   --machine-types c3-standard-8,c3-standard-4 --boots 2 \
   --release-base https://github.com/<owner>/<repo>/releases/download
 ```
@@ -125,7 +125,7 @@ machine type, groups machine types with identical measurements (PlatformRegistry
 keeps images unique by `measurementsHash`, CR-5), and writes
 `measurements/<name>-<version>.json` in the `CATALOG_FILE` format of
 `contracts/script/RegisterCatalog.s.sol`: `name`, `version` (for example
-`0.6.1-s1+c3-standard-4.c3-standard-8`), `mrtd`, `rtmr0` to `rtmr2`,
+`0.6.1-s2+c3-standard-4.c3-standard-8`), `mrtd`, `rtmr0` to `rtmr2`,
 `isDebug`, `sourceURI` (the release URL with `#sha256=` of the tarball) and
 `imageId = keccak256(abi.encode(name, version, measurementsHash))`. Registering
 it onchain (`addImage` from OWNER) is a separate operator step.

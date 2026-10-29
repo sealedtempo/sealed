@@ -25,7 +25,7 @@ removed.
 | dstack guest payload (units, `dstack-prepare.sh`, `app-compose.sh`, configs) | `/usr/bin`, `/usr/lib/systemd`, `/etc` | Apache-2.0 | `os/common/rootfs`, `os/mkosi/mkosi.skeleton` |
 | nerdctl 2.3.5, CNI plugins 1.3.0, stargz-snapshotter 0.18.2 | `/usr/bin`, `/usr/lib/cni` | Apache-2.0 | Upstream release binaries, sha256-pinned in `versions.env` |
 | Sysbox 0.6.7 (`sysbox-runc`, `sysbox-fs`, `sysbox-mgr`) | `/usr/bin` | Apache-2.0 | Built from source at pinned commits |
-| `sealed-logship` (debug variant only) | `/usr/bin` | Apache-2.0; Go standard library BSD-3-Clause | `runtime/images/dstack-os/logship`, built with Go 1.26.2 |
+| `sealed-logship` (debug variant only) | `/usr/bin`; Go's `LICENSE` and `PATENTS` in `/usr/share/licenses/sealed-logship/go` | Apache-2.0; Go standard library BSD-3-Clause | `runtime/images/dstack-os/logship`, built with Go 1.26.2 |
 
 Built during the image build but not shipped on the disk: `dstack-mr` and
 `nitro-tpm-pcr-compute` (removed from the tree in `mkosi.finalize` after they

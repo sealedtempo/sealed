@@ -93,10 +93,13 @@ FORBIDDEN_SURFACE = [
 ]
 
 # The Cloud Logging exporter: required in the debug variant, forbidden in production.
+# It is a Go binary, so the Go LICENSE and PATENTS ship with it (review policy-5).
 DEBUG_ONLY = [
     "usr/bin/sealed-logship",
     "usr/lib/systemd/system/sealed-logship.service",
     "usr/lib/systemd/system-preset/82-dstack-sealed-debug.preset",
+    "usr/share/licenses/sealed-logship/go/LICENSE",
+    "usr/share/licenses/sealed-logship/go/PATENTS",
 ]
 
 # DEP-5 License: values that are banned (rule 9, D-021) or are not free.
