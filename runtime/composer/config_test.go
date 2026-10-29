@@ -62,7 +62,7 @@ func TestParseConfigRejects(t *testing.T) {
 		"checksummed address":   {`0x00000000000000000000000000000000000000c1`, `0x00000000000000000000000000000000000000C1`},
 		"short salt":            {`"salt": "0x5a5a`, `"salt": "0x5a`},
 		"zero image":            {`"imageId": "0x1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d"`, `"imageId": "0x0000000000000000000000000000000000000000000000000000000000000000"`},
-		"composer version":      {`"composerVersion": "1.4.0"`, `"composerVersion": "0.9.0"`},
+		"composer version":      {`"composerVersion": "` + Version + `"`, `"composerVersion": "0.9.0"`},
 		"unsorted apps":         {`{ "id": "llm-gateway"`, `{ "id": "zz-gateway"`},
 		"bad scheme":            {`"scheme": "sslip"`, `"scheme": "nip"`},
 		"bad ip":                {`"ip": "34.1.2.3"`, `"ip": "34.1.2"`},

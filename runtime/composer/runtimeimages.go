@@ -11,7 +11,7 @@ import (
 // Version is the composer version. It must equal config.composerVersion.
 // Any change to composed output (this code, runtime-images.json, the Caddy
 // templates or the host rules) requires a new version.
-const Version = "1.4.0"
+const Version = "1.5.0"
 
 //go:embed runtime-images.json
 var runtimeImagesJSON []byte

@@ -1,8 +1,8 @@
 {
-  "composerVersion": "1.4.0",
-  "stackHash": "0x8d592d7609ef9381029923b9c2d290b035f23762daee36e929f4941279d29c3e",
-  "configHash": "0xc7175f01f021b95ea2baeb700fd5a91113fbcae6b8160c9948b2aab9b2d2145a",
-  "deploymentId": "0x9da407861b25eadbf390269ee4d276e6cb2ae943d9af6d3d101e85c79990f711",
+  "composerVersion": "1.5.0",
+  "stackHash": "0xfcb620df245051acd1f9b13b7e4cf8a585ecb683920671d56748d5d45497524d",
+  "configHash": "0x4efba54aa28c59d4d1a8bac5402520401218f78535ed96b9700ab578c00fc617",
+  "deploymentId": "0xffc23e7f9ecf0962747e82e17a05d93b2bf97b6558b3bf996a7772431377af5a",
   "releases": [
     {
       "appId": "0x55fd8d795c5b9d2a906e1540ade043a6fb75de555aeb3800c4dd8cf3079b5dda",
@@ -24,12 +24,12 @@
     }
   ],
   "files": {
-    "Caddyfile": "0x06a19801dc13d7a3efb7663b7a40f4dcd4277c629f41369eb8fa848d6ae39fa6",
-    "Caddyfile.payment-needed": "0x5dfd58ea1ea0cbd957b91e0da2feda3f3dde9062f12177fb6c201fc05d613724",
-    "app-compose.json": "0x8d592d7609ef9381029923b9c2d290b035f23762daee36e929f4941279d29c3e",
-    "config.json": "0xc7175f01f021b95ea2baeb700fd5a91113fbcae6b8160c9948b2aab9b2d2145a",
+    "Caddyfile": "0x74e9cd7d5e6baacd5d223235fe2323e17756fd332fde78e2e9a242fba465d96b",
+    "Caddyfile.payment-needed": "0x1abded7a9f4f5a79985fc49bbd5607fce967bdfbbe190d1095e753f0cdfdb696",
+    "app-compose.json": "0xfcb620df245051acd1f9b13b7e4cf8a585ecb683920671d56748d5d45497524d",
+    "config.json": "0x4efba54aa28c59d4d1a8bac5402520401218f78535ed96b9700ab578c00fc617",
     "egress.json": "0xc9dd351712aa76f4f721ddf60cab5bd3e077846252d5bb96a0d08caaafe1a7b9",
-    "pre-launch.sh": "0xf9e67aa3c519f25864fe9cf1200341e1f8dae3d955969f2ab88f4d60b93d1a1c",
-    "stack.json": "0xef075817ed08f13e7cec0d0412d6bfcbc15339e5583384e204af4772fd118e87"
+    "pre-launch.sh": "0x3c85b62b47506a34c26e88ac5b62108d3cabf48bb9cfbc0996043dde4609573b",
+    "stack.json": "0x05b8316354b3e91d1918da7d95124ae2ea9574108440ff2622f912da5b7c8349"
   }
 }
