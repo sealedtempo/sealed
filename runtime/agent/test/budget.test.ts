@@ -229,3 +229,62 @@ describe("shared spend budget (D-048)", () => {
     expect(b.available(T0)).toBe(650n);
   });
 });
+
+// payments-8: a limit below the app-hour floor leaves the payer 0 for the whole period, so the payer's recovery of an
+// orphaned escrow deposit (a requestClose or withdraw network fee) was refused at every hour and the deposit stayed in
+// escrow. A `recovery` reservation may go past reserved_for_fees by a small allowance, never past the limit itself.
+describe("payments-8: recovery reservations below the fee floor", () => {
+  const ALLOWANCE = { perTx: 10_000n, perWindow: 50_000n };
+  // reserved_for_fees as Agent.feeReserve computes it for crm, coding-agent and internal-tools (0.15 USD per hour until
+  // the window ends), with nothing unpaid yet: 3.60 USD a day against a 2 USD limit.
+  const floor = (windowEnd: number, now: number) => (150_000n * BigInt(Math.max(0, windowEnd - now)) + 3599n) / 3600n;
+  const onchain = (recoveryAllowance?: typeof ALLOWANCE) => {
+    const b = new SpendBudget({ limit: 2_000_000n, state: emptyBudgetState(T0), onchainLimit: true, feeReserve: floor, recoveryAllowance });
+    b.setOnchain({ remaining: 2_000_000n, periodEnd: T0 + DAY_SEC }, b.beginOnchainRead(), T0);
+    return b;
+  };
+
+  it("lets a 0.01 USD recovery reservation through at every hour of the period, while ordinary ones are refused", () => {
+    const b = onchain(ALLOWANCE);
+    const refused: number[] = [];
+    let granted = 0;
+    for (let h = 0; h < 24; h++) {
+      const now = T0 + h * 3600;
+      // Fees paid so far this period lower the key's remaining limit (only the hours already accrued).
+      b.setOnchain({ remaining: 2_000_000n - BigInt(Math.min(h, 13)) * 150_000n, periodEnd: T0 + DAY_SEC }, b.beginOnchainRead(), now);
+      expect(b.reserve(10_000n, now)).toMatchObject({ ok: false, reason: "budget" });
+      const r = b.reserve(10_000n, now, "recovery");
+      if (!r.ok) {
+        refused.push(h);
+        continue;
+      }
+      granted++;
+      b.release(r.reservationId, 10_000n, now);
+    }
+    // Five transactions per window (0.05 USD), then the allowance is used up until the window rolls.
+    expect(granted).toBe(5);
+    expect(refused).toHaveLength(19);
+    expect(b.state.recoveryOverReserve).toBe("50000");
+    const next = T0 + DAY_SEC + 60;
+    b.setOnchain({ remaining: 2_000_000n, periodEnd: T0 + 2 * DAY_SEC }, b.beginOnchainRead(), next);
+    expect(b.state.recoveryOverReserve).toBeUndefined();
+    expect(b.reserve(10_000n, next, "recovery").ok).toBe(true);
+  });
+
+  it("refuses a recovery reservation above the per-transaction allowance or above what the limit allows", () => {
+    const b = onchain(ALLOWANCE);
+    expect(b.reserve(10_001n, T0, "recovery")).toMatchObject({ ok: false, reason: "budget" });
+    b.setOnchain({ remaining: 5_000n, periodEnd: T0 + DAY_SEC }, b.beginOnchainRead(), T0);
+    expect(b.reserve(5_001n, T0, "recovery")).toMatchObject({ ok: false, reason: "budget" });
+    expect(b.reserve(5_000n, T0, "recovery")).toMatchObject({ ok: true, remaining: "0" });
+    // Open reservations count against the limit too.
+    expect(b.reserve(1n, T0, "recovery")).toMatchObject({ ok: false });
+  });
+
+  it("without an allowance a recovery reservation is an ordinary one, and one that fits needs no allowance", () => {
+    expect(onchain().reserve(10_000n, T0, "recovery")).toMatchObject({ ok: false, reason: "budget" });
+    const { b } = make({ limit: 2_000_000n });
+    expect(b.reserve(10_000n, T0, "recovery").ok).toBe(true);
+    expect(b.state.recoveryOverReserve).toBeUndefined();
+  });
+});

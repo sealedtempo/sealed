@@ -9,12 +9,14 @@ import { AgentSpendBudget } from '../../src/shared-budget.js'
  *
  * What the payer may reserve is budget - reservedForFees - used - open reservations, so fee
  * settlement keeps priority. `used` of a release is what counts as spent; the rest of the
- * reservation goes back.
+ * reservation goes back. A `purpose: recovery` reservation may go past reservedForFees by at
+ * most `recoveryAllowance` (payments-8), never past the budget itself.
  */
-export function fakeAgentBudget(options: { budget: bigint; reservedForFees?: bigint }) {
+export function fakeAgentBudget(options: { budget: bigint; reservedForFees?: bigint; recoveryAllowance?: bigint }) {
   const state = {
     budget: options.budget,
     reservedForFees: options.reservedForFees ?? 0n,
+    recoveryAllowance: options.recoveryAllowance ?? 0n,
     used: 0n,
     reservations: new Map<string, bigint>(),
     /** Throw a network error on every call. */
@@ -26,12 +28,16 @@ export function fakeAgentBudget(options: { budget: bigint; reservedForFees?: big
   }
   const calls: { path: string; body: Record<string, string> }[] = []
   let next = 0
+  const held = () => {
+    let sum = 0n
+    for (const amount of state.reservations.values()) sum += amount
+    return sum
+  }
   const available = () => {
-    let held = 0n
-    for (const amount of state.reservations.values()) held += amount
-    const left = state.budget - state.reservedForFees - state.used - held
+    const left = state.budget - state.reservedForFees - state.used - held()
     return left > 0n ? left : 0n
   }
+  const recoveryFits = (amount: bigint) => amount <= state.recoveryAllowance && amount <= state.budget - state.used - held()
   const fake = {
     state,
     calls,
@@ -49,7 +55,8 @@ export function fakeAgentBudget(options: { budget: bigint; reservedForFees?: big
       if (path === '/v1/spend/reserve') {
         if (typeof body.amount !== 'string' || !/^\d+$/.test(body.amount)) return Response.json({ error: 'amount must be a decimal string' }, { status: 400 })
         const amount = BigInt(body.amount)
-        if (amount > available()) return Response.json({ ok: false, remaining: available().toString() }, { status: 409 })
+        if (amount > available() && !(body.purpose === 'recovery' && recoveryFits(amount)))
+          return Response.json({ ok: false, remaining: available().toString() }, { status: 409 })
         const reservationId = `r${++next}`
         state.reservations.set(reservationId, amount)
         return Response.json({ ok: true, reservationId, remaining: available().toString() })

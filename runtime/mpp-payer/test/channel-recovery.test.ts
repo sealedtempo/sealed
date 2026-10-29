@@ -83,6 +83,48 @@ describe('channel recovery (review M1)', () => {
     expect(sent).toEqual([])
     expect(journal.get(id(7))?.status).toBe('retired')
     expect(guard.counters().debited).toBe('0')
+    // payments-8: it asked for the recovery allowance, and the deferral is reported with the deposit at stake.
+    expect(agent.calls.find((c) => c.path === '/v1/spend/reserve')?.body).toMatchObject({ amount: '100', purpose: 'recovery' })
+    expect(recovery.snapshot()).toMatchObject({ deferred: 1, deferredAmount: '500000' })
+    // Once the agent has room (here: the limit was raised), the next pass goes through and the deferral is cleared.
+    agent.state.reservedForFees = 0n
+    await recovery.sweep()
+    expect(sent).toEqual([{ call: 'requestClose', salt: id(7) }])
+    expect(recovery.snapshot()).toMatchObject({ requestCloses: 1, deferred: 0, deferredAmount: '0' })
+  })
+
+  // payments-8: before the fix every pass was deferred while fee priority held the whole budget (a limit below the
+  // app-hour floor), so the deposit stayed in escrow for good.
+  it('recovers a deposit while fee priority holds the whole budget, through the recovery allowance', async () => {
+    let now = 1_000
+    const journal = new ChannelJournal(undefined, () => 0)
+    journal.recordOpen({ channelId: id(9), chainId: 4217, escrow: '0x4d50500000000000000000000000000000000000', descriptor: descriptor(9), deposit: 500_000n })
+    const states: Record<string, ChannelState> = { [id(9)]: { deposit: 500_000n, settled: 120_000n, closeRequestedAt: 0 } }
+    const { chain, sent } = fakeChain(states)
+    const agent = fakeAgentBudget({ budget: 2_000_000n, reservedForFees: 2_000_000n, recoveryAllowance: 10_000n })
+    const recovery = new ChannelRecovery({ journal, chain, liveChannels: () => new Set(), guard: new SpendGuard(2_000_000n), budget: agent.budget, now: () => now })
+    expect(agent.available()).toBe(0n)
+    await recovery.sweep()
+    expect(sent).toEqual([{ call: 'requestClose', salt: id(9) }])
+    states[id(9)] = { deposit: 500_000n, settled: 120_000n, closeRequestedAt: 10_000 }
+    now = 20_000
+    await recovery.sweep()
+    expect(sent.map((s) => s.call)).toEqual(['requestClose', 'withdraw'])
+    expect(journal.get(id(9))).toMatchObject({ status: 'closed', refunded: '400000' })
+    expect(recovery.snapshot()).toMatchObject({ requestCloses: 1, withdrawals: 1, recovered: '400000', deferred: 0 })
+    expect(agent.releases()).toEqual([100n, 100n])
+  })
+
+  it('does not ask for the allowance when the fee is larger than what the channel still holds', async () => {
+    const journal = new ChannelJournal(undefined, () => 0)
+    journal.recordOpen({ channelId: id(10), chainId: 4217, escrow: '0x4d50500000000000000000000000000000000000', descriptor: descriptor(10), deposit: 500_000n })
+    const { chain, sent } = fakeChain({ [id(10)]: { deposit: 500_000n, settled: 499_950n, closeRequestedAt: 0 } })
+    const agent = fakeAgentBudget({ budget: 2_000_000n, reservedForFees: 2_000_000n, recoveryAllowance: 10_000n })
+    const recovery = new ChannelRecovery({ journal, chain, liveChannels: () => new Set(), guard: new SpendGuard(2_000_000n), budget: agent.budget, now: () => 1_000 })
+    await recovery.sweep()
+    expect(sent).toEqual([])
+    expect(agent.calls.find((c) => c.path === '/v1/spend/reserve')?.body.purpose).toBeUndefined()
+    expect(recovery.snapshot()).toMatchObject({ deferred: 1, deferredAmount: '50' })
   })
 
   it('keeps the journal and the session store across restarts', () => {

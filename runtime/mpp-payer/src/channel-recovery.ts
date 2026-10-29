@@ -83,7 +83,11 @@ export class ViemEscrowChain implements EscrowChain {
   }
 }
 
-export type RecoveryCounters = { requestCloses: number; withdrawals: number; recovered: string; failures: number }
+/**
+ * `deferred` and `deferredAmount` (payments-8): channels whose last recovery attempt waited for budget, and the
+ * deposit they still hold (deposit - settled).
+ */
+export type RecoveryCounters = { requestCloses: number; withdrawals: number; recovered: string; failures: number; deferred: number; deferredAmount: string }
 
 export type ChannelRecoveryDeps = {
   journal: ChannelJournal
@@ -110,12 +114,17 @@ export type ChannelRecoveryDeps = {
  *
  * Both transactions are network fees the account pays itself, so they are budgeted like any
  * other debit (local guard and shared budget). The refund returns to the account but not to the
- * access-key limit, so no budget is given back for it.
+ * access-key limit, so no budget is given back for it. When the deposit at stake is larger than
+ * the fee, the shared reservation says `purpose: recovery`, which the agent lets past its fee
+ * priority by a small allowance (payments-8): otherwise a limit below the fee floor would keep the
+ * deposit in escrow for good. A channel still waiting for budget is reported (`deferred`).
  */
 export class ChannelRecovery {
   private timer: NodeJS.Timeout | undefined
   private running: Promise<void> | undefined
-  private readonly counters: RecoveryCounters = { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0 }
+  private readonly counters: Omit<RecoveryCounters, 'deferred' | 'deferredAmount'> = { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0 }
+  /** Channels whose last recovery attempt was deferred for lack of budget, and the deposit at stake. */
+  private readonly deferred = new Map<string, bigint>()
   private readonly now: () => number
 
   constructor(private readonly deps: ChannelRecoveryDeps) {
@@ -134,7 +143,8 @@ export class ChannelRecovery {
   }
 
   snapshot(): RecoveryCounters {
-    return { ...this.counters }
+    const atStake = [...this.deferred.values()].reduce((a, b) => a + b, 0n)
+    return { ...this.counters, deferred: this.deferred.size, deferredAmount: atStake.toString() }
   }
 
   /** One pass over the journal. Never throws; a pass already running is joined. */
@@ -170,12 +180,14 @@ export class ChannelRecovery {
       // Never opened (the open was refused or expired) or already closed or withdrawn.
       if (record.status === 'open' && recent) return
       journal.markClosed(record.channelId)
+      this.deferred.delete(record.channelId)
       return
     }
+    const atStake = state.deposit > state.settled ? state.deposit - state.settled : 0n
     if (state.closeRequestedAt > 0) {
       journal.markCloseRequested(record.channelId, state.closeRequestedAt)
       if (now < state.closeRequestedAt + (await chain.gracePeriod())) return
-      const result = await this.send('withdraw', record)
+      const result = await this.send('withdraw', record, atStake)
       if (result?.status === 'success') {
         const refunded = result.refunded ?? state.deposit - state.settled
         journal.markClosed(record.channelId, refunded)
@@ -186,7 +198,7 @@ export class ChannelRecovery {
       return
     }
     if (record.status === 'open') journal.retire(record.channelId, 'orphaned')
-    const result = await this.send('requestClose', record)
+    const result = await this.send('requestClose', record, atStake)
     if (result?.status === 'success') {
       journal.markCloseRequested(record.channelId, result.closeRequestedAt ?? now)
       this.counters.requestCloses++
@@ -194,8 +206,11 @@ export class ChannelRecovery {
     }
   }
 
-  /** Sends one recovery transaction with its network fee reserved in both caps. */
-  private async send(call: RecoveryCall, record: ChannelRecord) {
+  /**
+   * Sends one recovery transaction with its network fee reserved in both caps. `atStake` is what the channel still
+   * holds for the payer; only when it is larger than the fee is the shared reservation a `recovery` one.
+   */
+  private async send(call: RecoveryCall, record: ChannelRecord, atStake: bigint) {
     const prepared = await this.deps.chain.prepare(call, record.descriptor)
     const fee = prepared.feeCap
     let release: (() => void) | undefined
@@ -203,16 +218,18 @@ export class ChannelRecovery {
     try {
       if (fee > 0n) {
         release = this.deps.guard.reserve(fee, 'fee')
-        if (this.deps.budget) shared = await this.deps.budget.reserve(fee)
+        if (this.deps.budget) shared = await this.deps.budget.reserve(fee, atStake > fee ? 'recovery' : undefined)
       }
     } catch (error) {
       release?.()
       if (error instanceof SpendLimitError || error instanceof BudgetUnavailableError) {
-        this.deps.log?.({ event: 'channel_recovery_deferred', channelId: record.channelId, call, detail: error.message.slice(0, 200) })
+        this.deferred.set(record.channelId, atStake)
+        this.deps.log?.({ event: 'channel_recovery_deferred', channelId: record.channelId, call, atStake: atStake.toString(), detail: error.message.slice(0, 200) })
         return undefined
       }
       throw error
     }
+    this.deferred.delete(record.channelId)
     try {
       const result = await prepared.send()
       if (shared) await this.deps.budget!.release(shared, fee)

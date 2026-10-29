@@ -115,6 +115,8 @@ export function networkFeeAllowance(chainId: number): bigint {
   const local = feeUnitsReserved(LOCAL_MIN_GAS, LOCAL_MAX_GAS_PRICE);
   return local > NETWORK_FEE_ALLOWANCE ? local : NETWORK_FEE_ALLOWANCE;
 }
+/** Recovery transactions per budget window that may go past reserved_for_fees (payments-8: 0.05 USD on mainnet). */
+export const RECOVERY_TXS_PER_WINDOW = 5n;
 /** A reservation older than this since the last read of the access key's limit triggers a new read. */
 export const ONCHAIN_LIMIT_MAX_AGE_SEC = 60;
 /** A ledger rebuild reads at most this many pages of stored reports (500 each) before it gives up (D-062). */
@@ -340,6 +342,9 @@ export class Agent {
       onchainLimit: ctx.config.settlement.mode === "access-key",
       state: store.state.budget,
       feeReserve: (windowEnd, now) => this.feeReserve(windowEnd, now),
+      // payments-8: the payer's recovery of an orphaned escrow deposit may use a settlement transaction's network fee
+      // allowance past reserved_for_fees, for a few transactions per window.
+      recoveryAllowance: { perTx: networkFeeAllowance(ctx.config.chainId), perWindow: RECOVERY_TXS_PER_WINDOW * networkFeeAllowance(ctx.config.chainId) },
       onChange: scheduleSave,
     });
     // In the background: a blocked RPC must not delay boot (every settlement and stale reservation reads again).
@@ -699,7 +704,7 @@ export class Agent {
       if (age === Number.POSITIVE_INFINITY) await this.refreshSpendLimit();
       else if (age >= ONCHAIN_LIMIT_MAX_AGE_SEC) void this.refreshSpendLimit();
     }
-    const result = budget.reserve(r.data.amount, this.clock.now());
+    const result = budget.reserve(r.data.amount, this.clock.now(), r.data.purpose);
     if (result.ok) {
       try {
         await (this.store as StateStore).save();
