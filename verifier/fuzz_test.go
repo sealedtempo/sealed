@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/internal/fixture"
@@ -279,6 +281,29 @@ func FuzzVerifyLiveSubmission(f *testing.F) {
 			t.Fatalf("a document with another config passed:\n%s", raw)
 		case !eok || !sameRuntime(wantRT, gotRT):
 			t.Fatalf("a document with other RTMR3 events passed:\n%s", raw)
+		}
+	})
+}
+
+// FuzzPublicAddr: the live attestation dialer (refuseNonPublic) connects to a
+// resolved address only if isPublicAddr says it is public. Whatever it calls
+// public, sealed-egress's fail-closed classification (policy.Classify, which
+// treats only global unicast outside the special ranges as public) must call
+// public too: the attest host's DNS answer is the attacker's choice.
+func FuzzPublicAddr(f *testing.F) {
+	for _, s := range []string{
+		"34.1.2.3", "2600:1900::1", "127.0.0.1", "169.254.169.254", "::ffff:169.254.169.254", "64:ff9b::a9fe:a9fe",
+		"fd20:ce::254", "100.64.0.1", "fe80::1", "8.8.8.8", "2001:4860::8888",
+	} {
+		f.Add(netip.MustParseAddr(s).AsSlice())
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		a, ok := netip.AddrFromSlice(raw)
+		if !ok {
+			return
+		}
+		if verify.IsPublicAddr(a.String()) && policy.Classify(a) != policy.ClassPublic {
+			t.Fatalf("the live fetch would dial %s, which sealed-egress classifies %s", a, policy.Classify(a))
 		}
 	})
 }

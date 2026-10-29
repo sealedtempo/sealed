@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // nonPublic are the destination ranges a live attestation fetch refuses unless AllowPrivateAddresses is set:
@@ -40,10 +42,14 @@ var nonPublic = []netip.Prefix{
 	netip.MustParsePrefix("ff00::/8"),
 }
 
-// isPublicAddr reports whether ip is a globally routable unicast address.
+// isPublicAddr reports whether ip is a globally routable unicast address. It starts from sealed-egress's
+// classification, which calls public only IPv4 outside the special ranges and IPv6 inside 2000::/3 outside NAT64,
+// 6to4, Teredo, benchmarking and ORCHID: a list of non-public ranges alone let reserved and IPv4-embedding IPv6
+// space through (fuzz finding, FuzzPublicAddr), such as 64:ff9b:1::/48, whose local NAT64 can reach 169.254.169.254.
+// nonPublic adds the documentation ranges egress leaves public for its test fixtures.
 func isPublicAddr(ip netip.Addr) bool {
 	ip = ip.Unmap()
-	if !ip.IsValid() {
+	if !ip.IsValid() || policy.Classify(ip) != policy.ClassPublic {
 		return false
 	}
 	for _, p := range nonPublic {
