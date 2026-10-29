@@ -5,8 +5,11 @@ import { ustar } from "./helpers.ts";
 describe("release asset host (D-046)", () => {
   it("serves a bundle at <base>/<appId>-v<version>/<appId>-<version>.bundle.tar", async () => {
     expect(bundleAssetPath("crm", "10.0.11")).toBe("/crm-v10.0.11/crm-10.0.11.bundle.tar");
-    // A manifest version that already starts with v keeps it: the tag is <appId>-v<release_version>.
-    expect(bundleAssetPath("coding-agent", "v1.58.2")).toBe("/coding-agent-vv1.58.2/coding-agent-v1.58.2.bundle.tar");
+    // A version that already starts with v before a digit is tagged with one v (composer 1.4.0 TagVersion); the
+    // asset name keeps the version as it is.
+    expect(bundleAssetPath("coding-agent", "v1.58.2")).toBe("/coding-agent-v1.58.2/coding-agent-v1.58.2.bundle.tar");
+    expect(bundleAssetPath("internal-tools", "V3")).toBe("/internal-tools-v3/internal-tools-V3.bundle.tar");
+    expect(() => bundleAssetPath("crm", "vnext")).toThrow("cannot name release assets");
     expect(() => bundleAssetPath("crm", "1.0.0+build.1")).toThrow("cannot name release assets");
     expect(() => bundleAssetPath("Crm", "1.0.0")).toThrow("not a catalog slug");
 
