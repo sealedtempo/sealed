@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sealedtempo <349375820+sealedtempo@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 +0000
+Subject: [PATCH 8/8] mkosi: ship the Go and project license texts for sysbox and the
+ container stack
+
+sysbox-runc, sysbox-fs, sysbox-mgr, nerdctl, the CNI plugins and
+stargz-snapshotter are Go binaries staged by hand into the rootfs, not
+Debian packages, so the copyright capture in mkosi.postinst never reaches
+them and the prod profile deletes /usr/share/doc. Install the Go standard
+library notice (LICENSE and PATENTS, BSD-3-Clause) and each project's own
+Apache-2.0 LICENSE under /usr/share/licenses, which check_image.py now
+requires on both the prod and the debug disk (review policy-5). The sysbox
+texts come from the pinned source checkouts; the release tarballs carry no
+license file, so the container-stack texts are pinned in the component. Every
+text is sha256 checked before it is installed.
+---
+ .../container-stack/container-stack-build.sh  | 23 +++++++++++++++++++
+ os/mkosi/components/sysbox/sysbox-build.sh    | 21 +++++++++++++++++
+ 2 files changed, 44 insertions(+)
+
+diff --git a/os/mkosi/components/container-stack/container-stack-build.sh b/os/mkosi/components/container-stack/container-stack-build.sh
+index 71d93ec..321bf9a 100755
+--- a/os/mkosi/components/container-stack/container-stack-build.sh
++++ b/os/mkosi/components/container-stack/container-stack-build.sh
+@@ -46,4 +46,27 @@ install -Dm0644 "$ROOT/os/yocto/layers/meta-dstack/recipes-containers/stargz-sna
+   "$STAGE/usr/lib/systemd/system/containerd-stargz-grpc.service"
+ install -Dm0644 "$ROOT/os/yocto/layers/meta-dstack/recipes-containers/containerd-config/files/config.toml" \
+   "$STAGE/etc/containerd/config.toml"
++# Sealed: nerdctl, the CNI plugins and stargz-snapshotter are Go programs, so
++# the staged binaries carry the Go standard library notice (BSD-3-Clause) and
++# each project's own Apache-2.0 LICENSE. The Debian copyright capture in
++# mkosi.postinst does not reach manually staged binaries, and the prod profile
++# deletes /usr/share/doc, so install the texts under /usr/share/licenses, which
++# check_image.py requires on both the prod and the debug disk. The release
++# tarballs carry no license file, so each project's LICENSE is pinned in this
++# component (sha256 checked); the Go texts are byte for byte GOROOT's.
++goroot=$(go env GOROOT)
++echo "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  $goroot/LICENSE" | sha256sum -c -
++echo "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  $goroot/PATENTS" | sha256sum -c -
++install -Dm0644 "$goroot/LICENSE" "$STAGE/usr/share/licenses/container-stack/go/LICENSE"
++install -Dm0644 "$goroot/PATENTS" "$STAGE/usr/share/licenses/container-stack/go/PATENTS"
++LICENSES="$SELF/components/container-stack/licenses"
++for proj in nerdctl cni-plugins stargz-snapshotter; do
++  case $proj in
++    nerdctl)            sha=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 ;;
++    cni-plugins)        sha=b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1 ;;
++    stargz-snapshotter) sha=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 ;;
++  esac
++  echo "$sha  $LICENSES/$proj-LICENSE" | sha256sum -c -
++  install -Dm0644 "$LICENSES/$proj-LICENSE" "$STAGE/usr/share/licenses/container-stack/$proj-LICENSE"
++done
+ find "$STAGE" -print0 | xargs -0r touch -h -d "@${SOURCE_DATE_EPOCH:?}"
+diff --git a/os/mkosi/components/sysbox/sysbox-build.sh b/os/mkosi/components/sysbox/sysbox-build.sh
+index b5f0659..c94627d 100755
+--- a/os/mkosi/components/sysbox/sysbox-build.sh
++++ b/os/mkosi/components/sysbox/sysbox-build.sh
+@@ -50,4 +50,25 @@ mkdir -p "$STAGE/var/lib/sysbox" "$STAGE/etc"
+ # and duplicate entries here are a fatal parse error for some userns tooling.
+ printf 'sysbox:100000:65536\n' > "$STAGE/etc/subuid"
+ printf 'sysbox:100000:65536\n' > "$STAGE/etc/subgid"
++# Sealed: the sysbox binaries are Go programs, so the staged binaries carry the
++# Go standard library notice (BSD-3-Clause) and each project's own Apache-2.0
++# LICENSE. The Debian copyright capture in mkosi.postinst does not reach
++# manually staged binaries, and the prod profile deletes /usr/share/doc, so
++# install the texts under /usr/share/licenses, which check_image.py requires on
++# both the prod and the debug disk. The Go texts are byte for byte GOROOT's
++# (the same sha256 as runtime/envexec and sealed-logship); each project's
++# LICENSE is the one in its pinned source checkout.
++goroot=$(go env GOROOT)
++echo "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  $goroot/LICENSE" | sha256sum -c -
++echo "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc  $goroot/PATENTS" | sha256sum -c -
++install -Dm0644 "$goroot/LICENSE" "$STAGE/usr/share/licenses/sysbox/go/LICENSE"
++install -Dm0644 "$goroot/PATENTS" "$STAGE/usr/share/licenses/sysbox/go/PATENTS"
++for mod in sysbox-runc sysbox-fs sysbox-mgr; do
++  case $mod in
++    sysbox-runc) sha=b6ebde6849218d10473832460729fc47104a5ef1d77c194974983c131aa8a777 ;;
++    *)           sha=d654e7d0229420c56e7cc790b251d0bb90248f509113aca960c182b70311d9ac ;;
++  esac
++  echo "$sha  $B/$mod/LICENSE" | sha256sum -c -
++  install -Dm0644 "$B/$mod/LICENSE" "$STAGE/usr/share/licenses/sysbox/$mod-LICENSE"
++done
+ find "$STAGE" -print0 | xargs -0r touch -h -d "@${SOURCE_DATE_EPOCH:?}"

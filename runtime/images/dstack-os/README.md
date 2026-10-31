@@ -23,12 +23,12 @@ production secrets to a debug image, and acceptance tests run on production.
 | Path | What |
 |---|---|
 | `upstream.env` | Pins: upstream repo and commit, Sealed version, image names, fixed commit identity and time |
-| `patches/` | Seven `git am` patches on the upstream commit, documented line by line in `patches/README.md` |
-| `overlay/` | New files added to the upstream tree in one commit: the `sealed-debug` profile and the `sealed-logship` component |
+| `patches/` | Eight `git am` patches on the upstream commit, documented line by line in `patches/README.md` |
+| `overlay/` | New files added to the upstream tree in one commit: the `sealed-debug` profile, the `sealed-logship` component and the container-stack license texts |
 | `logship/` | `sealed-logship` (Go, standard library only), copied into the tree as `os/sealed/logship` |
 | `source.lock` | The resulting patched commit and tree; CI fails when it drifts |
 | `build.sh` | Prepare, lock, lint, build and package |
-| `check_image.py` | License and attack-surface check of the built disk (fails on NVIDIA, ZFS or CDDL content) |
+| `check_image.py` | License and attack-surface check of the built disk (fails on NVIDIA, ZFS or CDDL content, or a missing hand-staged license text) |
 | `rust_inventory.py` | License inventory of the Rust crates compiled into the guest |
 | `license-exceptions.json` | Waivers for `check_image.py`, each tied to a decision id. Empty |
 | `tools/osimage/` | Go helper: Authenticode, image identity, measurement compose, quote verification, catalog JSON |
@@ -96,8 +96,8 @@ TDX quota:
 ```bash
 runtime/images/dstack-os/import-and-measure.sh \
   --project P --zone us-central1-a --bucket gs://P-sealed-images \
-  --tarball sealed-dstack-os-0.6.1-s1-gce.tar.gz \
-  --identity sealed-dstack-os-0.6.1-s1-identity.tar.gz \
+  --tarball sealed-dstack-os-0.6.1-s3-gce.tar.gz \
+  --identity sealed-dstack-os-0.6.1-s3-identity.tar.gz \
   --machine-types c3-standard-8,c3-standard-4 --boots 2 \
   --release-base https://github.com/<owner>/<repo>/releases/download
 ```
@@ -125,7 +125,7 @@ machine type, groups machine types with identical measurements (PlatformRegistry
 keeps images unique by `measurementsHash`, CR-5), and writes
 `measurements/<name>-<version>.json` in the `CATALOG_FILE` format of
 `contracts/script/RegisterCatalog.s.sol`: `name`, `version` (for example
-`0.6.1-s1+c3-standard-4.c3-standard-8`), `mrtd`, `rtmr0` to `rtmr2`,
+`0.6.1-s3+c3-standard-4.c3-standard-8`), `mrtd`, `rtmr0` to `rtmr2`,
 `isDebug`, `sourceURI` (the release URL with `#sha256=` of the tarball) and
 `imageId = keccak256(abi.encode(name, version, measurementsHash))`. Registering
 it onchain (`addImage` from OWNER) is a separate operator step.

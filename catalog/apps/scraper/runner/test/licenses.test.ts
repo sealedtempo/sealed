@@ -133,6 +133,8 @@ describe('upstream license texts (LICENSES/)', () => {
       'playwright-v1.62.1-NOTICE': 'microsoft/playwright v1.62.1 NOTICE',
       'firefox-MPL-2.0.txt': 'mozilla/bedrock a15178c3c7c976c67b3641af77cae0b66093a175 media/MPL/2.0/index.txt',
       'postgresql-17.11-COPYRIGHT': 'postgres/postgres REL_17_11 COPYRIGHT',
+      'sapphire-async-queue-1.5.5-LICENSE.md': 'sapphiredev/utilities @sapphire/async-queue@1.5.5 LICENSE.md',
+      'type-fest-v2.19.0-license-mit': 'sindresorhus/type-fest v2.19.0 license-mit',
     });
     const pkg = JSON.parse(readFileSync(resolve(RUNNER, 'package.json'), 'utf8')) as {
       dependencies: Record<string, string>;
@@ -161,6 +163,52 @@ describe('upstream license texts (LICENSES/)', () => {
   it('the hash is git\'s blob id', () => {
     // printf 'hello\n' | git hash-object --stdin
     expect(gitBlobHash(Buffer.from('hello\n'))).toBe('ce013625030ba8dba906f756967f9e9ca394464a');
+  });
+});
+
+// The image ships the production node_modules as npm published them. A package whose npm tarball
+// has no license text of its own (no LICENSE, COPYING or COPYRIGHT file, and no grant in its
+// README) must be listed here: with the upstream text LICENSES/ carries for it, or with the words
+// LICENSE-NOTICE uses to say why there is none (review policy-5, the PUB-D audit of every image).
+const WITHOUT_OWN_TEXT: Record<string, { text: string } | { none: string }> = {
+  '@sapphire/async-queue@1.5.5': { text: 'sapphire-async-queue-1.5.5-LICENSE.md' },
+  'type-fest@2.19.0': { text: 'type-fest-v2.19.0-license-mit' },
+  // Upstream has no license file; the Apache License 2.0 text is Crawlee's.
+  'got-scraping@4.2.2': { text: 'crawlee-v3.18.2-LICENSE.md' },
+  'boolbase@1.0.0': { none: 'so there is no text of this version to ship' },
+};
+
+const TEXT_FILE = /^(un)?(licen[cs]e|copying|copyright)([._-].*)?$/i;
+const README_GRANT =
+  /Permission is hereby granted|Permission to use, copy, modify|Licensed under the Apache License, Version 2\.0|Redistribution and use in source and binary forms/;
+
+function ownText(pkg: InstalledPackage): boolean {
+  const files = readdirSync(pkg.dir);
+  if (files.some((f) => TEXT_FILE.test(f))) return true;
+  const readme = files.find((f) => /^readme(\.|$)/i.test(f));
+  return readme !== undefined && README_GRANT.test(readFileSync(join(pkg.dir, readme), 'utf8'));
+}
+
+describe('npm packages without a license text of their own', () => {
+  const full = productionTree(RUNNER);
+  const without = full
+    .filter((p) => !p.name.startsWith('@sealed/') && !ownText(p))
+    .map((p) => `${p.name}@${p.version}`)
+    .sort();
+
+  it('are exactly the listed ones', () => {
+    expect(without).toEqual(Object.keys(WITHOUT_OWN_TEXT).sort());
+  });
+
+  it('each has its upstream text in LICENSES/, or LICENSE-NOTICE says why there is none', () => {
+    const files = new Set(noticeTexts(NOTICE).map((t) => t.file));
+    for (const [id, entry] of Object.entries(WITHOUT_OWN_TEXT)) {
+      const at = id.lastIndexOf('@');
+      expect(NOTICE, id).toContain(`${id.slice(0, at)} ${id.slice(at + 1)}`);
+      if ('text' in entry) expect(files.has(entry.text), `${id}: LICENSES/${entry.text}`).toBe(true);
+      else expect(NOTICE, id).toContain(entry.none);
+    }
+    expect(readFileSync(join(APP, 'LICENSES', 'crawlee-v3.18.2-LICENSE.md'), 'utf8')).toMatch(/^\s*Apache License\n\s*Version 2\.0, January 2004\n/);
   });
 });
 

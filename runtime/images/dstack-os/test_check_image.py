@@ -199,16 +199,38 @@ class CheckImageTest(unittest.TestCase):
 
     def test_variant_contents(self):
         def debug_tree(root):
-            for path in check_image.DEBUG_ONLY:
+            for path in check_image.DEBUG_ONLY + check_image.REQUIRED_LICENSES:
                 write(root, path, b"x")
 
         violations, _ = self.scan(debug_tree, [], variant="prod")
         self.assertEqual({v["kind"] for v in violations}, {"variant"})
-        self.assertEqual(len(violations), 3)
+        self.assertEqual(len(violations), len(check_image.DEBUG_ONLY))
         shutil.rmtree(self.work)
         os.makedirs(self.work)
         violations, _ = self.scan(lambda root: write(root, "etc/hostname", b"dstack"), [], variant="debug")
-        self.assertEqual(len(violations), 3)
+        self.assertEqual(len(violations), len(check_image.DEBUG_ONLY) + len(check_image.REQUIRED_LICENSES))
+
+    def test_required_licenses(self):
+        # Both variants must carry every hand-staged binary's license text. A
+        # tree without them fails in each variant; a tree with them does not.
+        # No variant means no license check, as for the old callers.
+        def full(root):
+            for path in check_image.DEBUG_ONLY + check_image.REQUIRED_LICENSES:
+                write(root, path, b"x")
+
+        for variant in ("prod", "debug"):
+            violations, _ = self.scan(lambda root: write(root, "etc/hostname", b"x"), [], variant=variant)
+            missing = {v["subject"] for v in violations if v["kind"] == "license"}
+            self.assertEqual(missing, set(check_image.REQUIRED_LICENSES))
+            shutil.rmtree(self.work)
+            os.makedirs(self.work)
+
+        violations, _ = self.scan(full, [], variant="debug")
+        self.assertEqual([v for v in violations if v["kind"] == "license"], [])
+        shutil.rmtree(self.work)
+        os.makedirs(self.work)
+        violations, _ = self.scan(lambda root: write(root, "etc/hostname", b"x"), [])
+        self.assertEqual([v for v in violations if v["kind"] == "license"], [])
 
 
 class ParserTest(unittest.TestCase):

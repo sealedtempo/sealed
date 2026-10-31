@@ -1,0 +1,3 @@
+# Upstream license texts installed into the OS image stay byte for byte as
+# upstream; the build checks their sha256, whatever the checkout's line endings.
+overlay/os/mkosi/components/container-stack/licenses/* -text

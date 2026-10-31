@@ -93,10 +93,33 @@ FORBIDDEN_SURFACE = [
 ]
 
 # The Cloud Logging exporter: required in the debug variant, forbidden in production.
+# It is a Go binary, so the Go LICENSE and PATENTS ship with it (review policy-5).
 DEBUG_ONLY = [
     "usr/bin/sealed-logship",
     "usr/lib/systemd/system/sealed-logship.service",
     "usr/lib/systemd/system-preset/82-dstack-sealed-debug.preset",
+    "usr/share/licenses/sealed-logship/go/LICENSE",
+    "usr/share/licenses/sealed-logship/go/PATENTS",
+]
+
+# License texts for the binaries that are staged into the rootfs by hand
+# (sysbox and the container stack), not installed as Debian packages, so the
+# copyright capture in mkosi.postinst does not reach them and the prod
+# profile's RemoveFiles deletes /usr/share/doc. Each is a Go binary, so Go's
+# standard library notice (LICENSE and PATENTS) ships with it; each project
+# also ships its own LICENSE. Both the prod and the debug disk carry them
+# (review policy-5).
+REQUIRED_LICENSES = [
+    "usr/share/licenses/sysbox/go/LICENSE",
+    "usr/share/licenses/sysbox/go/PATENTS",
+    "usr/share/licenses/sysbox/sysbox-runc-LICENSE",
+    "usr/share/licenses/sysbox/sysbox-fs-LICENSE",
+    "usr/share/licenses/sysbox/sysbox-mgr-LICENSE",
+    "usr/share/licenses/container-stack/go/LICENSE",
+    "usr/share/licenses/container-stack/go/PATENTS",
+    "usr/share/licenses/container-stack/nerdctl-LICENSE",
+    "usr/share/licenses/container-stack/cni-plugins-LICENSE",
+    "usr/share/licenses/container-stack/stargz-snapshotter-LICENSE",
 ]
 
 # DEP-5 License: values that are banned (rule 9, D-021) or are not free.
@@ -311,6 +334,9 @@ def scan(disk, inventory, out_json, exceptions, variant=None):
                 violate("variant", path, "missing from the debug variant (was the sealed-debug profile applied?)")
             elif variant == "prod" and present:
                 violate("variant", path, "debug-only component in the production variant")
+        for path in REQUIRED_LICENSES if variant else []:
+            if not os.path.lexists(os.path.join(root, path)):
+                violate("license", path, "license text for a hand-staged binary missing from the image")
         report["rootfs"] = {"files": files, "elf_files": elf_files, "kernel_module_licenses": modules}
     finally:
         shutil.rmtree(work, ignore_errors=True)
