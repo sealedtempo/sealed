@@ -938,8 +938,8 @@ func TestBootstrapCreatesTheOSImages(t *testing.T) {
 		t.Fatalf("os images %+v", o)
 	}
 	for _, want := range []string{
-		"Boot image         projects/acme-prod-4417/global/images/sealed-dstack-os-0-6-1-s1",
-		"Debug boot image   projects/acme-prod-4417/global/images/sealed-dstack-os-debug-0-6-1-s1",
+		"Boot image         projects/acme-prod-4417/global/images/sealed-dstack-os-0-6-1-s4",
+		"Debug boot image   projects/acme-prod-4417/global/images/sealed-dstack-os-debug-0-6-1-s4",
 		"System disk image  projects/acme-prod-4417/global/images/sealed-dstack-data-v1",
 		"Binding            sealed-binding/v1 customer=0x00000000000000000000000000000000000000c1 key_broker=https://sealed-key-broker-xyz-uc.a.run.app",
 	} {
@@ -963,7 +963,7 @@ func TestBootstrapCreatesTheOSImages(t *testing.T) {
 	// --plan creates nothing and names what the apply will create.
 	h.osImgs.calls = nil
 	code, _, errs = h.run(append(args, "--plan", "--work-dir", work)...)
-	if code != ExitOK || len(h.osImgs.calls) != 0 || !strings.Contains(errs, "sealed-dstack-os-0-6-1-s1, sealed-dstack-os-debug-0-6-1-s1, sealed-dstack-data-v1 from https://github.com/sealedtempo/sealed/releases/download/os-image-v0.6.1-s1") {
+	if code != ExitOK || len(h.osImgs.calls) != 0 || !strings.Contains(errs, "sealed-dstack-os-0-6-1-s4, sealed-dstack-os-debug-0-6-1-s4, sealed-dstack-data-v1 from https://github.com/sealedtempo/sealed/releases/download/os-image-v0.6.1-s4") {
 		t.Fatalf("plan: %d %d %s", code, len(h.osImgs.calls), errs)
 	}
 	// --no-os-images skips them.
@@ -977,9 +977,9 @@ func TestBootstrapCreatesTheOSImages(t *testing.T) {
 		t.Fatalf("bad version: %d %v %s", code, h.tf.calls, errs)
 	}
 	// A failed import fails the command and says the rerun is safe.
-	h.osImgs.err = fmt.Errorf("sealed-dstack-os-0.6.1-s1-gce.tar.gz has sha256 00, but the release's hashes file says 11")
+	h.osImgs.err = fmt.Errorf("sealed-dstack-os-0.6.1-s4-gce.tar.gz has sha256 00, but the release's hashes file says 11")
 	code, out, errs = h.run(append(args, "--yes", "--work-dir", work)...)
-	if code != ExitFailed || strings.Contains(out, "sct_") || !strings.Contains(errs, "OS images are not ready: sealed-dstack-os-0.6.1-s1-gce.tar.gz has sha256 00") || !strings.Contains(errs, "Run the same sealed bootstrap command again") {
+	if code != ExitFailed || strings.Contains(out, "sct_") || !strings.Contains(errs, "OS images are not ready: sealed-dstack-os-0.6.1-s4-gce.tar.gz has sha256 00") || !strings.Contains(errs, "Run the same sealed bootstrap command again") {
 		t.Fatalf("failed import: %d %s %s", code, out, errs)
 	}
 }

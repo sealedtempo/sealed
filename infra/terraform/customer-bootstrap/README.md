@@ -59,7 +59,7 @@ After the apply, `sealed bootstrap` creates the images every deployment in this 
 customer's own credentials:
 
 - `sealed-dstack-os-<version>` and `sealed-dstack-os-debug-<version>` (the version with dots as dashes, for example
-  `sealed-dstack-os-0-6-1-s1`), imported from the OS image release assets
+  `sealed-dstack-os-0-6-1-s4`), imported from the OS image release assets
   `<release asset base>/os-image-v<version>/<name>-<version>-gce.tar.gz`. Each tarball's sha256 must match the
   release's `<name>-<version>-hashes.txt` before it is uploaded to the boot bucket and imported.
 - `sealed-dstack-data-v1`, the dstack system disk: a 10 MiB GPT disk with one partition named `dstack-data`, the
