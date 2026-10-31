@@ -52,6 +52,8 @@ type config struct {
 	ReleaseAssetBases []string
 	// BundleCacheDir keeps verified bundles on disk by bundleHash; memory only when empty.
 	BundleCacheDir string
+	// AllowedXFAM is tdx.allowed_xfam (D-077): from --defaults when given, else attest.DefaultAllowedXFAM.
+	AllowedXFAM []uint64
 }
 
 // devSimEnv must be "1" for any dev flag to be accepted.
@@ -225,6 +227,7 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	}
 
 	c.TCBPolicy = attest.DefaultTCBPolicy()
+	c.AllowedXFAM = attest.DefaultAllowedXFAM()
 	if c.DefaultsFile != "" {
 		raw, err := os.ReadFile(c.DefaultsFile)
 		if err != nil {
@@ -232,6 +235,9 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 		}
 		if c.TCBPolicy, err = attest.TCBPolicyFromDefaults(raw); err != nil {
 			return nil, err
+		}
+		if c.AllowedXFAM, err = attest.XFAMAllowlistFromDefaults(raw); err != nil {
+			return nil, fmt.Errorf("%s: %w", c.DefaultsFile, err)
 		}
 		if bases == "" {
 			var d struct {

@@ -37,7 +37,7 @@ every check with its data.
 | `report_data`: `sha256("sealed/kb-release/v1" \|\| nonce \|\| ephemeralPub) \|\| 32 zero bytes` | `report_data_mismatch` |
 | `chain`: the RPC serves the configured chain, and its head block is at most 60 s from the broker's clock (D-060); the image and release reads below are pinned to that block | 503 `chain_stale` |
 | `image`: `getImage(imageId)` exists | `image_not_approved` |
-| `image`: `keccak256(mrtd \|\| rtmr0 \|\| rtmr1 \|\| rtmr2)` equals its measurementsHash; MRCONFIGID and MROWNERCONFIG are zero | `measurements_mismatch` |
+| `image`: `keccak256(mrtd \|\| rtmr0 \|\| rtmr1 \|\| rtmr2)` equals its measurementsHash; MRCONFIGID and MROWNERCONFIG are zero; XFAM is in `tdx.allowed_xfam` (D-077) | `measurements_mismatch` |
 | `image`: not a debug image, and the TD has no debug, migratable or reserved attribute bits | `image_debug` |
 | `image`: `isApprovedImage(imageId)`, and in `--allowed-images` when that is set | `image_not_approved` |
 | `rtmr3`: the event log replays to the quote's RTMR3 with exactly the Sealed event sequence | `rtmr3_replay` |

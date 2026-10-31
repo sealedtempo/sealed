@@ -102,11 +102,15 @@ var newQuoteVerifier = func(defaults []byte, allowSimulated bool, cacheDir strin
 	if err != nil {
 		return nil, err
 	}
+	xfam, err := attest.XFAMAllowlistFromDefaults(defaults)
+	if err != nil {
+		return nil, err
+	}
 	getter, err := attest.NewCachingGetter(attest.CacheOptions{Dir: cacheDir})
 	if err != nil {
 		return nil, err
 	}
-	return attest.NewVerifier(attest.VerifierOptions{AllowSimulated: allowSimulated, Getter: getter, TCBPolicy: policy})
+	return attest.NewVerifier(attest.VerifierOptions{AllowSimulated: allowSimulated, Getter: getter, TCBPolicy: policy, AllowedXFAM: xfam})
 }
 
 func runVerify(ctx context.Context, args []string, e *Env) error {

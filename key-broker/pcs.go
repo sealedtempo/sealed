@@ -160,9 +160,11 @@ func readTDConfig(raw []byte) (*tdConfig, error) {
 }
 
 // check requires MRCONFIGID and MROWNERCONFIG to be zero: dstack on GCP leaves both zero and consumes neither, so a
-// value there means a TD launched with a configuration the approved image was never measured with. MROWNER is set by
-// Google (stable across reboots) and XFAM by the host; both are recorded in the decision, not pinned (deferred).
-func (td *tdConfig) check() error {
+// value there means a TD launched with a configuration the approved image was never measured with. XFAM must be in
+// allowedXFAM (tdx.allowed_xfam, D-077): the host chooses it and no register measures it, so a value the registered
+// machine shapes were not measured with is refused too. MROWNER is set by Google (stable across reboots) and is
+// recorded in the decision, not pinned.
+func (td *tdConfig) check(allowedXFAM []uint64) error {
 	for _, f := range []struct {
 		name string
 		v    []byte
@@ -174,5 +176,5 @@ func (td *tdConfig) check() error {
 			return fmt.Errorf("the TD was launched with %s 0x%x; Sealed images require it to be zero", f.name, f.v)
 		}
 	}
-	return nil
+	return attest.CheckXFAM(td.XFAM, allowedXFAM)
 }

@@ -428,7 +428,7 @@ func (s *session) checkImage(ctx context.Context) *stop {
 			return s.deny(CheckImage, ReasonMeasurementsMismatch, err.Error(), data)
 		}
 		data["xfam"], data["mrOwner"] = hex0x(td.XFAM), hex0x(td.MrOwner)
-		if err := td.check(); err != nil {
+		if err := td.check(s.b.cfg.AllowedXFAM); err != nil {
 			return s.deny(CheckImage, ReasonMeasurementsMismatch, err.Error(), data)
 		}
 	}

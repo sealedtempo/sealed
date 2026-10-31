@@ -308,28 +308,96 @@ func TestCitedTestsExist(t *testing.T) {
 	}
 }
 
-// TestXFAMIsNotClaimedPinned: the key broker records XFAM and does not compare it with a pinned value
-// (key-broker/pcs.go tdConfig.check; D-070 is open), and the verifier only reports it. The docs must not say
-// otherwise. When XFAM pinning lands, change this test with the docs.
-func TestXFAMIsNotClaimedPinned(t *testing.T) {
-	stale := []string{
-		"TD_ATTRIBUTES and XFAM equal the values pinned",
-		"so both are pinned per image",
-		"both pinned per image",
-		"TD_ATTRIBUTES and XFAM against an approved",
-		"pinned TD attributes",
-		"so they are pinned per image",
+// TestXFAMPinnedByAllowlist (D-077, amending D-070): the key broker and the verifier refuse a quote whose XFAM is not
+// in tdx.allowed_xfam of config/defaults.yaml, one list for every image. The docs and the code must agree: the list is
+// the one the code uses, both components call the check, the docs say XFAM is pinned to that list, none keeps the old
+// wording (recorded but not pinned, or pinned per image), and every XFAM value the docs give is in the list.
+func TestXFAMPinnedByAllowlist(t *testing.T) {
+	allowed, err := attest.XFAMAllowlistFromDefaults([]byte(read(t, "config/defaults.yaml")))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, f := range []string{"docs/THREAT_MODEL.md", "docs/VERIFY.md", "docs/ARCHITECTURE.md", "docs/INTERFACES.md", "README.md"} {
+	def := attest.DefaultAllowedXFAM()
+	if len(allowed) != len(def) {
+		t.Fatalf("config/defaults.yaml tdx.allowed_xfam %v differs from attest.DefaultAllowedXFAM %v", allowed, def)
+	}
+	inList := map[uint64]bool{}
+	for i, v := range allowed {
+		if v != def[i] {
+			t.Fatalf("config/defaults.yaml tdx.allowed_xfam %v differs from attest.DefaultAllowedXFAM %v", allowed, def)
+		}
+		inList[v] = true
+	}
+	le := func(v uint64) []byte {
+		b := make([]byte, 8)
+		for i := range b {
+			b[i] = byte(v >> (8 * i))
+		}
+		return b
+	}
+	for _, v := range allowed {
+		if err := attest.CheckXFAM(le(v), allowed); err != nil {
+			t.Errorf("listed XFAM 0x%x refused: %v", v, err)
+		}
+		if out := v ^ 1<<9; !inList[out] && attest.CheckXFAM(le(out), allowed) == nil {
+			t.Errorf("XFAM 0x%x outside the list accepted", out)
+		}
+	}
+	// Both components call the shared check with their configured list.
+	for f, call := range map[string]string{
+		"key-broker/pcs.go":     "attest.CheckXFAM(td.XFAM, allowedXFAM)",
+		"key-broker/release.go": "td.check(s.b.cfg.AllowedXFAM)",
+		"verifier/core.go":      "s.deps.Quotes.CheckXFAM(s.quote)",
+	} {
+		mustContain(t, f, read(t, f), call)
+	}
+
+	stale := []string{
+		// recorded, not pinned (before D-077)
+		"not pinned yet", "XFAM is not pinned", "does not pin XFAM", "not compared with a pinned value", "XFAM is recorded, not pinned",
+		"XFAM only recorded", "XFAM recorded but not pinned", "XFAM and MROWNER are logged, not pinned", "until it is pinned",
+		"record XFAM", "but not pinned",
+		// pinned per image (D-077: one list for every image)
+		"TD_ATTRIBUTES and XFAM equal the values pinned", "so both are pinned per image", "both pinned per image",
+		"TD_ATTRIBUTES and XFAM against an approved", "pinned TD attributes", "so they are pinned per image", "pinned for its image",
+	}
+	const digits = "0123456789abcdef"
+	hexInBackticks := regexp.MustCompile("`0x([0-9a-f]{1,16})`")
+	for _, f := range []string{"docs/THREAT_MODEL.md", "docs/VERIFY.md", "docs/ARCHITECTURE.md", "docs/INTERFACES.md", "README.md",
+		"key-broker/README.md", "verifier/README.md"} {
 		text := read(t, f)
 		for _, s := range stale {
 			if strings.Contains(text, s) {
-				t.Errorf("%s claims XFAM is pinned (%q); the code records it only (D-070 open)", f, s)
+				t.Errorf("%s still says %q; XFAM is pinned to tdx.allowed_xfam (D-077)", f, s)
+			}
+		}
+		if f != "README.md" {
+			mustContain(t, f, text, "`tdx.allowed_xfam`", "D-077")
+		}
+		// An XFAM value named in the docs is a listed one. These lines also give TD_ATTRIBUTES 0x10000000.
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.Contains(strings.ToLower(line), "xfam") {
+				continue
+			}
+			for _, m := range hexInBackticks.FindAllStringSubmatch(line, -1) {
+				var v uint64
+				for _, c := range m[1] {
+					v = v<<4 | uint64(strings.IndexRune(digits, c))
+				}
+				if v != 1<<28 && !inList[v] {
+					t.Errorf("%s names XFAM `0x%s`, which is not in tdx.allowed_xfam %v", f, m[1], allowed)
+				}
 			}
 		}
 	}
-	if !strings.Contains(read(t, "key-broker/pcs.go"), "not pinned (deferred)") {
-		t.Error("key-broker/pcs.go no longer says XFAM is not pinned; if it is pinned now, update the docs and this test")
+	// VERIFY step 3 gives the listed value in the quote's byte order for the manual check.
+	verifyDoc := read(t, "docs/VERIFY.md")
+	for _, v := range allowed {
+		var hex []byte
+		for _, b := range le(v) {
+			hex = append(hex, digits[b>>4], digits[b&15])
+		}
+		mustContain(t, "docs/VERIFY.md", verifyDoc, "xfam `"+string(hex)+"`")
 	}
 }
 

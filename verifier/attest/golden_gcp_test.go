@@ -245,8 +245,12 @@ func TestRealGCPGolden(t *testing.T) {
 			}
 			hexEq(t, "GetQuote report_data", want[:], gq.ReportData)
 
-			// Host-chosen attributes: the production rule passes on what GCP sets.
+			// Host-chosen attributes: the production rule passes on what GCP sets, and XFAM is in tdx.allowed_xfam
+			// (D-077).
 			if err := q.CheckProductionAttributes(); err != nil {
+				t.Error(err)
+			}
+			if err := CheckXFAM(q.XFAM[:], repoXFAM(t)); err != nil {
 				t.Error(err)
 			}
 			if q.Debug() || q.Migratable() {
@@ -406,6 +410,20 @@ func TestRealGCPGoldenRejects(t *testing.T) {
 		}
 		if _, err := v.VerifyQuote(ctx, raw); !errors.Is(err, ErrQuoteInvalid) {
 			t.Fatalf("modified td_attributes verified: %v", err)
+		}
+	})
+	t.Run("XFAM changed", func(t *testing.T) {
+		raw := bytes.Clone(signed)
+		raw[v4XFAMOffset+1] ^= 0x02 // clears PKRU (bit 9)
+		q, err := ParseQuote(raw, ParseOptions{})
+		if err != nil || q.XFAMValue() != 0x600e7 {
+			t.Fatalf("offset check: %v", err)
+		}
+		if err := CheckXFAM(q.XFAM[:], repoXFAM(t)); !errors.Is(err, ErrXFAM) {
+			t.Fatalf("XFAM 0x600e7 accepted by tdx.allowed_xfam: %v", err)
+		}
+		if _, err := v.VerifyQuote(ctx, raw); !errors.Is(err, ErrQuoteInvalid) {
+			t.Fatalf("modified xfam verified: %v", err)
 		}
 	})
 	t.Run("policy without UpToDate", func(t *testing.T) {
