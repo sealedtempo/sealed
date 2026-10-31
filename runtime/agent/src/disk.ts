@@ -9,13 +9,17 @@
 //   tokens, no integrity, no requirements), which also gives a clear error.
 // - "Already mounted" means the topmost mount at the mount point is ext4 from /dev/mapper/<name>; the
 //   composer's bind mount of the host directory at the same path does not count.
-// Keys travel on stdin and fd 3, never in argv. Limit: aes-xts has no integrity, so the host can still
-// corrupt blocks or roll the whole disk back to an older copy of itself.
+// Keys travel on stdin and a private key file, never in argv. (A key passed as fd 3 and read as /dev/fd/N
+// worked on macOS but fails on Linux, where /dev/fd/N is /proc/self/fd/N and re-opening an anonymous pipe
+// that way gives ENXIO, e.g. cryptsetup "Cannot read keyfile /dev/fd/3". The key file lives in a 0700 dir
+// on the VM's tmpfs, so the key only ever sits in RAM, and the dir is removed as soon as the tool exits.)
+// Limit: aes-xts has no integrity, so the host can still corrupt blocks or roll the whole disk back to an
+// older copy of itself.
 import { spawn } from "node:child_process";
 import { hkdfSync } from "node:crypto";
-import { mkdir, readFile, stat } from "node:fs/promises";
-import { normalize } from "node:path";
-import type { Writable } from "node:stream";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, normalize } from "node:path";
 import type { Logger } from "./log.js";
 
 export interface CommandResult {
@@ -25,29 +29,45 @@ export interface CommandResult {
 }
 
 export interface CommandRunner {
-  /** `stdin` feeds fd 0; `fds[i]` feeds fd 3 + i through a pipe (read as /dev/fd/N). */
+  /** `stdin` feeds fd 0; each `fds[i]` is written to a key file whose path replaces `/dev/fd/${3 + i}` in args. */
   run(cmd: string, args: string[], opts?: { stdin?: Uint8Array; fds?: Uint8Array[] }): Promise<CommandResult>;
 }
 
 export const spawnRunner: CommandRunner = {
-  run: (cmd, args, opts) =>
-    new Promise((resolve, reject) => {
-      const extra = opts?.fds ?? [];
-      const p = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe", ...extra.map(() => "pipe" as const)] });
-      let stdout = "";
-      let stderr = "";
-      p.stdout?.on("data", (d) => (stdout += String(d)));
-      p.stderr?.on("data", (d) => (stderr += String(d)));
-      p.on("error", reject);
-      p.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
-      const feed = (w: Writable | null | undefined, data?: Uint8Array) => {
-        if (!w) return;
-        w.on("error", () => undefined); // the tool may exit without reading (EPIPE)
-        w.end(data ? Buffer.from(data) : undefined);
-      };
-      feed(p.stdin, opts?.stdin);
-      extra.forEach((d, i) => feed(p.stdio[3 + i] as Writable | null, d));
-    }),
+  run: async (cmd, args, opts) => {
+    const extra = opts?.fds ?? [];
+    let dir: string | undefined;
+    let finalArgs = args;
+    if (extra.length > 0) {
+      // One 0600 key file per extra key, in a private 0700 tmp dir; its path replaces /dev/fd/(3+i) in
+      // the args. The dir is removed in the finally below, so the key only lives for the tool's run.
+      dir = await mkdtemp(join(tmpdir(), "sealed-fd-"));
+      const paths: string[] = [];
+      for (let i = 0; i < extra.length; i++) {
+        const path = join(dir, `fd${3 + i}`);
+        await writeFile(path, Buffer.from(extra[i]), { mode: 0o600 });
+        paths.push(path);
+      }
+      finalArgs = args.map((a) => paths.reduce((s, path, i) => s.split(`/dev/fd/${3 + i}`).join(path), a));
+    }
+    try {
+      return await new Promise<CommandResult>((resolve, reject) => {
+        const p = spawn(cmd, finalArgs, { stdio: ["pipe", "pipe", "pipe"] });
+        let stdout = "";
+        let stderr = "";
+        p.stdout?.on("data", (d) => (stdout += String(d)));
+        p.stderr?.on("data", (d) => (stderr += String(d)));
+        p.on("error", reject);
+        p.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
+        if (p.stdin) {
+          p.stdin.on("error", () => undefined); // the tool may exit without reading (EPIPE)
+          p.stdin.end(opts?.stdin ? Buffer.from(opts.stdin) : undefined);
+        }
+      });
+    } finally {
+      if (dir) await rm(dir, { recursive: true, force: true });
+    }
+  },
 };
 
 export interface DataDisk {
