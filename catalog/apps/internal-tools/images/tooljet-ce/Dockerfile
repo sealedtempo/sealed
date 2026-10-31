@@ -16,6 +16,8 @@
 FROM docker.io/tooljet/tooljet-ce@sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47 AS upstream
 
 USER root
+# The RUN ends by removing the logs and caches apt, dpkg and ldconfig write with the build time in them, so
+# a no-cache rebuild gives the same digest (D-028).
 RUN set -eux; \
     test "$(cat /app/server/.version)" = "3.20.251-lts"; \
     test "$(id -u appuser)" = "1000"; \
@@ -34,7 +36,8 @@ RUN set -eux; \
     fi; \
     if find /app -xdev -path '*/node_modules' -prune -o -name ee -print | grep -q .; then \
       echo "ToolJet enterprise (ee) paths in the image" >&2; exit 1; \
-    fi
+    fi; \
+    rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old /var/lib/dpkg/*-old
 
 COPY --chmod=0755 sealed-entrypoint.sh /app/server/sealed-entrypoint.sh
 

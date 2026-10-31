@@ -23,12 +23,16 @@ RUN corepack install && pnpm install --frozen-lockfile --filter "@sealed/agent..
 COPY config/defaults.yaml config/defaults.yaml
 COPY packages/core packages/core
 COPY runtime/agent runtime/agent
+# pnpm stamps .modules.yaml and the workspace state file with the install time; they are removed so a
+# no-cache rebuild gives the same digest (D-028).
 RUN pnpm --filter @sealed/core build \
  && pnpm --filter @sealed/agent build \
- && pnpm --filter @sealed/agent deploy --prod --legacy /out
+ && pnpm --filter @sealed/agent deploy --prod --legacy /out \
+ && rm -f /out/node_modules/.modules.yaml /out/node_modules/.pnpm-workspace-state*.json
 
 FROM ${NODE_IMAGE} AS runtime
-# Debian packages come from a dated snapshot so the pinned versions stay installable.
+# Debian packages come from a dated snapshot so the pinned versions stay installable. The RUN ends by
+# removing the logs and caches apt, dpkg and ldconfig write with the build time in them (D-028).
 ARG DEBIAN_SNAPSHOT=20261027T000000Z
 RUN printf '%s\n' \
       "Types: deb" \
@@ -54,7 +58,8 @@ RUN printf '%s\n' \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 10001 sealed \
- && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin sealed
+ && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin sealed \
+ && rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old /var/lib/dpkg/*-old
 
 WORKDIR /app
 COPY --from=build /out /app
