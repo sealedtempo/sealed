@@ -157,6 +157,15 @@ export class Chain {
   async blockTime(): Promise<bigint> {
     return (await this.client.getBlock()).timestamp;
   }
+
+  /**
+   * Mines one empty block. anvil instant-mines one block per transaction, so a one-shot on-chain write lands at head;
+   * the api indexer only indexes to head-1 (MIN_CONFIRMATIONS, reorg safety), so with nothing after it its event is
+   * never indexed. On mainnet blocks keep coming; here the harness mines one so the indexer can catch up.
+   */
+  async mine(): Promise<void> {
+    await this.client.request({ method: "evm_mine" as never, params: [] as never });
+  }
 }
 
 export const REGISTRAR_ROLE = keccak256(toBytes("REGISTRAR_ROLE"));
