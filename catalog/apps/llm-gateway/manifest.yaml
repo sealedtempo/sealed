@@ -24,7 +24,7 @@ images:
   # with enterprise/ and litellm_enterprise removed, flattened. Digest pinned after the image workflow builds it.
   - name: litellm
     source: build:images/litellm
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:e92514c4a224af48dc7d2ef9a01e4acb5b261561395fa78df9754a170aded337
     platform: linux/amd64
     license_spdx: MIT
   - name: postgres
