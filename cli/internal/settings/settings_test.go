@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -129,5 +130,87 @@ func TestDeploymentsFileForAnotherChain(t *testing.T) {
 	os.WriteFile(noToken, []byte(strings.Replace(testnetDeployments, `"feeToken": "0x20C0000000000000000000000000000000000001", `, "", 1)), 0o600)
 	if s, err := Load(Options{DeploymentsFile: noToken, RPCURL: "https://rpc.testnet.example"}); err != nil || s.FeeToken != (common.Address{}) || s.Defaults.Chain.FeeToken != "" {
 		t.Fatalf("no fee token: %v %+v", err, s)
+	}
+}
+
+// TestCloudDefaults: the cloud block of config/defaults.yaml is read (G30). The CLI deploys to Google Cloud with Intel
+// TDX only, and every machine type with a registered image is in cloud.machine_family.
+func TestCloudDefaults(t *testing.T) {
+	repo, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "defaults.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	df := filepath.Join(dir, "defaults.yaml")
+	os.WriteFile(df, repo, 0o600)
+	for name, o := range map[string]Options{"embedded": {}, "config/defaults.yaml": {DefaultsFile: df}} {
+		s, err := Load(o)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		c := s.Defaults.Cloud
+		if c != (Cloud{Provider: "gcp", TEE: "intel-tdx", MachineFamily: "c3", Region: "us-central1"}) {
+			t.Fatalf("%s: cloud %+v", name, c)
+		}
+		if got := c.MachineTypes(); len(got) != 1 || got[0] != "c3-standard-8" || s.Defaults.DefaultMachineType != "c3-standard-8" {
+			t.Fatalf("%s: machine types %v, default %s (D-083: c3-standard-8 only)", name, got, s.Defaults.DefaultMachineType)
+		}
+		if ct, err := ConfidentialInstanceType(c.TEE); err != nil || ct != "TDX" {
+			t.Fatalf("%s: tee %s maps to %q: %v", name, c.TEE, ct, err)
+		}
+		for _, mt := range RegisteredMachineTypes {
+			if !strings.HasPrefix(mt, c.MachineFamily+"-") {
+				t.Errorf("%s: registered machine type %s is not in machine_family %s", name, mt, c.MachineFamily)
+			}
+		}
+	}
+
+	const cloudLine = "cloud: {provider: gcp, tee: intel-tdx, machine_family: c3, region: us-central1}"
+	const mtLine = "default_machine_type: c3-standard-8"
+	if !strings.Contains(string(repo), cloudLine) || !strings.Contains(string(repo), mtLine) {
+		t.Fatalf("config/defaults.yaml no longer has %q and %q; update this test", cloudLine, mtLine)
+	}
+	for name, c := range map[string]struct{ old, new, want string }{
+		"another provider":       {cloudLine, "cloud: {provider: aws, tee: intel-tdx, machine_family: c3, region: us-central1}", `cloud.provider "aws"`},
+		"no provider":            {cloudLine, "cloud: {tee: intel-tdx, machine_family: c3, region: us-central1}", `cloud.provider ""`},
+		"another tee":            {cloudLine, "cloud: {provider: gcp, tee: amd-sev-snp, machine_family: n2d, region: us-central1}", `cloud.tee "amd-sev-snp"`},
+		"no tee":                 {cloudLine, "cloud: {provider: gcp, machine_family: c3, region: us-central1}", `cloud.tee ""`},
+		"tee case":               {cloudLine, "cloud: {provider: gcp, tee: Intel-TDX, machine_family: c3, region: us-central1}", `cloud.tee "Intel-TDX"`},
+		"family without images":  {cloudLine, "cloud: {provider: gcp, tee: intel-tdx, machine_family: c4, region: us-central1}", `cloud.machine_family "c4"`},
+		"no family":              {cloudLine, "cloud: {provider: gcp, tee: intel-tdx, region: us-central1}", `cloud.machine_family ""`},
+		"unregistered default":   {mtLine, "default_machine_type: c3-standard-4", `default_machine_type "c3-standard-4"`},
+		"default of another fam": {mtLine, "default_machine_type: c4-standard-8", `default_machine_type "c4-standard-8"`},
+		"no default":             {mtLine, "", `default_machine_type ""`},
+	} {
+		os.WriteFile(df, []byte(strings.Replace(string(repo), c.old, c.new, 1)), 0o600)
+		if _, err := Load(Options{DefaultsFile: df}); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want an error naming %s", name, err, c.want)
+		}
+	}
+	if _, err := ConfidentialInstanceType("amd-sev-snp"); err == nil {
+		t.Fatal("amd-sev-snp has no confidentialInstanceType the CLI deploys")
+	}
+}
+
+// TestCloudRegionMatchesBootstrapModule: the bootstrap module's default region is cloud.region (G30). sealed bootstrap
+// passes cloud.region when --region is not given; the default applies when the module is applied on its own.
+func TestCloudRegionMatchesBootstrapModule(t *testing.T) {
+	s, err := Load(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`variable "region" \{[^}]*?\bdefault\s*=\s*"([^"]+)"`)
+	for _, dir := range []string{filepath.Join("..", "..", "..", "infra", "terraform", "customer-bootstrap"), filepath.Join("..", "embedded", "tfmodule")} {
+		b, err := os.ReadFile(filepath.Join(dir, "variables.tf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ""
+		if m := re.FindSubmatch(b); m != nil {
+			got = string(m[1])
+		}
+		if got != s.Defaults.Cloud.Region {
+			t.Errorf("%s/variables.tf: default region %q, want cloud.region %q", dir, got, s.Defaults.Cloud.Region)
+		}
 	}
 }

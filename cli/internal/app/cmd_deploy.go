@@ -83,6 +83,10 @@ func runDeploy(ctx context.Context, args []string, e *Env) error {
 	if err != nil {
 		return err
 	}
+	// Before the wallet is asked to approve: a VM of a shape the image was not measured on never gets its keys.
+	if err := deploy.CheckMachineType(p.MachineType, p.Image, s.Defaults.Cloud); err != nil {
+		return err
+	}
 	deadline := e.now().Add(wait)
 	for !p.Approval.Approved && !p.Debug && wait > 0 && e.now().Before(deadline) {
 		e.errorf("waiting for the wallet's approval of %s ...\n", p.Result.StackHash.Hex())
