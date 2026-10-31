@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,6 +15,10 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 import { parsePhpConfig } from "./lib/fake-espocrm.mjs";
+
+// RUN instructions with comment lines dropped and continuation lines joined, as BuildKit reads them.
+const runInstructions = (dockerfileText) =>
+  dockerfileText.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n").replace(/\\\n/g, " ").split("\n").filter((l) => /^RUN\s/.test(l));
 
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const imageDir = join(appDir, "images/espocrm");
@@ -66,8 +70,8 @@ async function sandbox({ uid = "33", installed = "true", owner = "33:33" } = {})
     dir,
     espo,
     env,
-    run: (shell, args, extra = {}) =>
-      spawnSync(shell, [script, ...args], { env: { ...env, ...extra }, encoding: "utf8", cwd: dir }),
+    run: (shell, args, extra = {}, stdio = "pipe") =>
+      spawnSync(shell, [script, ...args], { env: { ...env, ...extra }, encoding: "utf8", cwd: dir, stdio }),
     log: async () => (existsSync(log) ? (await readFile(log, "utf8")).trim().split("\n") : []),
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
@@ -162,12 +166,47 @@ for (const shell of shells) {
       }
     });
 
-    test("as root with volumes already owned by www-data: no chown", async () => {
+    test("as root with volumes already owned by www-data: no chown of the volumes", async () => {
       const box = await sandbox({ uid: "0", owner: "33:33" });
       try {
         assert.equal(box.run(shell, ["server"]).status, 0);
-        assert.ok(!(await box.log()).some((l) => l.startsWith("chown")));
+        assert.ok(!(await box.log()).some((l) => l.startsWith("chown -R")));
       } finally {
+        await box.cleanup();
+      }
+    });
+
+    // images-preflight: Docker gives a container that starts as root its stdout and stderr as
+    // root-owned 0600 pipes, and Apache opens ErrorLog /proc/self/fd/2 by path, so after setpriv it
+    // exited with "could not open error log file /proc/self/fd/2" and crm-server never started.
+    test("as root: gives its stdout and stderr pipes to www-data before setpriv", async () => {
+      const box = await sandbox({ uid: "0", owner: "33:33" });
+      try {
+        // Node gives a child sockets, not pipes, so a shell pipeline stands in for Docker's pipes.
+        const res = spawnSync(shell, ["-c", '"$0" "$1" server 2>&1 | cat; exit "$?"', shell, script], { env: box.env, encoding: "utf8", cwd: box.dir });
+        assert.equal(res.status, 0, res.stdout);
+        const log = await box.log();
+        const setpriv = log.findIndex((l) => l.startsWith("setpriv "));
+        assert.ok(setpriv > 0, log.join("\n"));
+        for (const fd of [1, 2]) {
+          const i = log.indexOf(`chown 33:33 /dev/fd/${fd}`);
+          assert.ok(i >= 0 && i < setpriv, log.join("\n"));
+        }
+      } finally {
+        await box.cleanup();
+      }
+    });
+
+    test("as root: leaves stdout and stderr alone when they are not pipes", async () => {
+      const box = await sandbox({ uid: "0", owner: "33:33" });
+      const out = openSync(join(box.dir, "out.txt"), "w");
+      try {
+        assert.equal(box.run(shell, ["server"], {}, ["ignore", out, out]).status, 0);
+        const log = await box.log();
+        assert.ok(log.some((l) => l.startsWith("setpriv ")), log.join("\n"));
+        assert.ok(!log.some((l) => l.includes("/dev/fd/")), log.join("\n"));
+      } finally {
+        closeSync(out);
         await box.cleanup();
       }
     });
@@ -247,6 +286,19 @@ describe("Dockerfile", () => {
     assert.ok(dockerfile.includes(`org.opencontainers.image.base.digest="${base.split("@")[1]}"`));
     assert.equal(dockerfile.match(/snapshot\.debian\.org\/archive\/debian\/\$\{DEBIAN_SNAPSHOT\} trixie main/g).length, 2);
     assert.match(dockerfile, /rm -f \/etc\/apt\/sources\.list\.d\/debian\.sources/);
+  });
+
+  // images-preflight: apt, dpkg and ldconfig write the build time (or inode times) into their logs
+  // and ldconfig's aux-cache; left in the runtime stage they gave every build a new digest, so the
+  // runtime image workflow's no-cache rebuild check failed.
+  test("removes the apt, dpkg and ldconfig files that record the build time", () => {
+    const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+    const runs = runInstructions(runtime).filter((l) => /apt-get install/.test(l));
+    assert.equal(runs.length, 1);
+    const install = runs[0].indexOf("apt-get install");
+    for (const f of ["/var/log/apt ", "/var/log/dpkg.log", "/var/log/alternatives.log", "/var/cache/ldconfig/aux-cache"]) {
+      assert.ok(runs[0].indexOf(f) > install, f);
+    }
   });
 
   test("checks the EspoCRM release against its sha256 and version", () => {

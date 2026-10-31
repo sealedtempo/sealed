@@ -11,6 +11,10 @@ import { parse } from "yaml";
 
 import { findExcluded, normalize } from "../tools/check-image-paths.mjs";
 
+// RUN instructions with comment lines dropped and continuation lines joined, as BuildKit reads them.
+const runInstructions = (dockerfileText) =>
+  dockerfileText.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n").replace(/\\\n/g, " ").split("\n").filter((l) => /^RUN\s/.test(l));
+
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const imageDir = join(appDir, "images/tooljet-ce");
 const dockerfile = readFileSync(join(imageDir, "Dockerfile"), "utf8");
@@ -100,6 +104,18 @@ describe("derived ToolJet image", () => {
     assert.match(dockerfile, /forbidden binaries left in the image/);
     assert.doesNotMatch(dockerfile, /LD_LIBRARY_PATH/);
     assert.match(dockerfile, /test "\$\(cat \/app\/server\/\.version\)" = "3\.20\.251-lts"/);
+  });
+
+  // images-preflight: apt-get purge, dpkg and ldconfig write the build time (or inode times) into
+  // their logs and ldconfig's aux-cache; flattened into the image they gave every build a new digest,
+  // so the runtime image workflow's no-cache rebuild check failed.
+  test("removes the apt, dpkg and ldconfig files that record the build time", () => {
+    const runs = runInstructions(dockerfile).filter((l) => /apt-get purge/.test(l));
+    assert.equal(runs.length, 1);
+    const after = Math.max(runs[0].indexOf("apt-get purge"), runs[0].indexOf("ldconfig;"));
+    for (const f of ["/var/log/dpkg.log", "/var/log/apt", "/var/log/alternatives.log", "/var/cache/ldconfig/aux-cache", "/var/cache/debconf/*-old", "/var/lib/dpkg/*-old"]) {
+      assert.ok(runs[0].indexOf(f) > after, f);
+    }
   });
 
   test("runs as uid 1000 with the entrypoint and command the fragment uses", () => {

@@ -29,6 +29,9 @@ RUN set -eux; \
     ldconfig; \
     rm -f /app/server/entrypoint.sh; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /root/.npm; \
+    # apt, dpkg and ldconfig record the build time (or inode times) in these files, which gave every
+    # build a new digest, so the workflow's no-cache rebuild check failed (images-preflight).
+    rm -f /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache; \
     if find / -xdev \( -name 'redis-server' -o -name 'redis-check-*' -o -name 'redis-benchmark' \
          -o -path '/usr/lib/redis*' -o -path '/etc/redis*' -o \( -name '*.so' -path '*redis*' \) \
          -o -name 'libclntsh*' -o -name 'libnnz*' -o -name 'libociei*' -o -name 'libociicus*' -o -name 'libocci*' \) -print | grep -q .; then \
