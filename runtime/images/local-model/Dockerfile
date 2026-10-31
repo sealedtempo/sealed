@@ -44,10 +44,13 @@ RUN --network=none set -eux; \
     chmod 0644 /out/licenses/*
 
 FROM --platform=linux/amd64 ${OLLAMA_BASE} AS cpu
-# The TDX VM has no GPU: drop every GPU runtime directory and its license files.
+# The TDX VM has no GPU: drop every GPU runtime directory and its license files. The base also ships
+# build-time headers under include/ (some CUDA-named, e.g. cuda_device_runtime_api.h); they are not needed
+# at runtime and would trip the no-GPU assertion below, so drop the whole include/ directory too.
 RUN --network=none set -eux; \
     rm -rf /usr/lib/ollama/cuda_v12 /usr/lib/ollama/cuda_v13 /usr/lib/ollama/mlx_cuda_v13 /usr/lib/ollama/vulkan \
            /usr/lib/ollama/CUDNN_LICENSE.txt /usr/lib/ollama/CUTLASS_LICENSE.txt /usr/lib/ollama/NVTX3_LICENSE.txt \
+           /usr/lib/ollama/include \
            /usr/local/nvidia; \
     find /usr/lib/ollama -mindepth 1 -maxdepth 1 -type d -print; \
     test -z "$(find /usr/lib/ollama \( -iname '*cuda*' -o -iname '*vulkan*' -o -iname '*hip*' -o -iname '*rocm*' \) -print -quit)"; \
