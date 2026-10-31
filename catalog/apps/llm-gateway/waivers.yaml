@@ -5,7 +5,7 @@
 #     package: <package name>
 #     reason: why it does not apply or why it cannot be fixed yet
 #     expires: YYYY-MM-DD         # required; the waiver stops applying after this date
-[]
+version: 1
 waivers:
   - id: CVE-2026-115557
     image: litellm
