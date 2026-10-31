@@ -294,6 +294,7 @@ func verifyLiveResponse(ctx context.Context, f *fetched, deps Deps, opts Options
 	}
 
 	s.checkReleases()
+	s.checkReleaseSignatures()
 	s.checkRecompute(deploymentID)
 	s.checkApproval()
 	s.checkExpectedCustomer()

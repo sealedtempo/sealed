@@ -3,6 +3,7 @@ package main
 import (
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/bundles"
+	"github.com/sealedtempo/sealed/verifier/releasesig"
 )
 
 // newComposer wires runtime/composer (brief item 19): bundles are fetched by the release asset URL rule (D-046)
@@ -15,4 +16,14 @@ func newComposer(c *config, _ verify.ChainReader) (verify.Composer, error) {
 		return nil, err
 	}
 	return &bundles.Composer{Source: src}, nil
+}
+
+// newSignatures checks release CI's signature and SLSA provenance of every release (supply-2) with the assets next
+// to its bundle, from the same bases. loadConfig already refused plain http bases outside SEALED_DEV_SIM=1.
+func newSignatures(c *config) (verify.ReleaseSignatures, error) {
+	v, err := releasesig.New(releasesig.Options{Bases: c.ReleaseAssetBases, AllowHTTP: true})
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
 }

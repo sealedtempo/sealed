@@ -72,7 +72,7 @@ func newEnvWith(t *testing.T, debug bool, edit func(w *fixture.World)) *env {
 	w.Populate(m, b, true)
 	e := &env{
 		w: w, m: m, b: b,
-		deps: verify.Deps{Quotes: devVerifier(t), Chain: m, Composer: fixture.Composer{}, Now: func() time.Time { return time.Unix(int64(m.Now)+10, 0) }},
+		deps: verify.Deps{Quotes: devVerifier(t), Chain: m, Composer: fixture.Composer{}, Signatures: fixture.Signatures{}, Now: func() time.Time { return time.Unix(int64(m.Now)+10, 0) }},
 		opts: verify.Options{ChainID: 4217, RequireOnchainRecord: true, AcceptSimulated: true},
 	}
 	// The head block is two seconds old on whatever clock the test sets (D-060 cases override this).
@@ -93,7 +93,7 @@ var allEvidenceChecks = []string{
 	verify.CheckBundle, verify.CheckChain, verify.CheckQuoteHash, verify.CheckQuote, verify.CheckTDAttributes,
 	verify.CheckImageMeasurements, verify.CheckImageApproved, verify.CheckEventLogHash, verify.CheckRTMR3,
 	verify.CheckComposeHash, verify.CheckConfigHash, verify.CheckConfigBinding, verify.CheckDeploymentID,
-	verify.CheckReportData, verify.CheckReleasesActive, verify.CheckStackRecompute, verify.CheckStackApproved,
+	verify.CheckReportData, verify.CheckReleasesActive, verify.CheckReleaseSignature, verify.CheckStackRecompute, verify.CheckStackApproved,
 	verify.CheckApprovalReleases, verify.CheckOnchainRecord,
 }
 

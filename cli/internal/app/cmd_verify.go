@@ -21,6 +21,7 @@ import (
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/releasesig"
 )
 
 var aliasRe = regexp.MustCompile(`^dep_[0-9A-Za-z]{8}$`)
@@ -130,7 +131,7 @@ func runVerify(ctx context.Context, args []string, e *Env) error {
 	fs.StringVar(&collateralCache, "collateral-cache", "", "directory for cached Intel PCS collateral (default the user cache dir)")
 	fs.DurationVar(&maxAge, "max-age", 0, "fail when the evidence is older than this (for example 26h)")
 	fs.DurationVar(&liveTimeout, "live-timeout", 30*time.Second, "timeout of the live /attest round trip")
-	fs.BoolVar(&allowSim, "dev-allow-simulated", false, "DEV ONLY (SEALED_DEV_SIM=1): accept dev simulator quotes; reports say simulated")
+	fs.BoolVar(&allowSim, "dev-allow-simulated", false, "DEV ONLY (SEALED_DEV_SIM=1): accept dev simulator quotes and releases without release CI's signature; reports say simulated")
 	fs.BoolVar(&insecureTLS, "dev-insecure-live-tls", false, "DEV ONLY (SEALED_DEV_SIM=1): skip WebPKI checks of the attest certificate (the key binding is still checked)")
 	fs.BoolVar(&livePrivate, "dev-live-allow-private", false, "DEV ONLY (SEALED_DEV_SIM=1): allow loopback and private attest addresses")
 	pos, err := parse(fs, args)
@@ -207,9 +208,15 @@ func runVerify(ctx context.Context, args []string, e *Env) error {
 	if rc, ok := reader.(*registry.Client); ok {
 		chainReader = rc.Chain() // pins every read of a verification to one block
 	}
-	deps := verify.Deps{Quotes: quotes, Chain: chainReader, Composer: &bundles.Composer{Fetcher: c.fetcher(e, s)}, Now: e.now}
+	fetcher := c.fetcher(e, s)
+	// Release CI's signature and SLSA provenance of every release (supply-2), from the bundles' release asset base.
+	sigs, err := releasesig.New(releasesig.Options{Bases: []string{fetcher.Base}, AllowHTTP: fetcher.AllowHTTP, HTTP: e.httpClient()})
+	if err != nil {
+		return err
+	}
+	deps := verify.Deps{Quotes: quotes, Chain: chainReader, Composer: &bundles.Composer{Fetcher: fetcher}, Signatures: sigs, Now: e.now}
 	opts := verify.Options{ChainID: s.ChainID, RequireOnchainRecord: true, MaxEvidenceAge: maxAge, ExpectedDeploymentID: &id,
-		AcceptSimulated: allowSim}
+		AcceptSimulated: allowSim, AcceptUnsignedReleases: allowSim}
 	if expectCustomer != "" {
 		if !common.IsHexAddress(expectCustomer) {
 			return usagef("--expect-customer is not an address")
