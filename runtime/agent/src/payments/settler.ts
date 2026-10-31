@@ -7,8 +7,8 @@
 // Billing fails closed on the customer's side, and only failures there count toward the grace period
 // (D-048, D-073): a missing, revoked or expired access key, an exhausted limit, too little balance
 // (also when it covers only part of what is due), a reverted estimate or transaction, a leg that cannot
-// be topped up, and a chain read error (the customer chooses the RPC and controls the VPC firewall, so
-// it can block the RPC). Failures that last the grace period switch Caddy to the measured
+// be topped up, and a chain read error (`rpc_error`: the customer chooses the RPC and controls the VPC
+// firewall, so it can block the RPC). Failures that last the grace period switch Caddy to the measured
 // payment-needed Caddyfile; a Closed deployment (terminal) switches at once. A failure streak ends, and
 // the normal Caddyfile comes back, only once no leg that was due at the previous settlement is left
 // unpaid, apart from legs in an app the FeeSplitter daily cap or a pause held back this settlement:
@@ -18,9 +18,11 @@
 // (reported as overCap, never paid at that cap).
 //
 // D-073: a platform outage never puts a customer on the payment-needed page. What only the platform or
-// the operator can do defers settlement instead: rebuilding this boot's ledger from its stored reports,
-// accepting a report, registering the deployment (the oracle and the ops key do, from the agent's
-// evidence), and a FeeSplitter the operator paused. While nothing but those fails, settlement records
+// the operator can do defers settlement instead (the PLATFORM_SIDE_FAILURES): rebuilding this boot's
+// ledger from its stored reports (`ledger_unverified`), the platform accepting a report
+// (`usage_not_submitted`), registering the deployment (`deployment_not_registered`; the oracle and the
+// ops key do, from the agent's evidence), and a FeeSplitter the operator paused (`fee_splitter_paused`).
+// While nothing but those fails, settlement records
 // deferredSince and the grace period does not run: none starts, and one a customer-side failure started
 // stands still until settlement resumes. Deferred fees are paid once the platform is back. A tick that
 // pays every leg it can try and leaves none overdue shows the customer's side works, so it ends a

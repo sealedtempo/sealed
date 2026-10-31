@@ -71,10 +71,11 @@ describe("payments-7: app-hours are not billed behind the payment-needed page", 
     // The customer authorizes a new key: the next settlement pays and restores the routes.
     w.payer.budgetResult = { spendable: 1_000_000_000n };
     const end = t0 + 96 * 3600;
-    const back = await w.settler.tick(end + 1);
-    expect(back.paymentNeeded).toBe(false);
-    // At most 10 legs per transaction: the backlog of 25 hourly legs takes three settlements.
-    for (let i = 2; i <= 3; i++) await w.settler.tick(end + i);
+    // Paying part of a backlog is no recovery (payments-3): at most 10 legs per transaction, so the 25-leg backlog
+    // takes three settlements, and the routes come back only at the settlement that leaves no leg overdue.
+    expect((await w.settler.tick(end + 1)).paymentNeeded).toBe(true);
+    expect((await w.settler.tick(end + 2)).paymentNeeded).toBe(true);
+    expect((await w.settler.tick(end + 3)).paymentNeeded).toBe(false);
     expect(w.ledger.unpaid()).toEqual([]);
     expect(w.payer.paid.flat().reduce((s, l) => s + l.amount, 0n)).toBe(billedAtLock);
     // The first billed interval after the lockout starts at the last poll (30 s before the routes came back), not

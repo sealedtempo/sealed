@@ -97,7 +97,13 @@ describe("payments-7: no app-hours behind the payment-needed page", () => {
     // The customer raises the limit: the backlog is paid, the routes come back, and crm is billed again from the
     // last poll on.
     payer.budgetResult = { spendable: 1_000_000_000n };
-    await hour();
+    // Paying part of a backlog is no recovery (payments-3): one settlement pays at most 10 legs, so a backlog of a
+    // day of hourly legs takes several settlements, and the routes come back only at the one that leaves none overdue.
+    let paid = 0;
+    while (agent.store?.state.payments.paymentNeeded && paid < 10) {
+      await hour();
+      paid++;
+    }
     expect(agent.store?.state.payments.paymentNeeded).toBe(false);
     expect(caddy.current).toBe(CADDYFILE);
     expect(agent.feeReserve(now + 86_400, now) - (agent.ledger?.unpaid() ?? []).reduce((s, e) => s + e.fee, 0n)).toBeGreaterThanOrEqual(24n * CRM_PER_HOUR);
