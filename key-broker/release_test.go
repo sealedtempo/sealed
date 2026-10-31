@@ -27,11 +27,13 @@ import (
 )
 
 // allowedChecks is the pipeline order. customer and config_chain run before stack_recompute, so the cheap checks
-// come before the release reads, bundle fetches and the compose.
+// come before the release reads, bundle fetches and the compose. The second chain check pins the approval reads to
+// the head again after the bundle fetches (kb-2).
 var allowedChecks = []string{
 	keybroker.CheckNonce, keybroker.CheckRequest, keybroker.CheckQuote, keybroker.CheckReportData, keybroker.CheckChain, keybroker.CheckImage,
 	keybroker.CheckRTMR3, keybroker.CheckComposeHash, keybroker.CheckCustomer, keybroker.CheckConfigChain, keybroker.CheckStackRecompute,
-	keybroker.CheckStackApproved, keybroker.CheckApprovalReleases, keybroker.CheckSecrets, keybroker.CheckKeys, keybroker.CheckSeal,
+	keybroker.CheckChain, keybroker.CheckStackApproved, keybroker.CheckApprovalReleases, keybroker.CheckDeployment, keybroker.CheckSecrets,
+	keybroker.CheckKeys, keybroker.CheckSeal,
 }
 
 // hmacKey is HMAC(key, tag || customer || salt) (D-058).

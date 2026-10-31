@@ -37,6 +37,9 @@ type Server struct {
 	FailNext int
 	// LoggingDown makes entries:write answer 403.
 	LoggingDown bool
+	// LoggingCalls counts entries:write calls; PartialSuccess records each call's partialSuccess flag.
+	LoggingCalls   int
+	PartialSuccess []bool
 	// CorruptCRC makes Secret Manager answer a wrong dataCrc32c.
 	CorruptCRC  bool
 	TokenCalls  int
@@ -169,16 +172,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusForbidden, "PERMISSION_DENIED", "logging.logEntries.create denied")
 			return
 		}
+		s.LoggingCalls++
 		var in struct {
-			LogName  string           `json:"logName"`
-			Resource map[string]any   `json:"resource"`
-			Entries  []map[string]any `json:"entries"`
+			LogName        string           `json:"logName"`
+			Resource       map[string]any   `json:"resource"`
+			Entries        []map[string]any `json:"entries"`
+			PartialSuccess bool             `json:"partialSuccess"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &in); err != nil || in.LogName == "" || len(in.Entries) == 0 {
 			apiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "bad entries")
 			return
 		}
+		s.PartialSuccess = append(s.PartialSuccess, in.PartialSuccess)
 		for _, e := range in.Entries {
 			e["logName"] = in.LogName
 			e["resource"] = in.Resource

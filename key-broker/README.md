@@ -35,7 +35,7 @@ every check with its data.
 | `quote`: TDX quote v4/v5 verified with Intel PCS collateral; no quote at all is refused | `quote_invalid`; 503 `unavailable` when PCS cannot serve collateral |
 | `quote`: TCB status allowed (`UpToDate`, `SWHardeningNeeded` by default) | `tcb_status` |
 | `report_data`: `sha256("sealed/kb-release/v1" \|\| nonce \|\| ephemeralPub) \|\| 32 zero bytes` | `report_data_mismatch` |
-| `chain`: the RPC serves the configured chain, and its head block is at most 60 s from the broker's clock (D-060); every read below is pinned to that block | 503 `chain_stale` |
+| `chain`: the RPC serves the configured chain, and its head block is at most 60 s from the broker's clock (D-060); the image and release reads below are pinned to that block | 503 `chain_stale` |
 | `image`: `getImage(imageId)` exists | `image_not_approved` |
 | `image`: `keccak256(mrtd \|\| rtmr0 \|\| rtmr1 \|\| rtmr2)` equals its measurementsHash; MRCONFIGID and MROWNERCONFIG are zero | `measurements_mismatch` |
 | `image`: not a debug image, and the TD has no debug, migratable or reserved attribute bits | `image_debug` |
@@ -47,27 +47,36 @@ every check with its data.
 | `stack_recompute`: `releaseIds` equal `config.apps[].releaseId`, each release is published for that app | `compose_mismatch` |
 | `stack_recompute`: each bundle, fetched by the release asset URL rule, has the onchain bundleHash | `bundle_hash_mismatch` |
 | `stack_recompute`: the composer recomputes `appCompose` byte for byte | `compose_mismatch` |
+| `chain` again: the approval and deployment reads below are pinned to the current head, which must also be at most 60 s from the broker's clock; the bundle fetches and the compose cannot age them (kb-2) | 503 `chain_stale` |
 | `stack_approved`: `DeploymentRegistry.isStackApproved(customer, stackHash)` | `stack_not_approved` |
 | `approval_releases`: the approval's releaseIds equal the config's as a set, and its imageId equals `config.imageId` and the request's (D-014) | `stack_not_approved` |
+| `deployment`: `DeploymentRegistry.getDeployment(deploymentId)` is not Closed, so a revived VM or a copied disk of a closed deployment gets nothing; a deployment the oracle has not registered yet (the first boot) passes | `stack_not_approved` |
 | `secrets`: every secret the stack's manifests name is stored (optional ones may be missing) | 503 `secret_missing` / `secret_invalid` |
 | `keys`: `diskKey` and `signerSeed` from the KMS HMAC key | 503 |
+| `chain` at the seal: the head of the approval reads is still at most 60 s old when the release is sealed | 503 `chain_stale` |
 | `seal`: HPKE to `ephemeralPub` | `bad_request` for an unusable key |
 
 Dependency failures (RPC, catalog, Intel PCS, Secret Manager, KMS) answer 503 `unavailable`, so the agent retries.
 A stale or foreign chain answers 503 `chain_stale` (recorded as a denial). An allowed release is answered only after
 its decision was written to Cloud Logging; if that write fails the answer is 503 `decision_log_unavailable` and
-nothing is released. Every other decision is written in the background.
+nothing is released. A denial or error of a request past `report_data` (its TDX quote verified and binds this request's
+nonce and ephemeral key, so it came from a live TDX VM) is also written before the answer (the answer does not
+depend on the write), so no flood can drop it. A replayed quote fails `report_data` and is queued like the rest. Every other decision is written in the background.
+Each non-junk decision also gets an operational line on Cloud Run stdout with its request id, decision, reason,
+stackHash, quoteHash, measurementsHash, eventLogHash, deploymentId, customer and remote address.
 
 ## Resource limits (D-066)
 
-- Per client address (the last `X-Forwarded-For` hop, which Cloud Run appends): 2 release requests per second with a
-  burst of 20, and four times that for nonces (`--client-rate`, negative turns it off). 429 `rate_limited` beyond.
+- Per client address (the last `X-Forwarded-For` hop, which Cloud Run appends; IPv6 per /48): 2 release requests per
+  second with a burst of 20, and four times that for nonces (`--client-rate`, negative turns it off). 429
+  `rate_limited` beyond.
 - The body is read before any slot is taken, with a 10 s deadline and a 2 MiB limit (413 beyond).
 - At most 4 bodies are parsed at a time; at most `--max-in-flight` (8) releases run their checks at a time.
 - Requests that fail before their nonce is accepted and their body validated are junk: answered at once, written to
   the decision log in the background in truncated form (names, reasons and details of at most 200 bytes, flagged
   `truncated`). The background queue is bounded; a full queue drops entries and the next written entry carries the
-  count in `suppressed`. Junk never takes a release slot.
+  count in `suppressed`. Junk never takes a release slot. The queue writes to Cloud Logging in batches of up to 32
+  entries per entries:write call. Only junk and denials of quotes that did not verify are queued.
 - The Go soft memory limit is 384 MiB unless `GOMEMLIMIT` is set.
 - Nonces: at most `--nonce-capacity` (100,000) live, oldest evicted first. `--nonce-journal <file>` keeps live and
   consumed nonces across a restart; it helps only on durable storage (Cloud Run's own filesystem is memory).
