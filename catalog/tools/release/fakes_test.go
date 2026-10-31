@@ -78,13 +78,21 @@ case "$output" in
 esac
 `
 
+// fakeSyft writes empty SPDX and Syft JSON. When FAKE_SYFT_UNOWNED is set and this is an every-file listing
+// (SYFT_FILE_METADATA_SELECTION=all, as sealed_syft_files runs it), it adds one file that no package owns at
+// that path, so a test can drive the release's excluded-path check through the file listing but not through
+// the shipped owned-by-package SBOM.
 const fakeSyft = `#!/usr/bin/env bash
 set -euo pipefail
 echo "syft $*" >>"$FAKE_LOG"
 [ "$1" = scan ] || exit 2
+files='[]'
+if [ -n "${FAKE_SYFT_UNOWNED:-}" ] && [ "${SYFT_FILE_METADATA_SELECTION:-}" = all ]; then
+  files='[{"SPDXID":"SPDXRef-File-unowned","fileName":"'"$FAKE_SYFT_UNOWNED"'"}]'
+fi
 for a in "$@"; do
   case "$a" in
-  spdx-json=*) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","name":"x","packages":[]}' >"${a#spdx-json=}" ;;
+  spdx-json=*) printf '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","name":"x","packages":[],"files":%s,"relationships":[]}' "$files" >"${a#spdx-json=}" ;;
   syft-json=*) printf '{"artifacts":[],"source":{},"distro":{}}' >"${a#syft-json=}" ;;
   esac
 done

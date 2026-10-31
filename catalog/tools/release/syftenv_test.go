@@ -185,8 +185,10 @@ sealed_syft_files registry:example.test/a@sha256:1 -o "spdx-json=$OUT/b.spdx.jso
 	registry := map[string]string{"SYFT_REGISTRY_AUTH_AUTHORITY": "ghcr.io"}
 	checkSyftEnv(t, "sealed_syft_sbom", calls[0].env, merge(wantSyftShipped, registry))
 	checkSyftEnv(t, "sealed_syft_files", calls[1].env, merge(wantSyftFiles, registry))
+	// Every scan passes -c scripts/release/syft.yaml, so a planted .syft.yaml cannot change what it lists.
+	cfg := filepath.Join(repoRoot(t), "scripts/release/syft.yaml")
 	for i, c := range calls {
-		if got, want := syftFlags(c.args), []string{"scan", "--platform", "linux/amd64", "-q"}; !reflect.DeepEqual(got, want) {
+		if got, want := syftFlags(c.args), []string{"scan", "-c", cfg, "--platform", "linux/amd64", "-q"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("call %d: flags %q, want %q", i+1, got, want)
 		}
 	}
@@ -231,8 +233,11 @@ func TestScanImageAndLintFixtureShareSyftSettings(t *testing.T) {
 	registry := map[string]string{"SYFT_REGISTRY_AUTH_AUTHORITY": "ghcr.io"}
 	checkSyftEnv(t, "scan-image.sh shipped SBOM", scan[0].env, merge(wantSyftShipped, registry))
 	checkSyftEnv(t, "scan-image.sh file listing", scan[1].env, merge(wantSyftFiles, registry))
-	mustContain(t, strings.Join(scan[0].args, " "), "scan registry:"+ref+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "sbom/notes-web.spdx.json"))
-	mustContain(t, strings.Join(scan[1].args, " "), "scan registry:"+ref+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "files/notes-web.spdx.json"))
+	// scan-image.sh here runs from the withScripts copy (root), make-image-sbom.sh from the real repo, so
+	// each -c resolves to its own checkout's scripts/release/syft.yaml.
+	scanCfg := filepath.Join(root, "scripts/release/syft.yaml")
+	mustContain(t, strings.Join(scan[0].args, " "), "scan registry:"+ref+" -c "+scanCfg+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "sbom/notes-web.spdx.json"))
+	mustContain(t, strings.Join(scan[1].args, " "), "scan registry:"+ref+" -c "+scanCfg+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "files/notes-web.spdx.json"))
 	for _, p := range []string{"sbom/notes-web.spdx.json", "files/notes-web.spdx.json"} {
 		if !fileExists(filepath.Join(out, p)) {
 			t.Errorf("%s missing", p)
@@ -254,36 +259,94 @@ func TestScanImageAndLintFixtureShareSyftSettings(t *testing.T) {
 		t.Fatalf("make-image-sbom.sh made %d syft calls, want 1 and the SBOM", len(fixture))
 	}
 	checkSyftEnv(t, "lint fixture vs scan-image.sh file listing", fixture[0].env, scan[1].env)
-	if got, want := syftFlags(fixture[0].args), syftFlags(scan[1].args); !reflect.DeepEqual(got, want) {
+	// Flags must match once the -c path (each checkout's own) is normalized: the fixture is made exactly as
+	// the release lists files, including the pinned config.
+	if got, want := normConfigFlag(syftFlags(fixture[0].args)), normConfigFlag(syftFlags(scan[1].args)); !reflect.DeepEqual(got, want) {
 		t.Errorf("lint fixture flags %q, scan-image.sh file listing flags %q", got, want)
+	}
+	// Both scripts must pin scripts/release/syft.yaml with -c, or a planted .syft.yaml could make them list
+	// different files (the release scan and the lint fixture would diverge).
+	for _, c := range []struct {
+		what string
+		args []string
+	}{{"scan-image.sh shipped SBOM", scan[0].args}, {"scan-image.sh file listing", scan[1].args}, {"lint fixture", fixture[0].args}} {
+		if got := configFlag(c.args); !strings.HasSuffix(got, "/scripts/release/syft.yaml") {
+			t.Errorf("%s: -c %q, want a path ending in scripts/release/syft.yaml", c.what, got)
+		}
 	}
 }
 
+// configFlag returns the value of the -c flag in a syft call, or "" if there is none.
+func configFlag(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-c" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// normConfigFlag replaces the absolute -c path (each checkout's own) with a placeholder, so two scans from
+// different checkouts compare equal on everything but that path.
+func normConfigFlag(flags []string) []string {
+	out := append([]string(nil), flags...)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == "-c" {
+			out[i+1] = "<cfg>"
+		}
+	}
+	return out
+}
+
 // TestSyftReadsTheSettings checks, with the real syft when it is installed, that syft resolves the two
-// environments to the intended configuration (an empty digest list, both Go license sources, the proxy).
+// environments to the intended configuration (an empty digest list, both Go license sources, the proxy) and
+// that the -c scripts/release/syft.yaml the scripts pass makes syft ignore every auto-discovered config: a
+// hostile .syft.yaml in the working directory and in HOME must not change exclude, scope, select-catalogers
+// or enrich. The fake syft forwards the -c flag (the only part of the call it needs) to `config --load`, so
+// without -c this test would read the planted configs and fail.
 func TestSyftReadsTheSettings(t *testing.T) {
 	real, err := exec.LookPath("syft")
 	if err != nil {
 		t.Skip("syft not installed")
 	}
 	bin := filepath.Join(t.TempDir(), "bin")
-	writeFile(t, filepath.Join(bin, "syft"), "#!/usr/bin/env bash\nexec \"$REAL_SYFT\" config --load\n")
+	writeFile(t, filepath.Join(bin, "syft"), `#!/usr/bin/env bash
+set -euo pipefail
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+  -c) args+=(-c "$2"); shift 2 ;;
+  *) shift ;;
+  esac
+done
+exec "$REAL_SYFT" config --load ${args[@]+"${args[@]}"}
+`)
 	if err := os.Chmod(filepath.Join(bin, "syft"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+
+	// A hostile .syft.yaml in the working directory and in HOME. -c must shut both out.
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".syft.yaml"), "scope: all-layers\nenrich: [all]\nselect-catalogers: [\"-go-module-binary-cataloger\"]\n")
+	writeFile(t, filepath.Join(home, ".config/syft/config.yaml"), "scope: all-layers\n")
+	work := t.TempDir()
+	writeFile(t, filepath.Join(work, ".syft.yaml"), "exclude:\n  - \"**/app/**\"\nscope: all-layers\nselect-catalogers: [\"-go-module-binary-cataloger\"]\n")
+	envScript := filepath.Join(repoRoot(t), "scripts/release/syft-env.sh")
+
 	for fn, want := range map[string]map[string]any{
 		"sealed_syft_sbom":  {"selection": "owned-by-package", "digests": []any{"sha1", "sha256"}},
 		"sealed_syft_files": {"selection": "all", "digests": []any{}},
 	} {
-		cmd := exec.Command("bash", "-c", ". scripts/release/syft-env.sh; "+fn+" registry:example.test/a@sha256:1")
-		cmd.Dir = repoRoot(t)
-		cmd.Env = append(cleanEnv(), append(hostileSyftEnv, "PATH="+bin+":"+os.Getenv("PATH"), "REAL_SYFT="+real, "HOME="+t.TempDir())...)
+		cmd := exec.Command("bash", "-c", `. "`+envScript+`"; `+fn+" registry:example.test/a@sha256:1")
+		cmd.Dir = work
+		cmd.Env = append(cleanEnv(), append(hostileSyftEnv, "PATH="+bin+":"+os.Getenv("PATH"), "REAL_SYFT="+real, "HOME="+home)...)
 		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("%s: %v", fn, err)
 		}
 		var cfg struct {
-			File struct {
+			Config string `yaml:"config"`
+			File   struct {
 				Metadata struct {
 					Selection string `yaml:"selection"`
 					Digests   []any  `yaml:"digests"`
@@ -298,8 +361,10 @@ func TestSyftReadsTheSettings(t *testing.T) {
 					FromContents bool `yaml:"from-contents"`
 				} `yaml:"main-module-version"`
 			} `yaml:"golang"`
-			Scope  string `yaml:"scope"`
-			Enrich []any  `yaml:"enrich"`
+			Scope            string `yaml:"scope"`
+			Enrich           []any  `yaml:"enrich"`
+			Exclude          []any  `yaml:"exclude"`
+			SelectCatalogers []any  `yaml:"select-catalogers"`
 		}
 		if err := yaml.Unmarshal(out, &cfg); err != nil {
 			t.Fatalf("%s: %v\n%s", fn, err, out)
@@ -313,8 +378,22 @@ func TestSyftReadsTheSettings(t *testing.T) {
 		if g := cfg.Golang; !g.Local || !g.Remote || g.Proxy != "https://proxy.golang.org" || g.NoProxy != "" || !g.MainMods.FromContents {
 			t.Errorf("%s: golang %+v", fn, g)
 		}
-		if cfg.Scope != "squashed" || len(cfg.Enrich) != 0 {
-			t.Errorf("%s: the caller's SYFT_SCOPE or SYFT_ENRICH leaked: scope %q, enrich %v", fn, cfg.Scope, cfg.Enrich)
+		// syft loaded our pinned config, not a discovered one.
+		if !strings.HasSuffix(cfg.Config, "scripts/release/syft.yaml") {
+			t.Errorf("%s: syft loaded config %q, want scripts/release/syft.yaml", fn, cfg.Config)
+		}
+		// None of the planted .syft.yaml settings apply.
+		if cfg.Scope != "squashed" {
+			t.Errorf("%s: a planted .syft.yaml changed scope to %q (want squashed)", fn, cfg.Scope)
+		}
+		if len(cfg.Enrich) != 0 {
+			t.Errorf("%s: a planted .syft.yaml set enrich %v", fn, cfg.Enrich)
+		}
+		if len(cfg.Exclude) != 0 {
+			t.Errorf("%s: a planted .syft.yaml set exclude %v", fn, cfg.Exclude)
+		}
+		if len(cfg.SelectCatalogers) != 0 {
+			t.Errorf("%s: a planted .syft.yaml set select-catalogers %v", fn, cfg.SelectCatalogers)
 		}
 	}
 }

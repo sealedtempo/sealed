@@ -176,9 +176,11 @@ func TestScanImageScript(t *testing.T) {
 		}
 	}
 	calls := f.calls(t)
-	mustContain(t, calls, "syft scan registry:"+ref+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "sbom/notes-web.spdx.json"))
+	// -c scripts/release/syft.yaml pins the config (syftenv_test.go checks it shuts out a planted .syft.yaml).
+	cfg := filepath.Join(root, "scripts/release/syft.yaml")
+	mustContain(t, calls, "syft scan registry:"+ref+" -c "+cfg+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "sbom/notes-web.spdx.json"))
 	// The every-file listing for lint (review policy-1); syftenv_test.go checks the settings of both runs.
-	mustContain(t, calls, "syft scan registry:"+ref+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "files/notes-web.spdx.json")+" -q")
+	mustContain(t, calls, "syft scan registry:"+ref+" -c "+cfg+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "files/notes-web.spdx.json")+" -q")
 	mustContain(t, calls, "grype sbom:")
 
 	writeFile(t, waivers, `version: 1

@@ -4,8 +4,11 @@
 # (runtime/composer/lint/testdata/syft-image/make-image-sbom.sh) both source it, and
 # catalog/tools/release/syftenv_test.go fails if the two resolve to different settings.
 #
-# The caller's SYFT_* variables are dropped first (registry access, SYFT_REGISTRY_*, excepted), so a shell or
-# runner cannot change what an SBOM lists. Then, for every scan:
+# The caller's SYFT_* variables are dropped first (registry access, SYFT_REGISTRY_*, excepted), and every
+# scan is given -c scripts/release/syft.yaml, so neither a shell or runner nor a .syft.yaml in the checkout
+# or the runner's HOME can change what an SBOM lists (syft given -c ignores every auto-discovered config,
+# including the ones that set exclude, scope, select-catalogers and enrich, which the SYFT_* variables do not
+# pin). Then, for every scan:
 #   SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES=true, SYFT_GOLANG_SEARCH_REMOTE_LICENSES=true  Go module
 #       licenses from the local module cache, else from the module proxy. Without them every module of a Go
 #       binary is NOASSERTION, which release lint refuses (F5). The runner's cache holds only this
@@ -32,6 +35,10 @@ _sealed_syft_drop="$(compgen -e | grep '^SYFT_' | grep -v '^SYFT_REGISTRY_' || t
 for _v in $_sealed_syft_drop; do unset "$_v"; done
 unset _v _sealed_syft_drop
 
+# The pinned config, beside this script, resolved to an absolute path so the -c holds wherever syft runs
+# (scan-image.sh runs it in the repository root, make-image-sbom.sh in a temp dir).
+_sealed_syft_cfg="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/syft.yaml"
+
 export SYFT_CHECK_FOR_APP_UPDATE=false
 export SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES=true
 export SYFT_GOLANG_SEARCH_REMOTE_LICENSES=true
@@ -43,11 +50,11 @@ export SYFT_GOLANG_MAIN_MODULE_VERSION_FROM_CONTENTS=true
 # VMs run), without progress output.
 sealed_syft_sbom() {
 	SYFT_FILE_METADATA_SELECTION=owned-by-package SYFT_FILE_METADATA_DIGESTS=sha1,sha256 \
-		syft scan "$1" --platform linux/amd64 "${@:2}" -q
+		syft scan "$1" -c "$_sealed_syft_cfg" --platform linux/amd64 "${@:2}" -q
 }
 
 # sealed_syft_files <source> [syft flags...]: the every-file listing of the same image, for lint.
 sealed_syft_files() {
 	SYFT_FILE_METADATA_SELECTION=all SYFT_FILE_METADATA_DIGESTS="" \
-		syft scan "$1" --platform linux/amd64 "${@:2}" -q
+		syft scan "$1" -c "$_sealed_syft_cfg" --platform linux/amd64 "${@:2}" -q
 }
