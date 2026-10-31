@@ -19,7 +19,9 @@
 # copying is redistribution and their license forbids it. A manifest that still names one fails the mirror.
 version: 1
 builds:
-  catalog/apps/coding-agent/fallback-opencode/images/opencode: {context: dir}
+  catalog/apps/coding-agent/fallback-opencode/images/opencode:
+    context: dir
+    nonreproducible: "the no-cache rebuild gives a different digest; built on a third-party base with apk and a Bun runtime, the nondeterminism is not yet isolated. opencode is the unused fallback (D-091), so low priority; fix pending (D-094)."
   catalog/apps/crm/images/espocrm: {context: dir}
   catalog/apps/inference-relay/images/litellm-relay: {context: dir}
   catalog/apps/inference-relay/images/relay: {context: root}
@@ -29,7 +31,9 @@ builds:
   runtime/agent: {context: root}
   runtime/egress: {context: root}
   runtime/envexec: {context: root}
-  runtime/images/local-model: {context: dir}
+  runtime/images/local-model:
+    context: dir
+    nonreproducible: "the no-cache rebuild gives a different digest; built on the ollama base with a layered model pull, the nondeterminism is not yet isolated; fix pending (D-094)."
   runtime/mpp-payer: {context: root}
   verifier: {context: root}
 extra:
