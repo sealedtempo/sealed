@@ -62,8 +62,8 @@ address is not in `--allowed-clients`, or that URL fetches are off (`--live-fetc
 
 - `POST /v1/verify/evidence`: an evidence bundle, or `{"bundle": {...}, "options": {...}}`.
 - `POST /v1/verify/live`: `{"url": "https://attest.<ip>.sslip.io/attest", "options": {...}}`. The daemon fetches
-  with a fresh nonce, only that exact path, refuses non-public destinations after DNS resolution (unless through
-  `HTTPS_PROXY`) and, with `--live-allowed-hosts`, any other host. A daemon with `--live-fetch=false` (the default
+  with a fresh nonce, only that exact path, refuses non-public destinations after DNS resolution (public as
+  sealed-egress classifies it, minus the documentation ranges; unless through `HTTPS_PROXY`) and, with `--live-allowed-hosts`, any other host. A daemon with `--live-fetch=false` (the default
   of the in-VM sidecar) answers 403 to this form. Or a caller-fetched attestation (sealed-mpp-payer):
   `{"attestUrl", "nonce", "attest": {GET /attest document}, "observedTlsPubKeyHash", "expectedCustomer",
   "expectedAppIds", "options"}`; the report mode is `live_submitted` and freshness is relative to the caller's nonce.

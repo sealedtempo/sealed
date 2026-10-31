@@ -106,8 +106,9 @@ dstack's GetQuote on Google Cloud returns an 8000-byte buffer. The signed quote 
 - Every producer trims to the signed bytes: Go `attest.TrimQuote`, and TypeScript `trimQuote` in `@sealed/core`, which sealed-agent uses for key release, evidence and `/attest`. Trimming cuts zero padding only, and refuses non-zero trailing bytes and truncated quotes.
 - quoteHash is `sha256` of the signed bytes only.
 - The key broker and the verifiers refuse a quote with any trailing bytes.
+- They also refuse a PCK certificate chain that is not in canonical PEM form (Go fuzzing): only the decoded certificates are signed, and PEM decoding skips spaces, tabs and CRs in the base64 and ignores its padding bits, so the chain's spelling was as unsigned as the padding.
 
-The simulator's quotes have no padding, which is why only real hardware showed this.
+The simulator's quotes have no padding, which is why only real hardware showed this. One malleability stays: each of the quote's two ECDSA signatures also verifies as (r, n-s), and real quote generation uses either form, so one attestation has up to four quoteHash values (`TestQuoteECDSATwinsVerify`). Nothing relies on quoteHash being unique: freshness comes from report_data (the release nonce, or nonce2 and attestedAt since D-047), and a heartbeat needs a later attestedAt.
 
 ### RTMR3 and the compose hash
 
@@ -174,7 +175,7 @@ Tests named here run in CI, on the local devnet or on a local Docker engine; the
 | Replay an old quote or request to the broker | single-use 5-minute nonce in report_data, consumed first | key broker replay tests (a released body replayed; 32 concurrent copies give exactly one 200) |
 | Reuse a quote made for evidence or live attest as a key-release quote | domain-separated report_data | `TestDenials` (evidence and attest constructions refused); verifier report_data vectors |
 | Relabel old evidence as fresh, or register a record signed before a revocation | attestedAt bound in report_data (D-047); oracle 15-minute window; `maxAttestationAge`; `AttestedBeforeApproval` (CR-3); `QuoteReused` (CR-4) | verifier "attestedAt relabelled"; `contracts/test/audit/AuditCrypto.t.sol` |
-| Pad one quote to many quoteHash values, or send dstack's padded buffer | only the exact signed quote is accepted; producers trim (D-052) | `TestRealGCPGolden`, `TestRealGCPGoldenRejects` (the 8000-byte form, non-zero padding and a truncated quote refused); `packages/core/test/dstack.test.ts`; `runtime/agent/test/dstack.test.ts` (fails without the trim) |
+| Pad one quote to many quoteHash values, or send dstack's padded buffer | only the exact signed quote is accepted; producers trim (D-052) | `TestRealGCPGolden`, `TestRealGCPGoldenRejects` (the 8000-byte form, non-zero padding and a truncated quote refused); `TestParseRejectsNonCanonicalCertChain` (a respelled PCK chain refused); `packages/core/test/dstack.test.ts`; `runtime/agent/test/dstack.test.ts` (fails without the trim) |
 | Network attacker intercepts released secrets | HPKE to the ephemeral key bound in the quote | shared Go and TypeScript HPKE vectors (`packages/core/test/fixtures/hpke-vector.json`, `key-broker/testdata/hpke-kb-release-vector.json`) |
 | Tampered quote, unsigned trailing bytes, out-of-date TCB | Intel collateral, CRLs, TCB policy; exact signed quote only | `TestDenials` with real GCE quotes and recorded Intel PCS collateral; `TestRealGCPGoldenRejects` (flipped report_data byte, policy without `UpToDate`, expired or missing collateral); `verifier/attest` tests |
 | A non-confidential VM asks for secrets | no valid TDX quote | `TestDenials` (no quote, non-TDX bytes, simulated quote on a production broker); `scripts/iam-checks/check.sh` non-confidential check; A3 |

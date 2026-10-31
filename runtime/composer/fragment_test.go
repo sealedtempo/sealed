@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 func notesManifest(t *testing.T) *Manifest {
@@ -400,6 +402,36 @@ func TestBootstrapDoneFile(t *testing.T) {
 		if p, err := ResolveDoneFile(m, f); err != nil || p != good.want {
 			t.Errorf("done_file %q resolved to %q (%v), want %q", good.file, p, err, good.want)
 		}
+	}
+}
+
+// TestEgressEntriesPassSealedEgress (fuzz finding, FuzzParseConfig): the
+// composer accepted allow entries sealed-egress refuses when it starts, so a
+// config or release with one composed a stack whose egress exited and never
+// booted: a wildcard over a multi-label public suffix (the label rules saw two
+// labels) and a numeric last label too long for strconv.Atoi.
+func TestEgressEntriesPassSealedEgress(t *testing.T) {
+	for _, e := range []string{"*.co.uk:443", "*.com.au:443", "*.co.jp:443", "a.12345678901234567890:443", "a.00:443"} {
+		if _, err := ParseHostPort(e); err == nil {
+			t.Errorf("%s accepted", e)
+		}
+		src := "version: 1\ndefault_allow: [\"" + e + "\"]\ncustomer_additions_allowed: true\n"
+		if _, _, err := ParseEgressPolicy([]byte(src)); err == nil {
+			t.Errorf("egress.yaml with %s accepted", e)
+		}
+		cfg, _ := fixtureStack(t)
+		cfg.EgressAdditions = map[string][]string{"notes": {e}}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("config with egress addition %s accepted", e)
+		}
+	}
+	// Wildcards one level below a public suffix, and under a private (non-ICANN)
+	// suffix, stay allowed, and the composed egress config loads.
+	cfg, bundles := fixtureStack(t)
+	cfg.EgressAdditions = map[string][]string{"notes": {"*.example.co.uk:443", "*.github.io:443", "a.b0:443"}}
+	r := mustCompose(t, cfg, bundles...)
+	if _, err := policy.Parse(r.EgressConfig); err != nil {
+		t.Fatalf("sealed-egress refuses the composed config: %v", err)
 	}
 }
 

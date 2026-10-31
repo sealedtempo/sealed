@@ -157,7 +157,7 @@ func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 			return HostPort{}, fmt.Errorf("%q: invalid host label %q (lowercase letters, digits and hyphens only)", s, l)
 		}
 	}
-	if _, err := strconv.Atoi(labels[len(labels)-1]); err == nil {
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
 		return HostPort{}, fmt.Errorf("%q: numeric top-level label", s)
 	}
 	return egressAccepts(s, hp)
@@ -166,10 +166,12 @@ func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 // egressAccepts refuses an entry that sealed-egress would refuse when it
 // loads the composed config. Such a stack would compose and could be
 // approved, but sealed-egress would exit at start and the stack would
-// never come up (runtime-2).
+// never come up (runtime-2). Its parser is the last word: it also refuses
+// wildcards over an ICANN public suffix (*.co.uk), which the label rules
+// above let through.
 func egressAccepts(s string, hp HostPort) (HostPort, error) {
 	if _, err := policy.ParseEntry(s); err != nil {
-		return HostPort{}, fmt.Errorf("%v (sealed-egress refuses it)", err)
+		return HostPort{}, fmt.Errorf("%q: sealed-egress refuses it: %v", s, err)
 	}
 	return hp, nil
 }

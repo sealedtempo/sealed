@@ -2,8 +2,12 @@ package attest
 
 import (
 	"bytes"
+	"context"
+	"crypto/elliptic"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,6 +164,84 @@ func TestParseRejectsMalformed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParseRejectsNonCanonicalCertChain (fuzz finding, FuzzVerifyQuote): the real GCP quote with one newline of its
+// PCK certificate PEM turned into a space, tab or CR, or a base64 padding bit set, decoded to the same certificates
+// and verified, giving the same attestation another quoteHash. ParseQuote (and so VerifyQuote and the key broker)
+// now refuses every PEM spelling but the canonical one.
+func TestParseRejectsNonCanonicalCertChain(t *testing.T) {
+	q := readGCPFile(t, "quote.dat")
+	v := recordedVerifierDir(t, filepath.Join(gcpDir, "pcs"), repoTCBPolicy(t), 0)
+	if _, err := v.VerifyQuote(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	begin := []byte("-----BEGIN CERTIFICATE-----\n")
+	first := bytes.Index(q, begin) + len(begin)
+	nl := first + 64 // the line end after the first base64 line
+	if q[nl] != '\n' {
+		t.Fatalf("byte %d is %q, not a line end", nl, q[nl])
+	}
+	end := bytes.Index(q[first:], []byte("=\n-----END")) + first // the last base64 character before padding
+	bad := map[string][]byte{}
+	for _, c := range []byte{' ', '\t', '\r'} {
+		m := bytes.Clone(q)
+		m[nl] = c
+		bad[fmt.Sprintf("line end %q", c)] = m
+	}
+	if end > first {
+		// With one '=' the last base64 character carries two unused bits; set the lowest.
+		const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+		m := bytes.Clone(q)
+		m[end-1] = alphabet[strings.IndexByte(alphabet, m[end-1])^1]
+		bad["padding bit"] = m
+	}
+	for name, m := range bad {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseQuote(m, ParseOptions{}); !errors.Is(err, ErrQuoteInvalid) || !strings.Contains(err.Error(), "canonical PEM") {
+				t.Fatalf("ParseQuote: %v", err)
+			}
+			if _, err := v.VerifyQuote(context.Background(), m); !errors.Is(err, ErrQuoteInvalid) {
+				t.Fatalf("VerifyQuote: %v", err)
+			}
+		})
+	}
+	// The v5 sample ends its chain with one NUL byte, which stays accepted.
+	if _, err := ParseQuote(readQuote(t, "v5_sample"), ParseOptions{}); err != nil {
+		t.Fatalf("v5 sample with its trailing NUL: %v", err)
+	}
+}
+
+// TestQuoteECDSATwinsVerify records the malleability ParseQuote cannot remove: each ECDSA signature of a quote (over
+// header and body, and the PCK key's over the QE report) also verifies as (r, n-s), and real quote generation picks
+// either form, so a verifier cannot demand one. quoteHash therefore does not name an attestation uniquely; nothing
+// may rely on it doing so (freshness is report_data's job).
+func TestQuoteECDSATwinsVerify(t *testing.T) {
+	q := readGCPFile(t, "quote.dat")
+	v := recordedVerifierDir(t, filepath.Join(gcpDir, "pcs"), repoTCBPolicy(t), 0)
+	const sigOff = 48 + 584 + 4 // v4: header, TD body, signature data length; then r || s
+	n := elliptic.P256().Params().N
+	m := bytes.Clone(q)
+	s := new(big.Int).SetBytes(m[sigOff+32 : sigOff+64])
+	new(big.Int).Sub(n, s).FillBytes(m[sigOff+32 : sigOff+64])
+	if bytes.Equal(m, q) {
+		t.Fatal("twin equals the original")
+	}
+	if _, err := v.VerifyQuote(context.Background(), m); err != nil {
+		t.Fatalf("the (r, n-s) twin no longer verifies; if low-s is now enforced, update ParseQuote's doc and this test: %v", err)
+	}
+	if a, ok := lowS(q); !ok || !bytes.Equal(a, mustLowS(t, m)) {
+		t.Fatal("lowS does not map both twins to one form")
+	}
+}
+
+func mustLowS(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	l, ok := lowS(raw)
+	if !ok {
+		t.Fatal("lowS failed")
+	}
+	return l
 }
 
 func TestTDAttributes(t *testing.T) {
