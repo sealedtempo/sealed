@@ -253,4 +253,22 @@ describe("D-062: a data disk rolled back to an older copy bills no leg twice", (
     // The clone took the stored report over, so its next period starts after it.
     expect(b.ledger?.state.signedThrough).toBeGreaterThanOrEqual(platform.stored.at(-1)?.periodEnd as number);
   });
+
+  it("a stopped agent writes nothing more to its disk: a save it had pending never lands over the next boot's state", async () => {
+    // The clone case above flaked this way (closePeriod found nothing open): the agent stopped at its start still
+    // had a 2 s debounced save pending, which fired after the next agent on the same disk had saved and before the
+    // copy was taken, so the clone booted from the stopped agent's state.
+    for (const a of agents) await a.stop().catch(() => undefined);
+    const x = newAgent();
+    await x.boot();
+    expect(await x.rebuildLedger()).toBe(true);
+    expect(await use(x, 1_000)).toBe(202); // the ledger changed: a debounced save is pending
+    await x.stop();
+    const path = join(settings.dataMount, ".sealed-agent", "state.json");
+    expect(JSON.parse(await readFile(path, "utf8")).ledger.open["llm-gateway"].tokens).toBe("1000"); // stop saved it
+    const next = JSON.stringify({ version: 1, written: "by the next boot on this disk" });
+    await writeFile(path, next);
+    await new Promise((r) => setTimeout(r, 2_500)); // past the debounce
+    expect(await readFile(path, "utf8")).toBe(next);
+  });
 });
