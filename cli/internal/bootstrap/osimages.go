@@ -28,7 +28,7 @@ import (
 // DefaultOSImageVersion is the Sealed dstack OS release bootstrap imports: SEALED_OS_VERSION in
 // runtime/images/dstack-os/upstream.env (TestDefaultOSImageVersionPin keeps the two equal). Its release tag is
 // os-image-v<version>.
-const DefaultOSImageVersion = "0.6.1-s1"
+const DefaultOSImageVersion = "0.6.1-s4"
 
 // The OS image names in PlatformRegistry and in the release asset names (SEALED_IMAGE_NAME_PROD and
 // SEALED_IMAGE_NAME_DEBUG), and the system disk image every deployment's dstack system disk is created from.

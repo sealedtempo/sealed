@@ -21,7 +21,7 @@ never printed. The CLI only reads Tempo (eth_call); it holds no keys and sends n
 ```sh
 sealed bootstrap --project <id> --customer-address <0x...> --platform-sa <email> \
   --key-broker-image ghcr.io/sealedtempo/sealed-key-broker@sha256:<digest> [--region us-central1] [--plan] [--yes] \
-  [--allowed-images 0x<imageId>,...] [--fee-splitter 0x... --fee-token 0x...] [--os-image-version 0.6.1-s1] [--no-os-images]
+  [--allowed-images 0x<imageId>,...] [--fee-splitter 0x... --fee-token 0x...] [--os-image-version 0.6.1-s4] [--no-os-images]
 sealed connect gcp --project <id> ...                  # the same command (D-032)
 
 sealed secrets set --config stack.yaml --missing       # generate or ask for every required secret, once
