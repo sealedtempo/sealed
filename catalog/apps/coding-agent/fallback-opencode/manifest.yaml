@@ -23,7 +23,7 @@ images:
   # plus bash, git, python3 and uid 10001. Digest pinned after the image workflow builds it.
   - name: opencode
     source: build:images/opencode
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:6b82f5ae74861bed26a1b36e21f5b12ef1d1abf968fadc00e356a1e62226788f
     platform: linux/amd64
     license_spdx: MIT
 resources:
