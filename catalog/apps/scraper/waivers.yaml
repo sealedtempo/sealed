@@ -6,4 +6,64 @@
 #     reason: why it does not apply or why it cannot be fixed yet
 #     expires: 2026-12-31           # YYYY-MM-DD, at most 90 days out
 version: 1
-waivers: []
+waivers:
+  - id: CVE-2026-106016
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109705
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109707
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109708
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109740
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109745
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109750
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109755
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109772
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109774
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-109780
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
+  - id: CVE-2026-113399
+    image: scraper-runner-playwright
+    package: "firefox"
+    reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
+    expires: 2026-12-31
