@@ -11,7 +11,8 @@
 // it can block the RPC). Failures that last the grace period switch Caddy to the measured
 // payment-needed Caddyfile; a Closed deployment (terminal) switches at once. A failure streak ends, and
 // the normal Caddyfile comes back, only once no leg that was due at the previous settlement is left
-// unpaid: paying part of a backlog is outcome `partial`, not a recovery, so a limit below the fees
+// unpaid, apart from legs in an app the FeeSplitter daily cap or a pause held back this settlement:
+// paying part of a backlog is outcome `partial`, not a recovery, so a limit below the fees
 // cannot restart the grace period at every limit period while the debt grows. Limits the operator sets
 // onchain are deferrals, not failures: the daily cap, and legs above a lowered per-payment cap
 // (reported as overCap, never paid at that cap).
@@ -226,9 +227,7 @@ export class Settler {
           outcomes.push(o);
         }
       } catch (err) {
-        log.warn("fee payment failed", { app, ...errorFields(err), ...(err instanceof PaymentError ? { outcome: err.outcome, txHash: err.txHash } : {}) });
-        const unknown = err instanceof PaymentError && err.outcome === "unknown";
-        outcomes.push({ app, result: "failed", reason: unknown ? "tx_unconfirmed" : (await this.splitterPaused(err)) ? "fee_splitter_paused" : "tx_failed" });
+        outcomes.push(await this.paymentFailed(app, err));
       }
     }
     this.d.status.overCap = overCap;
@@ -244,6 +243,13 @@ export class Settler {
     const left = limit - reserve;
     if (left >= b.spendable) return b;
     return left > 0n ? { spendable: left, binding: "spend_limit" } : { spendable: 0n, problem: "spend_limit", binding: "spend_limit" };
+  }
+
+  /** The outcome of a payment that threw: unconfirmed, the operator's pause (D-073), or a failed transaction. */
+  private async paymentFailed(app: string, err: unknown): Promise<AppOutcome> {
+    this.d.log.warn("fee payment failed", { app, ...errorFields(err), ...(err instanceof PaymentError ? { outcome: err.outcome, txHash: err.txHash } : {}) });
+    const unknown = err instanceof PaymentError && err.outcome === "unknown";
+    return { app, result: "failed", reason: unknown ? "tx_unconfirmed" : (await this.splitterPaused(err)) ? "fee_splitter_paused" : "tx_failed" };
   }
 
   /**
@@ -315,7 +321,9 @@ export class Settler {
       if (err instanceof PaymentError && err.outcome === "reverted") this.d.spend?.recordFees(err.networkFee ?? 0n, now, err.networkFee);
       if (err instanceof PaymentError && err.outcome === "unknown" && err.txHash) this.d.spend?.recordPendingFee(err.txHash, sum, sum + reserve, now);
       if (err instanceof PaymentError && err.outcome !== "not_sent") await this.saveNow();
-      throw err;
+      // A budget shortfall found before the send still counts, also when FeeSplitter was paused since the estimate.
+      const failed = await this.paymentFailed(app, err);
+      return left?.result === "failed" ? [left, failed] : [failed];
     }
     const { txHash, gasUsed, networkFee } = paid;
     for (const e of chosen) ledger.markPaid(e.usageHash, app, txHash, now);

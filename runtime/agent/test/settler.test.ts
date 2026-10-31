@@ -11,6 +11,7 @@ import { silentLogger } from "../src/log.js";
 import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
 import { emptyBudgetState, SpendBudget } from "../src/payments/budget.js";
 import type { Budget, PaymentLine } from "../src/payments/feePayer.js";
+import { ENFORCED_PAUSE_SELECTOR, isEnforcedPause } from "../src/payments/feePayer.js";
 import { PENDING_GIVE_UP_SEC, PLATFORM_SIDE_FAILURES, Settler } from "../src/payments/settler.js";
 import type { PaymentStatus } from "../src/state.js";
 import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
@@ -467,13 +468,71 @@ describe("settlement, grace period and the payment-needed switch", () => {
       expect(status).toMatchObject({ failingSince: null, deferredSince: 2000 });
     });
 
+    // Repair-pass finding (LOW): a pause that lands between a successful estimate and the send used to lose the
+    // budget shortfall the estimate already found, so a tick that was both short and paused read as a pure deferral.
+    it("a budget shortfall still counts when a pause lands between the estimate and the send", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      await ledger.closePeriod(1500);
+      await ledger.record("crm", "app_hour", 3600n, 1501);
+      await ledger.closePeriod(1600);
+      // 60_000 covers one 50_000 leg and its fee, not two; the pause is set after the estimate, so pay() reverts it.
+      payer.budgetResult = { spendable: 60_000n, binding: "spend_limit" };
+      const reserve = payer.feeReserve.bind(payer);
+      payer.feeReserve = async (lines) => {
+        const v = await reserve(lines);
+        payer.paused = true;
+        return v;
+      };
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([
+        { app: "crm", result: "failed", reason: "spend_limit" },
+        { app: "crm", result: "failed", reason: "fee_splitter_paused" },
+      ]);
+      expect(status.failingSince).toBe(2000);
+      expect(status.deferredSince).toBeUndefined();
+    });
+
+    // Repair-pass finding (BLOCKING, fee evasion): isEnforcedPause used to scan the whole viem error message for the
+    // selector. In access-key mode that message carries `from: <customer root wallet>`, so a customer whose address
+    // starts with 0xd93c0665 (a grindable 32-bit vanity prefix) turned every estimate or send revert into the
+    // operator's pause: settlement deferred, the grace clock never running, the page never shown.
+    it("an estimate revert whose message carries a 0xd93c0665 vanity address is still the customer's failure", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      expect(payer.paused).toBe(false); // paused() reads false; the only 0xd93c0665 is the vanity from address
+      payer.feeReserve = async () => {
+        const err = new Error(
+          [
+            "Execution reverted for an unknown reason.",
+            "",
+            "Request Arguments:",
+            "  from:  0xd93c0665eeb9a4674174cb14ffa6f56e83c7e7c3",
+            "  to:    0x20c0000000000000000000000000000000000001",
+            "",
+            "Details: execution reverted: custom error 0x576b38b4",
+            "Version: viem@2",
+          ].join("\n"),
+        ) as Error & { name: string; shortMessage: string; details: string };
+        err.name = "EstimateGasExecutionError";
+        err.shortMessage = "Execution reverted for an unknown reason.";
+        err.details = "execution reverted: custom error 0x576b38b4";
+        throw err;
+      };
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "estimate_reverted" }]);
+      expect(status.failingSince).toBe(2000);
+      expect(status.deferredSince).toBeUndefined();
+    });
+
     it("decodes EnforcedPause from the revert alone when paused() cannot be read", async () => {
       await ledger.record("crm", "app_hour", 3600n, 1001);
       payer.splitterPaused = async () => {
         throw new Error("fetch failed");
       };
+      // viem carries the decoded error name in shortMessage; the free-form message is never trusted for it.
       payer.feeReserve = async () => {
-        throw new Error('The contract function "payFees" reverted. Error: EnforcedPause()');
+        throw Object.assign(new Error('The contract function "payFees" reverted.'), {
+          shortMessage: 'The contract function "payFees" reverted. Error: EnforcedPause()',
+        });
       };
       expect((await settler.tick(2000)).apps).toEqual([{ app: "crm", result: "failed", reason: "fee_splitter_paused" }]);
       payer.feeReserve = async () => {
@@ -1048,9 +1107,35 @@ describe("payments-3: a spend limit below the fees (production grace period)", (
   });
 });
 
+// Repair-pass finding (BLOCKING): isEnforcedPause must read the pause only from revert-data fields, never from the
+// error message, which carries the request (the customer's root wallet as `from:` in access-key mode).
+describe("isEnforcedPause reads the pause from revert data, not from the message", () => {
+  const vanity = "0xd93c0665eeb9a4674174cb14ffa6f56e83c7e7c3";
+  it("ignores the selector when it only appears in the message or as a from address", () => {
+    expect(isEnforcedPause(new Error(`reverted. custom error ${ENFORCED_PAUSE_SELECTOR}`))).toBe(false);
+    const nonPause = Object.assign(new Error(`reverted\n  from:  ${vanity}\nDetails: custom error 0x576b38b4`), {
+      shortMessage: "Execution reverted for an unknown reason.",
+      details: "execution reverted: custom error 0x576b38b4",
+    });
+    expect(isEnforcedPause(nonPause)).toBe(false);
+  });
+  it("sees the real pause: the selector as revert data, a decoded error name, or EnforcedPause() in shortMessage", () => {
+    expect(isEnforcedPause({ data: ENFORCED_PAUSE_SELECTOR })).toBe(true);
+    expect(isEnforcedPause({ data: { errorName: "EnforcedPause" } })).toBe(true);
+    expect(isEnforcedPause({ raw: `${ENFORCED_PAUSE_SELECTOR}0000` })).toBe(true);
+    expect(isEnforcedPause({ cause: { signature: ENFORCED_PAUSE_SELECTOR } })).toBe(true);
+    // The node's text form, as viem surfaces it on the RpcRequestError / short message.
+    expect(isEnforcedPause(Object.assign(new Error("x"), { shortMessage: 'reverted. Error: EnforcedPause()' }))).toBe(true);
+    // Even when a vanity from address is also present, the real revert data still decides it.
+    const realPause = Object.assign(new Error(`from:  ${vanity}`), { cause: { data: ENFORCED_PAUSE_SELECTOR } });
+    expect(isEnforcedPause(realPause)).toBe(true);
+  });
+});
+
 // payments-4, ported from the pre-publish verifier's repro (verify-payments4.test.ts): a healthy key and balance, the
-// operator's FeeSplitter pause, the production grace period. The repro's payer reports the pause only in its revert
-// message, the way viem decodes it with the ABI. Before the fix the page showed at hour 25.
+// operator's FeeSplitter pause, the production grace period. paused() cannot be read here, so the pause is decoded from
+// the revert alone, carried the way the real Tempo node (anvil T12) carries it: the EnforcedPause selector as revert
+// data on the RpcRequestError in the cause chain, never in the free-form message. Before the fix the page showed at hour 25.
 describe("payments-4: a FeeSplitter pause never puts a customer on the payment-needed page", () => {
   const prod = parseDefaults(readFileSync(join(import.meta.dirname, "../../../config/defaults.yaml"), "utf8"));
   class PausedSplitterPayer extends FakePayer {
@@ -1058,7 +1143,11 @@ describe("payments-4: a FeeSplitter pause never puts a customer on the payment-n
       return false;
     }
     override async feeReserve(lines: PaymentLine[]) {
-      if (this.paused) throw new Error('The contract function "payFees" reverted. Error: EnforcedPause()');
+      if (this.paused)
+        throw Object.assign(new Error("Execution reverted for an unknown reason."), {
+          shortMessage: "Execution reverted for an unknown reason.",
+          cause: { data: "0xd93c0665" },
+        });
       return super.feeReserve(lines);
     }
   }
