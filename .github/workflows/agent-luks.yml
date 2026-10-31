@@ -1,0 +1,52 @@
+# Real dm-crypt for the agent's LUKS2 data disk (G18). runtime/agent/test/disk.real.test.ts runs LuksDisk with
+# the real cryptsetup, dmsetup, blkid, mkfs.ext4 and mount on loop devices: format, mount and write; close,
+# reopen and read; a wrong key, tampered headers, a keyring-opened table and a mapping on another device must
+# all fail. It runs in a privileged container made from the agent image's base (debian bookworm) with the agent
+# image's package pins (cryptsetup-bin=2:2.6.1-4~deb12u2), set up by runtime/agent/test/luks-container.sh.
+# The disk suite (disk.real.test.ts) fails if the image or the pins drift from runtime/agent/Dockerfile.
+#
+# Every action is pinned by full commit SHA with its version in a comment; catalog/tools/release
+# (go run ./catalog/tools/release workflows) enforces it.
+name: agent-luks
+on:
+  pull_request:
+    paths:
+      - runtime/agent/**
+      - packages/core/**
+      - pnpm-lock.yaml
+      - .github/workflows/agent-luks.yml
+  push:
+    branches: [main]
+    paths:
+      - runtime/agent/**
+      - packages/core/**
+      - pnpm-lock.yaml
+      - .github/workflows/agent-luks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: agent-luks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  # runtime/agent/Dockerfile NODE_IMAGE: node 24.22.1 on debian bookworm-slim, index digest pinned 2026-10-28.
+  AGENT_BASE_IMAGE: node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
+jobs:
+  real-luks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      # The container shares the runner's kernel: load the loop and dm-crypt modules before it starts, so
+      # /dev/loop-control and /dev/mapper/control exist inside it.
+      - name: Kernel modules
+        run: |
+          sudo modprobe -a loop dm_mod dm_crypt
+          ls -l /dev/loop-control /dev/mapper/control
+      - name: Real LUKS suite in a privileged container
+        run: |
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            "$AGENT_BASE_IMAGE" \
+            bash /src/runtime/agent/test/luks-container.sh
