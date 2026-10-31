@@ -10,6 +10,8 @@ import { HttpError, parseEndpoint } from "../src/http.js";
 import { silentLogger } from "../src/log.js";
 import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
 import { emptyBudgetState, SpendBudget } from "../src/payments/budget.js";
+import type { Budget, PaymentLine } from "../src/payments/feePayer.js";
+import { ENFORCED_PAUSE_SELECTOR, isEnforcedPause } from "../src/payments/feePayer.js";
 import { PENDING_GIVE_UP_SEC, PLATFORM_SIDE_FAILURES, Settler } from "../src/payments/settler.js";
 import type { PaymentStatus } from "../src/state.js";
 import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
@@ -94,7 +96,8 @@ describe("settlement, grace period and the payment-needed switch", () => {
     payer.cap = 25_000n;
     await ledger.record("crm", "app_hour", 3600n, 1001); // 50_000 -> 25k + 25k
     const r1 = await settler.tick(5000);
-    expect(r1.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 25_000n })]);
+    expect(r1.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 25_000n }), { app: "crm", result: "deferred", reason: "daily_cap" }]);
+    expect(r1.outcome).toBe("settled");
     const r2 = await settler.tick(6000);
     expect(r2.apps).toEqual([{ app: "crm", result: "deferred", reason: "daily_cap" }]);
     expect(status.failingSince).toBeNull();
@@ -156,10 +159,20 @@ describe("settlement, grace period and the payment-needed switch", () => {
     expect(status.paymentNeeded).toBe(true);
     expect(paymentNeededShown()).toBe(true);
     expect(status.lastOutcome).toBe("rpc_error");
+    // RPC back: 48 legs, at most MAX_LINES_PER_TX per transaction. Paying the first ten is no recovery (payments-3):
+    // the routes come back with the transaction that leaves nothing overdue.
     payer.rpcDown = false;
-    const r = await settler.tick(t0 + 48 * 3600);
-    expect(r.outcome).toBe("settled");
-    expect(r.paymentNeeded).toBe(false);
+    const backlog = ledger.unpaid().length;
+    expect(backlog).toBe(48);
+    let t = t0 + 48 * 3600;
+    const rounds: string[] = [];
+    while (ledger.unpaid().length > 0 && rounds.length < 10) {
+      const r = await settler.tick(t);
+      rounds.push(`${r.outcome}:${r.paymentNeeded}`);
+      t += 60;
+    }
+    expect(rounds).toEqual(["partial:true", "partial:true", "partial:true", "partial:true", "settled:false"]);
+    expect(status.failingSince).toBeNull();
     expect(caddy.current).toBe(CADDYFILE);
   });
 
@@ -254,7 +267,7 @@ describe("settlement, grace period and the payment-needed switch", () => {
     await ledger.record("llm-gateway", "tokens", 2_000_000n, 1001); // 400_000 -> 4 x 100k
     payer.daily = 250_000n;
     const r = await settler.tick(2000);
-    expect(r.apps).toEqual([expect.objectContaining({ result: "paid", amount: 200_000n, reports: 2 })]);
+    expect(r.apps).toEqual([expect.objectContaining({ result: "paid", amount: 200_000n, reports: 2 }), { app: "llm-gateway", result: "deferred", reason: "daily_cap" }]);
     expect(payer.estimates).toEqual([payer.paid[0]]);
     expect(ledger.unpaid().length).toBe(2);
   });
@@ -277,10 +290,256 @@ describe("settlement, grace period and the payment-needed switch", () => {
   it("a single leg whose estimate reverts is a failure", async () => {
     await ledger.record("crm", "app_hour", 3600n, 1001);
     payer.feeReserve = async () => {
-      throw new Error("execution reverted: EnforcedPause");
+      throw new Error("execution reverted: Unauthorized()");
     };
     const r = await settler.tick(2000);
     expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "estimate_reverted" }]);
+  });
+
+  // payments-3: a budget that covered part of the due legs used to read as "paid", which ended the failure streak.
+  it("a budget that covers only part of an app's legs is a failure: the streak runs on although something is paid", async () => {
+    for (let i = 0; i < 3; i++) {
+      await ledger.record("crm", "app_hour", 3600n, 1001 + i * 100);
+      await ledger.closePeriod(1050 + i * 100);
+    }
+    payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
+    const t0 = 10_000;
+    expect((await settler.tick(t0)).apps).toEqual([{ app: "crm", result: "failed", reason: "spend_limit" }]);
+    // Enough for one 50_000 leg and its network fee, not for two.
+    payer.budgetResult = { spendable: 60_000n, binding: "spend_limit" };
+    const r1 = await settler.tick(t0 + 60);
+    expect(r1.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 50_000n, reports: 1 }), { app: "crm", result: "failed", reason: "spend_limit" }]);
+    expect(r1.outcome).toBe("partial");
+    expect(status.failingSince).toBe(t0);
+    const r2 = await settler.tick(t0 + GRACE);
+    expect(r2.apps).toEqual([expect.objectContaining({ result: "paid", reports: 1 }), { app: "crm", result: "failed", reason: "spend_limit" }]);
+    expect(r2.paymentNeeded).toBe(true);
+    expect(paymentNeededShown()).toBe(true);
+    payer.budgetResult = { spendable: 1_000_000_000n };
+    const r3 = await settler.tick(t0 + GRACE + 60);
+    expect(r3).toMatchObject({ outcome: "settled", paymentNeeded: false, apps: [expect.objectContaining({ result: "paid", reports: 1 })] });
+    expect(ledger.unpaid()).toEqual([]);
+    expect(caddy.current).toBe(CADDYFILE);
+  });
+
+  it("a network fee that pushes the last leg out of the budget is a shortfall too", async () => {
+    await ledger.record("crm", "app_hour", 3600n, 1001);
+    await ledger.closePeriod(1500);
+    await ledger.record("crm", "app_hour", 3600n, 1501);
+    await ledger.closePeriod(1600);
+    // Both legs fit without the network fee (2 x 1000 for two lines), one leg fits with it.
+    payer.budgetResult = { spendable: 101_000n };
+    const r = await settler.tick(2000);
+    expect(r.apps).toEqual([expect.objectContaining({ result: "paid", reports: 1 }), { app: "crm", result: "failed", reason: "insufficient_balance" }]);
+    expect(status.failingSince).toBe(2000);
+  });
+
+  // payments-3 step 4: one transaction pays at most MAX_LINES_PER_TX legs; the rest wait without a usagePaid read.
+  describe("a backlog longer than one transaction", () => {
+    async function backlog(n: number) {
+      for (let i = 0; i < n; i++) {
+        await ledger.record("crm", "app_hour", 3600n, 1001 + i * 100);
+        await ledger.closePeriod(1050 + i * 100);
+      }
+    }
+
+    it("keeps a customer-side streak and the payment-needed page until the whole backlog is paid", async () => {
+      await backlog(25);
+      payer.budgetResult = { spendable: 0n, problem: "insufficient_balance" };
+      const t0 = 10_000;
+      await settler.tick(t0);
+      expect((await settler.tick(t0 + GRACE)).paymentNeeded).toBe(true);
+      payer.budgetResult = { spendable: 1_000_000_000n };
+      const reads = payer.paidReads;
+      const r1 = await settler.tick(t0 + GRACE + 60);
+      expect(payer.paidReads - reads).toBe(10);
+      expect(r1).toMatchObject({ outcome: "partial", paymentNeeded: true, apps: [expect.objectContaining({ result: "paid", reports: 10 })] });
+      expect(status.failingSince).toBe(t0);
+      expect(paymentNeededShown()).toBe(true);
+      expect((await settler.tick(t0 + GRACE + 120)).outcome).toBe("partial");
+      const r3 = await settler.tick(t0 + GRACE + 180);
+      expect(r3).toMatchObject({ outcome: "settled", paymentNeeded: false, apps: [expect.objectContaining({ result: "paid", reports: 5 })] });
+      expect(status.failingSince).toBeNull();
+      expect(caddy.current).toBe(CADDYFILE);
+    });
+
+    it("is no failure for a customer whose side works (a backlog left by a platform outage)", async () => {
+      platformDown = true;
+      await backlog(25);
+      await settler.tick(9_000);
+      platformDown = false;
+      const outcomes: string[] = [];
+      for (let t = 10_000; ledger.unpaid().length > 0 && outcomes.length < 5; t += 60) {
+        const r = await settler.tick(t);
+        outcomes.push(r.outcome);
+        expect(status.failingSince).toBeNull();
+        expect(r.paymentNeeded).toBe(false);
+      }
+      expect(outcomes).toEqual(["partial", "partial", "settled"]);
+    });
+
+    it("legs above the per-payment cap are still found behind a long backlog", async () => {
+      await backlog(12);
+      await ledger.record("llm-gateway", "tokens", 5_000_000n, 4000); // 1_000_000
+      await ledger.closePeriod(4100);
+      payer.cap = 500_000n;
+      await settler.tick(5000);
+      expect(Object.values(status.unpayable ?? {})).toEqual(["over_payment_cap"]);
+      expect(status.overCap).toBe(1);
+    });
+  });
+
+  // payments-4: FeeSplitter.pause() (owner only) makes payFees and topUpFees revert EnforcedPause. That is the operator's
+  // side (D-073): it used to count as estimate_reverted, so a pause longer than the grace period put every customer on
+  // the payment-needed page.
+  describe("a paused FeeSplitter (the operator's side)", () => {
+    it("defers settlement without a grace clock, and pays everything once unpaused", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      payer.paused = true;
+      const r1 = await settler.tick(2000);
+      expect(r1).toMatchObject({ outcome: "failed", paymentNeeded: false, apps: [{ app: "crm", result: "failed", reason: "fee_splitter_paused" }] });
+      expect(status).toMatchObject({ failingSince: null, deferredSince: 2000, lastOutcome: "fee_splitter_paused" });
+      await ledger.record("crm", "app_hour", 3600n, 2001);
+      expect((await settler.tick(2000 + 10 * GRACE)).paymentNeeded).toBe(false);
+      expect(paymentNeededShown()).toBe(false);
+      expect(payer.paid).toEqual([]);
+      payer.paused = false;
+      const r3 = await settler.tick(2000 + 10 * GRACE + 60);
+      expect(r3).toMatchObject({ outcome: "settled", paymentNeeded: false, apps: [expect.objectContaining({ result: "paid", reports: 2 })] });
+      expect(status.deferredSince).toBeUndefined();
+      expect(ledger.unpaid()).toEqual([]);
+    });
+
+    it("pauses a running grace period and resumes it after the unpause", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
+      const t0 = 10_000;
+      await settler.tick(t0);
+      // The customer fixes the limit 100 s in, but the operator has paused FeeSplitter for three grace periods.
+      payer.budgetResult = { spendable: 1_000_000_000n };
+      payer.paused = true;
+      expect((await settler.tick(t0 + 100)).apps).toEqual([{ app: "crm", result: "failed", reason: "fee_splitter_paused" }]);
+      await settler.tick(t0 + 100 + 3 * GRACE);
+      expect(status).toMatchObject({ failingSince: t0, deferredSince: t0 + 100 });
+      expect(paymentNeededShown()).toBe(false);
+      payer.paused = false;
+      const back = await settler.tick(t0 + 100 + 3 * GRACE + 10);
+      expect(back).toMatchObject({ outcome: "settled", paymentNeeded: false });
+      expect(status.failingSince).toBeNull();
+      expect(status.deferredSince).toBeUndefined();
+    });
+
+    it("does not hide a customer-side failure: an exhausted limit during a pause runs the grace period", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      payer.paused = true;
+      payer.budgetResult = { spendable: 0n, problem: "spend_limit" };
+      const t0 = 10_000;
+      expect((await settler.tick(t0)).apps).toEqual([{ app: "crm", result: "failed", reason: "spend_limit" }]);
+      expect(status.failingSince).toBe(t0);
+      expect(status.deferredSince).toBeUndefined();
+      expect((await settler.tick(t0 + GRACE)).paymentNeeded).toBe(true);
+    });
+
+    it("a budget that covers only part of the legs still counts while the batch reverts EnforcedPause", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      await ledger.closePeriod(1500);
+      await ledger.record("crm", "app_hour", 3600n, 1501);
+      await ledger.closePeriod(1600);
+      payer.paused = true;
+      payer.budgetResult = { spendable: 60_000n, binding: "spend_limit" };
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([
+        { app: "crm", result: "failed", reason: "spend_limit" },
+        { app: "crm", result: "failed", reason: "fee_splitter_paused" },
+      ]);
+      expect(status.failingSince).toBe(2000);
+    });
+
+    it("a pause between the estimate and the transaction is the operator's side too", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      const reserve = payer.feeReserve.bind(payer);
+      payer.feeReserve = async (lines) => {
+        const v = await reserve(lines);
+        payer.paused = true;
+        return v;
+      };
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "fee_splitter_paused" }]);
+      expect(status).toMatchObject({ failingSince: null, deferredSince: 2000 });
+    });
+
+    // Repair-pass finding (LOW): a pause that lands between a successful estimate and the send used to lose the
+    // budget shortfall the estimate already found, so a tick that was both short and paused read as a pure deferral.
+    it("a budget shortfall still counts when a pause lands between the estimate and the send", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      await ledger.closePeriod(1500);
+      await ledger.record("crm", "app_hour", 3600n, 1501);
+      await ledger.closePeriod(1600);
+      // 60_000 covers one 50_000 leg and its fee, not two; the pause is set after the estimate, so pay() reverts it.
+      payer.budgetResult = { spendable: 60_000n, binding: "spend_limit" };
+      const reserve = payer.feeReserve.bind(payer);
+      payer.feeReserve = async (lines) => {
+        const v = await reserve(lines);
+        payer.paused = true;
+        return v;
+      };
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([
+        { app: "crm", result: "failed", reason: "spend_limit" },
+        { app: "crm", result: "failed", reason: "fee_splitter_paused" },
+      ]);
+      expect(status.failingSince).toBe(2000);
+      expect(status.deferredSince).toBeUndefined();
+    });
+
+    // Repair-pass finding (BLOCKING, fee evasion): isEnforcedPause used to scan the whole viem error message for the
+    // selector. In access-key mode that message carries `from: <customer root wallet>`, so a customer whose address
+    // starts with 0xd93c0665 (a grindable 32-bit vanity prefix) turned every estimate or send revert into the
+    // operator's pause: settlement deferred, the grace clock never running, the page never shown.
+    it("an estimate revert whose message carries a 0xd93c0665 vanity address is still the customer's failure", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      expect(payer.paused).toBe(false); // paused() reads false; the only 0xd93c0665 is the vanity from address
+      payer.feeReserve = async () => {
+        const err = new Error(
+          [
+            "Execution reverted for an unknown reason.",
+            "",
+            "Request Arguments:",
+            "  from:  0xd93c0665eeb9a4674174cb14ffa6f56e83c7e7c3",
+            "  to:    0x20c0000000000000000000000000000000000001",
+            "",
+            "Details: execution reverted: custom error 0x576b38b4",
+            "Version: viem@2",
+          ].join("\n"),
+        ) as Error & { name: string; shortMessage: string; details: string };
+        err.name = "EstimateGasExecutionError";
+        err.shortMessage = "Execution reverted for an unknown reason.";
+        err.details = "execution reverted: custom error 0x576b38b4";
+        throw err;
+      };
+      const r = await settler.tick(2000);
+      expect(r.apps).toEqual([{ app: "crm", result: "failed", reason: "estimate_reverted" }]);
+      expect(status.failingSince).toBe(2000);
+      expect(status.deferredSince).toBeUndefined();
+    });
+
+    it("decodes EnforcedPause from the revert alone when paused() cannot be read", async () => {
+      await ledger.record("crm", "app_hour", 3600n, 1001);
+      payer.splitterPaused = async () => {
+        throw new Error("fetch failed");
+      };
+      // viem carries the decoded error name in shortMessage; the free-form message is never trusted for it.
+      payer.feeReserve = async () => {
+        throw Object.assign(new Error('The contract function "payFees" reverted.'), {
+          shortMessage: 'The contract function "payFees" reverted. Error: EnforcedPause()',
+        });
+      };
+      expect((await settler.tick(2000)).apps).toEqual([{ app: "crm", result: "failed", reason: "fee_splitter_paused" }]);
+      payer.feeReserve = async () => {
+        throw new Error("execution reverted: Unauthorized()");
+      };
+      expect((await settler.tick(2100)).apps).toEqual([{ app: "crm", result: "failed", reason: "estimate_reverted" }]);
+    });
   });
 
   it("the network fee must fit the budget on top of the fees", async () => {
@@ -547,7 +806,7 @@ describe("settlement, grace period and the payment-needed switch", () => {
     }
 
     it("the platform-side reasons are exactly those D-073 defers", () => {
-      expect([...PLATFORM_SIDE_FAILURES].sort()).toEqual(["deployment_not_registered", "ledger_unverified", "usage_not_submitted"]);
+      expect([...PLATFORM_SIDE_FAILURES].sort()).toEqual(["deployment_not_registered", "fee_splitter_paused", "ledger_unverified", "usage_not_submitted"]);
       for (const c of cases) expect(PLATFORM_SIDE_FAILURES.has(c.reason)).toBe(false);
     });
   });
@@ -712,5 +971,217 @@ describe("settlement, grace period and the payment-needed switch", () => {
       expect(budget.pendingFees()).toEqual([]);
       expect(BigInt(budget.state.fees) >= BigInt(counted)).toBe(true);
     });
+  });
+});
+
+// payments-3, ported from the pre-publish verifier's repro (verify-payments3.test.ts), with the production grace period
+// (24 h) against an access key whose periodic limit is below the app-hour fees. The settler used to count a payment
+// that cleared part of the backlog as a success: each limit period's first payment ended the failure streak, so a
+// daily limit never reached the payment-needed page while the debt grew, and a weekly one left it at the roll.
+describe("payments-3: a spend limit below the fees (production grace period)", () => {
+  const prod = parseDefaults(readFileSync(join(import.meta.dirname, "../../../config/defaults.yaml"), "utf8"));
+  const PROD_GRACE = prod.grace_period_minutes * 60;
+  const HOUR = 3600;
+  const t0 = 1_000_000;
+  const apps = ["crm", "coding-agent", "internal-tools"];
+
+  /** The access key's periodic limit as the keychain enforces it, and FeeSplitter's daily cap, which rolls every day. */
+  class PeriodicKeyPayer extends FakePayer {
+    now = t0;
+    periodEnd: number;
+    remaining: bigint;
+    dayEnd = t0 + 86_400;
+    constructor(
+      public keyLimit: bigint,
+      readonly period: number,
+    ) {
+      super();
+      this.periodEnd = t0 + period;
+      this.remaining = keyLimit;
+      this.daily = 20_000_000n;
+    }
+    roll() {
+      while (this.now >= this.periodEnd) {
+        this.periodEnd += this.period;
+        this.remaining = this.keyLimit;
+      }
+      while (this.now >= this.dayEnd) {
+        this.dayEnd += 86_400;
+        this.daily = 20_000_000n;
+      }
+    }
+    override async dailyRemaining() {
+      this.roll();
+      return super.dailyRemaining();
+    }
+    override async budget(reserve: bigint): Promise<Budget> {
+      this.roll();
+      const s = this.remaining - reserve;
+      return s > 0n ? { spendable: s, binding: "spend_limit" } : { spendable: 0n, problem: "spend_limit", binding: "spend_limit" };
+    }
+    override async pay(lines: PaymentLine[]) {
+      this.roll();
+      const sum = lines.reduce((s, l) => s + l.amount, 0n);
+      if (sum + this.networkFee > this.remaining) throw new Error("execution reverted: SpendingLimitExceeded");
+      const r = await super.pay(lines);
+      this.remaining -= sum + this.networkFee;
+      return r;
+    }
+  }
+
+  type Row = { h: number; outcome: string; failingSince: number | null; paymentNeeded: boolean; backlog: bigint };
+
+  function harness(payer: PeriodicKeyPayer) {
+    const ledger = new Ledger(emptyLedgerState(t0), {
+      deploymentId: `0x${"de".repeat(32)}`,
+      apps,
+      schedule: feeScheduleFromDefaults(prod),
+      domain: usageDomain(`0x${"04".repeat(20)}`, 4217),
+      enclaveKey: deriveEnclavePrivateKey(`0x${"01".repeat(32)}`),
+      perPaymentCap: () => payer.cap,
+    });
+    const status: PaymentStatus = { failingSince: null, paymentNeeded: false };
+    const platform: PlatformClient = { postEvidence: async () => ({ deploymentId: "0x" }), postUsage: async () => undefined, postHealth: async () => undefined };
+    const settler = new Settler({ ledger, payer, platform, status, graceSec: PROD_GRACE, save: async () => {}, log: silentLogger });
+    const rows: Row[] = [];
+    /** Hourly settlements from hour `from` to `to`, every app accruing an app-hour. */
+    const run = async (from: number, to: number) => {
+      for (let h = from; h <= to; h++) {
+        const now = t0 + h * HOUR;
+        for (const a of apps) await ledger.record(a, "app_hour", 3600n, now - 1);
+        payer.now = now;
+        const r = await settler.tick(now);
+        rows.push({ h, outcome: r.outcome, failingSince: status.failingSince, paymentNeeded: status.paymentNeeded, backlog: ledger.unpaid().reduce((s, e) => s + e.fee, 0n) });
+      }
+    };
+    return { ledger, status, rows, run };
+  }
+
+  it("uses the 24 h production grace period and 3.60 USD of app-hours a day", async () => {
+    expect(PROD_GRACE).toBe(86_400);
+    const { ledger } = harness(new PeriodicKeyPayer(0n, 86_400));
+    for (const a of apps) await ledger.record(a, "app_hour", 86_400n, t0 + 1);
+    await ledger.closePeriod(t0 + 2);
+    expect(ledger.unpaid().reduce((s, e) => s + e.fee, 0n)).toBe(3_600_000n);
+  });
+
+  it("a daily limit of 2 USD reaches the payment-needed page within the grace period of the streak that never clears", async () => {
+    const payer = new PeriodicKeyPayer(2_000_000n, 86_400);
+    const { rows, run } = harness(payer);
+    await run(1, 24 * 6);
+    // The streak ends only at a settlement that leaves nothing behind (before the fix: at every daily roll).
+    for (const r of rows) if (r.failingSince === null) expect(r.backlog).toBe(0n);
+    const lastClear = rows.filter((r) => r.backlog === 0n).at(-1)!.h;
+    const start = rows.find((r) => r.h > lastClear && r.failingSince !== null)!;
+    const shown = rows.find((r) => r.paymentNeeded);
+    expect(shown).toBeDefined();
+    expect(shown!.h).toBeLessThanOrEqual(start.h + PROD_GRACE / HOUR + 1);
+    // Once shown, the page stays: the debt is never paid, and the backlog behind it is under one day of fees.
+    for (const r of rows.filter((x) => x.h >= shown!.h)) expect(r.paymentNeeded).toBe(true);
+    expect(shown!.backlog < 3_600_000n).toBe(true);
+    expect(rows.filter((r) => r.h % 24 === 0 && r.h >= shown!.h).every((r) => r.outcome === "partial")).toBe(true);
+  });
+
+  it("a weekly limit of 12 USD keeps the payment-needed page past the weekly roll until the backlog is paid", async () => {
+    const payer = new PeriodicKeyPayer(12_000_000n, 7 * 86_400);
+    const { ledger, status, rows, run } = harness(payer);
+    await run(1, 24 * 8);
+    const shown = rows.find((r) => r.paymentNeeded)!;
+    expect(shown).toBeDefined();
+    const roll = rows.find((r) => r.h === 168)!;
+    expect(roll.outcome).toBe("partial");
+    // Before the fix the first payment after the roll restored the routes with about 12 USD still unpaid.
+    for (const r of rows.filter((x) => x.h >= shown.h)) expect(r.paymentNeeded).toBe(true);
+    expect(rows.at(-1)!.backlog > 0n).toBe(true);
+    // The customer raises the limit: the backlog is paid ten legs per app per settlement, and the routes come back
+    // with the settlement that leaves nothing overdue.
+    payer.keyLimit = 1_000_000_000n;
+    payer.remaining = payer.keyLimit;
+    const before = rows.length;
+    for (let h = 24 * 8 + 1; ledger.unpaid().length > 0 && h < 24 * 9; h++) await run(h, h);
+    const recovery = rows.slice(before);
+    expect(recovery.length).toBeGreaterThan(1);
+    expect(recovery.slice(0, -1).every((r) => r.paymentNeeded && r.outcome === "partial")).toBe(true);
+    expect(recovery.at(-1)).toMatchObject({ paymentNeeded: false, failingSince: null, outcome: "settled" });
+    expect(status.paymentNeeded).toBe(false);
+  });
+});
+
+// Repair-pass finding (BLOCKING): isEnforcedPause must read the pause only from revert-data fields, never from the
+// error message, which carries the request (the customer's root wallet as `from:` in access-key mode).
+describe("isEnforcedPause reads the pause from revert data, not from the message", () => {
+  const vanity = "0xd93c0665eeb9a4674174cb14ffa6f56e83c7e7c3";
+  it("ignores the selector when it only appears in the message or as a from address", () => {
+    expect(isEnforcedPause(new Error(`reverted. custom error ${ENFORCED_PAUSE_SELECTOR}`))).toBe(false);
+    const nonPause = Object.assign(new Error(`reverted\n  from:  ${vanity}\nDetails: custom error 0x576b38b4`), {
+      shortMessage: "Execution reverted for an unknown reason.",
+      details: "execution reverted: custom error 0x576b38b4",
+    });
+    expect(isEnforcedPause(nonPause)).toBe(false);
+  });
+  it("sees the real pause: the selector as revert data, a decoded error name, or EnforcedPause() in shortMessage", () => {
+    expect(isEnforcedPause({ data: ENFORCED_PAUSE_SELECTOR })).toBe(true);
+    expect(isEnforcedPause({ data: { errorName: "EnforcedPause" } })).toBe(true);
+    expect(isEnforcedPause({ raw: `${ENFORCED_PAUSE_SELECTOR}0000` })).toBe(true);
+    expect(isEnforcedPause({ cause: { signature: ENFORCED_PAUSE_SELECTOR } })).toBe(true);
+    // The node's text form, as viem surfaces it on the RpcRequestError / short message.
+    expect(isEnforcedPause(Object.assign(new Error("x"), { shortMessage: 'reverted. Error: EnforcedPause()' }))).toBe(true);
+    // Even when a vanity from address is also present, the real revert data still decides it.
+    const realPause = Object.assign(new Error(`from:  ${vanity}`), { cause: { data: ENFORCED_PAUSE_SELECTOR } });
+    expect(isEnforcedPause(realPause)).toBe(true);
+  });
+});
+
+// payments-4, ported from the pre-publish verifier's repro (verify-payments4.test.ts): a healthy key and balance, the
+// operator's FeeSplitter pause, the production grace period. paused() cannot be read here, so the pause is decoded from
+// the revert alone, carried the way the real Tempo node (anvil T12) carries it: the EnforcedPause selector as revert
+// data on the RpcRequestError in the cause chain, never in the free-form message. Before the fix the page showed at hour 25.
+describe("payments-4: a FeeSplitter pause never puts a customer on the payment-needed page", () => {
+  const prod = parseDefaults(readFileSync(join(import.meta.dirname, "../../../config/defaults.yaml"), "utf8"));
+  class PausedSplitterPayer extends FakePayer {
+    override async splitterPaused() {
+      return false;
+    }
+    override async feeReserve(lines: PaymentLine[]) {
+      if (this.paused)
+        throw Object.assign(new Error("Execution reverted for an unknown reason."), {
+          shortMessage: "Execution reverted for an unknown reason.",
+          cause: { data: "0xd93c0665" },
+        });
+      return super.feeReserve(lines);
+    }
+  }
+
+  it("26 hours of pause defer settlement; the backlog is paid after the unpause", async () => {
+    const t0 = 2_000_000;
+    const payer = new PausedSplitterPayer();
+    payer.paused = true;
+    const ledger = new Ledger(emptyLedgerState(t0), {
+      deploymentId: `0x${"de".repeat(32)}`,
+      apps: ["crm"],
+      schedule: feeScheduleFromDefaults(prod),
+      domain: usageDomain(`0x${"04".repeat(20)}`, 4217),
+      enclaveKey: deriveEnclavePrivateKey(`0x${"01".repeat(32)}`),
+      perPaymentCap: () => payer.cap,
+    });
+    const status: PaymentStatus = { failingSince: null, paymentNeeded: false };
+    const platform: PlatformClient = { postEvidence: async () => ({ deploymentId: "0x" }), postUsage: async () => undefined, postHealth: async () => undefined };
+    const settler = new Settler({ ledger, payer, platform, status, graceSec: prod.grace_period_minutes * 60, save: async () => {}, log: silentLogger });
+    let first: unknown;
+    for (let h = 1; h <= 26; h++) {
+      const now = t0 + h * 3600;
+      await ledger.record("crm", "app_hour", 3600n, now - 1);
+      const r = await settler.tick(now);
+      first ??= r.apps;
+      expect(r.paymentNeeded).toBe(false);
+    }
+    expect(first).toEqual([{ app: "crm", result: "failed", reason: "fee_splitter_paused" }]);
+    expect(status).toMatchObject({ failingSince: null, deferredSince: t0 + 3600, lastOutcome: "fee_splitter_paused" });
+    payer.paused = false;
+    const outcomes: string[] = [];
+    for (let h = 27; ledger.unpaid().length > 0 && h < 40; h++) outcomes.push((await settler.tick(t0 + h * 3600)).outcome);
+    expect(outcomes).toEqual(["partial", "partial", "settled"]);
+    expect(status).toMatchObject({ failingSince: null, paymentNeeded: false });
+    expect(status.deferredSince).toBeUndefined();
   });
 });

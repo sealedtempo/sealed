@@ -105,6 +105,36 @@ export interface FeePayer {
   spendLimit?(): Promise<SpendLimit | undefined>;
   /** The receipt of an earlier payment transaction, undefined while none is mined. */
   paymentReceipt?(txHash: Hex): Promise<PaymentReceipt | undefined>;
+  /** FeeSplitter.paused(): while the owner has paused it, payFees and topUpFees revert EnforcedPause (payments-4). */
+  splitterPaused?(): Promise<boolean>;
+}
+
+/** OpenZeppelin Pausable's EnforcedPause() selector, the revert of FeeSplitter.payFees and topUpFees while paused. */
+export const ENFORCED_PAUSE_SELECTOR = "0xd93c0665";
+
+/**
+ * Whether an estimate or payment error is FeeSplitter's EnforcedPause() revert, anywhere in the error's cause chain.
+ * The selector is matched only as revert data (`data`, a decoded error's `data`, `raw`, `signature`) or as viem's
+ * decoded error name; it is never read from the free-text `message` or `details`, which carry the request (`from:`
+ * is the customer's root wallet in access-key mode), so a customer address starting with the selector would turn any
+ * failure into the operator's pause (D-073) and the grace period would never run. The `EnforcedPause()` name, which
+ * cannot be an address, is matched in `shortMessage` and `details`.
+ */
+export function isEnforcedPause(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let e: unknown = err; typeof e === "object" && e !== null && !seen.has(e); e = (e as { cause?: unknown }).cause) {
+    seen.add(e);
+    const x = e as { data?: unknown; raw?: unknown; signature?: unknown; shortMessage?: unknown; details?: unknown };
+    const decoded = typeof x.data === "object" && x.data !== null ? (x.data as { errorName?: unknown; data?: unknown }) : undefined;
+    if (decoded?.errorName === "EnforcedPause") return true;
+    for (const v of [x.data, decoded?.data, x.raw, x.signature]) {
+      if (typeof v === "string" && v.toLowerCase().startsWith(ENFORCED_PAUSE_SELECTOR)) return true;
+    }
+    for (const v of [x.shortMessage, x.details]) {
+      if (typeof v === "string" && /\bEnforcedPause\(\)/.test(v)) return true;
+    }
+  }
+  return false;
 }
 
 const tip20Abi = [
@@ -202,6 +232,10 @@ export class TempoFeePayer implements FeePayer {
       args: [this.o.feeToken],
     });
     return cfg.perPaymentCap;
+  }
+
+  async splitterPaused(): Promise<boolean> {
+    return this.client.readContract({ address: this.o.feeSplitter, abi: feeSplitterAbi, functionName: "paused" });
   }
 
   async dailyRemaining(): Promise<bigint> {
