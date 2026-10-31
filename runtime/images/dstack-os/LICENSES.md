@@ -23,8 +23,8 @@ removed.
 | Debian trixie base system and the listed packages | rootfs | Debian main only (patch 0003): GPL-2.0, GPL-3.0, LGPL-2.1, LGPL-3.0, MIT, BSD, ISC, Apache-2.0, MPL-2.0 and other DFSG-free licenses per package | Snapshot `20260721T000000Z`. Explicit packages: systemd, systemd-boot, systemd-resolved, dbus, ca-certificates, bash, coreutils, iproute2, iptables, nftables, docker.io, docker-cli, docker-compose, containerd, chrony, wireguard-tools, cryptsetup, dmsetup, tpm2-tools, curl, wget, iputils-ping, dnsutils, traceroute, netcat-openbsd, fdisk, dosfstools, pciutils, usbutils, cpio, jq, fuse3, pigz, rsync, xfsprogs, e2fsprogs, gdisk, parted, busybox-static, cryptsetup-bin, systemd-boot-efi, acpid, numactl, plus their dependencies |
 | dstack guest services: `dstack-guest-agent`, `dstack-util`, `dstack-volume` | `/usr/bin` | Apache-2.0 (`LICENSE`, SPDX headers; the Rust workspace manifest says MIT, also allowed) | Built from the patched commit with Rust 1.92.0 and `Cargo.lock --locked`; crates in `-rust-crates.json` |
 | dstack guest payload (units, `dstack-prepare.sh`, `app-compose.sh`, configs) | `/usr/bin`, `/usr/lib/systemd`, `/etc` | Apache-2.0 | `os/common/rootfs`, `os/mkosi/mkosi.skeleton` |
-| nerdctl 2.3.5, CNI plugins 1.3.0, stargz-snapshotter 0.18.2 | `/usr/bin`, `/usr/lib/cni` | Apache-2.0 | Upstream release binaries, sha256-pinned in `versions.env` |
-| Sysbox 0.6.7 (`sysbox-runc`, `sysbox-fs`, `sysbox-mgr`) | `/usr/bin` | Apache-2.0 | Built from source at pinned commits |
+| nerdctl 2.3.5, CNI plugins 1.3.0, stargz-snapshotter 0.18.2 | `/usr/bin`, `/usr/lib/cni`; each project's `LICENSE` and Go's `LICENSE`+`PATENTS` in `/usr/share/licenses/container-stack` | Apache-2.0; Go standard library BSD-3-Clause | Upstream release binaries, sha256-pinned in `versions.env`. The tarballs carry no license file, so the Apache-2.0 texts are pinned in `overlay/os/mkosi/components/container-stack/licenses` (git blobs nerdctl/stargz `d6456956`, CNI `8dada3ed`) and sha256-checked at build time |
+| Sysbox 0.6.7 (`sysbox-runc`, `sysbox-fs`, `sysbox-mgr`) | `/usr/bin`; each module's `LICENSE` and Go's `LICENSE`+`PATENTS` in `/usr/share/licenses/sysbox` | Apache-2.0; Go standard library BSD-3-Clause | Built from source at pinned commits; each module's `LICENSE` is installed from its checkout (git blobs `sysbox-runc` `385b1fd2`, `sysbox-fs`/`sysbox-mgr` `c6087d5b`), sha256-checked |
 | `sealed-logship` (debug variant only) | `/usr/bin`; Go's `LICENSE` and `PATENTS` in `/usr/share/licenses/sealed-logship/go` | Apache-2.0; Go standard library BSD-3-Clause | `runtime/images/dstack-os/logship`, built with Go 1.26.2 |
 
 Built during the image build but not shipped on the disk: `dstack-mr` and
@@ -67,7 +67,12 @@ extracting the rootfs with `unsquashfs`:
 - the ESP contains only `EFI/BOOT/BOOTX64.EFI`;
 - no login, shell, debugger or SSH component is present (`sshd`, `login`,
   `agetty`, getty units and generator, `debug-shell.service`, `systemd-logind`,
-  the TEE simulator, `swtpm`, `gdb`, `strace`, `tcpdump`), in both variants.
+  the TEE simulator, `swtpm`, `gdb`, `strace`, `tcpdump`), in both variants;
+- every hand-staged binary carries its license text under `/usr/share/licenses`
+  (sysbox and the container stack in both variants, `sealed-logship` in the
+  debug variant): Go's `LICENSE` and `PATENTS`, and each project's own
+  `LICENSE`. These binaries are not Debian packages, so the copyright capture
+  in `mkosi.postinst` does not reach them.
 
 Inside the build, upstream's `check-parity.py` additionally refuses the main
 NVIDIA and ZFS paths (patch 0004) before the image is assembled.
