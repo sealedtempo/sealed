@@ -4,6 +4,8 @@
 #
 # Every action is pinned by full commit SHA with its version in a comment; catalog/tools/release
 # (go run ./catalog/tools/release workflows) enforces it, together with the secrets rules.
+# catalog/tools/release/ci_workflow_test.go checks the rest of this file's shape (toolchain versions, the compose pin,
+# timeouts, the chain tests and the version prints).
 name: ci
 on:
   pull_request:
@@ -16,15 +18,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   GO_VERSION: "1.27.3"
+  # Node and Python follow the runtime images, not a developer machine: every Node image is
+  # node:24.22.1-bookworm-slim, and the Python code that ships runs on CPython 3.13 (the LiteLLM image's
+  # /app/.venv and the OpenHands agent-server). ci_workflow_test.go fails when they drift apart.
   NODE_VERSION: "24.22.1"
-  PYTHON_VERSION: "3.12.16"
+  PYTHON_VERSION: "3.13.18"
   # D-053: Foundry v1.8.6 (Tempo hardforks T0 to T14).
   FOUNDRY_VERSION: v1.8.6
   TERRAFORM_VERSION: "1.17.0"
+  # The composer, scraper, crm and internal-tools tests check `docker compose config` output, which changes between
+  # compose releases, so the runner image's compose is replaced with the one dstack 0.6.1 ships in the guest (5.1.0).
+  # The sha256 is the GitHub release asset digest of docker-compose-linux-x86_64 v5.1.0.
+  COMPOSE_VERSION: "5.1.0"
+  COMPOSE_SHA256: 5633cb21e06a7c88c7ca48a9334d3d0f7f892e9605ae9e9a45f9a095d4ffceb8
 jobs:
   go:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Well above go test's -timeout (25m, counted per package test binary), so a hung package normally panics
+    # with its goroutine stacks before the job is cancelled without them.
+    timeout-minutes: 45
     env:
       # Nothing may skip in CI: the anvil end-to-end tests (verifier, key broker, CLI, release scripts), the key
       # broker's interop test against @sealed/core, the CLI's embedded Terraform module and the IAM check script.
@@ -45,6 +57,29 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: pnpm }
+      - uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2.4.0
+        with: { version: "v${{ env.COMPOSE_VERSION }}", cache-binary: false }
+      - name: Check the compose plugin
+        run: |
+          echo "$COMPOSE_SHA256  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          test "$(docker compose version --short)" = "$COMPOSE_VERSION"
+      # TestSystemFsck runs fsck.fat (dosfstools) when the runner has it; the measurement script test needs
+      # base64 -w0, sha256sum and jq; TestDockerChecksEgressConfigs runs the system python3.
+      - name: Tool versions
+        run: |
+          go version
+          node --version
+          pnpm --version
+          forge --version
+          terraform version
+          python3 --version
+          jq --version
+          openssl version
+          bash --version | head -n 1
+          docker --version
+          docker compose version
+          shellcheck --version | sed -n 2p
+          dpkg-query -W dosfstools || echo "dosfstools is not installed"
       # The key broker's interop test opens release ciphertexts with the built @sealed/core.
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @sealed/core build
@@ -57,9 +92,11 @@ jobs:
         run: |
           unformatted="$(gofmt -l catalog/tools)"
           if [ -n "$unformatted" ]; then echo "::error::gofmt needed: $unformatted"; exit 1; fi
-      - run: go test -count=1 ./...
+      # runtime/composer runs the real-Docker stacks and catalog/tools/release runs anvil and the workflow
+      # simulation; Go's default 10 minutes per package is too tight on a 4 vCPU runner.
+      - run: go test -count=1 -timeout 25m ./...
       # The key broker's dev build: simulated quotes through the real binary.
-      - run: go test -count=1 -tags sealeddev ./key-broker/...
+      - run: go test -count=1 -timeout 25m -tags sealeddev ./key-broker/...
   terraform:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -68,6 +105,12 @@ jobs:
         with: { persist-credentials: false }
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with: { terraform_version: "${{ env.TERRAFORM_VERSION }}", terraform_wrapper: false }
+      - name: Tool versions
+        run: |
+          terraform version
+          docker compose version
+          shellcheck --version | sed -n 2p
+          dpkg-query -W dosfstools || echo "dosfstools is not installed"
       # The customer bootstrap module (the CLI embeds the same files); plan tests use mock providers.
       - name: customer-bootstrap
         working-directory: infra/terraform/customer-bootstrap
@@ -78,11 +121,18 @@ jobs:
           terraform test -no-color
   ts:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 45 minutes, up from 30: the chain suites start anvil per suite, and the Firefox crawl installs Playwright's
+    # Firefox first.
+    timeout-minutes: 45
     env:
       # Scraper and relay Postgres tests use the runner image's PostgreSQL 16 (CI makes the scraper's required).
       PG_BIN: /usr/lib/postgresql/16/bin
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      # The @sealed/core and agent anvil suites gate on chainTestsEnabled() (packages/core/src/testing/localTempo.ts),
+      # which with this set fails instead of skipping when anvil or the contracts project is missing. The relay and
+      # mpp-payer end-to-end suites gate on anvilAvailable() (runtime/relay/test/helpers/anvil.ts), which ignores
+      # it; the "Require anvil" step below covers them.
+      SEALED_REQUIRE_CHAIN_TESTS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -93,11 +143,49 @@ jobs:
       # The relay catalog test runs the real composer lint, which needs Go.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      # anvilAvailable() is true when `anvil --version` exits 0; without anvil the relay and mpp-payer end-to-end
+      # suites would skip and pnpm -r test would still pass.
+      - name: Require anvil
+        run: |
+          if ! anvil --version >/dev/null 2>&1; then
+            echo "::error::anvil --version failed; the relay and mpp-payer end-to-end suites would skip"
+            exit 1
+          fi
+      # The scraper's catalog test runs `docker compose config` on the composed document.
+      - uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2.4.0
+        with: { version: "v${{ env.COMPOSE_VERSION }}", cache-binary: false }
+      - name: Check the compose plugin
+        run: |
+          echo "$COMPOSE_SHA256  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          test "$(docker compose version --short)" = "$COMPOSE_VERSION"
+      - name: Tool versions
+        run: |
+          node --version
+          pnpm --version
+          go version
+          forge --version
+          anvil --version
+          "$PG_BIN/postgres" --version
+          openssl version
+          docker compose version
+          shellcheck --version | sed -n 2p
+          dpkg-query -W dosfstools || echo "dosfstools is not installed"
       - run: pnpm install --frozen-lockfile
+      # The chain suites deploy the contracts from source (forge build); dependencies/ is not committed.
+      - run: make -C contracts deps
       - run: pnpm -r typecheck
       # The agent simulator CLI test and the relay smoke test run the built dist.
       - run: pnpm -r build
       - run: pnpm -r test
+      # The scraper's Playwright crawl of the fixture site (test/playwright.test.ts) needs Playwright's own Firefox
+      # build, which the install above does not download. --with-deps adds the system libraries Firefox needs.
+      - name: scraper Playwright Firefox crawl
+        working-directory: catalog/apps/scraper/runner
+        run: |
+          pnpm exec playwright install --with-deps firefox
+          pnpm test:playwright
   catalog:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -108,15 +196,32 @@ jobs:
         with: { go-version: "${{ env.GO_VERSION }}" }
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      # The crm, internal-tools and catalog/tools suites parse `docker compose config --format json` output; the
+      # llm-gateway check runs `docker compose config --quiet`.
+      - uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2.4.0
+        with: { version: "v${{ env.COMPOSE_VERSION }}", cache-binary: false }
+      - name: Check the compose plugin
+        run: |
+          echo "$COMPOSE_SHA256  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          test "$(docker compose version --short)" = "$COMPOSE_VERSION"
+      - name: Tool versions
+        run: |
+          python --version
+          node --version
+          pnpm --version
+          go version
+          docker compose version
+          shellcheck --version | sed -n 2p
+          dpkg-query -W dosfstools || echo "dosfstools is not installed"
       - run: python -m pip install --disable-pip-version-check PyYAML==6.0.3 httpx==0.28.1 jsonschema==4.25.1
       - name: Python suites (llm-gateway, coding-agent, local-model)
         run: |
           for d in catalog/apps/llm-gateway catalog/apps/coding-agent runtime/images/local-model; do
             make -C "$d" test PYTHON=python
           done
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: "${{ env.NODE_VERSION }}" }
       # The shared catalog tooling wraps the real composer lint (Node and Python).
       - name: catalog/tools suites
         run: |
@@ -136,6 +241,12 @@ jobs:
         with: { persist-credentials: false }
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with: { version: "${{ env.FOUNDRY_VERSION }}" }
+      - name: Tool versions
+        run: |
+          forge --version
+          docker compose version
+          shellcheck --version | sed -n 2p
+          dpkg-query -W dosfstools || echo "dosfstools is not installed"
       - run: make -C contracts deps
       - run: make -C contracts fmt-check
       - run: make -C contracts test
@@ -147,7 +258,13 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version: "${{ env.GO_VERSION }}" }
-      # actionlint runs shellcheck (preinstalled on the runner) on every run: block.
+      # actionlint runs the runner's preinstalled shellcheck on every run: block; this step prints its version.
+      - name: Tool versions
+        run: |
+          go version
+          docker compose version
+          shellcheck --version | sed -n 2p
+          dpkg-query -W dosfstools || echo "dosfstools is not installed"
       - name: actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
       - name: Pinning and secrets policy

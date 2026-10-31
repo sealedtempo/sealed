@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -147,18 +148,75 @@ func TestMeasureComposeIsCanonical(t *testing.T) {
 	}
 }
 
+// base64Probe encodes to 400 base64 characters, so an encoder that wraps (GNU's default is 76 columns) shows it.
+var base64Probe = bytes.Repeat([]byte{0xa5, 0x5a, 0x00}, 100)
+
+// base64NoWrap checks that bin -w0 encodes stdin on one unwrapped line, which the measurement script relies on.
+// It runs the command instead of reading its --help: macOS's base64 accepts -w0 without listing it there.
+func base64NoWrap(bin string) error {
+	cmd := exec.Command(bin, "-w0")
+	cmd.Stdin = bytes.NewReader(base64Probe)
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("%s -w0: %v", bin, err)
+	}
+	if got := strings.TrimSuffix(string(out), "\n"); got != base64.StdEncoding.EncodeToString(base64Probe) {
+		return fmt.Errorf("%s -w0 does not print one unwrapped line: %q", bin, got)
+	}
+	return nil
+}
+
+func TestBase64NoWrapProbe(t *testing.T) {
+	dir := t.TempDir()
+	fake := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	enc := base64.StdEncoding.EncodeToString(base64Probe)
+	var wrapped strings.Builder
+	for i := 0; i < len(enc); i += 76 {
+		wrapped.WriteString(enc[i:min(i+76, len(enc))] + "\n")
+	}
+	if err := base64NoWrap(fake("one-line", "cat >/dev/null; printf %s '"+enc+"'")); err != nil {
+		t.Errorf("rejected one unwrapped line without a newline: %v", err)
+	}
+	if err := base64NoWrap(fake("one-line-nl", "cat >/dev/null; echo '"+enc+"'")); err != nil {
+		t.Errorf("rejected one unwrapped line: %v", err)
+	}
+	if err := base64NoWrap(fake("refuses", "echo 'base64: invalid option -- w' >&2; exit 1")); err == nil {
+		t.Error("accepted a base64 that rejects -w0")
+	}
+	if err := base64NoWrap(fake("wraps", "cat >/dev/null; cat <<'EOF'\n"+wrapped.String()+"EOF")); err == nil {
+		t.Error("accepted output wrapped at 76 columns")
+	}
+	if err := base64NoWrap(fake("garbles", "cat >/dev/null; echo pQBapQBa")); err == nil {
+		t.Error("accepted output that is not the encoding of the input")
+	}
+	if real, err := exec.LookPath("base64"); err == nil {
+		t.Logf("%s: %v", real, base64NoWrap(real))
+	}
+}
+
 // TestMeasureScriptOutputParses runs the measurement boot script against a fake guest agent and parses the serial
-// output it produces, with journald console prefixes and kernel noise in between. It needs GNU coreutils
-// (base64 -w0, sha256sum), so it runs on Linux CI and is skipped elsewhere.
+// output it produces, with journald console prefixes and kernel noise in between. It needs a base64 that takes -w0
+// (GNU coreutils and macOS both do), sha256sum and jq. It skips without them, except on CI, where it fails.
 func TestMeasureScriptOutputParses(t *testing.T) {
-	if out, err := exec.Command("base64", "--help").CombinedOutput(); err != nil || !bytes.Contains(out, []byte("-w")) {
-		t.Skip("GNU base64 not available")
+	need := func(err error) {
+		if err == nil {
+			return
+		}
+		if os.Getenv("CI") != "" {
+			t.Fatalf("CI must run the measurement script test: %v", err)
+		}
+		t.Skip(err)
 	}
-	if _, err := exec.LookPath("sha256sum"); err != nil {
-		t.Skip("sha256sum not available")
-	}
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not available")
+	need(base64NoWrap("base64"))
+	for _, tool := range []string{"sha256sum", "jq", "bash"} {
+		_, err := exec.LookPath(tool)
+		need(err)
 	}
 	dir := t.TempDir()
 	quote := strings.Repeat("0123456789abcdef", 300)
