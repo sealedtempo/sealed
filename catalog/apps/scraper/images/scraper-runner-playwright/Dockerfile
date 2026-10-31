@@ -6,7 +6,7 @@
 #
 # Base: mcr.microsoft.com/playwright:v1.62.1-noble (Ubuntu 24.04, Node 24), index digest below.
 #   linux/amd64 child: sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac
-# The image tag must match the playwright npm version in runner/package.json (1.62.1), or
+# The image tag must match the playwright npm version in runner/package.json (1.64.1), or
 # Playwright cannot find /ms-playwright/firefox-<revision>.
 #
 # Only Firefox (MPL-2.0) is kept. The base also ships Chromium, which on Linux x64 is Google's
@@ -14,7 +14,7 @@
 # a later layer would still ship them in the base layers, so the final stage copies the cleaned
 # filesystem into a single fresh layer.
 
-FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS build
+FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea AS build
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 CI=1
 RUN npm install --global --ignore-scripts pnpm@10.33.2
 WORKDIR /src
@@ -34,7 +34,7 @@ RUN mkdir /app \
  && rm -f /app/node_modules/.modules.yaml /app/node_modules/.pnpm-workspace-state*.json \
  && cp -r /src/catalog/apps/scraper/runner/dist /app/dist
 
-FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS rootfs
+FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea AS rootfs
 # The RUN ends by removing the logs and caches apt, dpkg and ldconfig write with the build time in them (D-028).
 RUN rm -rf /ms-playwright/chromium-* /ms-playwright/chromium_headless_shell-* /ms-playwright/webkit-* /ms-playwright/ffmpeg-* \
  && ls -d /ms-playwright/firefox-* \
