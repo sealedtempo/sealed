@@ -37,7 +37,6 @@ contract DeployedContractsForkTest is Test {
         FeeSplitter splitter;
     }
 
-    string internal json;
     Sys internal live;
     address internal owner;
     address internal ops;
@@ -79,7 +78,9 @@ contract DeployedContractsForkTest is Test {
         }
         console.log("fork block", block.number, "timestamp", block.timestamp);
 
-        json = vm.readFile("deployments/tempo-mainnet.json");
+        // Read the deployment record into a local memory string, not a storage variable: the file now carries every
+        // contract's ABI and source verification (about 136 KB), and storing it would exceed forge's default setUp gas.
+        string memory json = vm.readFile("deployments/tempo-mainnet.json");
         live = Sys(
             PlatformRegistry(json.readAddress(".contracts.PlatformRegistry.address")),
             AppRegistry(json.readAddress(".contracts.AppRegistry.address")),
@@ -106,14 +107,17 @@ contract DeployedContractsForkTest is Test {
     /// @dev Runs this source's creation code with the recorded constructor arguments at the deployed address (so
     ///      address-dependent immutables match) and compares the result with the code on mainnet.
     function test_fork_deployedCodeEqualsSource() public {
-        _compareCode("PlatformRegistry", address(live.platform), type(PlatformRegistry).creationCode);
-        _compareCode("AppRegistry", address(live.apps), type(AppRegistry).creationCode);
-        _compareCode("OracleSignatureVerifier", address(live.verifier), type(OracleSignatureVerifier).creationCode);
-        _compareCode("DeploymentRegistry", address(live.registry), type(DeploymentRegistry).creationCode);
-        _compareCode("FeeSplitter", address(live.splitter), type(FeeSplitter).creationCode);
+        string memory json = vm.readFile("deployments/tempo-mainnet.json");
+        _compareCode(json, "PlatformRegistry", address(live.platform), type(PlatformRegistry).creationCode);
+        _compareCode(json, "AppRegistry", address(live.apps), type(AppRegistry).creationCode);
+        _compareCode(json, "OracleSignatureVerifier", address(live.verifier), type(OracleSignatureVerifier).creationCode);
+        _compareCode(json, "DeploymentRegistry", address(live.registry), type(DeploymentRegistry).creationCode);
+        _compareCode(json, "FeeSplitter", address(live.splitter), type(FeeSplitter).creationCode);
     }
 
-    function _compareCode(string memory name, address target, bytes memory creationCode) internal {
+    function _compareCode(string memory json, string memory name, address target, bytes memory creationCode)
+        internal
+    {
         bytes memory deployed = target.code;
         assertGt(deployed.length, 0, string.concat(name, ": no code at the recorded address"));
         bytes memory args = json.readBytes(string.concat(".contracts.", name, ".constructorArgs"));
