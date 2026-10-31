@@ -257,7 +257,7 @@ func (s *simulator) useAction(ctx map[string]any, st simStep) {
 	}
 	switch name {
 	case "actions/checkout", "actions/setup-go", "foundry-rs/foundry-toolchain", "anchore/sbom-action/download-syft",
-		"anchore/scan-action/download-grype", "sigstore/cosign-installer", "docker/setup-buildx-action":
+		"anchore/scan-action/download-grype", "sigstore/cosign-installer", "docker/setup-buildx-action", "docker/login-action":
 		return // the workspace is the fixture; tools come from the fakes
 	case "actions/upload-artifact":
 		paths := strings.Fields(with["path"])
