@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 import yaml
@@ -176,6 +177,28 @@ class OpenHandsPackagingTest(CommonChecks, unittest.TestCase):
         self.assertEqual(env["SEALED_RUN_AS"], self.server["user"])
         self.assertEqual(self.app["fragment"]["volumes"]["coding-agent-workspace"]["x-sealed-owner"], self.server["user"])
         self.assertNotIn("working_dir", self.server)  # the image's is /, outside the volume
+
+    def test_tmpdir_is_an_owned_volume_dir_not_a_tmpfs(self):
+        """G20/spec 6.5.4: the PyInstaller one-file binary unpacks its libraries under $TMPDIR and
+        maps them, so TMPDIR must be an exec-capable, owned directory on the data-disk volume, not
+        the noexec /tmp tmpfs. Without this the server dies with 'libz.so.1: failed to map segment'.
+        """
+        env = self.server["environment"]
+        tmpdir = env["TMPDIR"]
+        owned = env["SEALED_OWNED_DIRS"].split(",")
+        self.assertIn(tmpdir, owned)
+        self.assertTrue(tmpdir.startswith("/workspace/"), tmpdir)
+        self.assertEqual(self.server["volumes"], ["coding-agent-workspace:/workspace"])
+        # TMPDIR must not resolve onto any tmpfs mount (every tmpfs is noexec).
+        tmpfs_targets = [entry.split(":", 1)[0] for entry in self.server.get("tmpfs") or []]
+        for target in tmpfs_targets:
+            self.assertFalse(tmpdir == target or tmpdir.startswith(target.rstrip("/") + "/"),
+                             f"TMPDIR {tmpdir} is under the {target} tmpfs (noexec)")
+
+    def test_server_root_filesystem_is_read_only(self):
+        """G20/spec 6.5.4 lockdown: the agent-server root filesystem is read-only; only the /tmp
+        tmpfs and the /workspace volume are writable."""
+        self.assertIs(self.server["read_only"], True)
 
     def test_bootstrap_state_is_out_of_the_agents_reach(self):
         done = self.manifest["bootstrap"]["done_file"]
@@ -622,6 +645,130 @@ class LicenseTextsTest(unittest.TestCase):
             text = next(t for t in texts if "https://github.com/" + t.repo == upstream["repo"])
             self.assertEqual(text.ref, upstream["version"], variant)
             self.assertIn("MIT License", read(os.path.join(APP_DIR, "LICENSES", text.file)))
+
+
+def docker_cli(*args, stdin=None, timeout=300):
+    """Run the docker CLI and return (returncode, combined output)."""
+    proc = subprocess.run(["docker", *args], input=stdin, capture_output=True, text=True, timeout=timeout)
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def require_docker(test):
+    """Skip unless a Docker daemon with the compose plugin is reachable (D-063 pattern)."""
+    if shutil.which("docker") is None:
+        test.skipTest("docker CLI not installed")
+    if docker_cli("info", timeout=30)[0] != 0:
+        test.skipTest("no reachable docker daemon")
+    if docker_cli("compose", "version", timeout=30)[0] != 0:
+        test.skipTest("docker compose plugin not installed")
+
+
+class OpenHandsDockerStartTest(unittest.TestCase):
+    """Start/health test (G20, spec 6.5.4), consistent with the composer's D-063 docker compose up
+    tests: starts the real pinned agent-server image as composed and waits for its healthcheck.
+
+    A stand-in image (as the composer's docker_test.go uses) cannot catch G20, because the defect is
+    in how the real PyInstaller one-file binary loads its libraries from $TMPDIR. This runs the
+    shipped image with the fragment's user, entrypoint, command, environment, tmpfs, volume, read_only
+    and healthcheck, and the workspace volume pre-owned by uid 10001 (sealed-agent does this on a VM).
+    It fails on the pre-fix fragment (the container dies with 'libz.so.1: failed to map segment' and
+    never becomes healthy) and passes once TMPDIR points at the exec-capable data-disk volume.
+
+    Runs whenever Docker is available and the pinned image can be obtained; skips otherwise. Set
+    SEALED_SKIP_DOCKER_START=1 to skip it explicitly.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if app_variant() != "openhands-agent-server":
+            raise unittest.SkipTest("app directory holds the OpenCode variant")
+        if os.environ.get("SEALED_SKIP_DOCKER_START") == "1":
+            raise unittest.SkipTest("SEALED_SKIP_DOCKER_START=1")
+        cls.app = sealed_compose.load_app(APP_DIR)
+        cls.server = cls.app["fragment"]["services"]["coding-agent-server"]
+        cls.image = "ghcr.io/openhands/agent-server@" + AGENT_SERVER_DIGEST
+
+    def ensure_image(self):
+        if docker_cli("image", "inspect", self.image, timeout=30)[0] == 0:
+            return
+        code, out = docker_cli("pull", self.image, timeout=900)
+        if code != 0:
+            self.skipTest("pinned agent-server image unavailable (cannot pull): " + out[-200:])
+
+    def test_coding_agent_server_starts_and_becomes_healthy(self):
+        require_docker(self)
+        self.ensure_image()
+
+        volume_name = "coding-agent-workspace"
+        service = dict(self.server)
+        service["image"] = self.image
+        service.pop("x-sealed-secrets", None)
+        env = dict(service.get("environment") or {})
+        # The composer mounts these as secret files and envexec exports them; stand in with test
+        # values (generated here, never printed or committed) so the server starts standalone.
+        env["OH_SESSION_API_KEYS_0"] = os.urandom(32).hex()
+        env["OH_SECRET_KEY"] = os.urandom(32).hex()
+        service["environment"] = env
+        doc = {"services": {"coding-agent-server": service}, "volumes": {volume_name: {}}}
+
+        project = "sealed-oh-start-" + os.urandom(4).hex()
+        container = project + "-coding-agent-server-1"
+        default_volume = project + "_" + volume_name
+        # The compose file outlives the test method (cleanups run after it returns), so it is not
+        # inside a TemporaryDirectory: remove it last (registered first, LIFO).
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = os.path.join(tmp, "compose.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(doc, handle)
+        compose = lambda *a, **k: docker_cli("compose", "-f", path, "-p", project, *a, **k)
+
+        def teardown():
+            compose("down", "-v", "-t", "2", timeout=120)
+            # Belt and suspenders: leave no container or volume behind even if compose down could not.
+            docker_cli("rm", "-f", container, timeout=30)
+            docker_cli("volume", "rm", "-f", default_volume, timeout=30)
+        self.addCleanup(teardown)  # registered last, so it runs first (file still present)
+
+        # Create the volume and give it to uid 10001 (sealed-agent does this from x-sealed-owner
+        # before the ready gate opens; prepdirs refuses a root-owned volume).
+        self.assertEqual(compose("up", "--no-start", timeout=120)[0], 0)
+        code, ls = docker_cli("volume", "ls", "--format", "{{.Name}}", timeout=30)
+        vol = next((n for n in ls.split() if project in n and n.endswith(volume_name)), default_volume)
+        code, out = docker_cli("run", "--rm", "-u", "0:0", "-v", vol + ":/workspace",
+                               "busybox:1.37.0", "chown", "10001:10001", "/workspace", timeout=120)
+        if code != 0 and "manifest" in out.lower():
+            self.skipTest("busybox stand-in image unavailable: " + out[-200:])
+        self.assertEqual(code, 0, out)
+
+        code, out = compose("up", "-d", timeout=300)
+        self.assertEqual(code, 0, out)
+
+        deadline = time.monotonic() + 180
+        state = ""
+        while time.monotonic() < deadline:
+            code, state = docker_cli(
+                "inspect", "-f",
+                "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}",
+                container, timeout=30)
+            state = state.strip()
+            if "healthy" in state or "unhealthy" in state or state.startswith("exited"):
+                break
+            time.sleep(4)
+        logs = docker_cli("logs", "--tail", "40", container, timeout=30)[1]
+        self.assertIn("healthy", state, f"coding-agent-server did not become healthy ({state}).\n{logs[-2000:]}")
+        self.assertNotIn("unhealthy", state, f"coding-agent-server is unhealthy.\n{logs[-2000:]}")
+
+        # Lockdown ties (G20): the process runs as uid 10001 and the root filesystem is read-only.
+        probe = ("import os, sys;"
+                 "print('uid', os.getuid());"
+                 "ro=False\n"
+                 "try:\n open('/sealed-root-probe','w').close()\nexcept OSError:\n ro=True\n"
+                 "print('root_read_only', ro)")
+        code, out = docker_cli("exec", container, "/usr/local/bin/python3", "-I", "-c", probe, timeout=30)
+        self.assertEqual(code, 0, out)
+        self.assertIn("uid 10001", out, out)
+        self.assertIn("root_read_only True", out, out)
 
 
 if __name__ == "__main__":
