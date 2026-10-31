@@ -182,7 +182,7 @@ Release assets (D-046), one GitHub Release per app version under `catalog.releas
 | SBOM and scan of an image | `sbom.<image>.spdx.json`, `scan.<image>.json` in the same release (the bundle's `sbom/` and `scan/` files; asset names cannot contain `/`) |
 | release summary | `<appId>-<version>.release.json` (`sealed-release/v1`, for the api and console) |
 
-The rule is implemented once, `runtime/composer` `NewReleaseAssets`, `ReleaseTag`, `TagVersion`, `BundleAssetName`, `SBOMAssetName` (the private api's `assetUrls` and the devnet keep tested copies); release CI names, the key broker, sealed-verifierd (`verifier/bundles`) and the CLI use it. Fetchers follow redirects, accept a bundle only when its sha256 equals the onchain bundleHash (else `bundle_hash_mismatch`), load it in canonical form and cache it by hash. Onchain `signatureURI` is the `.sig` URL and `provenanceURI` the `.intoto.jsonl` URL.
+The rule is implemented once, `runtime/composer` `NewReleaseAssets`, `ReleaseTag`, `TagVersion`, `BundleAssetName`, `SBOMAssetName` (the private api's `assetUrls` and the devnet keep tested copies); release CI names, the key broker, sealed-verifierd (`verifier/bundles`) and the CLI use it. Fetchers follow redirects, accept a bundle only when its sha256 equals the onchain bundleHash (else `bundle_hash_mismatch`), load it in canonical form and cache it by hash. Onchain `signatureURI` is the `.sigstore.json` URL and `provenanceURI` the `.intoto.jsonl` URL.
 
 ## 8. Evidence bundle (`sealed-evidence/v1`)
 
