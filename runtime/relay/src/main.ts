@@ -22,6 +22,10 @@ async function main(): Promise<void> {
   if (prices.currency !== config.currency) throw new Error('price table currency differs from FEE_TOKEN_ADDRESS')
 
   const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 10 })
+  // An idle client can fail outside a query (Postgres restart or shutdown, a dropped connection). Without
+  // a handler, node-postgres re-emits it as an unhandled 'error' event and crashes the process; log and let
+  // the pool discard the bad client instead.
+  pool.on('error', (error) => log({ event: 'pg_pool_error', error: String(error) }))
   const db = new PgStore(pool)
   await db.migrate()
   const store = db.asMppxStore()
