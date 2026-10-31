@@ -5,7 +5,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/release-test.XXXXXX")"
+# Strip any trailing slash from TMPDIR (macOS default ends in one) so WORK holds no
+# double slash; otherwise path-comparison assertions miss once a path is canonicalized.
+_tmp="${TMPDIR:-/tmp}"
+WORK="$(mktemp -d "${_tmp%/}/release-test.XXXXXX")"
 PIDS=()
 _test_cleanup() {
 	local p
