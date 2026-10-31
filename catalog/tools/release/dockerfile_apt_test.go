@@ -250,6 +250,20 @@ func within(p, root string) bool {
 	return root == "/" || p == root || strings.HasPrefix(p, root+"/")
 }
 
+// stampRemoved reports whether an rm of got satisfies the required removal of want. The stamp files are
+// written as globs (node_modules/.pnpm-workspace-state*.json), so an rm of the required glob matches by
+// equality, and an rm of a concrete file the glob names (node_modules/.pnpm-workspace-state-v1.json) matches
+// by path.Match. That keeps the check from caring which spelling a Dockerfile picks for the same file.
+func stampRemoved(want, got string) bool {
+	if got == want {
+		return true
+	}
+	if ok, err := path.Match(want, got); err == nil && ok {
+		return true
+	}
+	return false
+}
+
 func parseStages(instrs []dfInstr) ([]dfStage, error) {
 	var stages []dfStage
 	byName := map[string]int{}
@@ -540,7 +554,7 @@ func checkDockerfileReproducible(name, src string) ([]string, reproStats, error)
 				for _, c := range all[lastWrite[d]+1:] {
 					if args, ok := isRm(c.words); ok {
 						for _, a := range args {
-							removed = removed || resolvePath(c.cwd, a) == want
+							removed = removed || stampRemoved(want, resolvePath(c.cwd, a))
 						}
 					}
 				}
@@ -720,6 +734,7 @@ COPY --from=rootfs / /
 			[]string{"no rm of /out/node_modules/.modules.yaml", "no rm of /out/node_modules/.pnpm-workspace-state*.json"}},
 		{"only one stamp removed", "FROM node AS build\nRUN pnpm deploy --prod /out && rm -f /out/node_modules/.modules.yaml\nFROM node\nCOPY --from=build /out /app\n",
 			[]string{"no rm of /out/node_modules/.pnpm-workspace-state*.json"}},
+		{"a concrete workspace-state filename is accepted for the glob", "FROM node AS build\nRUN pnpm deploy --prod /out \\\n && rm -f /out/node_modules/.modules.yaml /out/node_modules/.pnpm-workspace-state-v1.json\nFROM node\nCOPY --from=build /out /app\n", nil},
 		{"a pnpm tree that is not copied is not checked", "FROM node AS build\nWORKDIR /src\nRUN pnpm install && pnpm deploy --prod /out && " + pnpmRm + "\nFROM node\nCOPY --from=build /out /app\n", nil},
 		{"pnpm in the final stage", "FROM node\nWORKDIR /app\nRUN pnpm install --prod\n", []string{"/app/node_modules from stage 0", "/app/node_modules/.pnpm-workspace-state*.json"}},
 		{"pnpm run is not a write", "FROM node AS build\nWORKDIR /out\nRUN pnpm run build\nFROM node\nCOPY --from=build /out /app\n", nil},
