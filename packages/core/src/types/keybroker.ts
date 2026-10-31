@@ -42,8 +42,10 @@ export const DENIAL_REASONS = [
 
 export const denialSchema = z.object({ decision: z.literal("denied"), reason: z.string(), detail: z.string().optional() });
 
-const secretName = z.string().regex(/^[A-Z][A-Z0-9_]*$/);
-const secretOwner = z.string().regex(/^(_gate|[a-z][a-z0-9-]*)$/);
+// As the composer's manifest rules (catalog/schema/manifest.schema.json, manifest.go): a secret name is at most 128
+// characters (MaxSecretNameLen; envexec refuses longer ones), and its owner is an app id or the password gate.
+const secretName = z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/);
+const secretOwner = z.string().regex(/^(_gate|[a-z][a-z0-9-]{1,30}[a-z0-9])$/);
 
 export const releasePlaintextSchema = z.object({
   secrets: z.record(secretOwner, z.record(secretName, z.string())),

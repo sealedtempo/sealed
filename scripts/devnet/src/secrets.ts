@@ -1,6 +1,7 @@
 // The customer's secrets for the devnet key broker's in-memory store (its --dev-secrets-file), planned from the
 // manifests in the stack's release bundles like `sealed secrets set --missing` does: every required secret gets a
-// value from its generator, a same_as secret is stored once under the app it names (D-043), optional secrets stay
+// value from its generator, a same_as secret is stored once under the app it names (D-043), which must list the
+// referencing app in that secret's share_with (D-059, as Compose and sealed secrets require), optional secrets stay
 // unset, and the gate password is stored as its bcrypt hash (sealed-gate-password).
 import { randomBytes } from "node:crypto";
 import { bcryptHash } from "@sealed/agent/dist/src/gate/bcrypt.js";
@@ -12,6 +13,7 @@ export interface ManifestSecret {
   generate?: string;
   optional?: boolean;
   same_as?: string;
+  share_with?: string[];
 }
 
 export function manifestSecrets(bundle: Uint8Array): { id: string; secrets: ManifestSecret[] } {
@@ -71,6 +73,10 @@ export function planSecrets(bundles: Uint8Array[]): SecretPlan {
     for (const s of m.secrets) {
       if (s.same_as) {
         const [app, name] = s.same_as.split("/");
+        const source = manifests.find((x) => x.id === app)?.secrets.find((x) => x.name === name);
+        if (source && !source.share_with?.includes(m.id)) {
+          throw new Error(`${m.id}/${s.name}: same_as ${s.same_as}, but ${app} does not share ${name} with ${m.id} (its share_with, D-059)`);
+        }
         const v = store[`sealed-${app}-${name}`];
         if (v === undefined) {
           if (s.optional) continue;

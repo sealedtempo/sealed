@@ -187,13 +187,8 @@ func ComposeWith(cfg *Config, bundles []*Bundle, ri *RuntimeImages) (*Result, er
 			hasGateway = true
 		}
 	}
-	if hasGateway {
-		if cfg.Endpoints.Relay == "" || cfg.Endpoints.RelayAttest == "" || cfg.RelayOwner == "" {
-			return nil, fmt.Errorf("config: endpoints.relay, endpoints.relayAttest and relayOwner are required when %s is in the stack", gatewayApp)
-		}
-		if err := checkRelayOrigin(cfg.Endpoints.Relay, cfg.Endpoints.RelayAttest); err != nil {
-			return nil, err
-		}
+	if err := cfg.validateComposable(); err != nil {
+		return nil, err
 	}
 	routes, err := planRoutes(cfg, apps)
 	if err != nil {

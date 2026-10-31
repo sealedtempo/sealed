@@ -273,7 +273,7 @@ Every output is built from sorted inputs and serialized as CJSON or rendered fro
 
 ## Lint
 
-`lint.LintApp` (catalog source, including `waivers.yaml`), `lint.LintBundle` (release bundle; also checks each ref is exactly `<Options.Registry>/<name>@<digest>`, default the runtime images registry, and that SBOMs are present) and `lint.LintCatalog` (all apps, id matches directory, shared route names, `same_as` across apps). Errors block a release; warnings need review. `catalog/tools` wraps the CLI for app test suites.
+`lint.LintApp` (catalog source, including `waivers.yaml`), `lint.LintBundle` (release bundle; also checks each ref is exactly `<Options.Registry>/<name>@<digest>`, default the runtime images registry, and that SBOMs are present) and `lint.LintCatalog` (all apps, id matches directory, shared route names, `same_as` across apps: the referenced app and secret exist, the secret is no reference itself and its `share_with` lists the referencing app (D-059); a `share_with` entry naming no catalog app is a warning). Errors block a release; warnings need review. `catalog/tools` wraps the CLI for app test suites.
 
 License policy:
 

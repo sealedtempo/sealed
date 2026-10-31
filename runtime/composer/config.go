@@ -292,6 +292,35 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// validateComposable holds the rules Compose applies after Validate that
+// depend on the config alone: every app id is one a release manifest can
+// have (planApps matches each to a bundle), the custom scheme names the
+// attest route's domain (planRoutes), and with llm-gateway in the stack the
+// relay endpoints and relayOwner are set, the relay on the attest origin
+// (D-045). The TypeScript twin, @sealed/core sealedConfigSchema, applies
+// Validate and these; TestConfigParity runs both over one table
+// (testdata/config-parity.json).
+func (c *Config) validateComposable() error {
+	for i, a := range c.Apps {
+		if !appIDRe.MatchString(a.ID) || reservedAppIDs[a.ID] || strings.HasPrefix(a.ID, "sealed-") {
+			return fmt.Errorf("config: apps[%d].id: %q is not an app id", i, a.ID)
+		}
+	}
+	if _, err := c.Hostname("attest"); err != nil {
+		return err
+	}
+	for _, a := range c.Apps {
+		if a.ID != gatewayApp {
+			continue
+		}
+		if c.Endpoints.Relay == "" || c.Endpoints.RelayAttest == "" || c.RelayOwner == "" {
+			return fmt.Errorf("config: endpoints.relay, endpoints.relayAttest and relayOwner are required when %s is in the stack", gatewayApp)
+		}
+		return checkRelayOrigin(c.Endpoints.Relay, c.Endpoints.RelayAttest)
+	}
+	return nil
+}
+
 func (c *Config) validateHostnames() error {
 	h := c.Hostnames
 	switch h.Scheme {

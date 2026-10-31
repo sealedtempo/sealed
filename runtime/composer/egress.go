@@ -204,8 +204,15 @@ func endpointHostPort(field, raw string) (string, error) {
 		port = "443"
 	}
 	entry := host + ":" + port
-	if _, err := ParseHostPort(entry); err != nil {
+	hp, err := ParseHostPort(entry)
+	if err != nil {
 		return "", fmt.Errorf("%s: %v", field, err)
+	}
+	// An endpoint names the one host the agent or the payer connects to. A
+	// wildcard host cannot be dialed, and its allow entry would open every
+	// name under it to that caller.
+	if hp.Wildcard {
+		return "", fmt.Errorf("%s: %q must name one host, not a wildcard", field, raw)
 	}
 	return entry, nil
 }

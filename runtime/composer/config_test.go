@@ -85,6 +85,9 @@ func TestParseConfigRejects(t *testing.T) {
 		"http platform api": {`https://api.sealed.example`, `http://api.sealed.example`},
 		"http relay attest": {`"https://attest.relay.sealed.example/attest"`, `"http://attest.relay.sealed.example/attest"`},
 		"opaque endpoint":   {`https://rpc.tempo.xyz`, `https:rpc.tempo.xyz`},
+		// An endpoint is one host; *.tempo.xyz:443 would open the whole domain to the agent (fix-parity).
+		"wildcard endpoint":       {`https://rpc.tempo.xyz`, `https://*.tempo.xyz`},
+		"wildcard relay endpoint": {`"https://attest.relay.sealed.example"`, `"https://*.relay.sealed.example"`},
 		// Review C-11: relayAttest is the relay agent's /attest.
 		"relay attest path":     {`relay.sealed.example/attest"`, `relay.sealed.example/v1/attest"`},
 		"relay attest slash":    {`relay.sealed.example/attest"`, `relay.sealed.example/attest/"`},
