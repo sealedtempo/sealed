@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -235,8 +237,9 @@ func TestImagesWorkflowPlansFromLastSuccessfulRun(t *testing.T) {
 	}
 }
 
-// supply-3: every image the build job pushes is signed by images.yml on main, and the signature verifies for
-// the identity the catalog and release jobs require.
+// supply-3: every image the build job pushes is signed by images.yml on main, and the signature self-verifies
+// for the identity that catalog.yml and release.yml are meant to check. Those jobs do not verify image
+// signatures yet (the supply-3 verify half is not implemented); this test covers the signing half only.
 func TestImagesWorkflowSignsEveryPushedImage(t *testing.T) {
 	requireJQ(t)
 	root := withScripts(t, fixtureRepo(t))
@@ -429,6 +432,26 @@ func TestImagesPRWorkflowShape(t *testing.T) {
 			t.Errorf("images-pr.yml does not run for %s: %s", p, paths)
 		}
 	}
+	// Every image directory the release tool builds must be covered by a paths glob, or a change inside
+	// that directory never runs the check although --changed-only would select it (supply-4).
+	globs := prPathGlobs(t, pr.On["pull_request"])
+	set, err := LoadImages(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range set.Build {
+		probe := b.Dir + "/deep/file.txt"
+		covered := false
+		for _, g := range globs {
+			if ghPathMatch(g, probe) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			t.Errorf("images-pr.yml paths do not cover a change under %s (image %s): %v", b.Dir, b.Name, globs)
+		}
+	}
 	if len(pr.Permissions) != 0 {
 		t.Errorf("images-pr.yml top-level permissions must be empty: %v", pr.Permissions)
 	}
@@ -446,6 +469,51 @@ func TestImagesPRWorkflowShape(t *testing.T) {
 	if pr.Env["BUILDKIT_IMAGE"] != images.Env["BUILDKIT_IMAGE"] || pr.Env["BUILDX_VERSION"] != images.Env["BUILDX_VERSION"] || pr.Env["BUILDKIT_IMAGE"] == "" {
 		t.Errorf("both workflows build with the same BuildKit: %q %q", pr.Env["BUILDKIT_IMAGE"], images.Env["BUILDKIT_IMAGE"])
 	}
+}
+
+// prPathGlobs pulls the pull_request paths list out of a parsed on: block.
+func prPathGlobs(t *testing.T, trigger any) []string {
+	t.Helper()
+	m, ok := trigger.(map[string]any)
+	if !ok {
+		t.Fatalf("pull_request trigger is not a map: %T", trigger)
+	}
+	raw, ok := m["paths"].([]any)
+	if !ok {
+		t.Fatalf("pull_request has no paths list: %v", m)
+	}
+	var globs []string
+	for _, p := range raw {
+		globs = append(globs, fmt.Sprint(p))
+	}
+	return globs
+}
+
+// ghPathMatch reports whether a GitHub Actions path-filter glob matches path. "**" matches any run of
+// characters including "/"; "*" matches a run within one segment; "?" matches a single non-slash character.
+func ghPathMatch(glob, p string) bool {
+	var b strings.Builder
+	b.WriteString("^")
+	for i := 0; i < len(glob); i++ {
+		switch c := glob[i]; c {
+		case '*':
+			if i+1 < len(glob) && glob[i+1] == '*' {
+				b.WriteString(".*")
+				i++
+			} else {
+				b.WriteString("[^/]*")
+			}
+		case '?':
+			b.WriteString("[^/]")
+		case '.', '+', '(', ')', '|', '^', '$', '{', '}', '[', ']', '\\':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteString("$")
+	return regexp.MustCompile(b.String()).MatchString(p)
 }
 
 func TestBuildMatrixChangedOnly(t *testing.T) {

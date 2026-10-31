@@ -1,8 +1,11 @@
-# Pull request check for the runtime images (D-028): every image the pull request changes is built twice
-# for linux/amd64, the second time without cache, and both builds must give the same digest. This is the
-# check images.yml runs on main before it pins a digest, so a build that writes the build time into the image
-# fails here instead of after the merge. Nothing is pushed or signed, and the jobs get a read-only token and
-# no secrets.
+# Pull request check for the runtime images (D-028): every image whose Dockerfile or image directory the
+# pull request changes is built twice for linux/amd64, the second time without cache, and both builds must
+# give the same digest. This is the check images.yml runs on main before it pins a digest, so a build that
+# writes the build time into the image fails here instead of after the merge. Nothing is pushed or signed,
+# and the jobs get a read-only token and no secrets.
+# The paths below cover every image directory LoadImages reports (TestImagesPRWorkflowShape checks this), so
+# a change inside an image's build directory runs the check. A root-context image also rebuilds on main for
+# broader inputs it copies (go.mod, packages/**, config/defaults.yaml); those are gated by images.yml only.
 # A separate workflow from images.yml for two reasons: the workflow policy keeps repository secrets
 # (images.yml's PIN_PR_TOKEN) out of every workflow that pull requests trigger, and images.yml's single
 # concurrency slot must not be shared with pull requests.
@@ -13,6 +16,9 @@ on:
       - "**/Dockerfile"
       - "**/Dockerfile.dockerignore"
       - catalog/apps/**/images/**
+      - runtime/**
+      - verifier/**
+      - key-broker/**
       - catalog/tools/release/images.yaml
       - scripts/release/build-image.sh
       - .github/workflows/images-pr.yml
