@@ -33,10 +33,10 @@ var KnownActions = map[string]ActionPin{
 	"docker/setup-buildx-action":   {"f87e5991a6d7451dcb8d9637bfbc97413f497069", "v4.4.1"},
 	// Looked up 2026-10-29; images.yml logs in to Docker Hub so its base-image pulls are not anonymous
 	// (github-readiness finding 7: 14 x 2 anonymous pulls per run are rate limited).
-	"docker/login-action": {"9780b0c442fbb1117ed29e0efdff1e18412f7567", "v3.3.0"},
-	"sigstore/cosign-installer":    {"6f9f17788090df1f26f669e9d70d6ae9567deba6", "v4.1.2"},
-	"anchore/sbom-action":          {"66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c", "v0.24.3"},
-	"anchore/scan-action":          {"27805bf3b4e84b4a5c980df22ed233c00390a439", "v7.4.2"},
+	"docker/login-action":       {"9780b0c442fbb1117ed29e0efdff1e18412f7567", "v3.3.0"},
+	"sigstore/cosign-installer": {"6f9f17788090df1f26f669e9d70d6ae9567deba6", "v4.1.2"},
+	"anchore/sbom-action":       {"66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c", "v0.24.3"},
+	"anchore/scan-action":       {"27805bf3b4e84b4a5c980df22ed233c00390a439", "v7.4.2"},
 	// Looked up 2026-10-29; v2.4.0 (2026-09-16) is the newest release. ci.yml passes an explicit compose
 	// version and checks the installed plugin's sha256, because the action itself verifies no checksum.
 	"docker/setup-compose-action": {"54042514f505b273907334ae2b9cdbb9a0213c1a", "v2.4.0"},
