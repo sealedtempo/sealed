@@ -244,7 +244,7 @@ Usage:
   sealed secrets list [--config stack.yaml | --apps a,b]
   sealed secrets rm <app> <NAME> | gate [--yes]
   sealed deploy --config stack.yaml [--plan]
-  sealed verify --deployment <0x id | dep_ alias> [--evidence <file>] [--live <attest url>] [--json]
+  sealed verify <0x id | dep_ alias> [--evidence <file>] [--live <attest url>] [--json]
   sealed verify ... --deployments <network>.json --rpc <url>   another chain: its deployments file and an RPC of it
   sealed catalog list [--json]
   sealed catalog show <app> [--json]

@@ -409,9 +409,13 @@ func TestVerifyAliasAndEvidenceDownload(t *testing.T) {
 	if code, _, errs := h.run("verify", "--deployment", "dep_AAAAAAAA", "--api", api.URL); code != ExitFailed || !strings.Contains(errs, "does not know") {
 		t.Fatalf("unknown alias: %d %s", code, errs)
 	}
-	if code, _, _ := h.run("verify", "--deployment", "dep_7Q2fK9mX"); code != ExitUsage {
-		t.Fatal("alias without --api")
+	// With no --api flag, the platform api comes from SEALED_PLATFORM_API (C07/G23): the alias resolves and the
+	// evidence downloads through it, so `sealed verify <id>` works without --api.
+	h.env["SEALED_PLATFORM_API"] = api.URL
+	if code, out, errs := h.run("verify", "dep_7Q2fK9mX", "--dev-allow-simulated"); code != ExitOK {
+		t.Fatalf("alias via SEALED_PLATFORM_API: %d\n%s\n%s", code, out, errs)
 	}
+	delete(h.env, "SEALED_PLATFORM_API")
 	if code, _, _ := h.run("verify", "--deployment", "nope"); code != ExitUsage {
 		t.Fatal("bad id")
 	}
