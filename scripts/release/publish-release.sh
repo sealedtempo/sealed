@@ -24,8 +24,9 @@
 #   EXPECT_CHAIN_ID     default: config/defaults.yaml chain.chain_id (4217)
 #   DEPLOYMENTS_FILE    default: contracts/deployments/tempo-mainnet.json
 #   FEE_TOKEN_ADDRESS   default: the deployments file's config.feeToken, else chain.fee_token
-#   LOG_LOOKBACK_BLOCKS how far back to search for the ReleasePublished event of an already published
-#                       release (default 500000)
+#   LOG_CHUNK_BLOCKS    most blocks one eth_getLogs request may span when looking up the ReleasePublished
+#                       event of an already published release (default 50000; the mainnet RPC allows 100000)
+#   LOG_LOOKBACK_BLOCKS optional limit on how far back that lookup goes (default: to the AppRegistry deploy block)
 # Exit codes: 0 published or already published, 2 usage, 3 refused (app not registered, no role, conflict),
 # 1 anything else.
 
@@ -117,22 +118,65 @@ write_result() { # write_result <receipt.json> <alreadyPublished>
 	printf 'MAINNET_LEDGER.md row:\n%s\n' "$(jq -r .ledger <<<"$summary")" >&2
 }
 
+# The ReleasePublished event of an already published release. The mainnet RPC (https://rpc.tempo.xyz) refuses
+# eth_getLogs over more than 100,000 blocks (read 2026-10-29; Tempo makes about 1.8 blocks a second), so no
+# query spans more than LOG_CHUNK_BLOCKS: first a window around the block of the release's
+# publishedAt (cast find-block), then everything from the head back to the search floor, newest first.
+RELEASE_EVENT='ReleasePublished(bytes32 indexed,bytes32 indexed,address indexed,string,bytes32,bytes32,bytes32,string,string)'
+release_search_floor() { # the AppRegistry deploy block, or head - LOG_LOOKBACK_BLOCKS when that is later
+	local floor head
+	floor="$(jq -r '.contracts.AppRegistry.blockNumber // 0' "$DEPLOYMENTS_FILE")"
+	if [ -n "${LOG_LOOKBACK_BLOCKS:-}" ]; then
+		head="$(cast block-number --rpc-url "$RPC")"
+		[ "$((head - LOG_LOOKBACK_BLOCKS))" -gt "$floor" ] && floor="$((head - LOG_LOOKBACK_BLOCKS))"
+	fi
+	printf '%s\n' "$floor"
+}
+logs_tx() { # logs_tx <from> <to>: the first matching transaction hash in [from, to], empty when there is none
+	local out
+	if ! out="$(cast logs --rpc-url "$RPC" --json --from-block "$1" --to-block "$2" --address "$REGISTRY" "$RELEASE_EVENT" \
+		"$RELEASE_ID" 2>/dev/null)"; then
+		die "eth_getLogs for blocks $1 to $2 failed ($(jq -r '.errors[0].message // empty' <<<"$out" 2>/dev/null | head -c 200)); lower LOG_CHUNK_BLOCKS if the RPC caps the range"
+	fi
+	# cast prints a list of logs, or (some versions) {"success": true, "data": [...]}.
+	jq -r 'if type == "array" then (.[0].transactionHash // empty) else (.data // [] | .[0].transactionHash // empty) end' <<<"$out"
+}
+release_tx() {
+	local chunk floor head raw published near lo hi tx
+	chunk="${LOG_CHUNK_BLOCKS:-50000}"
+	[[ "$chunk" =~ ^[1-9][0-9]*$ ]] || die "LOG_CHUNK_BLOCKS must be a positive number of blocks" 2
+	floor="$(release_search_floor)"
+	head="$(cast block-number --rpc-url "$RPC")"
+	# getRelease returns one dynamic tuple: offset word, appId, bundleHash, egressPolicyHash, sbomHash, status, publishedAt.
+	raw="$(ccall "$REGISTRY" 'getRelease(bytes32)' "$RELEASE_ID")"
+	if [ "${#raw}" -ge 450 ] && published="$(cast to-dec "0x${raw:386:64}")" &&
+		near="$(cast find-block "$published" --rpc-url "$RPC" 2>/dev/null)" && [[ "$near" =~ ^[0-9]+$ ]]; then
+		lo=$((near - 600)) hi=$((near + 600))
+		[ "$lo" -lt "$floor" ] && lo="$floor"
+		[ "$hi" -gt "$head" ] && hi="$head"
+		if [ "$lo" -le "$hi" ]; then
+			tx="$(logs_tx "$lo" "$hi")"
+			[ -n "$tx" ] && { printf '%s\n' "$tx"; return 0; }
+		fi
+	fi
+	hi="$head"
+	while [ "$hi" -ge "$floor" ]; do
+		lo=$((hi - chunk + 1))
+		[ "$lo" -lt "$floor" ] && lo="$floor"
+		tx="$(logs_tx "$lo" "$hi")"
+		[ -n "$tx" ] && { printf '%s\n' "$tx"; return 0; }
+		hi=$((lo - 1))
+	done
+}
+
 # 4. Idempotency and conflicts.
 by_version="$(ccall "$REGISTRY" 'releaseByVersion(bytes32,string)(bytes32)' "$APP_ID" "$VERSION" | lower)"
 by_bundle="$(ccall "$REGISTRY" 'releaseByBundle(bytes32,bytes32)(bytes32)' "$APP_ID" "$BUNDLE_HASH" | lower)"
 zero="0x$(printf '0%.0s' {1..64})"
 if [ "$by_version" = "$RELEASE_ID" ]; then
 	log "ok   $SLUG $VERSION is already published as $RELEASE_ID; nothing to send"
-	head="$(cast block-number --rpc-url "$RPC")"
-	from_block="$(jq -r '.contracts.AppRegistry.blockNumber // 0' "$DEPLOYMENTS_FILE")"
-	lookback="${LOG_LOOKBACK_BLOCKS:-500000}"
-	[ "$((head - lookback))" -gt "$from_block" ] && from_block="$((head - lookback))"
-	tx="$(cast logs --rpc-url "$RPC" --json --from-block "$from_block" --to-block latest --address "$REGISTRY" \
-		'ReleasePublished(bytes32 indexed,bytes32 indexed,address indexed,string,bytes32,bytes32,bytes32,string,string)' \
-		"$RELEASE_ID" 2>/dev/null | jq -r '.[0].transactionHash // empty' || true)"
-	if [ -z "$tx" ]; then
-		die "already published, but the ReleasePublished event of $RELEASE_ID is not within $lookback blocks; raise LOG_LOOKBACK_BLOCKS" 1
-	fi
+	tx="$(release_tx)"
+	[ -n "$tx" ] || die "already published, but no ReleasePublished event of $RELEASE_ID was found since block $(release_search_floor)" 1
 	receipt="$(mktemp)"
 	add_cleanup "rm -f '$receipt'"
 	cast receipt "$tx" --json --rpc-url "$RPC" >"$receipt"
