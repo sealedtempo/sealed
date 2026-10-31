@@ -38,7 +38,9 @@ go test ./catalog/tools/release/                       # unit, script and workfl
   nothing else references (`extra`: the key broker), and `never_mirror` (Twenty, D-049). A `build:` source
   without an entry fails, so an image cannot be skipped silently.
 - `extra-images.json`: digests of the `extra` images (same shape as `runtime-images.json`).
-- `runtime-waivers.yaml`: Grype waivers for sidecar and extra images.
+- `runtime-waivers.yaml`: Grype waivers for sidecar and extra images. They also apply to the `sealed-runtime`
+  entry of `images --format scan-matrix` (Caddy, the sidecars and the key broker), which `catalog.yml` scans
+  in every full scan, in the weekly rescan and in a pull request that changes `runtime-images.json`.
 
 ## Release assets (D-046)
 

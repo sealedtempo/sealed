@@ -146,6 +146,7 @@ New files, added verbatim in one commit with fixed metadata:
 
 | File | Purpose |
 |---|---|
+| `os/mkosi/mkosi.skeleton/usr/lib/sysctl.d/90-sealed-sysrq.conf` | `-kernel.sysrq = 0` in both variants (review kb-4). The kernel is built with `CONFIG_MAGIC_SYSRQ=n`, so this only matters if a later kernel config turns SysRq on; the leading `-` makes systemd-sysctl ignore the missing key until then. The host owns the serial port, and SysRq over a serial BREAK can reboot, crash or dump the guest. `check_image.py` fails the build unless `kernel.sysrq` ends up 0, the UKI command line does not turn SysRq on (`sysrq_always_enabled`, or `sysctl.kernel.sysrq` other than 0), and a kernel with SysRq starts with it off |
 | `os/mkosi/mkosi.profiles/sealed-debug/mkosi.conf` | `[Build] Environment=SEALED_IMAGE_VARIANT=debug`. Always used as `--profile=prod,sealed-debug`, so it inherits every production removal and adds nothing else (`build.sh lint` rejects `Packages=`, `RemoveFiles=` or `ExtraTrees=` in it) |
 | `os/mkosi/components/sealed-logship/sealed-logship.sh` | Component descriptor in upstream's component framework (cache key inputs for development builds, build entry point) |
 | `os/mkosi/components/sealed-logship/sealed-logship-build.sh` | `go build -trimpath -buildvcs=false -ldflags='-s -w -buildid='` with `CGO_ENABLED=0`, `GOPROXY=off` and upstream's pinned Go 1.26.2 (`GOTOOLCHAIN=local`), then installs the unit and preset |

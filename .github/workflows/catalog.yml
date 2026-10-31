@@ -7,7 +7,8 @@
 #
 # Images that are still unbuilt (all-zero digest) cannot be scanned on a pull request: the runtime image
 # workflow builds them after merge, scans them, and opens the pin PR, which runs this workflow in full.
-# Every Monday the whole catalog is rescanned, because new CVEs appear without any change here.
+# Every Monday the whole catalog and the runtime images (Caddy, the sidecars and the key broker, scanned as
+# the sealed-runtime entry) are rescanned, because new CVEs appear without any change here.
 name: catalog
 on:
   pull_request:
@@ -94,6 +95,9 @@ jobs:
               APPS=""  # the gate itself changed: scan every app
             else
               APPS="$(sed -n 's#^catalog/apps/\([^/]*\)/.*#\1#p' "$CHANGED" | sort -u | paste -sd, -)"
+              # A sidecar pin change scans the runtime images (supply-5). extra-images.json and
+              # runtime-waivers.yaml are under catalog/tools/release/, which scans everything.
+              if grep -qx 'runtime/composer/runtime-images.json' "$CHANGED"; then APPS="${APPS:+$APPS,}sealed-runtime"; fi
               [ -n "$APPS" ] || APPS=none
             fi
           fi
@@ -114,7 +118,24 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version: "${{ env.GO_VERSION }}" }
+      # The pinned Caddy (runtime-images.json, by digest) for TestCaddyfileWithRealCaddy, which fails instead
+      # of skipping when SEALED_REQUIRE_CADDY=1 (runtime-3).
+      - name: Pinned Caddy binary
+        run: |
+          pin=runtime/composer/runtime-images.json
+          ref="$(jq -r '.images.caddy | (.source | sub(":[^:/]*$"; "")) + "@" + .digest' "$pin")"
+          version="$(jq -r '.images.caddy.source | sub("^.*:"; "") | sub("-.*$"; "")' "$pin")"
+          mkdir -p "$RUNNER_TEMP/caddy"
+          id="$(docker create --platform linux/amd64 "$ref")"
+          docker cp "$id:/usr/bin/caddy" "$RUNNER_TEMP/caddy/caddy"
+          docker rm "$id" >/dev/null
+          got="$("$RUNNER_TEMP/caddy/caddy" version)"
+          echo "caddy from $ref: $got"
+          case "$got" in "v$version "*) ;; *) echo "::error::$ref is not Caddy v$version: $got"; exit 1 ;; esac
       - name: Composer golden and compose tests
+        env:
+          SEALED_CADDY_BIN: ${{ runner.temp }}/caddy/caddy
+          SEALED_REQUIRE_CADDY: "1"
         run: go test -count=1 ./runtime/composer/... ./runtime/caddy/...
       # Every app alone and the customer stack, composed by the real composer, then docker compose config.
       - name: Compose lint
@@ -176,6 +197,7 @@ jobs:
       # Licenses of every SBOM package (D-021, D-050), enterprise paths and license_exclusions, with the
       # every-file listings (scan-image.sh files/), which hold the same packages as the SBOMs.
       - name: Catalog lint with the SBOMs
+        if: matrix.app != 'sealed-runtime'
         env:
           APP: ${{ matrix.app }}
           DIR: ${{ matrix.dir }}

@@ -12,13 +12,22 @@
 #     --tarball <name>-<version>-gce.tar.gz --identity <name>-<version>-identity.tar.gz \
 #     [--machine-types c3-standard-8[,c3-standard-4,...]] [--boots 2] \
 #     [--release-base https://github.com/<owner>/<repo>/releases/download | --source-uri URL] \
+#     [--repo OWNER/REPO] [--allow-unsigned] \
 #     [--image-name NAME] [--network N --subnet S] [--out FILE] [--work DIR] \
 #     [--osimage BIN] [--timeout SECONDS] [--keep] [--dry-run]
 #
 # What it does, in order:
-#   1. Checks the tarball against the identity file (sha256) and imports it as
-#      a GCE image with UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC (reused if an image
-#      of that name already carries the same tarball sha256).
+#   1. Verifies the Sigstore bundles of the identity and the tarball
+#      (<file>.sigstore.json, release assets next to them): both must be signed
+#      keyless by .github/workflows/os-image.yml of OWNER/REPO at the tag
+#      os-image-v<version of the identity>, which only signs a commit on main
+#      (supply-7). OWNER/REPO is --repo, else the --release-base repository,
+#      else sealedtempo/sealed. Needs cosign. --allow-unsigned skips this for a
+#      local or workflow_dispatch build, which must never be registered for
+#      production. Then checks the tarball against the identity file (sha256)
+#      and imports it as a GCE image with UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC
+#      (reused if an image of that name already carries the same tarball
+#      sha256).
 #   2. Builds two small auxiliary disks: a dstack-data GPT disk and a DSTACKSHR
 #      FAT32 disk holding a measurement app-compose.json (runner "bash", no
 #      containers, no network, no secrets) and .sys-config.json (no KMS, no
@@ -34,9 +43,10 @@
 #
 # It creates and deletes GCE images, disks and VMs and GCS objects in the given
 # project, so it is run by the operator, never by CI. --dry-run prints the
-# gcloud commands instead of running them. Needs gcloud, mtools (mformat,
-# mcopy), sgdisk (gdisk/gptfdisk), GNU tar or bsdtar, and the osimage helper
-# (built from tools/osimage with Go when --osimage is not given).
+# gcloud commands instead of running them (the signature and sha256 checks still
+# run). Needs gcloud, cosign, mtools (mformat, mcopy), sgdisk (gdisk/gptfdisk),
+# GNU tar or bsdtar, and the osimage helper (built from tools/osimage with Go
+# when --osimage is not given).
 set -euo pipefail
 umask 0022
 
@@ -48,7 +58,7 @@ log() { echo "import-and-measure: $*" >&2; }
 
 project='' zone='' bucket='' tarball='' identity_in='' machine_types=c3-standard-8 boots=2
 release_base='' source_uri='' image_name='' network='' subnet='' out='' work='' osimage='' timeout=1200
-keep=0 dry_run=0
+keep=0 dry_run=0 repo='' allow_unsigned=0
 while [[ $# -gt 0 ]]; do
   case $1 in
     --project) project=$2; shift 2 ;;
@@ -60,6 +70,8 @@ while [[ $# -gt 0 ]]; do
     --boots) boots=$2; shift 2 ;;
     --release-base) release_base=$2; shift 2 ;;
     --source-uri) source_uri=$2; shift 2 ;;
+    --repo) repo=$2; shift 2 ;;
+    --allow-unsigned) allow_unsigned=1; shift ;;
     --image-name) image_name=$2; shift 2 ;;
     --network) network=$2; shift 2 ;;
     --subnet) subnet=$2; shift 2 ;;
@@ -69,7 +81,7 @@ while [[ $# -gt 0 ]]; do
     --timeout) timeout=$2; shift 2 ;;
     --keep) keep=1; shift ;;
     --dry-run) dry_run=1; shift ;;
-    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
@@ -79,10 +91,21 @@ done
 [[ $boots =~ ^[1-9][0-9]*$ ]] || die "--boots must be a positive integer"
 [[ -f $tarball ]] || die "no such tarball: $tarball"
 [[ -n $release_base || -n $source_uri ]] || die "--release-base or --source-uri is required (the onchain sourceURI)"
+if [[ -z $repo ]]; then
+  if [[ $release_base =~ ^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/download/?$ ]]; then
+    repo=${BASH_REMATCH[1]}
+  else
+    repo=sealedtempo/sealed
+  fi
+fi
+[[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "--repo must be OWNER/REPO"
 
 for tool in gcloud mformat mcopy sgdisk gzip; do
   command -v "$tool" >/dev/null || die "$tool is required"
 done
+if [[ $allow_unsigned == 0 ]]; then
+  command -v cosign >/dev/null || die "cosign is required to verify the release signatures"
+fi
 sha256() {
   if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
@@ -118,7 +141,27 @@ if [[ -z $osimage ]]; then
   (cd "$REPO" && go build -o "$osimage" ./runtime/images/dstack-os/tools/osimage)
 fi
 
-# 1. Identity of the image, and the tarball it vouches for.
+# 1. Signatures (supply-7): os-image.yml signs the disk tarball and the identity
+# files keyless at its os-image-v<version> tag, and only for a commit on main.
+# The identity is checked before it is unpacked, against any such tag; the
+# version it names then fixes the tag both signatures must come from.
+signer="https://github.com/$repo/.github/workflows/os-image.yml@refs/tags/os-image-v"
+verify_signature() { # verify_signature FILE --certificate-identity[-regexp] VALUE
+  local file=$1
+  shift
+  [[ -f $file.sigstore.json ]] ||
+    die "no signature $file.sigstore.json: download it with the release asset (--allow-unsigned only for a local build)"
+  cosign verify-blob --bundle "$file.sigstore.json" "$@" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com "$file" >/dev/null 2>"$work/cosign.err" ||
+    die "$file is not signed by os-image.yml of $repo ($*): $(cat "$work/cosign.err")"
+}
+if [[ $allow_unsigned == 1 ]]; then
+  log "WARNING: --allow-unsigned: the tarball and identity signatures are NOT checked; never register this image for production"
+else
+  verify_signature "$identity_in" --certificate-identity-regexp "^${signer//./\\.}[0-9A-Za-z.+_-]+\$"
+fi
+
+# 2. Identity of the image, and the tarball it vouches for.
 mkdir -p "$work/identity"
 case $identity_in in
   *.tar.gz) tar -xzf "$identity_in" -C "$work/identity" ;;
@@ -141,6 +184,12 @@ variant=$(json_field "$identity" variant)
 version=$(json_field "$identity" sealedOsVersion)
 os_image_hash=$(json_field "$identity" osImageHash)
 want_sha=$(json_field "$identity" gceTarball.sha256)
+if [[ $allow_unsigned == 0 ]]; then
+  [[ $version =~ ^[0-9A-Za-z.+_-]+$ ]] || die "the identity names an invalid version $version"
+  verify_signature "$identity_in" --certificate-identity "$signer$version"
+  verify_signature "$tarball" --certificate-identity "$signer$version"
+  log "signed by os-image.yml of $repo at os-image-v$version"
+fi
 got_sha=$(sha256 "$tarball")
 [[ $got_sha == "$want_sha" ]] || die "tarball sha256 $got_sha does not match the identity's $want_sha"
 log "image $name $version ($variant), os_image_hash $os_image_hash, tarball sha256 $got_sha"
@@ -189,7 +238,7 @@ else
   log "imported $image_name; it stays in the project for deployments"
 fi
 
-# 2. Auxiliary disks.
+# 3. Auxiliary disks.
 nonce=$("$osimage" nonce)
 mkdir -p "$work/data" "$work/shared" "$work/files"
 zero_file "$work/data/disk.raw" 10
@@ -212,7 +261,7 @@ for pair in "$data_image:$work/data.tar.gz" "$shared_image:$work/shared.tar.gz";
   created_images+=("$img")
 done
 
-# 3. Boots.
+# 4. Boots.
 net_flags=()
 [[ -n $network ]] && net_flags+=(--network "$network")
 [[ -n $subnet ]] && net_flags+=(--subnet "$subnet")
@@ -265,7 +314,7 @@ if [[ $dry_run == 1 ]]; then
   exit 0
 fi
 
-# 4. Catalog entries.
+# 5. Catalog entries.
 out=${out:-$SELF/measurements/$name-$version.json}
 mkdir -p "$(dirname "$out")"
 uri_flags=(-release-base "$release_base")

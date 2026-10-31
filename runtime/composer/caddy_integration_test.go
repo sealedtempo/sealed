@@ -32,10 +32,15 @@ import (
 // 503 while bootstrap runs, spoofed relay headers), bearer passthrough
 // through the gate's bearer mode (held while bootstrap runs, review C-6), the
 // public attest route, the admin socket mode and the payment-needed switch,
-// and the relay route served on the attest host.
+// and the relay route served on the attest host. With SEALED_REQUIRE_CADDY=1
+// (the catalog workflow's compose job) a missing binary fails the test
+// instead of skipping it (runtime-3).
 func TestCaddyfileWithRealCaddy(t *testing.T) {
 	bin := os.Getenv("SEALED_CADDY_BIN")
 	if bin == "" {
+		if os.Getenv("SEALED_REQUIRE_CADDY") == "1" {
+			t.Fatal("SEALED_REQUIRE_CADDY=1 but SEALED_CADDY_BIN is not set: the real-Caddy test must run here")
+		}
 		t.Skip("SEALED_CADDY_BIN not set")
 	}
 	cfg, bundles := fixtureStack(t)
