@@ -13,6 +13,7 @@ Limits: confidential VMs do not stop physical attacks on the server, bugs inside
 - The VM booted a platform image registered and approved in PlatformRegistry, identified by its MRTD and RTMR0 to RTMR2.
 - Every chain read came from one block that was at most 60 seconds old when the verification ran, so a lagging RPC cannot hide a revocation.
 - The VM runs exactly the stack whose hash is in RTMR3, and that stack is what the deterministic composer produces from the public config and the onchain releases' bundles, byte for byte.
+- Every release was signed by the release workflow of the public repo on its main branch (cosign keyless, logged in Rekor) and comes with that workflow's SLSA provenance.
 - Every release is active onchain, and the customer's wallet approved exactly this stack with exactly these releases and this image.
 - The onchain deployment record matches the evidence, and the quote binds the enclave signer that pays fees.
 - With `--live`: the quote is fresh (it binds your nonce), and the TLS key you connected to belongs to that VM.
@@ -90,7 +91,8 @@ Every check is listed in the report, and a check whose inputs are missing fails 
 | `report_data` | the quote's report_data is `sha256("sealed/evidence/v1" \|\| stackHash \|\| configHash \|\| enclaveSigner \|\| nonce2 \|\| uint64be(attestedAt))` then 32 zero bytes (D-047), or the live construction | the quote was made for this evidence, at this time, for this signer |
 | `freshness` | evidence: attestedAt within `--max-age` and at most 5 minutes in the future; live: your nonce is bound | old evidence cannot be passed off as new |
 | `releases_active` | each release exists, is active (or deprecated) and belongs to the app named in the config | a revoked release fails |
-| `stack_recompute` | each bundle, fetched from `<release_asset_base>/<app>-v<tagVersion>/<app>-<version>.bundle.tar` (`tagVersion` is the version without a leading `v` before a digit), hashes to the onchain bundleHash and names the same app and version; the composer then recomputes appCompose byte for byte | the stack is built only from the bundles registered onchain, with nothing added. This check does not verify the bundles' cosign signatures or SLSA provenance; [Verify a release](#verify-a-release) does |
+| `release_signature` | next to each bundle, from the same release asset base: `<bundle>.sigstore.json` is a cosign keyless signature over exactly the onchain bundleHash by `https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main` on the GitHub OIDC issuer, with a Rekor entry, and `<bundle>.intoto.jsonl` is SLSA provenance signed by slsa-github-generator `generator_generic_slsa3.yml@refs/tags/v2.1.0` for that workflow, with the bundleHash as a subject. Both are checked offline against the Sigstore public-good trusted root built into the verifier; the identities are fixed in the verifier, never read from the release or the chain. A dev verification (`--dev-allow-simulated` under `SEALED_DEV_SIM=1`) passes unsigned releases with a `DEV:` detail | each release was built from this repository's main branch by its release workflow, not only registered by the OPS key |
+| `stack_recompute` | each bundle, fetched from `<release_asset_base>/<app>-v<tagVersion>/<app>-<version>.bundle.tar` (`tagVersion` is the version without a leading `v` before a digit), hashes to the onchain bundleHash and names the same app and version; the composer then recomputes appCompose byte for byte | the stack is built only from the bundles registered onchain, with nothing added; `release_signature` shows release CI built and signed those bundles |
 | `stack_approved` | `DeploymentRegistry.isStackApproved(customer, stackHash)` | the customer's wallet approved this stack, unrevoked and unexpired |
 | `approval_releases` | `getStackApproval` names exactly the config's releases and image (D-014) | the approval covers what runs |
 | `onchain_record` | `getDeployment` is Active and its customer, stackHash, imageId, configHash and enclaveSigner match; in evidence mode also eventLogHash, quoteHash and attestedAt equal to `lastAttestedAt` | the onchain record describes this evidence |
@@ -99,7 +101,7 @@ Every check is listed in the report, and a check whose inputs are missing fails 
 
 ## Verify a release
 
-Each release in a stack can be checked on its own:
+`release_signature` runs these signature and provenance checks for every release of a verification. Each release in a stack can also be checked on its own:
 
 ```sh
 B=https://github.com/sealedtempo/sealed/releases/download
@@ -263,7 +265,7 @@ If every step matches, you have checked the deployment with your own tools again
 
 ## What verification does not show
 
-- That each release was signed and built by the release workflow. `sealed verify` (like the key broker) accepts a bundle whose sha256 equals its onchain bundleHash and does not check the cosign signature or the SLSA provenance, so a release is anchored by the registrar (OPS) key and the release CI that registers it ([THREAT_MODEL.md](THREAT_MODEL.md#trust-anchors)). Check the signature and provenance of each release yourself with [Verify a release](#verify-a-release).
+- That the key broker checked release signatures. `sealed verify` and sealed-verifierd check them (`release_signature`), but the key broker, which releases the secrets, accepts a bundle whose sha256 equals its onchain bundleHash and checks neither the signature nor the provenance. For secret release, a release is anchored by the registrar (OPS) key and the release CI that registers it ([THREAT_MODEL.md](THREAT_MODEL.md#trust-anchors)).
 - That the apps are free of bugs or behave well with the data they are given. Read the app's README, LICENSE-NOTICE and egress policy, and the customer's `egressAdditions` in the config.
 - That the config says what you want. `debug`, `endpoints` (the key broker, platform api, Tempo RPC and relay the deployment uses), `egressAdditions` and `allowedVpcRanges` are inside the stackHash, so a passing verification shows they are what the customer approved: `jq '.config | {debug, endpoints, egressAdditions, allowedVpcRanges}' evidence.json`. A secret one app takes from another (`same_as`) is allowed only when the source app's manifest lists the taking app in `share_with` (D-059); both are in the release bundles' manifests.
 - That the hardware resists physical attacks, or that the cloud provider with physical access does not attack it.
