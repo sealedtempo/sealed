@@ -27,7 +27,7 @@ images:
   # after the runtime image workflow builds it (D-028).
   - name: espocrm
     source: build:images/espocrm
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:ddc086fac0ed643bd6370179da9f521a573a5202de71df105482744afa29fec7
     platform: linux/amd64
     license_spdx: AGPL-3.0-or-later
   # Index digest (multi-arch). linux/amd64 manifest:
