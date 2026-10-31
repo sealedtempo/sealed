@@ -110,14 +110,14 @@ contract DeployedContractsForkTest is Test {
         string memory json = vm.readFile("deployments/tempo-mainnet.json");
         _compareCode(json, "PlatformRegistry", address(live.platform), type(PlatformRegistry).creationCode);
         _compareCode(json, "AppRegistry", address(live.apps), type(AppRegistry).creationCode);
-        _compareCode(json, "OracleSignatureVerifier", address(live.verifier), type(OracleSignatureVerifier).creationCode);
+        _compareCode(
+            json, "OracleSignatureVerifier", address(live.verifier), type(OracleSignatureVerifier).creationCode
+        );
         _compareCode(json, "DeploymentRegistry", address(live.registry), type(DeploymentRegistry).creationCode);
         _compareCode(json, "FeeSplitter", address(live.splitter), type(FeeSplitter).creationCode);
     }
 
-    function _compareCode(string memory json, string memory name, address target, bytes memory creationCode)
-        internal
-    {
+    function _compareCode(string memory json, string memory name, address target, bytes memory creationCode) internal {
         bytes memory deployed = target.code;
         assertGt(deployed.length, 0, string.concat(name, ": no code at the recorded address"));
         bytes memory args = json.readBytes(string.concat(".contracts.", name, ".constructorArgs"));

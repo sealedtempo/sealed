@@ -20,7 +20,13 @@ const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const fragment = parse(readFileSync(join(appDir, "compose.fragment.yaml"), "utf8"));
 const server = fragment.services["internal-tools-server"];
 const script = unescapeFromCompose(server.entrypoint[2]);
-const shells = ["/bin/sh", "/bin/dash", "/bin/busybox"].filter((s) => existsSync(s));
+// busybox is a multi-call binary: it needs its "sh" applet ("busybox sh -c ..."), not "busybox -c ...",
+// which treats -c as an unknown applet and exits 127.
+const shells = [
+  { bin: "/bin/sh", argv: ["-c"] },
+  { bin: "/bin/dash", argv: ["-c"] },
+  { bin: "/bin/busybox", argv: ["sh", "-c"] },
+].filter((s) => existsSync(s.bin));
 
 const FAKE_TOOLJET = `
 const http = require("node:http");
@@ -74,7 +80,7 @@ async function start(shell, { done = false, env = {} } = {}) {
   const setupPort = await freePort();
   const body = script.replaceAll("/sealed-bootstrap/done.json", doneFile).replaceAll("/app/server/sealed-entrypoint.sh", fakeEntrypoint);
   assert.notEqual(body, script);
-  const child = spawn(shell, ["-c", body, "internal-tools-server", ...server.command], {
+  const child = spawn(shell.bin, [...shell.argv, body, "internal-tools-server", ...server.command], {
     env: {
       PATH: process.env.PATH,
       SEALED_PUBLIC_URL_TOOLS: "https://tools.34-1-2-3.sslip.io",
@@ -110,7 +116,7 @@ describe("internal-tools-server entrypoint", () => {
   });
 
   for (const shell of shells) {
-    describe(shell, () => {
+    describe(shell.argv.length > 1 ? `${shell.bin} ${shell.argv[0]}` : shell.bin, () => {
       test("serves only on the setup port until done.json, then only on the route port", async () => {
         const run = await start(shell);
         await until(() => responds(run.setupPort), "the setup port");

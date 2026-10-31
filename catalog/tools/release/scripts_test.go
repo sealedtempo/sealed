@@ -203,7 +203,7 @@ func cleanEnv() []string {
 		k := kv[:strings.IndexByte(kv, '=')]
 		switch {
 		case strings.HasSuffix(k, "_PRIVATE_KEY"), strings.HasPrefix(k, "TEMPO_"), strings.HasPrefix(k, "ETH_"),
-			k == "SEALED_ENV", k == "CI", k == "GITHUB_ACTIONS", k == "DEPLOYMENTS_FILE", k == "FEE_TOKEN_ADDRESS",
+			strings.HasPrefix(k, "GITHUB_"), k == "SEALED_ENV", k == "CI", k == "DEPLOYMENTS_FILE", k == "FEE_TOKEN_ADDRESS",
 			k == "EXPECT_CHAIN_ID", k == "MAINTAINER_DEFAULT_ADDRESS", k == "DRY_RUN", k == "FOUNDRY_PROFILE":
 			continue
 		}
