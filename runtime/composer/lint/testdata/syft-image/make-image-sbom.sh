@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Builds a small synthetic container image whose file layout copies the paths the catalog manifests
-# exclude (and near misses that must not match), scans it with syft as the release pipeline does,
-# and writes the SPDX JSON. Needs syft, crane and Go with go-ethereum v1.17.10 in the module cache;
-# no network and no docker daemon.
+# exclude (and near misses that must not match), scans it with syft as the release pipeline does
+# for lint (sealed_syft_files of scripts/release/syft-env.sh, as scripts/release/scan-image.sh
+# runs it), and writes the SPDX JSON. Needs syft, crane and Go with go-ethereum v1.17.10 in the
+# module cache; no docker daemon. syft reads Go module licenses from that cache and asks
+# proxy.golang.org only for modules it lacks.
 #
 #   bash runtime/composer/lint/testdata/syft-image/make-image-sbom.sh . runtime/composer/lint/testdata/syft-image/image.spdx.json
 #
@@ -170,12 +172,11 @@ mkdir -p "$r/usr/local/bin"
 # --- Image and SBOM ----------------------------------------------------------------------------
 COPYFILE_DISABLE=1 tar -C "$r" --numeric-owner -cf "$work/layer.tar" .
 crane append --oci-empty-base -f "$work/layer.tar" -t sealed.test/lint-fixture:1 -o "$work/image.tar" >/dev/null
-# As the release scan should run it: every file listed (not only files a package owns) and Go
-# module licenses read (license audit F5, F6). Digests are left out to keep the fixture small.
-(cd "$work" && SYFT_CHECK_FOR_APP_UPDATE=false \
-  SYFT_FILE_METADATA_SELECTION=all \
-  SYFT_FILE_METADATA_DIGESTS="" \
-  SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES=true \
-  syft scan docker-archive:image.tar -q --source-name lint-fixture --source-version 1 -o spdx-json=image.spdx.json)
+# As the release scan lists files for lint (scan-image.sh): the same syft settings and scan call, so
+# every file is listed and Go module licenses are read (license audit F5, F6). Only the source and
+# its name differ.
+# shellcheck source=scripts/release/syft-env.sh
+. "$repo/scripts/release/syft-env.sh"
+(cd "$work" && sealed_syft_files docker-archive:image.tar --source-name lint-fixture --source-version 1 -o spdx-json=image.spdx.json)
 python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); json.dump(d, open(sys.argv[2], "w"), indent=1, sort_keys=True); open(sys.argv[2], "a").write("\n")' \
   "$work/image.spdx.json" "$out"

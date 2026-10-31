@@ -3,9 +3,14 @@
 #
 #   github-release.sh publish --tag <tag> --target <commit> --notes <file> --assets <dir>
 #       Creates the release as a draft with every file in <dir>, then publishes it. A draft left by an
-#       earlier failed run is updated and published. When the tag is already a published release nothing is
+#       earlier failed run is updated, moved to <commit> and published. When the tag is already a published release nothing is
 #       uploaded and the script prints "exists" (the caller then publishes onchain from that release's own
-#       bundle, so a re-run never swaps the bundle of a public release); otherwise it prints "created".
+#       bundle, so a re-run never swaps the bundle of a public release, and must first check that bundle is
+#       its own build or signed by the release workflow on main); otherwise it prints "created". A draft or
+#       release that github-actions[bot] did not create (a person, or a token other than the workflow's)
+#       fails the script and is left as it is (supply-1).
+#   github-release.sh author --tag <tag>
+#       Prints the login of the account that created the release (github-actions[bot] for the release job).
 #   github-release.sh notes --tag <tag> --notes <file>
 #       Replaces the release notes (used once the publishRelease transaction hash is known).
 #   github-release.sh fetch --url <asset url> --sha256 <0x hex> --out <file>
@@ -21,7 +26,7 @@
 . "$(dirname "$0")/lib.sh"
 
 CMD="${1:-}"
-[ -n "$CMD" ] || die "usage: github-release.sh publish|notes|fetch|state [flags]" 2
+[ -n "$CMD" ] || die "usage: github-release.sh publish|notes|fetch|state|author [flags]" 2
 shift
 TAG="" TARGET="" NOTES="" ASSETS="" URL="" SHA="" OUT=""
 while [ $# -gt 0 ]; do
@@ -37,6 +42,8 @@ while [ $# -gt 0 ]; do
 	esac
 done
 REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
+# The account GitHub records as the author of a release created with the workflow's GITHUB_TOKEN.
+BOT="github-actions[bot]"
 
 state() {
 	local draft
@@ -47,6 +54,16 @@ state() {
 	else
 		echo published
 	fi
+}
+
+author() { gh release view "$TAG" --repo "$REPO" --json author --jq .author.login; }
+
+# require_bot <state>: a draft or published release this script would reuse must be the release job's own.
+require_bot() {
+	local who
+	who="$(author)" || die "cannot read the author of release $TAG"
+	[ "$who" = "$BOT" ] ||
+		die "release $TAG is a $1 created by $who, not by the release workflow ($BOT); it is left as it is. Delete it after checking where it came from, or bump release_version"
 }
 
 case "$CMD" in
@@ -63,14 +80,16 @@ publish)
 	done
 	case "$(state)" in
 	published)
+		require_bot "published release"
 		log "ok   release $TAG is already published; its assets stay as they are"
 		echo exists
 		exit 0
 		;;
 	draft)
+		require_bot draft
 		log "update draft release $TAG (left by an earlier run)"
 		gh release upload "$TAG" "${files[@]}" --clobber --repo "$REPO" >&2
-		gh release edit "$TAG" --notes-file "$NOTES" --repo "$REPO" >&2
+		gh release edit "$TAG" --notes-file "$NOTES" --target "$TARGET" --repo "$REPO" >&2
 		;;
 	none)
 		log "create draft release $TAG at $TARGET with ${#files[@]} assets"
@@ -106,6 +125,12 @@ fetch)
 	got="0x$( (sha256sum "$OUT" 2>/dev/null || shasum -a 256 "$OUT") | cut -d' ' -f1)"
 	[ "$got" = "$SHA" ] || die "$URL has sha256 $got, expected $SHA"
 	log "ok   $URL matches $SHA"
+	;;
+author)
+	[ -n "$TAG" ] || die "usage: github-release.sh author --tag <tag>" 2
+	need gh
+	[ -n "$REPO" ] || REPO="$(defaults_get repo)"
+	author
 	;;
 state)
 	[ -n "$TAG" ] || die "usage: github-release.sh state --tag <tag>" 2

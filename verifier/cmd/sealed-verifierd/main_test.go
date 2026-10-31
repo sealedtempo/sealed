@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,10 +18,12 @@ import (
 
 	"github.com/sealedtempo/sealed/runtime/composer"
 	verify "github.com/sealedtempo/sealed/verifier"
+	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/bundles"
 	"github.com/sealedtempo/sealed/verifier/chain"
 	"github.com/sealedtempo/sealed/verifier/internal/anviltest"
 	"github.com/sealedtempo/sealed/verifier/internal/fixture"
+	"github.com/sealedtempo/sealed/verifier/releasesig"
 )
 
 func envMap(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -31,6 +34,14 @@ func useComposer(t *testing.T, f func(*config, verify.ChainReader) (verify.Compo
 	old := composerFactory
 	composerFactory = f
 	t.Cleanup(func() { composerFactory = old })
+}
+
+// useSignatures replaces signaturesFactory for one test.
+func useSignatures(t *testing.T, f func(*config) (verify.ReleaseSignatures, error)) {
+	t.Helper()
+	old := signaturesFactory
+	signaturesFactory = f
+	t.Cleanup(func() { signaturesFactory = old })
 }
 
 var addrFlags = []string{
@@ -69,7 +80,7 @@ func TestConfigSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.RPCURL != "https://rpc.example" || c.Listen != ":9999" || c.ChainID != 4217 || len(c.TCBPolicy.AllowedStatuses) != 2 ||
-		c.MaxInFlight != 8 || c.LiveHosts != nil || c.LivePrivate {
+		c.MaxInFlight != 8 || c.LiveHosts != nil || c.LivePrivate || !slices.Equal(c.AllowedXFAM, attest.DefaultAllowedXFAM()) {
 		t.Fatalf("%+v", c)
 	}
 	c, err = loadConfig(append([]string{"--live-allowed-hosts", " *.sslip.io, relay.example.com ,", "--max-in-flight", "3"}, addrFlags...), envMap(nil), io.Discard)
@@ -116,13 +127,18 @@ func TestConfigSources(t *testing.T) {
 	}
 
 	defaults := filepath.Join(dir, "defaults.yaml")
-	os.WriteFile(defaults, []byte("tcb_policy:\n  allowed_statuses: [UpToDate]\n"), 0o644)
+	os.WriteFile(defaults, []byte("tcb_policy:\n  allowed_statuses: [UpToDate]\ntdx:\n  allowed_xfam: [\"0x600e7\"]\n"), 0o644)
 	c, err = loadConfig(append([]string{"--defaults", defaults}, addrFlags...), envMap(nil), io.Discard)
-	if err != nil || len(c.TCBPolicy.AllowedStatuses) != 1 {
+	if err != nil || len(c.TCBPolicy.AllowedStatuses) != 1 || !slices.Equal(c.AllowedXFAM, []uint64{0x600e7}) {
 		t.Fatalf("defaults file: %v %+v", err, c)
 	}
+	// A defaults file without tdx.allowed_xfam cannot turn the XFAM check off (D-077).
+	os.WriteFile(defaults, []byte("tcb_policy:\n  allowed_statuses: [UpToDate]\n"), 0o644)
+	if _, err := loadConfig(append([]string{"--defaults", defaults}, addrFlags...), envMap(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "tdx.allowed_xfam") {
+		t.Fatalf("defaults file without tdx.allowed_xfam: %v", err)
+	}
 	repoDefaults := filepath.Join("..", "..", "..", "config", "defaults.yaml")
-	if _, err := loadConfig(append([]string{"--defaults", repoDefaults}, addrFlags...), envMap(nil), io.Discard); err != nil {
+	if c, err := loadConfig(append([]string{"--defaults", repoDefaults}, addrFlags...), envMap(nil), io.Discard); err != nil || !slices.Equal(c.AllowedXFAM, attest.DefaultAllowedXFAM()) {
 		t.Fatalf("repo defaults: %v", err)
 	}
 	for _, bad := range [][]string{{"--chain-id", "x"}, {"--collateral-ttl", "-1s"}, {"--platform-registry", "nope"}, {"extra"},
@@ -147,6 +163,7 @@ func TestDaemonRedactsRPCURL(t *testing.T) {
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 	useComposer(t, func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil })
+	useSignatures(t, func(*config) (verify.ReleaseSignatures, error) { return fixture.Signatures{}, nil })
 	srv, err := newServer(context.Background(), c, log)
 	if err != nil {
 		t.Fatal(err)
@@ -212,6 +229,7 @@ func TestDaemonEndToEnd(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	useComposer(t, func(*config, verify.ChainReader) (verify.Composer, error) { return fixture.Composer{}, nil })
+	useSignatures(t, func(*config) (verify.ReleaseSignatures, error) { return fixture.Signatures{}, nil })
 	srv, err := newServer(context.Background(), c, log)
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +243,8 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 	text, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(text), "Sealed verification (evidence): PASS") || !strings.Contains(string(text), "WARNING") {
+	if !strings.Contains(string(text), "Sealed verification (evidence): PASS") || !strings.Contains(string(text), "WARNING") ||
+		!strings.Contains(string(text), "2 releases signed by "+fixture.ReleaseSigner) {
 		t.Fatalf("daemon report:\n%s", text)
 	}
 
@@ -244,6 +263,15 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 	if srv.Deps.Composer != nil {
 		t.Fatal("composer wired")
+	}
+
+	// The production signature checker is wired by default, from the release asset bases.
+	signaturesFactory = newSignatures
+	if srv, err = newServer(context.Background(), c, log); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := srv.Deps.Signatures.(*releasesig.Verifier); !ok {
+		t.Fatalf("signatures %T", srv.Deps.Signatures)
 	}
 }
 

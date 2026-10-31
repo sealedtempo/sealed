@@ -104,11 +104,12 @@ func clientAddr(r *http.Request) string {
 	return ip.String()
 }
 
-// limitKey is the rate limit bucket of an address: IPv6 addresses count per /64, the unit one host usually controls.
+// limitKey is the rate limit bucket of an address: IPv6 addresses count per /48, the prefix one site usually gets,
+// so a host cannot spread a flood over the /64s of its own allocation (kb-6).
 func limitKey(addr string) string {
 	ip := net.ParseIP(addr)
 	if ip == nil || ip.To4() != nil {
 		return addr
 	}
-	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+	return ip.Mask(net.CIDRMask(48, 128)).String() + "/48"
 }

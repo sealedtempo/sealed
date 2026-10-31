@@ -148,12 +148,24 @@ services:
         if __name__ == "__main__":
             sys.exit(main())
     command: ["tini", "--", "/usr/local/bin/openhands-agent-server", "--host", "0.0.0.0", "--port", "8000"]
+    # Lockdown (spec 6.5.4): the root filesystem is read-only. Only the /tmp tmpfs and the
+    # /workspace data-disk volume (TMPDIR, persistence, project) are writable. HOME
+    # (/home/openhands) becomes read-only; with the browser and VS Code off the server needs
+    # nothing there.
+    read_only: true
     x-sealed-secrets:
       - OH_SESSION_API_KEYS_0
       - OH_SECRET_KEY
     environment:
       SEALED_RUN_AS: "10001:10001"
-      SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/conversations,/workspace/bash_events,/workspace/.openhands
+      SEALED_OWNED_DIRS: /workspace,/workspace/project,/workspace/conversations,/workspace/bash_events,/workspace/.openhands,/workspace/.tmp
+      # The agent-server is a PyInstaller one-file binary: at every start it unpacks ~175 MB of
+      # shared libraries under $TMPDIR and maps them. The composed /tmp is a noexec tmpfs (Docker
+      # mounts every tmpfs noexec, and the composer accepts only size/mode on an app tmpfs), so the
+      # kernel refuses the mapping and the binary dies with "libz.so.1: failed to map segment".
+      # Point TMPDIR at an owned directory on the data-disk volume, which is mounted nodev,nosuid
+      # (not noexec), so the libraries load. prepdirs creates it as uid 10001 (SEALED_OWNED_DIRS).
+      TMPDIR: /workspace/.tmp
       OH_CONVERSATION_RUNTIME: local
       OH_CONVERSATION_RUNTIME_SELECTABLE: "false"
       OH_ENABLE_VSCODE: "false"

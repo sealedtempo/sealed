@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // EgressPolicy is a release's egress.yaml (INTERFACES section 7).
@@ -101,6 +102,8 @@ const MaxEgressAllowEntries = 256
 // need at least two labels; wildcards cover exactly one label and need at
 // least two labels after "*.". IPv4 literals must be public unicast
 // addresses; ParseHostPortIn also accepts private ones inside given ranges.
+// Every entry must also pass sealed-egress's own parser (policy.ParseEntry),
+// so wildcards over an ICANN public suffix (`*.co.uk`) are refused.
 func ParseHostPort(s string) (HostPort, error) { return ParseHostPortIn(s, nil) }
 
 // ParseHostPortIn is ParseHostPort that accepts private (RFC 1918) IPv4
@@ -134,7 +137,7 @@ func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 		if addr.IsPrivate() && !containsAddr(private, addr) {
 			return HostPort{}, fmt.Errorf("%q: private address %s is allowed only inside allowedVpcRanges", s, host)
 		}
-		return HostPort{Host: host, Port: port, IP: true}, nil
+		return egressAccepts(s, HostPort{Host: host, Port: port, IP: true})
 	}
 	hp := HostPort{Host: host, Port: port}
 	name := host
@@ -154,8 +157,21 @@ func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 			return HostPort{}, fmt.Errorf("%q: invalid host label %q (lowercase letters, digits and hyphens only)", s, l)
 		}
 	}
-	if _, err := strconv.Atoi(labels[len(labels)-1]); err == nil {
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
 		return HostPort{}, fmt.Errorf("%q: numeric top-level label", s)
+	}
+	return egressAccepts(s, hp)
+}
+
+// egressAccepts refuses an entry that sealed-egress would refuse when it
+// loads the composed config. Such a stack would compose and could be
+// approved, but sealed-egress would exit at start and the stack would
+// never come up (runtime-2). Its parser is the last word: it also refuses
+// wildcards over an ICANN public suffix (*.co.uk), which the label rules
+// above let through.
+func egressAccepts(s string, hp HostPort) (HostPort, error) {
+	if _, err := policy.ParseEntry(s); err != nil {
+		return HostPort{}, fmt.Errorf("%q: sealed-egress refuses it: %v", s, err)
 	}
 	return hp, nil
 }
@@ -190,8 +206,15 @@ func endpointHostPort(field, raw string) (string, error) {
 		port = "443"
 	}
 	entry := host + ":" + port
-	if _, err := ParseHostPort(entry); err != nil {
+	hp, err := ParseHostPort(entry)
+	if err != nil {
 		return "", fmt.Errorf("%s: %v", field, err)
+	}
+	// An endpoint names the one host the agent or the payer connects to. A
+	// wildcard host cannot be dialed, and its allow entry would open every
+	// name under it to that caller.
+	if hp.Wildcard {
+		return "", fmt.Errorf("%s: %q must name one host, not a wildcard", field, raw)
 	}
 	return entry, nil
 }

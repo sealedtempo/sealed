@@ -36,6 +36,14 @@ override_resource {
 }
 
 override_resource {
+  target          = google_cloud_run_v2_service.key_broker
+  override_during = plan
+  values = {
+    uri = "https://sealed-key-broker-xyz-uc.a.run.app"
+  }
+}
+
+override_resource {
   target          = google_service_account.key_broker
   override_during = plan
   values = {
@@ -66,6 +74,16 @@ run "network_and_firewall" {
   assert {
     condition     = google_compute_subnetwork.sealed.name == "sealed-subnet" && google_compute_subnetwork.sealed.region == "us-central1"
     error_message = "subnet name and region"
+  }
+
+  assert {
+    condition     = google_compute_subnetwork.sealed.description == "sealed-binding/v1 customer=0x00000000000000000000000000000000000000c1 key_broker=https://sealed-key-broker-xyz-uc.a.run.app"
+    error_message = "the subnet carries the connection binding the platform checks: this wallet, lowercase, and this project's key broker"
+  }
+
+  assert {
+    condition     = output.connection_binding == google_compute_subnetwork.sealed.description
+    error_message = "the binding is an output"
   }
 
   assert {
@@ -229,8 +247,25 @@ run "deployer" {
   }
 
   assert {
-    condition     = google_compute_subnetwork_iam_member.deployer.subnetwork == "sealed-subnet" && toset(google_project_iam_custom_role.subnet_user.permissions) == toset(["compute.subnetworks.use", "compute.subnetworks.useExternalIp"])
-    error_message = "subnet use is granted on the sealed subnet only"
+    condition     = google_compute_subnetwork_iam_member.deployer.subnetwork == "sealed-subnet" && toset(google_project_iam_custom_role.subnet_user.permissions) == toset(["compute.subnetworks.get", "compute.subnetworks.use", "compute.subnetworks.useExternalIp"])
+    error_message = "subnet use, and reading the connection binding, are granted on the sealed subnet only"
+  }
+
+  assert {
+    condition = (
+      length(setintersection(google_project_iam_custom_role.deployer_named.permissions, toset(["compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.setLabels", "compute.images.useReadOnly"]))) == 5 &&
+      contains(google_project_iam_custom_role.deployer_project.permissions, "compute.globalOperations.get") &&
+      !anytrue([for p in setunion(google_project_iam_custom_role.deployer_project.permissions, google_project_iam_custom_role.subnet_user.permissions) : startswith(p, "compute.images.")])
+    )
+    error_message = "the deployer creates, reads, tags, deletes and boots images only under the sealed-* name condition, and follows their global operations (D-074)"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in setunion(google_project_iam_custom_role.deployer_named.permissions, google_project_iam_custom_role.deployer_project.permissions, google_project_iam_custom_role.subnet_user.permissions) :
+      !startswith(p, "storage.") && !contains(["compute.subnetworks.update", "compute.subnetworks.setIamPolicy", "compute.subnetworks.create"], p)
+    ])
+    error_message = "the deployer holds no storage permission outside the staging bucket and cannot change the subnet or its binding"
   }
 
   assert {
@@ -340,6 +375,72 @@ run "boot_bucket" {
   assert {
     condition     = google_storage_bucket.boot[0].name == "sealed-test-1234-sealed-boot" && google_storage_bucket.boot[0].public_access_prevention == "enforced" && google_storage_bucket.boot[0].uniform_bucket_level_access == true
     error_message = "the boot bucket is private"
+  }
+}
+
+run "staging_bucket" {
+  command = plan
+
+  assert {
+    condition = (
+      google_storage_bucket.staging.name == "sealed-test-1234-sealed-staging" &&
+      google_storage_bucket.staging.uniform_bucket_level_access == true &&
+      google_storage_bucket.staging.public_access_prevention == "enforced" &&
+      google_storage_bucket.staging.location == "us-central1"
+    )
+    error_message = "the staging bucket is <project>-sealed-staging, private, with uniform access (D-074)"
+  }
+
+  assert {
+    condition = (
+      length(google_storage_bucket.staging.lifecycle_rule) == 1 &&
+      tolist(google_storage_bucket.staging.lifecycle_rule[0].condition)[0].age == 1 &&
+      tolist(google_storage_bucket.staging.lifecycle_rule[0].action)[0].type == "Delete"
+    )
+    error_message = "staged objects are deleted after 1 day"
+  }
+
+  assert {
+    condition = (
+      google_storage_bucket_iam_member.deployer_staging.bucket == "sealed-test-1234-sealed-staging" &&
+      google_storage_bucket_iam_member.deployer_staging.role == "roles/storage.objectAdmin" &&
+      google_storage_bucket_iam_member.deployer_staging.member == "serviceAccount:sealed-deployer@sealed-test-1234.iam.gserviceaccount.com" &&
+      length(google_storage_bucket_iam_member.deployer_staging.condition) == 0
+    )
+    error_message = "the deployer gets objectAdmin on the staging bucket only"
+  }
+
+  assert {
+    condition     = output.staging_bucket == "sealed-test-1234-sealed-staging"
+    error_message = "the staging bucket is an output"
+  }
+}
+
+run "keyed_rpc_is_redacted_from_plan_and_output" {
+  command = plan
+
+  variables {
+    tempo_rpc_url = "https://tempo.provider.example/v2/FAKEAPIKEY0123456789"
+  }
+
+  # issensitive is true only because the variable and both outputs carry
+  # sensitive = true; without it Terraform prints the key in the Cloud Run env
+  # block and the Outputs block of every plan and apply (cli-1).
+  assert {
+    condition = (
+      issensitive(var.tempo_rpc_url) &&
+      issensitive(output.tempo_rpc_url) &&
+      issensitive(output.key_broker_env) &&
+      issensitive(module.key_broker_env.env["TEMPO_RPC_URL"]) &&
+      issensitive([for e in google_cloud_run_v2_service.key_broker.template[0].containers[0].env : e.value if e.name == "TEMPO_RPC_URL"][0])
+    )
+    error_message = "the keyed Tempo RPC must be sensitive everywhere it flows, so Terraform redacts it from the plan, the apply and the outputs (cli-1)"
+  }
+
+  # The CLI still reads the full value from `terraform output -json`.
+  assert {
+    condition     = nonsensitive(output.tempo_rpc_url) == "https://tempo.provider.example/v2/FAKEAPIKEY0123456789"
+    error_message = "the broker must still get the full keyed RPC"
   }
 }
 

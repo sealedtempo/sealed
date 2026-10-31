@@ -169,6 +169,14 @@ type DecisionLog interface {
 	Write(ctx context.Context, d *Decision) error
 }
 
+// BatchLog is a DecisionLog that also writes several decisions in one call (Cloud Logging entries:write in
+// key-broker/gcp). The background queue then drains up to MaxLogBatch decisions per call instead of one, so a
+// backlog clears quickly (kb-6).
+type BatchLog interface {
+	DecisionLog
+	WriteBatch(ctx context.Context, ds []*Decision) error
+}
+
 // JSONLinesLog writes one JSON object per line. It is the local fake of Cloud Logging and the format tests read.
 type JSONLinesLog struct {
 	mu sync.Mutex

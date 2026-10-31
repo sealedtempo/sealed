@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/sealedtempo/sealed/cli/internal/bootstrap"
 	"github.com/sealedtempo/sealed/cli/internal/deploy"
 	"github.com/sealedtempo/sealed/cli/internal/gcp"
 	"github.com/sealedtempo/sealed/cli/internal/registry"
@@ -38,6 +40,7 @@ type harness struct {
 	store   *memStore
 	compute *fakeCompute
 	shared  *fakeShared
+	osImgs  *fakeOSImages
 	tf      *fakeTerraform
 	dir     string
 	stdin   string
@@ -54,7 +57,7 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	h := &harness{t: t, env: map[string]string{"HOME": t.TempDir()}, chain: testkit.NewMemChain(), store: newMemStore(),
-		compute: newFakeCompute(), shared: &fakeShared{}, tf: &fakeTerraform{}, dir: t.TempDir()}
+		compute: newFakeCompute(), shared: &fakeShared{}, tf: &fakeTerraform{}, osImgs: &fakeOSImages{}, dir: t.TempDir()}
 	h.bundles = testkit.NewBundleServer(t)
 	// A deployments file naming the fake registries.
 	dep := map[string]any{"chainId": 4217, "network": "test", "contracts": map[string]any{
@@ -113,6 +116,7 @@ func (h *harness) run(args ...string) (int, string, string) {
 		NewCompute:       func(string, gcp.TokenSource) deploy.Compute { return h.compute },
 		NewShared:        func(string, string, gcp.TokenSource) deploy.SharedDisk { return h.shared },
 		Terraform:        h.tf,
+		ImportOSImages:   h.osImgs.ensure,
 		HTTP:             h.bundles.Client(),
 		AllowHTTPBundles: true,
 	}
@@ -222,6 +226,8 @@ func (f *fakeShared) Ensure(_ context.Context, name string, _ map[string][]byte)
 type fakeTerraform struct {
 	calls [][]string
 	dir   string
+	// rpc, when set, is the tempo_rpc_url output.
+	rpc string
 }
 
 func (f *fakeTerraform) Stream(_ context.Context, dir string, _ []string, args ...string) error {
@@ -231,16 +237,40 @@ func (f *fakeTerraform) Stream(_ context.Context, dir string, _ []string, args .
 
 func (f *fakeTerraform) Capture(_ context.Context, dir string, _ []string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
-	return []byte(`{
+	rpc := f.rpc
+	if rpc == "" {
+		rpc = "https://rpc.tempo.xyz"
+	}
+	return []byte(strings.Replace(`{
  "project_id": {"value": "acme-prod-4417"}, "region": {"value": "us-central1"},
  "customer_address": {"value": "0x00000000000000000000000000000000000000c1"},
  "deployer_service_account": {"value": "sealed-deployer@acme-prod-4417.iam.gserviceaccount.com"},
  "key_broker_service_account": {"value": "sealed-key-broker@acme-prod-4417.iam.gserviceaccount.com"},
  "key_broker_url": {"value": "https://sealed-key-broker-xyz-uc.a.run.app"},
  "subnetwork": {"value": "sealed-subnet"}, "boot_bucket": {"value": "acme-prod-4417-sealed-boot"},
- "tempo_rpc_url": {"value": "https://rpc.tempo.xyz"}, "debug_log_service_account": {"value": ""},
+ "tempo_rpc_url": {"value": "RPC"}, "debug_log_service_account": {"value": ""},
+ "connection_binding": {"value": "sealed-binding/v1 customer=0x00000000000000000000000000000000000000c1 key_broker=https://sealed-key-broker-xyz-uc.a.run.app"},
  "kms_key_version": {"value": "projects/acme-prod-4417/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac/cryptoKeyVersions/1"}
-}`), nil
+}`, `"RPC"`, strconv.Quote(rpc), 1)), nil
+}
+
+// fakeOSImages stands in for bootstrap.OSImages.Ensure and records what bootstrap asked for.
+type fakeOSImages struct {
+	calls []bootstrap.OSImages
+	err   error
+}
+
+func (f *fakeOSImages) ensure(_ context.Context, o *bootstrap.OSImages) ([]bootstrap.OSImage, error) {
+	f.calls = append(f.calls, *o)
+	if f.err != nil {
+		return nil, f.err
+	}
+	var out []bootstrap.OSImage
+	for i, role := range []string{"boot", "debugBoot", "systemDisk"} {
+		name := o.Planned()[i]
+		out = append(out, bootstrap.OSImage{Role: role, Name: name, Ref: "projects/" + o.Project + "/global/images/" + name, Created: true})
+	}
+	return out, nil
 }
 
 // --- verify ---
@@ -379,9 +409,13 @@ func TestVerifyAliasAndEvidenceDownload(t *testing.T) {
 	if code, _, errs := h.run("verify", "--deployment", "dep_AAAAAAAA", "--api", api.URL); code != ExitFailed || !strings.Contains(errs, "does not know") {
 		t.Fatalf("unknown alias: %d %s", code, errs)
 	}
-	if code, _, _ := h.run("verify", "--deployment", "dep_7Q2fK9mX"); code != ExitUsage {
-		t.Fatal("alias without --api")
+	// With no --api flag, the platform api comes from SEALED_PLATFORM_API (C07/G23): the alias resolves and the
+	// evidence downloads through it, so `sealed verify <id>` works without --api.
+	h.env["SEALED_PLATFORM_API"] = api.URL
+	if code, out, errs := h.run("verify", "dep_7Q2fK9mX", "--dev-allow-simulated"); code != ExitOK {
+		t.Fatalf("alias via SEALED_PLATFORM_API: %d\n%s\n%s", code, out, errs)
 	}
+	delete(h.env, "SEALED_PLATFORM_API")
 	if code, _, _ := h.run("verify", "--deployment", "nope"); code != ExitUsage {
 		t.Fatal("bad id")
 	}
@@ -812,14 +846,15 @@ func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
 		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
 		"--key-broker-image", "ghcr.io/sealedtempo/key-broker@sha256:" + strings.Repeat("ab", 32)}
 	for name, tc := range map[string]struct {
-		env  map[string]string
-		args []string
-		want string
+		env   map[string]string
+		args  []string
+		want  string
+		shown string // the RPC as the command prints it: never its path or query
 	}{
-		"default":       {want: "https://rpc.tempo.xyz"},
-		"--rpc":         {args: []string{"--rpc", "https://tempo.customer-node.example/rpc"}, want: "https://tempo.customer-node.example/rpc"},
-		"TEMPO_RPC_URL": {env: map[string]string{"TEMPO_RPC_URL": "https://tempo.customer-node.example/env"}, want: "https://tempo.customer-node.example/env"},
-		"--tempo-rpc":   {args: []string{"--rpc", "https://reader.example", "--tempo-rpc", "https://broker.customer.example"}, want: "https://broker.customer.example"},
+		"default":       {want: "https://rpc.tempo.xyz", shown: "https://rpc.tempo.xyz."},
+		"--rpc":         {args: []string{"--rpc", "https://tempo.customer-node.example/rpc"}, want: "https://tempo.customer-node.example/rpc", shown: "https://tempo.customer-node.example (path and query not shown)."},
+		"TEMPO_RPC_URL": {env: map[string]string{"TEMPO_RPC_URL": "https://tempo.customer-node.example/env"}, want: "https://tempo.customer-node.example/env", shown: "https://tempo.customer-node.example (path and query not shown)."},
+		"--tempo-rpc":   {args: []string{"--rpc", "https://reader.example", "--tempo-rpc", "https://broker.customer.example"}, want: "https://broker.customer.example", shown: "https://broker.customer.example."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
@@ -837,7 +872,7 @@ func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
 			if vars["tempo_rpc_url"] != tc.want || vars["chain_id"] != float64(4217) || vars["enable_debug_logging"] != false {
 				t.Fatalf("vars %v", vars)
 			}
-			if !strings.Contains(errs, "The key broker will read Tempo chain 4217 through "+tc.want) {
+			if !strings.Contains(errs, "The key broker will read Tempo chain 4217 through "+tc.shown) {
 				t.Fatalf("effective RPC not shown: %s", errs)
 			}
 		})
@@ -855,6 +890,101 @@ func TestBootstrapNeverDropsTheCustomersRPC(t *testing.T) {
 	json.Unmarshal(b, &vars)
 	if vars["enable_debug_logging"] != true {
 		t.Fatalf("--debug-logging: %v", vars)
+	}
+}
+
+// TestBootstrapNeverPrintsTheRPCKey: a keyed Tempo RPC reaches the key broker's variables in full, but
+// bootstrap prints only its scheme and host, in the plan, the summary and the JSON.
+func TestBootstrapNeverPrintsTheRPCKey(t *testing.T) {
+	const keyed = "https://tempo.provider.example/v2/FAKEAPIKEY0123456789"
+	args := []string{"--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
+		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
+		"--key-broker-image", "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32), "--tempo-rpc", keyed}
+	for _, mode := range [][]string{{"--plan"}, {"--yes"}, {"--yes", "--json"}} {
+		h := newHarness(t)
+		h.tf.rpc = keyed
+		work := filepath.Join(h.dir, "work")
+		code, out, errs := h.run(append(append([]string{"bootstrap", "--work-dir", work}, mode...), args...)...)
+		if code != ExitOK {
+			t.Fatalf("%v: %d %s", mode, code, errs)
+		}
+		if strings.Contains(out+errs, "FAKEAPIKEY0123456789") {
+			t.Fatalf("%v: bootstrap printed the RPC API key:\n%s\n%s", mode, out, errs)
+		}
+		if !strings.Contains(errs, "through https://tempo.provider.example (path and query not shown)") {
+			t.Errorf("%v: the effective RPC host is not shown: %s", mode, errs)
+		}
+		var vars map[string]any
+		b, _ := os.ReadFile(filepath.Join(work, "terraform.tfvars.json"))
+		json.Unmarshal(b, &vars)
+		if vars["tempo_rpc_url"] != keyed {
+			t.Fatalf("%v: the broker must still get the full RPC: %v", mode, vars["tempo_rpc_url"])
+		}
+	}
+}
+
+// TestBootstrapCreatesTheOSImages (D-075): after the apply, bootstrap creates the boot and system disk images in
+// the project with the customer's own credentials, staged in the boot bucket; --plan only says so, --no-os-images
+// skips it, and a failure says how to finish.
+func TestBootstrapCreatesTheOSImages(t *testing.T) {
+	args := []string{"bootstrap", "--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
+		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
+		"--key-broker-image", "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32)}
+	h := newHarness(t)
+	work := filepath.Join(h.dir, "work")
+	code, out, errs := h.run(append(args, "--yes", "--work-dir", work)...)
+	if code != ExitOK || len(h.osImgs.calls) != 1 {
+		t.Fatalf("%d %d calls %s", code, len(h.osImgs.calls), errs)
+	}
+	o := h.osImgs.calls[0]
+	if o.Project != "acme-prod-4417" || o.Bucket != "acme-prod-4417-sealed-boot" || o.Version != bootstrap.DefaultOSImageVersion ||
+		o.AssetBase != "https://github.com/sealedtempo/sealed/releases/download" || o.Images == nil || o.Storage == nil || o.Dir != filepath.Join(work, "os-images") {
+		t.Fatalf("os images %+v", o)
+	}
+	for _, want := range []string{
+		"Boot image         projects/acme-prod-4417/global/images/sealed-dstack-os-0-6-1-s4",
+		"Debug boot image   projects/acme-prod-4417/global/images/sealed-dstack-os-debug-0-6-1-s4",
+		"System disk image  projects/acme-prod-4417/global/images/sealed-dstack-data-v1",
+		"Binding            sealed-binding/v1 customer=0x00000000000000000000000000000000000000c1 key_broker=https://sealed-key-broker-xyz-uc.a.run.app",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary lacks %q:\n%s", want, out)
+		}
+	}
+	// JSON names the refs for image.boot and image.systemDisk, and the binding.
+	h.osImgs.calls = nil
+	code, out, _ = h.run(append(args, "--yes", "--json", "--work-dir", work, "--os-image-version", "0.6.2-s3")...)
+	var sum struct {
+		OSImages          map[string]string `json:"osImages"`
+		ConnectionBinding string            `json:"connectionBinding"`
+	}
+	json.Unmarshal([]byte(out), &sum)
+	if code != ExitOK || sum.OSImages["boot"] != "projects/acme-prod-4417/global/images/sealed-dstack-os-0-6-2-s3" ||
+		sum.OSImages["systemDisk"] != "projects/acme-prod-4417/global/images/sealed-dstack-data-v1" || !strings.HasPrefix(sum.ConnectionBinding, "sealed-binding/v1 ") ||
+		h.osImgs.calls[0].Version != "0.6.2-s3" {
+		t.Fatalf("json %d %s", code, out)
+	}
+	// --plan creates nothing and names what the apply will create.
+	h.osImgs.calls = nil
+	code, _, errs = h.run(append(args, "--plan", "--work-dir", work)...)
+	if code != ExitOK || len(h.osImgs.calls) != 0 || !strings.Contains(errs, "sealed-dstack-os-0-6-1-s4, sealed-dstack-os-debug-0-6-1-s4, sealed-dstack-data-v1 from https://github.com/sealedtempo/sealed/releases/download/os-image-v0.6.1-s4") {
+		t.Fatalf("plan: %d %d %s", code, len(h.osImgs.calls), errs)
+	}
+	// --no-os-images skips them.
+	code, out, _ = h.run(append(args, "--yes", "--no-os-images", "--work-dir", work)...)
+	if code != ExitOK || len(h.osImgs.calls) != 0 || strings.Contains(out, "Boot image") {
+		t.Fatalf("--no-os-images: %d %d", code, len(h.osImgs.calls))
+	}
+	// A bad version is refused before Terraform runs.
+	h.tf.calls = nil
+	if code, _, errs := h.run(append(args, "--yes", "--os-image-version", "latest", "--work-dir", work)...); code != ExitUsage || len(h.tf.calls) != 0 || !strings.Contains(errs, "--os-image-version") {
+		t.Fatalf("bad version: %d %v %s", code, h.tf.calls, errs)
+	}
+	// A failed import fails the command and says the rerun is safe.
+	h.osImgs.err = fmt.Errorf("sealed-dstack-os-0.6.1-s4-gce.tar.gz has sha256 00, but the release's hashes file says 11")
+	code, out, errs = h.run(append(args, "--yes", "--work-dir", work)...)
+	if code != ExitFailed || strings.Contains(out, "sct_") || !strings.Contains(errs, "OS images are not ready: sealed-dstack-os-0.6.1-s4-gce.tar.gz has sha256 00") || !strings.Contains(errs, "Run the same sealed bootstrap command again") {
+		t.Fatalf("failed import: %d %s %s", code, out, errs)
 	}
 }
 

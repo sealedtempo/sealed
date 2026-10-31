@@ -22,6 +22,14 @@ sealed_gate cookie is removed from the Cookie header on every proxied app
 request, so no app can replay it against another app's route. Every app
 handle body is a route block, because inside a plain handle Caddy runs
 same-named directives that have a matcher before those that have none.
+
+The global cert_issuer names Let's Encrypt production as both the ACME
+directory and the test directory. certmagic sends every retry after a
+failed first issuance to the test directory, which otherwise defaults to
+Let's Encrypt staging; sealed-egress lets Caddy reach only
+acme-v02.api.letsencrypt.org:443, so a retry against staging could never
+succeed (spec-conformance G06). With both the same, certmagic keeps the
+certificate a retry obtains and does not order a second one.
 */ -}}
 {{- define "cookie_strip_route"}}
 			request_header Cookie "(^|;\s*){{.}}=[^;]*" ""
@@ -36,6 +44,10 @@ same-named directives that have a matcher before those that have none.
 	admin unix/{{.AdminSocket}}|{{.AdminSocketMode}}
 	persist_config off
 	ocsp_stapling off
+	cert_issuer acme {
+		dir https://acme-v02.api.letsencrypt.org/directory
+		test_dir https://acme-v02.api.letsencrypt.org/directory
+	}
 	servers {
 		protocols h1 h2
 	}

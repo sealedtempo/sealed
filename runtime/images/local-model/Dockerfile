@@ -10,7 +10,10 @@
 ARG OLLAMA_BASE=ollama/ollama:0.40.12@sha256:20d1bbfbabe1c97ba4b16301f08a20d8484bcf77047742a3cb71c613d8e12d0b
 ARG GO_BASE=golang:1.27.3-trixie@sha256:7b072c590a326b9d2a43b165ae247f6e8eafff32e1ad154ab97139e89f053be9
 
-FROM --platform=linux/amd64 ${GO_BASE} AS gate
+# The gate stage runs on the build machine and cross-compiles for linux/amd64, the platform of the
+# rest of the image. Under amd64 emulation on an arm64 machine the Go 1.27.3 toolchain crashes
+# ("fatal error: found pointer to free object", images-preflight), so it must not run emulated.
+FROM --platform=$BUILDPLATFORM ${GO_BASE} AS gate
 # Go 1.27.3's LICENSE (BSD-3-Clause) and PATENTS, which a binary built with the standard library
 # carries (license audit F3). The same texts are in catalog/apps/llm-gateway/LICENSES/.
 ARG GO_LICENSE_SHA256=911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
@@ -22,7 +25,7 @@ COPY gate/*.go ./
 RUN --network=none set -eux; \
     rm -f ./*_test.go; \
     go mod init sealed.local/ollama-gate; \
-    test "$(go version)" = "go version go1.27.3 linux/amd64"; \
+    test "$(go env GOVERSION)" = "go1.27.3"; \
     nonstd="$(GOTOOLCHAIN=local GOPROXY=off go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' . | grep .)"; \
     test "$nonstd" = "sealed.local/ollama-gate"; \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-trimpath \

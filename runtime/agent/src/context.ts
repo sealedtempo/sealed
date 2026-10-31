@@ -13,8 +13,9 @@ import {
   feeScheduleFromDefaults,
   type Hex,
   parseCJSON,
+  parseSealedConfig,
   type SealedConfig,
-  sealedConfigSchema,
+  SealedConfigError,
   stackHash as computeStackHash,
 } from "@sealed/core";
 import {
@@ -61,19 +62,24 @@ export interface DeploymentContext {
   schedule: FeeSchedule;
 }
 
-export async function readPublicConfig(path: string): Promise<{ config: SealedConfig; json: Record<string, CJSONValue> }> {
-  return parsePublicConfig(await readFile(path, "utf8"));
+export async function readPublicConfig(path: string, o: { devSim?: boolean } = {}): Promise<{ config: SealedConfig; json: Record<string, CJSONValue> }> {
+  return parsePublicConfig(await readFile(path, "utf8"), o);
 }
 
-export function parsePublicConfig(text: string): { config: SealedConfig; json: Record<string, CJSONValue> } {
-  const json = parseCJSON(text);
-  if (json === null || typeof json !== "object" || Array.isArray(json)) throw new Error("config must be a JSON object");
-  const parsed = sealedConfigSchema.safeParse(json);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    throw new Error(`invalid public config: ${issue?.path.join(".")}: ${issue?.message}`);
+/**
+ * The public config by the composer's rules (@sealed/core parseSealedConfig, the twin of composer.ParseConfig): the
+ * agent accepts exactly the configs the composer composes. With devSim (SEALED_DEV_SIM=1, local tests only) the
+ * endpoints may be plain http on loopback.
+ */
+export function parsePublicConfig(text: string, o: { devSim?: boolean } = {}): { config: SealedConfig; json: Record<string, CJSONValue> } {
+  let config: SealedConfig;
+  try {
+    config = parseSealedConfig(text, { devSim: o.devSim === true });
+  } catch (err) {
+    if (err instanceof SealedConfigError) throw new Error(`invalid public config: ${err.message}`);
+    throw err;
   }
-  return { config: parsed.data, json };
+  return { config, json: parseCJSON(text) as Record<string, CJSONValue> };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
@@ -81,7 +87,8 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 /**
  * Review C-4 (the agent's side): over plain http the agent cannot tell who answers, so anyone on the path could
  * hand it chosen secrets for its ephemeral HPKE key (a known disk key on a fresh deployment) or read the relay's
- * traffic. Every endpoint must be https, except a loopback endpoint (local tests) and dev sim mode.
+ * traffic. Every endpoint must be https, except a loopback endpoint (local tests) and dev sim mode. parsePublicConfig
+ * already refuses http and loopback endpoints outside dev sim mode, as the composer does; this stays as a second check.
  */
 export function requireHttpsEndpoints(endpoints: Record<string, unknown>, devSim: boolean): void {
   if (devSim) return;

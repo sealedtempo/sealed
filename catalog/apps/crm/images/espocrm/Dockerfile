@@ -75,6 +75,8 @@ FROM docker.io/library/debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee
 ARG DEBIAN_SNAPSHOT
 ARG ESPOCRM_VERSION=10.0.11
 
+# The RUN ends by removing the logs and caches apt, dpkg, update-alternatives and ldconfig write with the
+# build time in them, so a no-cache rebuild gives the same digest (D-028).
 RUN set -eux; \
     rm -f /etc/apt/sources.list.d/debian.sources; \
     printf '%s\n' \
@@ -88,10 +90,11 @@ RUN set -eux; \
       php8.4-cli php8.4-pgsql php8.4-gd php8.4-zip php8.4-xml php8.4-mbstring php8.4-curl \
       php8.4-intl php8.4-bcmath php8.4-opcache \
       nodejs ca-certificates; \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/*; \
     # Debian's default site, docroot and logs are not used (apache-sealed.conf).
     rm -rf /var/www/html /etc/apache2/sites-enabled/* /var/log/apache2/*; \
-    test "$(id -u www-data):$(id -g www-data)" = "33:33"
+    test "$(id -u www-data):$(id -g www-data)" = "33:33"; \
+    rm -rf /var/log/dpkg.log /var/log/apt /var/log/alternatives.log /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old /var/lib/dpkg/*-old
 
 COPY --from=fetch /espocrm /var/www/html
 COPY --from=fetch /skel /opt/espocrm/skel

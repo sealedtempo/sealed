@@ -58,6 +58,9 @@ variable "tempo_rpc_url" {
   type        = string
   description = "Tempo JSON-RPC URL the key broker reads approvals from. Chosen by the customer, never by the platform."
   default     = "https://rpc.tempo.xyz"
+  # The customer's RPC can embed an API key in its path, query or userinfo, so
+  # Terraform must redact it from the plan, the apply and the outputs (cli-1).
+  sensitive = true
 
   validation {
     condition     = can(regex("^https://[^/@\\s]+(/[^\\s]*)?$", var.tempo_rpc_url))

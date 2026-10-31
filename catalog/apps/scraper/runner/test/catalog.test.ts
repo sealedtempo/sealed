@@ -10,6 +10,10 @@ import { parseJobSpec } from '../src/job.js';
 import { caddySite, compose, envexecSecrets, findComposer, lint, secretMounts, type Composed, type Composer } from './helpers/composer.js';
 import { expected, FIXTURES, SITE } from './helpers/fixture.js';
 
+// RUN instructions with comment lines dropped and continuation lines joined, as BuildKit reads them.
+const runInstructions = (dockerfileText: string) =>
+  dockerfileText.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n').replace(/\\\n/g, ' ').split('\n').filter((l) => /^RUN\s/.test(l));
+
 // Checks of the catalog package. The catalog rules (manifest schema, the fragment rules of
 // docs/INTERFACES.md section 14, the egress policy, licenses) are checked only by the real
 // composer, so there is no copy of them here; these tests add what is specific to the scraper,
@@ -249,6 +253,31 @@ describe('Dockerfiles', () => {
     expect(variants.playwright).toMatch(/^FROM scratch$/m);
     expect(variants.playwright).toMatch(/^COPY --from=rootfs \/ \/$/m);
     expect(variants.slim).toContain('--no-optional');
+  });
+
+  // images-preflight: pnpm writes the install time into node_modules/.modules.yaml (prunedAt) and
+  // .pnpm-workspace-state-v1.json (lastValidatedTimestamp). Shipped in the image, they gave every
+  // build a new digest, so the runtime image workflow's no-cache rebuild check (exit 4) failed.
+  it('drops the pnpm metadata that records the install time from the released image', () => {
+    const runs = runInstructions(variants.playwright);
+    const prod = runs.filter((r) => /pnpm install [^&]*--prod/.test(r));
+    expect(prod).toHaveLength(1);
+    const run = prod[0]!;
+    const rm = run.indexOf('rm -f /app/node_modules/.modules.yaml /app/node_modules/.pnpm-workspace-state*.json');
+    expect(rm).toBeGreaterThan(run.search(/pnpm install [^&]*--prod/));
+  });
+
+  // images-preflight: apt, dpkg and ldconfig write the build time (or inode times) into their logs
+  // and ldconfig's aux-cache; flattened into the released image they gave every build a new digest.
+  it('removes the apt, dpkg and ldconfig files that record the build time from the rootfs stage', () => {
+    const rootfs = variants.playwright.slice(variants.playwright.indexOf('AS rootfs'));
+    const runs = runInstructions(rootfs).filter((l) => /apt-get install/.test(l));
+    expect(runs).toHaveLength(1);
+    const run = runs[0]!;
+    const install = run.indexOf('apt-get install');
+    for (const f of ['/var/log/dpkg.log', '/var/log/apt', '/var/log/alternatives.log', '/var/cache/ldconfig/aux-cache', '/var/cache/debconf/*-old', '/var/lib/dpkg/*-old']) {
+      expect(run.indexOf(f), f).toBeGreaterThan(install);
+    }
   });
 
   it('builds from the runner lockfile with frozen installs', () => {

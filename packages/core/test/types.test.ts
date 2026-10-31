@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { cjsonSha256 } from "../src/cjson.js";
 import {
+  devSimSealedConfigSchema,
   evidenceBundleSchema,
+  parseSealedConfig,
   releasePlaintextSchema,
   routeHostname,
+  SealedConfigError,
   sealedConfigSchema,
   usageEventSchema,
 } from "../src/types/index.js";
@@ -19,7 +23,7 @@ export const exampleConfig = {
     { id: "llm-gateway", releaseId: `0x${"11".repeat(32)}` },
   ],
   hostnames: { scheme: "sslip", ip: "34.1.2.3" },
-  egressAdditions: { scraper: ["example.com:443", "*.example.org:443"] },
+  egressAdditions: { crm: ["example.com:443", "*.example.org:443"] },
   allowedVpcRanges: [],
   endpoints: {
     keyBroker: "https://sealed-key-broker-xyz.a.run.app",
@@ -71,6 +75,61 @@ describe("sealed-config/v1", () => {
     expect(sealedConfigSchema.safeParse({ ...exampleConfig, settlement: { ...s, gracePeriodMinutes: -1 } }).success).toBe(false);
     expect(sealedConfigSchema.safeParse({ ...exampleConfig, settlement: { ...s, intervalMinutes: 0 } }).success).toBe(false);
   });
+  // fix-parity: the twin used to accept what the composer refuses, so a platform-built config could pass here and
+  // fail only at compose; runtime/composer/testdata/config-parity.json holds the full table (configParity.test.ts).
+  it("refuses what the composer refuses: http endpoints, other relayAttest paths, VPC ranges in the VM ranges", () => {
+    const ep = (k: string, v: string) => ({ ...exampleConfig, endpoints: { ...exampleConfig.endpoints, [k]: v } });
+    expect(sealedConfigSchema.safeParse(ep("tempoRpc", "http://rpc.tempo.xyz")).success).toBe(false);
+    expect(sealedConfigSchema.safeParse(ep("keyBroker", "https://127.0.0.1:8080")).success).toBe(false);
+    expect(sealedConfigSchema.safeParse(ep("relayAttest", "https://attest.relay.example/v1/attest")).success).toBe(false);
+    expect(sealedConfigSchema.safeParse({ ...exampleConfig, allowedVpcRanges: ["172.30.128.0/20"] }).success).toBe(false);
+    expect(sealedConfigSchema.safeParse({ ...exampleConfig, allowedVpcRanges: ["10.20.0.0/16"] }).success).toBe(true);
+    expect(sealedConfigSchema.safeParse({ ...exampleConfig, extra: 1 }).success).toBe(false);
+    expect(sealedConfigSchema.safeParse({ ...exampleConfig, customer: exampleConfig.customer.toUpperCase().replace("0X", "0x") }).success).toBe(false);
+  });
+  it("with llm-gateway requires the relay endpoints and relayOwner (D-045)", () => {
+    const { relayOwner: _, ...noOwner } = exampleConfig;
+    expect(sealedConfigSchema.safeParse(noOwner).success).toBe(false);
+    expect(sealedConfigSchema.safeParse({ ...noOwner, apps: [exampleConfig.apps[0]] }).success).toBe(true);
+  });
+  it("outputs the composer's normalized form", () => {
+    const { egressAdditions: _e, allowedVpcRanges: _a, ...bare } = exampleConfig;
+    const out = sealedConfigSchema.parse({ ...bare, relayOwner: exampleConfig.relayOwner, debug: null });
+    expect(out.egressAdditions).toEqual({});
+    expect(out.allowedVpcRanges).toEqual([]);
+    expect(out.debug).toBe(false);
+    const noGw = sealedConfigSchema.parse({ ...exampleConfig, apps: [exampleConfig.apps[0]], relayOwner: "", endpoints: { ...exampleConfig.endpoints, relay: null } });
+    expect("relayOwner" in noGw).toBe(false);
+    expect("relay" in noGw.endpoints).toBe(false);
+    expect(cjsonSha256(noGw)).toBe(cjsonSha256(sealedConfigSchema.parse({ ...noGw })));
+  });
+  it("parseSealedConfig takes the composer's text rules and names the field", () => {
+    const text = JSON.stringify(exampleConfig);
+    expect(parseSealedConfig(text).chainId).toBe(4217);
+    expect(() => parseSealedConfig(text.replace('"intervalMinutes":60', '"intervalMinutes":60.0'))).toThrow(SealedConfigError);
+    expect(() => parseSealedConfig(`${text}${" ".repeat(128 * 1024)}`)).toThrow("at most 131072");
+    expect(() => parseSealedConfig(JSON.stringify(exampleConfig.settlement))).toThrow(SealedConfigError);
+    const err = (() => {
+      try {
+        parseSealedConfig(JSON.stringify({ ...exampleConfig, egressAdditions: { crm: ["10.1.2.3:5432"] } }));
+      } catch (e) {
+        return e as SealedConfigError;
+      }
+    })();
+    expect(err?.field).toBe("egressAdditions.crm[0]");
+    expect(() => parseSealedConfig(JSON.stringify({ ...exampleConfig, apps: [{ ...exampleConfig.apps[0], extra: 1 }, exampleConfig.apps[1]] }))).toThrow("apps[0].extra");
+  });
+  it("in dev sim mode only, endpoints may be plain http on loopback; every other rule stays", () => {
+    const local = { ...exampleConfig, endpoints: { keyBroker: "http://127.0.0.1:9", platformApi: "http://localhost:8080", tempoRpc: "http://127.0.0.1:8545", relay: "http://127.0.0.1:7443", relayAttest: "http://127.0.0.1:7443/attest" } };
+    expect(sealedConfigSchema.safeParse(local).success).toBe(false);
+    expect(devSimSealedConfigSchema.safeParse(local).success).toBe(true);
+    expect(parseSealedConfig(JSON.stringify(local), { devSim: true }).endpoints.keyBroker).toBe("http://127.0.0.1:9");
+    expect(devSimSealedConfigSchema.safeParse({ ...local, endpoints: { ...local.endpoints, keyBroker: "ftp://127.0.0.1:9" } }).success).toBe(false);
+    expect(devSimSealedConfigSchema.safeParse({ ...local, endpoints: { ...local.endpoints, keyBroker: "http://u:p@127.0.0.1:9" } }).success).toBe(false);
+    expect(devSimSealedConfigSchema.safeParse({ ...local, endpoints: { ...local.endpoints, relayAttest: "http://127.0.0.1:7443/v1" } }).success).toBe(false);
+    expect(devSimSealedConfigSchema.safeParse({ ...local, endpoints: { ...local.endpoints, relay: "http://127.0.0.1:7444" } }).success).toBe(false);
+    expect(devSimSealedConfigSchema.safeParse({ ...local, allowedVpcRanges: ["172.30.0.0/16"] }).success).toBe(false);
+  });
   it("derives route hostnames", () => {
     const cfg = sealedConfigSchema.parse(exampleConfig);
     expect(routeHostname(cfg, "attest")).toBe("attest.34-1-2-3.sslip.io");
@@ -86,6 +145,10 @@ describe("other schemas", () => {
     expect(releasePlaintextSchema.parse(ok).secrets.crm?.APP_SECRET).toBe("x");
     expect(releasePlaintextSchema.safeParse({ ...ok, secrets: { "../etc": { X: "1" } } }).success).toBe(false);
     expect(releasePlaintextSchema.safeParse({ ...ok, secrets: { crm: { "bad name": "1" } } }).success).toBe(false);
+    // As the composer's manifest rule (MaxSecretNameLen): at most 128 characters; owners are app ids or _gate.
+    expect(releasePlaintextSchema.safeParse({ ...ok, secrets: { crm: { [`A${"B".repeat(127)}`]: "1" } } }).success).toBe(true);
+    expect(releasePlaintextSchema.safeParse({ ...ok, secrets: { crm: { [`A${"B".repeat(128)}`]: "1" } } }).success).toBe(false);
+    expect(releasePlaintextSchema.safeParse({ ...ok, secrets: { "crm-": { X: "1" } } }).success).toBe(false);
   });
   it("usage events", () => {
     expect(usageEventSchema.parse({ app: "llm-gateway", unit: "tokens", quantity: 123, meta: { model: "m" } }).quantity).toBe(123);

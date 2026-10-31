@@ -156,6 +156,7 @@ func cmdImages(args []string, stdout, stderr io.Writer) error {
 	changed := fs.String("changed", "", "file listing changed paths; selects builds (build-matrix)")
 	all := fs.Bool("all", false, "select every build (build-matrix)")
 	names := fs.String("names", "", "comma-separated image names to select (build-matrix)")
+	changedOnly := fs.Bool("changed-only", false, "with --changed: only the images a changed file touches, without the unbuilt ones (build-matrix, pull request check)")
 	apps := fs.String("apps", "", "comma-separated app ids; limits the mirror and scan matrices to their images")
 	failBlocked := fs.Bool("fail-on-blocked", false, "fail when a selected app names an image that must not be mirrored (mirror-matrix)")
 	if err := fs.Parse(args); err != nil {
@@ -179,7 +180,15 @@ func cmdImages(args []string, stdout, stderr io.Writer) error {
 				return err
 			}
 		}
-		sel := SelectBuilds(set, files, *all, splitList(*names))
+		var sel []BuildImage
+		if *changedOnly {
+			if *changed == "" || *all || *names != "" {
+				return errors.New("--changed-only needs --changed, and neither --all nor --names")
+			}
+			sel = ChangedBuilds(set, files)
+		} else {
+			sel = SelectBuilds(set, files, *all, splitList(*names))
+		}
 		if sel == nil {
 			sel = []BuildImage{}
 		}

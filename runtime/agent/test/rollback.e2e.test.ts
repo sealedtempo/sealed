@@ -253,4 +253,29 @@ describe("D-062: a data disk rolled back to an older copy bills no leg twice", (
     // The clone took the stored report over, so its next period starts after it.
     expect(b.ledger?.state.signedThrough).toBeGreaterThanOrEqual(platform.stored.at(-1)?.periodEnd as number);
   });
+
+  it("a stopped agent writes nothing more to its disk: a save it had pending never lands over the next boot's state", async () => {
+    // The clone case above flaked this way (closePeriod found nothing open): the agent stopped at its start still
+    // had a 2 s debounced save pending, which fired after the next agent on the same disk had saved and before the
+    // copy was taken, so the clone booted from the stopped agent's state.
+    for (const a of agents) await a.stop().catch(() => undefined);
+    const x = newAgent();
+    await x.boot();
+    expect(await x.rebuildLedger()).toBe(true);
+    expect(await use(x, 1_000)).toBe(202); // the ledger changed: a debounced save is pending
+    await x.stop();
+    const path = join(settings.dataMount, ".sealed-agent", "state.json");
+    // stop() runs the bounded final settlement (payments-5, D-068), so it cuts the open period into one paid report:
+    // the open period is empty and the 1000 tokens are billed exactly once (D-062). Either way stop saved the ledger.
+    const saved = JSON.parse(await readFile(path, "utf8")) as {
+      ledger: { open: Record<string, unknown>; reports: { report: { items: { unit: number; quantity: string }[] } }[] };
+    };
+    expect(saved.ledger.open["llm-gateway"]).toBeUndefined();
+    const items = saved.ledger.reports.flatMap((r) => r.report.items);
+    expect(items.filter((i) => i.unit === 1 && i.quantity === "1000")).toHaveLength(1);
+    const next = JSON.stringify({ version: 1, written: "by the next boot on this disk" });
+    await writeFile(path, next);
+    await new Promise((r) => setTimeout(r, 2_500)); // past the debounce
+    expect(await readFile(path, "utf8")).toBe(next);
+  });
 });

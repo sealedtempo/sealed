@@ -101,6 +101,19 @@ func (s *BundleServer) Put(t testing.TB, app, version string, raw []byte) {
 	s.mu.Unlock()
 }
 
+// PutNext serves raw next to the bundle of (app, version), at the bundle URL plus suffix (".sigstore.json",
+// ".intoto.jsonl").
+func (s *BundleServer) PutNext(t testing.TB, app, version, suffix string, raw []byte) {
+	t.Helper()
+	u, err := bundles.AssetURL(s.URL, app, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.files[strings.TrimPrefix(u, s.URL)+suffix] = raw
+	s.mu.Unlock()
+}
+
 // Fetcher returns a fetcher for this server.
 func (s *BundleServer) Fetcher(cacheDir string) *bundles.Fetcher {
 	return &bundles.Fetcher{Base: s.URL, HTTP: s.Client(), CacheDir: cacheDir, AllowHTTP: true}

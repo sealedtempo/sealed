@@ -36,7 +36,17 @@ export interface ConfigOverrides {
   feeToken?: string;
 }
 
+/**
+ * A public config as the composer accepts it, except that the endpoints are the tests' plain-http loopback servers,
+ * which only dev sim mode accepts (@sealed/core devSimSealedConfigSchema). With llm-gateway in the stack it carries the
+ * relay endpoints and relayOwner, as the composer requires (D-045).
+ */
 export function makeConfig(o: ConfigOverrides = {}) {
+  const apps = o.apps ?? [
+    { id: "crm", releaseId: `0x${"c1".repeat(32)}` as Hex },
+    { id: "llm-gateway", releaseId: `0x${"11".repeat(32)}` as Hex },
+  ];
+  const gateway = apps.some((a) => a.id === "llm-gateway");
   return {
     schema: "sealed-config/v1",
     chainId: o.chainId ?? 4217,
@@ -44,10 +54,7 @@ export function makeConfig(o: ConfigOverrides = {}) {
     salt: `0x${"5a".repeat(32)}`,
     imageId: o.imageId ?? `0x${"1d".repeat(32)}`,
     composerVersion: "1.0.0",
-    apps: o.apps ?? [
-      { id: "crm", releaseId: `0x${"c1".repeat(32)}` },
-      { id: "llm-gateway", releaseId: `0x${"11".repeat(32)}` },
-    ],
+    apps,
     hostnames: { scheme: "sslip", ip: "34.1.2.3" },
     egressAdditions: {},
     allowedVpcRanges: [],
@@ -55,6 +62,7 @@ export function makeConfig(o: ConfigOverrides = {}) {
       keyBroker: "http://127.0.0.1:9",
       platformApi: "http://127.0.0.1:9",
       tempoRpc: "http://127.0.0.1:9",
+      ...(gateway ? { relay: "http://127.0.0.1:9", relayAttest: "http://127.0.0.1:9/attest" } : {}),
       ...o.endpoints,
     },
     contracts: {
@@ -66,6 +74,7 @@ export function makeConfig(o: ConfigOverrides = {}) {
     },
     feeToken: o.feeToken ?? "0x20c0000000000000000000000000000000000000",
     settlement: { mode: "access-key", intervalMinutes: 60, gracePeriodMinutes: 1440, spendLimitPerDay: "2000000", ...o.settlement },
+    ...(gateway ? { relayOwner: `0x${"05".repeat(20)}` } : {}),
   };
 }
 

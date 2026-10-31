@@ -52,6 +52,8 @@ type config struct {
 	ReleaseAssetBases []string
 	// BundleCacheDir keeps verified bundles on disk by bundleHash; memory only when empty.
 	BundleCacheDir string
+	// AllowedXFAM is tdx.allowed_xfam (D-077): from --defaults when given, else attest.DefaultAllowedXFAM.
+	AllowedXFAM []uint64
 }
 
 // devSimEnv must be "1" for any dev flag to be accepted.
@@ -100,7 +102,7 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	fs.StringVar(&clients, "allowed-clients", env("SEALED_VERIFIERD_ALLOWED_CLIENTS"), "comma-separated source IP addresses or CIDR prefixes that may call the API, for example the payer's 172.30.250.5 on a stack's verifier network, which the composer sets (SEALED_VERIFIERD_ALLOWED_CLIENTS); every source when empty; loopback may always read /healthz")
 	fs.StringVar(&headAge, "max-chain-head-age", or(env("SEALED_VERIFIERD_MAX_CHAIN_HEAD_AGE"), verify.DefaultMaxChainHeadAge.String()), "oldest chain head a verification accepts, at most 5m; a staler RPC fails the chain check (SEALED_VERIFIERD_MAX_CHAIN_HEAD_AGE)")
 	fs.StringVar(&maxInFlight, "max-in-flight", or(env("SEALED_VERIFIERD_MAX_IN_FLIGHT"), strconv.Itoa(httpapi.DefaultMaxInFlight)), "concurrent verifications before answering 429 (SEALED_VERIFIERD_MAX_IN_FLIGHT)")
-	fs.BoolVar(&c.AllowSimulated, "dev-allow-simulated", false, "DEV ONLY: accept dev simulator quotes; requires SEALED_DEV_SIM=1")
+	fs.BoolVar(&c.AllowSimulated, "dev-allow-simulated", false, "DEV ONLY: accept dev simulator quotes and releases without release CI's signature; requires SEALED_DEV_SIM=1")
 	fs.BoolVar(&c.InsecureLiveTLS, "dev-insecure-live-tls", false, "DEV ONLY: skip WebPKI checks of /attest certificates; requires SEALED_DEV_SIM=1")
 	fs.BoolVar(&c.LivePrivate, "dev-live-allow-private", false, "DEV ONLY: let live verification fetch loopback and private addresses; requires SEALED_DEV_SIM=1")
 	if err := fs.Parse(args); err != nil {
@@ -225,6 +227,7 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 	}
 
 	c.TCBPolicy = attest.DefaultTCBPolicy()
+	c.AllowedXFAM = attest.DefaultAllowedXFAM()
 	if c.DefaultsFile != "" {
 		raw, err := os.ReadFile(c.DefaultsFile)
 		if err != nil {
@@ -232,6 +235,9 @@ func loadConfig(args []string, getenv func(string) string, stderr io.Writer) (*c
 		}
 		if c.TCBPolicy, err = attest.TCBPolicyFromDefaults(raw); err != nil {
 			return nil, err
+		}
+		if c.AllowedXFAM, err = attest.XFAMAllowlistFromDefaults(raw); err != nil {
+			return nil, fmt.Errorf("%s: %w", c.DefaultsFile, err)
 		}
 		if bases == "" {
 			var d struct {

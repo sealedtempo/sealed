@@ -179,6 +179,28 @@ func (Composer) Compose(_ context.Context, in verify.ComposeInput) (*verify.Comp
 	}, nil
 }
 
+// ReleaseSigner is the identity Signatures reports, release.yml on main of the public repository.
+const ReleaseSigner = "https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main"
+
+// Signatures is a stand-in for verifier/releasesig: every release counts as signed by release CI, except bundle
+// hashes listed in Unsigned.
+type Signatures struct {
+	Unsigned map[[32]byte]bool
+}
+
+// VerifyReleaseSignature implements verify.ReleaseSignatures.
+func (s Signatures) VerifyReleaseSignature(_ context.Context, rel verify.ComposeRelease) (*verify.ReleaseSignature, error) {
+	if s.Unsigned[rel.BundleHash] {
+		return nil, fmt.Errorf("%s-%s.bundle.tar.sigstore.json: not signed by %s", rel.App, rel.Version, ReleaseSigner)
+	}
+	url := fmt.Sprintf("https://assets.example/%s-v%s/%s-%s.bundle.tar", rel.App, rel.Version, rel.App, rel.Version)
+	return &verify.ReleaseSignature{
+		Signer: ReleaseSigner, Issuer: "https://token.actions.githubusercontent.com", SignatureURL: url + ".sigstore.json", LogIndex: 1,
+		Builder:     "https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@refs/tags/v2.1.0",
+		BuildConfig: ReleaseSigner, ProvenanceURL: url + ".intoto.jsonl",
+	}, nil
+}
+
 // composeInput builds the composer input from the world's own releases (what the chain will hold).
 func (w *World) composeInput() verify.ComposeInput {
 	in := verify.ComposeInput{Config: w.ConfigJSON()}

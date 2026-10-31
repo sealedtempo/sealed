@@ -408,6 +408,29 @@ func (r *Registries) RevokeStack(t testing.TB, customer int, stackHash [32]byte)
 	r.Node.Call(t, customer, r.DeploymentRegistry, r.abi("DeploymentRegistry"), "revokeStack", stackHash)
 }
 
+// RegisterDeployment registers a record (ops) with an oracle signature (method 1) over digest, the record's
+// DeploymentRegistry.recordDigest. rec is the IDeploymentRegistry.Record tuple (verifier/chain.Record).
+func (r *Registries) RegisterDeployment(t testing.TB, rec any, digest [32]byte) {
+	t.Helper()
+	sig, err := crypto.Sign(digest[:], Key(Oracle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig[64] += 27
+	bytesT, _ := abi.NewType("bytes", "", nil)
+	evidence, err := abi.Arguments{{Type: bytesT}}.Pack(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Node.Call(t, Ops, r.DeploymentRegistry, r.abi("DeploymentRegistry"), "registerDeployment", rec, uint8(1), evidence)
+}
+
+// CloseDeployment closes a deployment as dev account `customer`.
+func (r *Registries) CloseDeployment(t testing.TB, customer int, deploymentID [32]byte) {
+	t.Helper()
+	r.Node.Call(t, customer, r.DeploymentRegistry, r.abi("DeploymentRegistry"), "closeDeployment", deploymentID)
+}
+
 // ImageID is keccak256(abi.encode(name, version, measurementsHash)).
 func ImageID(name, version string, measurementsHash [32]byte) [32]byte {
 	strT, _ := abi.NewType("string", "", nil)

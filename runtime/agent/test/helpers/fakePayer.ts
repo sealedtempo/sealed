@@ -34,6 +34,10 @@ export class FakePayer implements FeePayer {
   failNextAs: "reverted" | "unknown" | undefined;
   /** Receipts paymentReceipt() reports, by transaction hash. */
   receipts = new Map<string, PaymentReceipt>();
+  /** FeeSplitter.pause() by the owner: payFees and topUpFees revert EnforcedPause(), selector 0xd93c0665. */
+  paused = false;
+  /** How often usagePaid was read (paidAmount calls). */
+  paidReads = 0;
   private key(usageHash: Hex, appId: Hex) {
     return `${usageHash}:${appId}`;
   }
@@ -64,7 +68,12 @@ export class FakePayer implements FeePayer {
   }
   async paidAmount(usageHash: Hex, appId: Hex) {
     this.chainRead();
+    this.paidReads++;
     return this.onchain.get(this.key(usageHash, appId)) ?? 0n;
+  }
+  async splitterPaused() {
+    this.chainRead();
+    return this.paused;
   }
   async legToken(usageHash: Hex, appId: Hex) {
     this.chainRead();
@@ -72,6 +81,8 @@ export class FakePayer implements FeePayer {
   }
   /** FeeSplitter's checks for a batch, as the contract would revert on them. */
   private check(lines: PaymentLine[]) {
+    // As viem reports it for a batch estimate on a Tempo node (anvil T12): the selector, not the error's name.
+    if (this.paused) throw new Error("Execution reverted with reason: custom error 0xd93c0665.");
     let total = 0n;
     for (const l of lines) {
       const k = this.key(l.usageHash, l.appId);
@@ -93,7 +104,9 @@ export class FakePayer implements FeePayer {
   async budget(reserve: bigint): Promise<Budget> {
     if (this.budgetResult.problem) return this.budgetResult;
     const spendable = this.budgetResult.spendable - reserve;
-    return spendable > 0n ? { spendable } : { spendable: 0n, problem: "insufficient_balance" };
+    const binding = this.budgetResult.binding;
+    if (spendable <= 0n) return binding === "spend_limit" ? { spendable: 0n, problem: "spend_limit", binding } : { spendable: 0n, problem: "insufficient_balance" };
+    return binding ? { spendable, binding } : { spendable };
   }
   async pay(lines: PaymentLine[]) {
     if (this.failNext > 0) {

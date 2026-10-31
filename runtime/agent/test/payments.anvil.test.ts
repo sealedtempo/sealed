@@ -42,6 +42,7 @@ import {
   registerApp,
   registerDeployment,
   type SealedDeployment,
+  send,
   startLocalTempo,
   tokenBalance,
 } from "@sealed/core/testing";
@@ -54,7 +55,7 @@ import type { PlatformClient } from "../src/evidence.js";
 import { parseEndpoint } from "../src/http.js";
 import { createLogger, silentLogger } from "../src/log.js";
 import { emptyLedgerState, Ledger } from "../src/metering/ledger.js";
-import { TempoFeePayer } from "../src/payments/feePayer.js";
+import { isEnforcedPause, TempoFeePayer } from "../src/payments/feePayer.js";
 import { Settler } from "../src/payments/settler.js";
 import type { PaymentStatus } from "../src/state.js";
 import { type FakeCaddy, startFakeCaddy } from "./helpers/fakeCaddy.js";
@@ -248,7 +249,7 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
     it("defers payments beyond the FeeSplitter daily cap and pays them the next day", async () => {
       await h.ledger.record("llm-gateway", "tokens", 6_000_000n, 3001); // 1.2 USD -> 1.0 + 0.2; 1.0 left today
       const r1 = await h.settler.tick(4000);
-      expect(r1.apps).toEqual([expect.objectContaining({ app: "llm-gateway", result: "paid", amount: 1_000_000n })]);
+      expect(r1.apps).toEqual([expect.objectContaining({ app: "llm-gateway", result: "paid", amount: 1_000_000n }), { app: "llm-gateway", result: "deferred", reason: "daily_cap" }]);
       const r2 = await h.settler.tick(4100);
       expect(r2.apps).toEqual([{ app: "llm-gateway", result: "deferred", reason: "daily_cap" }]);
       expect(h.status.failingSince).toBeNull();
@@ -344,6 +345,45 @@ describe.skipIf(!enabled)("fee payments on a local Tempo node", () => {
       expect(closed.paymentNeeded).toBe(true);
       expect(caddy.current).toBe(CADDYFILE_PAYMENT_NEEDED);
       await new DirectCaddySwitch(parseEndpoint(join(dir, "admin.sock")), { normal: CADDYFILE, paymentNeeded: CADDYFILE_PAYMENT_NEEDED }).apply("normal");
+    });
+  });
+
+  // payments-4: FeeSplitter.pause() (owner only) makes payFees and topUpFees revert EnforcedPause. That is the operator's
+  // side (D-073): settlement is deferred and the grace period does not run, where it used to count as estimate_reverted.
+  describe("a paused FeeSplitter", () => {
+    it("reads paused(), decodes the node's EnforcedPause revert, defers settlement, and pays once unpaused", async () => {
+      const seed = `0x${"d4".repeat(32)}` as Hex;
+      const deploymentId = await deployment(seed, `0x${"04".repeat(32)}`);
+      const h = harness("enclave-account", seed, deploymentId);
+      h.setCap(PER_PAYMENT_CAP);
+      await fund(node, PATH_USD, enclaveSignerAddress(seed), 1_000_000n);
+      await h.ledger.record("crm", "app_hour", 3600n, 1001);
+      await h.ledger.closePeriod(1500);
+      const [leg] = h.ledger.unpaid();
+      expect(await h.payer.splitterPaused()).toBe(false);
+      await send(node.client, DEV_KEYS.owner, d.feeSplitter, d.abis.FeeSplitter, "pause", []);
+      try {
+        expect(await h.payer.splitterPaused()).toBe(true);
+        const err = await h.payer.feeReserve([{ appId: leg!.appId, amount: leg!.fee, usageHash: leg!.usageHash, paid: 0n }]).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(err).toBeInstanceOf(Error);
+        expect(isEnforcedPause(err)).toBe(true);
+        const grace = defaults.grace_period_minutes * 60;
+        const r1 = await h.settler.tick(2000);
+        expect(r1.apps).toEqual([{ app: "crm", result: "failed", reason: "fee_splitter_paused" }]);
+        expect(h.status).toMatchObject({ failingSince: null, deferredSince: 2000, lastOutcome: "fee_splitter_paused" });
+        const r2 = await h.settler.tick(2000 + 10 * grace);
+        expect(r2.paymentNeeded).toBe(false);
+        expect(h.status.failingSince).toBeNull();
+      } finally {
+        await send(node.client, DEV_KEYS.owner, d.feeSplitter, d.abis.FeeSplitter, "unpause", []);
+      }
+      const r3 = await h.settler.tick(3000);
+      expect(r3.apps).toEqual([expect.objectContaining({ app: "crm", result: "paid", amount: 50_000n })]);
+      expect(h.status.deferredSince).toBeUndefined();
+      expect(h.ledger.unpaid()).toEqual([]);
     });
   });
 

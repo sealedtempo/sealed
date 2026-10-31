@@ -181,7 +181,9 @@ func main() {
 		Composer: &localComposer{byHash: byHash},
 		Now:      func() time.Time { return now },
 	}
-	rep, err := verify.VerifyEvidence(context.Background(), b, deps, verify.Options{ChainID: cfg.ChainID, MaxEvidenceAge: 15 * time.Minute, AcceptSimulated: true})
+	rep, err := verify.VerifyEvidence(context.Background(), b, deps, verify.Options{ChainID: cfg.ChainID, MaxEvidenceAge: 15 * time.Minute, AcceptSimulated: true,
+		// Bundles built from the working tree carry no release CI signature (release_signature reports that).
+		AcceptUnsignedReleases: true})
 	if err != nil {
 		fail(err)
 	}

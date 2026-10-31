@@ -1,5 +1,7 @@
 // Polls each app's healthcheck URL. The results feed the content-free health report, and for
-// `metering.source: heartbeat` apps every healthy interval is billed as app-hour seconds.
+// `metering.source: heartbeat` apps every healthy interval is billed as app-hour seconds, except while the
+// routes show the payment-needed page (payments-7): the customer cannot reach the apps then, so that time
+// is never billed, then or later.
 import type { AppMeta } from "../context.js";
 import { localRequest, parseEndpoint } from "../http.js";
 import { errorFields, type Logger } from "../log.js";
@@ -27,7 +29,14 @@ export class AppHealthPoller {
   private readonly states = new Map<string, AppPollState>();
   constructor(
     private readonly apps: AppMeta[],
-    private readonly deps: { ledger?: Ledger; log: Logger; intervalSec: number; probe?: Probe },
+    private readonly deps: {
+      ledger?: Ledger;
+      log: Logger;
+      intervalSec: number;
+      probe?: Probe;
+      /** False while the routes show the payment-needed page: app-hours are not recorded (payments-7). */
+      billable?: () => boolean;
+    },
   ) {
     for (const a of apps) this.states.set(a.id, { status: "unknown" });
   }
@@ -52,7 +61,9 @@ export class AppHealthPoller {
         }
         if (st.status !== "healthy") this.deps.log.info("app healthy", { app: app.id });
         st.status = "healthy";
-        if (app.metering?.source === "heartbeat" && this.deps.ledger && st.lastHealthyAt !== undefined) {
+        // While not billable the poll still moves lastHealthyAt, so the next billed interval starts from it.
+        const billable = this.deps.billable?.() ?? true;
+        if (billable && app.metering?.source === "heartbeat" && this.deps.ledger && st.lastHealthyAt !== undefined) {
           const seconds = Math.min(now - st.lastHealthyAt, 2 * this.deps.intervalSec);
           if (seconds > 0) {
             try {

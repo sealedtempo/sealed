@@ -375,6 +375,11 @@ func TestHostAllowlistAndPublicAddresses(t *testing.T) {
 		"192.168.1.1": false, "169.254.169.254": false, "100.64.0.1": false, "0.0.0.0": false, "::1": false,
 		"fe80::1": false, "fd00::1": false, "::ffff:127.0.0.1": false, "::ffff:8.8.8.8": true, "224.0.0.1": false,
 		"64:ff9b::a9fe:a9fe": false,
+		// Outside 2000::/3 or embedding IPv4 (fuzz finding, FuzzPublicAddr): local-use NAT64, 6to4, Teredo,
+		// IPv4-compatible, site-local, unallocated, benchmarking.
+		"64:ff9b:1::a9fe:a9fe": false, "2002:a9fe:a9fe::1": false, "2001:0:a9fe:a9fe::1": false, "::a9fe:a9fe": false,
+		"fec0::1": false, "4000::1": false, "4130:3030:3030:3030:3030:3030:3030:3030": false, "2001:2::1": false,
+		"2001:4860:4860::8888": true,
 	} {
 		if got := verify.IsPublicAddr(addr); got != public {
 			t.Errorf("IsPublicAddr(%s) = %v", addr, got)

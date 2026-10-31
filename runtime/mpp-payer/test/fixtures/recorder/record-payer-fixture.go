@@ -71,7 +71,7 @@ func main() {
 		panic(err)
 	}
 	srv := &httpapi.Server{
-		Deps:    verify.Deps{Quotes: q, Chain: m, Composer: fixture.Composer{}, Now: func() time.Time { return time.Unix(int64(m.Now)+5, 0) }},
+		Deps:    verify.Deps{Quotes: q, Chain: m, Composer: fixture.Composer{}, Signatures: fixture.Signatures{}, Now: func() time.Time { return time.Unix(int64(m.Now)+5, 0) }},
 		ChainID: 4217, LiveTimeout: 5 * time.Second, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	mux := http.NewServeMux()

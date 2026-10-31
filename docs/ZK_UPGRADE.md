@@ -46,7 +46,7 @@ A DCAP proof covers the quote. It does not replay dstack's event log, but the re
 - Onchain replay: the evidence carries the RTMR3 event log (about ten short events, all public hashes), and the verifier recomputes `sha384(le32(0x08000001) || ":" || name || ":" || payload)` and the fold in Solidity. SHA-384 has no EVM precompile, so this is expensive; do it once per quote in the submission step below, not in every `verify` call.
 - In the proof: a Sealed guest program that runs Automata's DCAP verification (`dcap-rs`), the RTMR3 replay and the report_data v2 check, and outputs a compact journal. Cheaper onchain, but a new program to review and pin, and the verifier must then check the collateral the journal names against the onchain PCCS itself.
 
-Start with onchain replay: it reuses Automata's audited program and contracts unchanged.
+Start with onchain replay: it reuses Automata's published program and contracts unchanged, so there is no new guest program to review.
 
 ### quoteHash for method-2 records
 

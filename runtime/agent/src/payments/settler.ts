@@ -4,22 +4,29 @@
 // the report's fee: a leg paid short (the customer can pay first with any amount) is topped up with
 // the shortfall, so it is never settled for less.
 //
-// Billing fails closed on the customer's side. A failure there counts toward the grace period: a
-// missing, revoked or expired access key, an exhausted limit, too little balance, a reverted estimate
-// or transaction, a leg that cannot be topped up, and a chain read error (the customer chooses the RPC
-// and controls the VPC firewall, so it can block the RPC). Failures that last the grace period switch
-// Caddy to the measured payment-needed Caddyfile; a Closed deployment (terminal) switches at once. The
-// next successful settlement restores the normal Caddyfile. Only limits the operator sets onchain are
-// deferrals: the daily cap, and legs above a lowered per-payment cap (reported as overCap, never paid
-// at that cap).
+// Billing fails closed on the customer's side, and only failures there count toward the grace period
+// (D-048, D-073): a missing, revoked or expired access key, an exhausted limit, too little balance
+// (also when it covers only part of what is due), a reverted estimate or transaction, a leg that cannot
+// be topped up, and a chain read error (`rpc_error`: the customer chooses the RPC and controls the VPC
+// firewall, so it can block the RPC). Failures that last the grace period switch Caddy to the measured
+// payment-needed Caddyfile; a Closed deployment (terminal) switches at once. A failure streak ends, and
+// the normal Caddyfile comes back, only once no leg that was due at the previous settlement is left
+// unpaid, apart from legs in an app the FeeSplitter daily cap or a pause held back this settlement:
+// paying part of a backlog is outcome `partial`, not a recovery, so a limit below the fees
+// cannot restart the grace period at every limit period while the debt grows. Limits the operator sets
+// onchain are deferrals, not failures: the daily cap, and legs above a lowered per-payment cap
+// (reported as overCap, never paid at that cap).
 //
-// D-073: a platform outage never puts a customer on the payment-needed page. What only the platform
-// can do defers settlement instead: rebuilding this boot's ledger from its stored reports, accepting a
-// report, registering the deployment (the oracle and the ops key do, from the agent's evidence). While
-// nothing but those fails, settlement records deferredSince and the grace period does not run: none
-// starts, and one a customer-side failure started stands still until settlement resumes. Deferred fees
-// are paid once the platform is back. A tick that pays every leg it can try shows the customer's side
-// works, so it ends a customer-side failure streak even during a deferral.
+// D-073: a platform outage never puts a customer on the payment-needed page. What only the platform or
+// the operator can do defers settlement instead (the PLATFORM_SIDE_FAILURES): rebuilding this boot's
+// ledger from its stored reports (`ledger_unverified`), the platform accepting a report
+// (`usage_not_submitted`), registering the deployment (`deployment_not_registered`; the oracle and the
+// ops key do, from the agent's evidence), and a FeeSplitter the operator paused (`fee_splitter_paused`).
+// While nothing but those fails, settlement records
+// deferredSince and the grace period does not run: none starts, and one a customer-side failure started
+// stands still until settlement resumes. Deferred fees are paid once the platform is back. A tick that
+// pays every leg it can try and leaves none overdue shows the customer's side works, so it ends a
+// customer-side failure streak even during a deferral.
 //
 // D-062: a report is paid only once the platform has accepted it, so every paid period is among the
 // stored reports the agent rebuilds its ledger from after a disk rollback. Each tick first rebuilds
@@ -33,7 +40,7 @@ import { HttpError } from "../http.js";
 import { errorFields, type Logger } from "../log.js";
 import type { Ledger, UnpaidEntry } from "../metering/ledger.js";
 import type { PaymentStatus } from "../state.js";
-import { type Budget, type DeploymentStatus, type FeePayer, MAX_LINES_PER_TX, PaymentError, type PaymentLine } from "./feePayer.js";
+import { type Budget, type DeploymentStatus, type FeePayer, isEnforcedPause, MAX_LINES_PER_TX, PaymentError, type PaymentLine } from "./feePayer.js";
 
 /**
  * Where settlement records what it took from the shared spend limit (D-048, the SpendBudget). Every broadcast
@@ -49,11 +56,12 @@ export interface SpendRecorder {
 
 /**
  * Failures on the platform's side (D-073): the platform api's stored reports could not be read (D-062), it has not
- * accepted a report yet, or it has not registered the deployment onchain (the oracle registers it from the agent's
- * evidence, which an unreachable api never gets). Settlement is deferred and the grace period does not run; only
- * failures on the customer's side (key, limit, balance, a reverted payment, the customer's RPC) count toward it.
+ * accepted a report yet, it has not registered the deployment onchain (the oracle registers it from the agent's
+ * evidence, which an unreachable api never gets), or the operator paused FeeSplitter (payFees and topUpFees revert
+ * EnforcedPause). Settlement is deferred and the grace period does not run; only failures on the customer's side
+ * (key, limit, balance, a reverted payment, the customer's RPC) count toward it.
  */
-export const PLATFORM_SIDE_FAILURES: ReadonlySet<string> = new Set(["ledger_unverified", "usage_not_submitted", "deployment_not_registered"]);
+export const PLATFORM_SIDE_FAILURES: ReadonlySet<string> = new Set(["ledger_unverified", "usage_not_submitted", "deployment_not_registered", "fee_splitter_paused"]);
 
 /** A transaction with no receipt after this long is no longer looked for; what was counted for it stays counted. */
 export const PENDING_GIVE_UP_SEC = 6 * 3600;
@@ -118,6 +126,9 @@ const shortfall = (b: Budget) => b.problem ?? (b.binding === "spend_limit" ? "sp
 const asLines = (es: Due[]): PaymentLine[] => es.map((e) => ({ appId: e.appId, amount: e.owed, usageHash: e.usageHash, paid: e.paid }));
 
 export class Settler {
+  /** FeeSplitter.paused() as read in this settlement, after a revert (payments-4). */
+  private pausedRead: Promise<boolean> | undefined;
+
   constructor(private readonly d: SettlerDeps) {}
 
   private async submitReports(): Promise<number> {
@@ -159,6 +170,7 @@ export class Settler {
   private async payApps(now: number, payable: UnpaidEntry[]): Promise<AppOutcome[]> {
     const { ledger, payer, log } = this.d;
     const outcomes: AppOutcome[] = [];
+    this.pausedRead = undefined;
     const cap = await payer.perPaymentCap();
     this.d.onPerPaymentCap?.(cap);
     let daily = await payer.dailyRemaining();
@@ -166,9 +178,16 @@ export class Settler {
     const unpayable: Record<string, UnpayableReason> = {};
     for (const [app, all] of this.byApp(payable)) {
       const due: Due[] = [];
+      // One transaction pays at most MAX_LINES_PER_TX legs, so the legs behind them wait for a later settlement
+      // without a usagePaid read now: a long backlog costs no chain read per leg at every settlement.
+      const later: UnpaidEntry[] = [];
       let appOverCap = 0;
       let mismatched = 0;
       for (const e of all) {
+        if (due.length >= MAX_LINES_PER_TX && e.fee <= cap) {
+          later.push(e);
+          continue;
+        }
         const paid = await payer.paidAmount(e.usageHash, e.appId);
         if (paid >= e.fee) {
           ledger.markPaid(e.usageHash, app, undefined, now);
@@ -200,17 +219,17 @@ export class Settler {
       }
       if (due.length === 0) continue;
       if (!(await payer.appInDeployment((due[0] as Due).appId))) {
-        for (const e of due) unpayable[`${e.usageHash}:${app}`] = "not_in_deployment";
+        for (const e of [...due, ...later]) unpayable[`${e.usageHash}:${app}`] = "not_in_deployment";
         outcomes.push({ app, result: "failed", reason: "not_in_deployment" });
         continue;
       }
       try {
-        const o = await this.payApp(app, due, daily, now);
-        if (o.result === "paid") daily -= o.amount;
-        outcomes.push(o);
+        for (const o of await this.payApp(app, due, daily, now)) {
+          if (o.result === "paid") daily -= o.amount;
+          outcomes.push(o);
+        }
       } catch (err) {
-        log.warn("fee payment failed", { app, ...errorFields(err), ...(err instanceof PaymentError ? { outcome: err.outcome, txHash: err.txHash } : {}) });
-        outcomes.push({ app, result: "failed", reason: err instanceof PaymentError && err.outcome === "unknown" ? "tx_unconfirmed" : "tx_failed" });
+        outcomes.push(await this.paymentFailed(app, err));
       }
     }
     this.d.status.overCap = overCap;
@@ -228,11 +247,33 @@ export class Settler {
     return left > 0n ? { spendable: left, binding: "spend_limit" } : { spendable: 0n, problem: "spend_limit", binding: "spend_limit" };
   }
 
+  /** The outcome of a payment that threw: unconfirmed, the operator's pause (D-073), or a failed transaction. */
+  private async paymentFailed(app: string, err: unknown): Promise<AppOutcome> {
+    this.d.log.warn("fee payment failed", { app, ...errorFields(err), ...(err instanceof PaymentError ? { outcome: err.outcome, txHash: err.txHash } : {}) });
+    const unknown = err instanceof PaymentError && err.outcome === "unknown";
+    return { app, result: "failed", reason: unknown ? "tx_unconfirmed" : (await this.splitterPaused(err)) ? "fee_splitter_paused" : "tx_failed" };
+  }
+
+  /**
+   * Whether the operator paused FeeSplitter (payments-4): the revert decodes as EnforcedPause, or paused() reads true.
+   * paused() is read at most once per settlement, and only after something reverted.
+   */
+  private async splitterPaused(err: unknown): Promise<boolean> {
+    if (isEnforcedPause(err)) return true;
+    const read = this.d.payer.splitterPaused;
+    if (!read) return false;
+    this.pausedRead ??= read.call(this.d.payer).catch(() => false);
+    return this.pausedRead;
+  }
+
   /**
    * Picks the oldest legs that fit the daily cap and the payer's balance and limit, then estimates the
    * network fee for exactly that batch, shrinking it while the estimate reverts or the fee does not fit.
+   * A leg the budget leaves behind adds the shortfall as a failure (the customer's side), one the daily cap
+   * leaves behind a daily_cap deferral; legs left only because one transaction holds at most MAX_LINES_PER_TX
+   * wait for the next settlement (tick counts them as overdue, so they keep a failure streak running).
    */
-  private async payApp(app: string, due: Due[], daily: bigint, now: number): Promise<AppOutcome> {
+  private async payApp(app: string, due: Due[], daily: bigint, now: number): Promise<AppOutcome[]> {
     const { ledger, payer, log } = this.d;
     const raw = await this.budget(0n, now);
     const limit = raw.spendable < daily ? raw.spendable : daily;
@@ -243,28 +284,35 @@ export class Settler {
       chosen.push(e);
       sum += e.owed;
     }
-    const first = (due[0] as Due).owed;
-    if (chosen.length === 0) {
-      if (daily < first && raw.spendable >= first) return { app, result: "deferred", reason: "daily_cap" };
-      return { app, result: "failed", reason: shortfall(raw) };
-    }
+    const next = chosen.length < MAX_LINES_PER_TX ? due[chosen.length] : undefined;
+    let left: AppOutcome | undefined =
+      next === undefined ? undefined : sum + next.owed > raw.spendable ? { app, result: "failed", reason: shortfall(raw) } : { app, result: "deferred", reason: "daily_cap" };
+    if (chosen.length === 0) return [left as AppOutcome];
     let reserve = 0n;
     for (;;) {
       try {
         reserve = await payer.feeReserve(asLines(chosen));
       } catch (err) {
+        if (await this.splitterPaused(err)) {
+          // D-073: the operator's pause, not the customer's failure. A budget shortfall still counts.
+          log.warn("FeeSplitter is paused; settlement is deferred until the operator unpauses it", { app, ...errorFields(err) });
+          const paused: AppOutcome = { app, result: "failed", reason: "fee_splitter_paused" };
+          return left?.result === "failed" ? [left, paused] : [paused];
+        }
         if (chosen.length === 1) {
           log.warn("payment estimate reverted", { app, usageHash: (chosen[0] as Due).usageHash, ...errorFields(err) });
-          return { app, result: "failed", reason: "estimate_reverted" };
+          return [{ app, result: "failed", reason: "estimate_reverted" }];
         }
         chosen = chosen.slice(0, Math.ceil(chosen.length / 2));
         continue;
       }
       if (sumOwed(chosen) + reserve <= raw.spendable) break;
       if (chosen.length === 1) {
-        return { app, result: "failed", reason: shortfall(await this.budget(reserve, now)) };
+        return [{ app, result: "failed", reason: shortfall(await this.budget(reserve, now)) }];
       }
       chosen = chosen.slice(0, -1);
+      // The network fee does not fit on top of every chosen leg: the budget leaves the last one behind.
+      left = { app, result: "failed", reason: shortfall(raw) };
     }
     sum = sumOwed(chosen);
     let paid: Awaited<ReturnType<FeePayer["pay"]>>;
@@ -275,7 +323,9 @@ export class Settler {
       if (err instanceof PaymentError && err.outcome === "reverted") this.d.spend?.recordFees(err.networkFee ?? 0n, now, err.networkFee);
       if (err instanceof PaymentError && err.outcome === "unknown" && err.txHash) this.d.spend?.recordPendingFee(err.txHash, sum, sum + reserve, now);
       if (err instanceof PaymentError && err.outcome !== "not_sent") await this.saveNow();
-      throw err;
+      // A budget shortfall found before the send still counts, also when FeeSplitter was paused since the estimate.
+      const failed = await this.paymentFailed(app, err);
+      return left?.result === "failed" ? [left, failed] : [failed];
     }
     const { txHash, gasUsed, networkFee } = paid;
     for (const e of chosen) ledger.markPaid(e.usageHash, app, txHash, now);
@@ -284,7 +334,9 @@ export class Settler {
     await this.saveNow();
     const topUps = chosen.filter((e) => e.paid > 0n).length;
     log.info("fees paid", { app, amount: sum.toString(), reports: chosen.length, topUps, txHash, gasUsed, mode: payer.mode });
-    return { app, result: "paid", txHash, amount: sum, reports: chosen.length };
+    const paidOutcome: AppOutcome = { app, result: "paid", txHash, amount: sum, reports: chosen.length };
+    if (left?.result === "failed") log.warn("the budget covers only part of the fees due", { app, reason: left.reason, left: due.length - chosen.length });
+    return left ? [paidOutcome, left] : [paidOutcome];
   }
 
   private async saveNow(): Promise<void> {
@@ -312,8 +364,24 @@ export class Settler {
     }
   }
 
+  /**
+   * Legs the customer is behind on: submitted, payable (not in `unpayable`), cut at or before the previous settlement
+   * and still unpaid, in apps that no operator or platform limit held back in this settlement (the daily cap, a
+   * paused FeeSplitter). Any of them keeps a failure streak running (payments-3).
+   */
+  private overdue(apps: AppOutcome[], previous: number | undefined): number {
+    if (previous === undefined) return 0;
+    const held = new Set(
+      apps.filter((a) => (a.result === "deferred" && a.reason === "daily_cap") || (a.result === "failed" && PLATFORM_SIDE_FAILURES.has(a.reason))).map((a) => a.app),
+    );
+    const unpayable = this.d.status.unpayable ?? {};
+    return this.d.ledger.unpaid().filter((e) => e.submitted && e.createdAt <= previous && !held.has(e.app) && !unpayable[`${e.usageHash}:${e.app}`]).length;
+  }
+
   async tick(now: number): Promise<SettlementResult> {
     const { ledger, status, log, payer } = this.d;
+    // A leg cut at or before the previous settlement was due then; still unpaid now, it is overdue.
+    const previous = status.lastAttemptAt;
     await this.reconcilePending(now);
     if (this.d.rebuild) await this.d.rebuild();
     let reportCut = false;
@@ -334,6 +402,7 @@ export class Settler {
     }
     let apps: AppOutcome[] = [];
     let outcome: SettlementResult["outcome"];
+    let overdue = 0;
     if (deployment === "closed") outcome = "deployment_closed";
     else if (!ledger.verified) {
       outcome = "failed";
@@ -355,9 +424,10 @@ export class Settler {
       }
       // Paid only once the platform holds them (D-062): waiting reports defer settlement until they are in (D-073).
       if (waiting.length > 0) apps.push({ app: "*", result: "failed", reason: "usage_not_submitted" });
+      overdue = this.overdue(apps, previous);
       const failed = apps.some((a) => a.result === "failed");
       const paid = apps.some((a) => a.result === "paid");
-      outcome = failed ? (paid ? "partial" : "failed") : "settled";
+      outcome = failed ? (paid ? "partial" : "failed") : overdue > 0 ? "partial" : "settled";
     }
     status.lastAttemptAt = now;
     status.lastOutcome = apps.find((a) => a.result === "failed")?.reason ?? outcome;
@@ -368,16 +438,17 @@ export class Settler {
     if (deferred) {
       // D-073: a platform outage defers settlement; the grace period is paused, never started by it.
       status.deferredSince ??= now;
-      // Every leg the customer's side could be asked to pay was paid: its failure streak is over, so the outage
-      // cannot keep a customer who fixed their key, limit or balance on the payment-needed page either.
-      if (paidSome) status.failingSince = null;
+      // Every leg the customer's side could be asked to pay was paid and none is overdue: its failure streak is over,
+      // so the outage cannot keep a customer who fixed their key, limit or balance on the payment-needed page either.
+      if (paidSome && overdue === 0) status.failingSince = null;
     } else {
       this.resumeGrace(now);
       if (outcome === "deployment_closed" || customerSide) status.failingSince ??= now;
-      else status.failingSince = null;
+      // Part of a backlog paid is no recovery: the streak runs on until no overdue leg is left (payments-3).
+      else if (overdue === 0) status.failingSince = null;
     }
     if (paidSome) status.lastPaidAt = now;
-    await this.updateGate(now, outcome === "deployment_closed", ledger.unpaid().length === 0 || paidSome);
+    await this.updateGate(now, outcome === "deployment_closed");
     await this.d.save();
     return { at: now, reportCut, submitted, outcome, apps, paymentNeeded: status.paymentNeeded };
   }
@@ -390,7 +461,7 @@ export class Settler {
     delete status.deferredSince;
   }
 
-  private async updateGate(now: number, closed: boolean, recovered: boolean): Promise<void> {
+  private async updateGate(now: number, closed: boolean): Promise<void> {
     const { status, gate, log } = this.d;
     // While deferred (D-073) the grace clock stands still at the deferral's start.
     const clock = status.deferredSince ?? now;
@@ -403,7 +474,8 @@ export class Settler {
         }
         status.paymentNeeded = true;
         await gate?.apply("payment-needed");
-      } else if (status.paymentNeeded && status.failingSince === null && recovered) {
+      } else if (status.paymentNeeded && status.failingSince === null) {
+        // failingSince is null only once nothing overdue is left unpaid, not after a partial payment (payments-3).
         await gate?.apply("normal");
         status.paymentNeeded = false;
         log.info("payment succeeded, app routes restored");

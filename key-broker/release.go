@@ -26,8 +26,11 @@ import (
 const (
 	// CheckConfigChain requires config.chainId and config.contracts to name this broker's chain and registries.
 	CheckConfigChain = "config_chain"
-	// CheckChain pins every registry read of the decision to the current head block.
+	// CheckChain pins the registry reads to the current head block: the first pin holds the image and release reads,
+	// the repin before the approval holds the approval and deployment reads (kb-2).
 	CheckChain = "chain"
+	// CheckDeployment refuses a deployment that was closed onchain (kb-1).
+	CheckDeployment = "deployment"
 	// ReasonInternal answers 500: a defect in the broker itself.
 	ReasonInternal = "internal"
 )
@@ -59,8 +62,15 @@ type session struct {
 	// is logged truncated and in the background, and it never took a release slot.
 	junk bool
 
-	quote      *attest.Quote
-	reg        Registry
+	quote *attest.Quote
+	// bound marks a request whose verified quote also carries this request's report_data, so it came from a live
+	// TDX VM holding the nonce. Only its denials are written before the answer (kb-6); a replayed quote fails
+	// report_data and its denial is queued in the background.
+	bound bool
+	reg   Registry
+	// head is the block reg reads at. repinChain moves it forward before the approval reads, and release checks its
+	// age again right before sealing (kb-2).
+	head       Head
 	runtime    *attest.RuntimeInfo
 	stackHash  [32]byte
 	cfg        *composer.Config
@@ -142,7 +152,7 @@ func (s *session) check(ctx context.Context) (*ReleaseResponse, *stop) {
 	defer cancel()
 	for _, step := range []func(context.Context) *stop{
 		s.checkQuote, s.checkReportData, s.pinChain, s.checkImage, s.checkRTMR3, s.checkComposeHash,
-		s.checkCustomer, s.checkConfigChain, s.checkRecompute, s.checkApproval,
+		s.checkCustomer, s.checkConfigChain, s.checkRecompute, s.repinChain, s.checkApproval, s.checkDeployment,
 	} {
 		if st := step(rctx); st != nil {
 			return nil, st
@@ -151,8 +161,10 @@ func (s *session) check(ctx context.Context) (*ReleaseResponse, *stop) {
 	return s.release(rctx)
 }
 
-// finish records the decision. An allowed release is answered only after its entry was written; every other
-// decision is written in the background, junk in truncated form (D-066).
+// finish records the decision. An allowed release is answered only after its entry was written. A denial or error
+// of a request whose TDX quote verified and carries this request's report_data is written before the answer too, so
+// a flood of junk quotes cannot drop it from the queue (kb-6). A quote that verifies but fails report_data is a
+// replay of a captured quote or a broken client; it needs no TDX VM, so its denial is queued. Every other decision is written in the background, junk in truncated form (D-066).
 func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, st *stop) *Outcome {
 	out := &Outcome{Decision: s.d}
 	if st != nil {
@@ -166,13 +178,17 @@ func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, 
 	s.d.DurationMS = b.deps.Now().Sub(s.start).Milliseconds()
 
 	if out.Status != http.StatusOK {
-		if s.junk {
+		switch {
+		case s.junk:
 			s.d.truncate()
-		} else {
-			b.deps.OpLog.Info("release decision", "requestId", s.d.RequestID, "decision", s.d.Decision, "reason", s.d.Reason,
-				"stackHash", s.d.Hashes.StackHash, "simulated", s.d.Simulated, "durationMs", s.d.DurationMS)
+			b.logs.enqueue(s.d, true)
+		case s.bound:
+			b.opLog(s.d)
+			b.logs.writeNow(ctx, s.d)
+		default:
+			b.opLog(s.d)
+			b.logs.enqueue(s.d, false)
 		}
-		b.logs.enqueue(s.d, s.junk)
 		return out
 	}
 
@@ -188,9 +204,17 @@ func (b *Broker) finish(ctx context.Context, s *session, resp *ReleaseResponse, 
 		s.d.Decision, s.d.Reason, s.d.Detail, s.d.HTTPStatus, s.d.Released = DecisionError, ReasonLogFailed, detail, http.StatusServiceUnavailable, nil
 		out.Status, out.Body = http.StatusServiceUnavailable, &Denial{Decision: DecisionError, Reason: ReasonLogFailed, Detail: detail}
 	}
-	b.deps.OpLog.Info("release decision", "requestId", s.d.RequestID, "decision", s.d.Decision, "reason", s.d.Reason,
-		"stackHash", s.d.Hashes.StackHash, "simulated", s.d.Simulated, "durationMs", s.d.DurationMS)
+	b.opLog(s.d)
 	return out
+}
+
+// opLog writes the operational line of a non-junk decision to Cloud Run stdout: the identifiers of the attempt,
+// never a secret. It stays even when the decision log dropped or failed the entry (kb-6).
+func (b *Broker) opLog(d *Decision) {
+	h := d.Hashes
+	b.deps.OpLog.Info("release decision", "requestId", d.RequestID, "decision", d.Decision, "reason", d.Reason,
+		"stackHash", h.StackHash, "quoteHash", h.QuoteHash, "measurementsHash", h.MeasurementsHash, "eventLogHash", h.EventLogHash,
+		"deploymentId", h.DeploymentID, "customer", h.Customer, "remote", d.Remote, "simulated", d.Simulated, "durationMs", d.DurationMS)
 }
 
 func (s *session) pass(name, detail string, data map[string]any) {
@@ -297,6 +321,7 @@ func (s *session) checkReportData(context.Context) *stop {
 			`report_data is not sha256("sealed/kb-release/v1" || nonce || ephemeralPub) || 32 zero bytes`, data)
 	}
 	s.pass(CheckReportData, "binds this nonce and ephemeral key", data)
+	s.bound = true
 	return nil
 }
 
@@ -313,21 +338,65 @@ func (s *session) pinChain(ctx context.Context) *stop {
 	if err != nil {
 		return s.unavailable(CheckChain, "", err.Error())
 	}
+	age, data, st := s.useHead(reg, head)
+	if st != nil {
+		return st
+	}
+	s.pass(CheckChain, fmt.Sprintf("image and release reads pinned to block %d of chain %d, %s old", head.Number, cfg.ChainID, age.Round(time.Second)), data)
+	return nil
+}
+
+// repinChain pins the approval reads to the current head again, right before they are made (kb-2). The bundle
+// fetches and the compose between the first pin and here can take most of the release deadline, so the first pin
+// could be well past MaxHeadAge by now. A head behind the first pin (an RPC that moved to a lagging backend) keeps
+// the first pin, the newer view; either way its age is checked again.
+func (s *session) repinChain(ctx context.Context) *stop {
+	reg, head, err := s.b.deps.Chain.Pin(ctx)
+	if err != nil {
+		return s.unavailable(CheckChain, "", err.Error())
+	}
+	what := "approval reads pinned to the current head"
+	if head.Number < s.head.Number {
+		reg, head = s.reg, s.head
+		what = "the RPC's head is behind the first pin; approval reads stay at the first pin"
+	}
+	age, data, st := s.useHead(reg, head)
+	if st != nil {
+		return st
+	}
+	s.pass(CheckChain, fmt.Sprintf("%s, block %d, %s old", what, head.Number, age.Round(time.Second)), data)
+	return nil
+}
+
+// useHead logs head as the block of the decision's reads and, when its timestamp is within MaxHeadAge of the
+// broker's clock in either direction (D-060), makes reg the registry the next checks read. Otherwise it answers
+// chain_stale.
+func (s *session) useHead(reg Registry, head Head) (time.Duration, map[string]any, *stop) {
 	s.d.Hashes.BlockNumber = head.Number
 	s.d.Hashes.BlockTime = head.Time.Unix()
+	age, data, st := s.headAge(head)
+	if st != nil {
+		return 0, nil, st
+	}
+	s.reg, s.head = reg, head
+	return age, data, nil
+}
+
+// headAge measures head against the broker's clock now and refuses it with chain_stale when it is more than
+// MaxHeadAge old or that far ahead (D-060).
+func (s *session) headAge(head Head) (time.Duration, map[string]any, *stop) {
+	maxAge := s.b.cfg.MaxHeadAge
 	age := s.b.deps.Now().Sub(head.Time)
 	data := map[string]any{"blockNumber": head.Number, "blockTime": head.Time.Unix(), "ageSeconds": int64(age.Round(time.Second) / time.Second),
-		"maxAgeSeconds": int64(cfg.MaxHeadAge / time.Second)}
+		"maxAgeSeconds": int64(maxAge / time.Second)}
 	switch {
-	case age > cfg.MaxHeadAge:
-		return s.stale(fmt.Sprintf("the Tempo RPC's head block %d is %s old, more than %s: its reads could predate a revocation",
-			head.Number, age.Round(time.Second), cfg.MaxHeadAge), data)
-	case age < -cfg.MaxHeadAge:
-		return s.stale(fmt.Sprintf("the Tempo RPC's head block %d is %s ahead of this key broker's clock", head.Number, (-age).Round(time.Second)), data)
+	case age > maxAge:
+		return 0, nil, s.stale(fmt.Sprintf("the Tempo RPC's head block %d is %s old, more than %s: its reads could predate a revocation",
+			head.Number, age.Round(time.Second), maxAge), data)
+	case age < -maxAge:
+		return 0, nil, s.stale(fmt.Sprintf("the Tempo RPC's head block %d is %s ahead of this key broker's clock", head.Number, (-age).Round(time.Second)), data)
 	}
-	s.reg = reg
-	s.pass(CheckChain, fmt.Sprintf("registry reads pinned to block %d of chain %d, %s old", head.Number, cfg.ChainID, age.Round(time.Second)), data)
-	return nil
+	return age, data, nil
 }
 
 func (s *session) checkImage(ctx context.Context) *stop {
@@ -359,7 +428,7 @@ func (s *session) checkImage(ctx context.Context) *stop {
 			return s.deny(CheckImage, ReasonMeasurementsMismatch, err.Error(), data)
 		}
 		data["xfam"], data["mrOwner"] = hex0x(td.XFAM), hex0x(td.MrOwner)
-		if err := td.check(); err != nil {
+		if err := td.check(s.b.cfg.AllowedXFAM); err != nil {
 			return s.deny(CheckImage, ReasonMeasurementsMismatch, err.Error(), data)
 		}
 	}
@@ -578,6 +647,35 @@ func (s *session) checkApproval(ctx context.Context) *stop {
 	return nil
 }
 
+// checkDeployment refuses a deployment that was closed onchain (kb-1). closeDeployment is terminal and the
+// deploymentId is keccak256(customer, stackHash, salt), so a revived VM or a copied disk of a closed deployment never
+// gets its secrets or keys again; a new deployment uses a new salt. A deployment the oracle has not registered yet
+// (every first boot, which registers after its release) passes. It reads at the repinned head, like the approval.
+func (s *session) checkDeployment(ctx context.Context) *stop {
+	id := s.deployment
+	data := map[string]any{"deploymentId": hex0x(id[:])}
+	dep, err := s.reg.GetDeployment(ctx, id)
+	if errors.Is(err, chain.ErrNotFound) {
+		data["status"] = chain.DeploymentNone
+		s.pass(CheckDeployment, "the deployment is not registered yet", data)
+		return nil
+	}
+	if err != nil {
+		return s.unavailable(CheckDeployment, "", "DeploymentRegistry.getDeployment: "+err.Error())
+	}
+	data["status"], data["closedAt"] = dep.Status, dep.ClosedAt
+	switch dep.Status {
+	case chain.DeploymentActive:
+		s.pass(CheckDeployment, "the deployment is Active", data)
+		return nil
+	case chain.DeploymentClosed:
+		return s.deny(CheckDeployment, ReasonStackNotApproved, fmt.Sprintf("deployment %s was closed onchain (closedAt %d); a closed deployment never gets its secrets again",
+			hex0x(id[:]), dep.ClosedAt), data)
+	default:
+		return s.deny(CheckDeployment, ReasonStackNotApproved, fmt.Sprintf("deployment %s has unknown status %d", hex0x(id[:]), dep.Status), data)
+	}
+}
+
 // release reads the stack's secrets, derives the keys and seals everything to the ephemeral key.
 func (s *session) release(ctx context.Context) (*ReleaseResponse, *stop) {
 	apps := make([]string, len(s.cfg.Apps))
@@ -621,6 +719,13 @@ func (s *session) release(ctx context.Context) (*ReleaseResponse, *stop) {
 	if err != nil {
 		return nil, s.internal(CheckSeal, "encode release plaintext: "+err.Error())
 	}
+	// The release is decided here. The secret reads and the KMS calls take time, so the head the approval was read
+	// at must still be within MaxHeadAge now (kb-2).
+	age, headData, st := s.headAge(s.head)
+	if st != nil {
+		clear(plain)
+		return nil, st
+	}
 	enc, ct, err := SealRelease(s.req.EphemeralPub, s.req.Nonce, plain)
 	clear(plain)
 	if errors.Is(err, ErrBadEphemeralKey) {
@@ -629,7 +734,8 @@ func (s *session) release(ctx context.Context) (*ReleaseResponse, *stop) {
 	if err != nil {
 		return nil, s.internal(CheckSeal, err.Error())
 	}
-	s.pass(CheckSeal, "HPKE X25519/HKDF-SHA256/AES-256-GCM to ephemeralPub, info sealed/kb-release/v1, aad nonce", nil)
+	s.pass(CheckSeal, fmt.Sprintf("HPKE X25519/HKDF-SHA256/AES-256-GCM to ephemeralPub, info sealed/kb-release/v1, aad nonce; the approval's head block %d is %s old",
+		s.head.Number, age.Round(time.Second)), headData)
 	s.d.Released = append(released, "diskKey", "signerSeed")
 	return &ReleaseResponse{
 		StackHash:    hex0x(s.stackHash[:]),

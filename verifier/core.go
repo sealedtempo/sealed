@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -202,7 +204,22 @@ func (s *session) checkQuote(raw []byte) {
 		s.rep.fail(CheckTDAttributes, err.Error(), data)
 		return
 	}
-	s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits", data)
+	// XFAM is pinned by allowlist (tdx.allowed_xfam, D-077). A simulated quote carries none; it passes the quote
+	// check only when the verification opted in (AcceptSimulated), as the key broker skips it for dev builds too.
+	if s.quote.Simulated {
+		s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits; simulated quote, no XFAM checked", data)
+		return
+	}
+	var allowed []string
+	for _, v := range s.deps.Quotes.AllowedXFAM() {
+		allowed = append(allowed, fmt.Sprintf("0x%x", v))
+	}
+	data["allowedXfam"] = allowed
+	if err := s.deps.Quotes.CheckXFAM(s.quote); err != nil {
+		s.rep.fail(CheckTDAttributes, err.Error(), data)
+		return
+	}
+	s.rep.pass(CheckTDAttributes, "production TD: no debug bits, not migratable, SEPT_VE_DISABLE set, no reserved bits; XFAM in tdx.allowed_xfam", data)
 }
 
 // checkImage compares the quote's measurements with PlatformRegistry and requires an approved non-debug image.
@@ -332,6 +349,47 @@ func (s *session) checkReleases() {
 		return
 	}
 	s.rep.pass(CheckReleasesActive, fmt.Sprintf("%d releases active", len(list)), data)
+}
+
+// checkReleaseSignatures requires release CI's signature and SLSA provenance for the onchain bundleHash of every
+// release of config.apps (supply-2), so a release the OPS key published without release.yml on main having built and
+// signed it fails. With Options.AcceptUnsignedReleases (dev only) the check still runs and reports, but passes.
+func (s *session) checkReleaseSignatures() {
+	if s.cfg == nil || s.releases == nil || slices.Contains(s.releases, nil) {
+		s.rep.fail(CheckReleaseSignature, "releases unavailable", nil)
+		return
+	}
+	var problems []string
+	var list []map[string]any
+	signers := map[string]bool{}
+	for i, rel := range s.releases {
+		in := ComposeRelease{App: s.cfg.Apps[i].ID, ReleaseID: s.cfg.releaseIDs[i], AppID: rel.AppId, Version: rel.Version, BundleHash: rel.BundleHash}
+		entry := map[string]any{"app": in.App, "version": in.Version, "bundleHash": hex0x(in.BundleHash[:]),
+			"onchainSignatureUri": rel.SignatureURI, "onchainProvenanceUri": rel.ProvenanceURI}
+		list = append(list, entry)
+		if s.deps.Signatures == nil {
+			problems = append(problems, fmt.Sprintf("%s %s: no release signature verifier is configured", in.App, in.Version))
+			continue
+		}
+		sig, err := s.deps.Signatures.VerifyReleaseSignature(s.ctx, in)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s %s: %v", in.App, in.Version, err))
+			continue
+		}
+		entry["signer"], entry["issuer"], entry["signatureUrl"], entry["logIndex"], entry["signedAt"] = sig.Signer, sig.Issuer, sig.SignatureURL, sig.LogIndex, sig.SignedAt
+		entry["builder"], entry["buildConfig"], entry["provenanceUrl"] = sig.Builder, sig.BuildConfig, sig.ProvenanceURL
+		signers[sig.Signer] = true
+	}
+	data := map[string]any{"releases": list}
+	switch {
+	case len(problems) > 0 && s.opts.AcceptUnsignedReleases:
+		data["acceptedUnsigned"] = true
+		s.rep.pass(CheckReleaseSignature, "DEV: releases without release CI's signature accepted (AcceptUnsignedReleases): "+joinProblems(problems), data)
+	case len(problems) > 0:
+		s.rep.fail(CheckReleaseSignature, joinProblems(problems), data)
+	default:
+		s.rep.pass(CheckReleaseSignature, fmt.Sprintf("%d releases signed by %s, with SLSA provenance for their bundleHash", len(list), strings.Join(slices.Sorted(maps.Keys(signers)), ", ")), data)
+	}
 }
 
 // checkRecompute recomputes appCompose from the config and the onchain releases and requires byte equality.

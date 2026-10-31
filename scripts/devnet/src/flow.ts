@@ -44,6 +44,7 @@ import {
   startVerifierd,
 } from "./services.ts";
 import { ENDPOINT_HOSTS, type EndpointName, endpointCert, endpointUrls, startTlsFront, type TlsFront } from "./tlsFront.ts";
+import { sealedVerifyArgs } from "./verifyArgs.ts";
 
 /** The five catalog apps a customer stack runs, plus the platform's relay app (registered and released only). */
 export const STACK_APPS = ["coding-agent", "crm", "internal-tools", "llm-gateway", "scraper"] as const;
@@ -541,6 +542,7 @@ export class Devnet {
 
   /** The api's catalog (indexer plus release assets by the D-046 rule) as the console shows it. */
   private async checkCatalog(): Promise<void> {
+    await this.chain.mine(); // the last addImage/publishRelease may sit at head; advance so the indexer (head-1) sees every release
     await waitFor("the api indexer has every release", async () => (await this.pg.psql("SELECT count(*) FROM releases WHERE status = 'active'")) === String(CATALOG_APPS.length) || undefined, { timeoutMs: 30_000 });
     checkEq(await this.pg.psql("SELECT count(*) || ' ' || count(*) FILTER (WHERE is_debug) FROM images"), "2 1", "indexed images (one debug)");
     const list = await http<Array<{ id: string; latestRelease: { releaseId: Hex } | null }>>(`${this.apiUrl}/v1/catalog/apps`);
@@ -758,6 +760,7 @@ export class Devnet {
     for (const app of STACK_APPS) check(await this.chain.read<boolean>("DeploymentRegistry", "appInDeployment", [a.deploymentId, computeAppId(app)]), `${app} in deployment`);
     const row = await this.pg.psql(`SELECT status || ' ' || kind FROM evidence WHERE deployment_id = '${a.deploymentId}'`);
     checkEq(row, "confirmed register", "api evidence row");
+    await this.chain.mine(); // register is the last on-chain write here; advance head so the indexer (head-1) reaches its block
     const indexed = await waitFor("the api indexer sees the deployment", async () => (await this.pg.psql(`SELECT enclave_signer FROM onchain_deployments WHERE deployment_id = '${a.deploymentId}'`)) || undefined, { timeoutMs: 20_000 });
     checkEq(indexed, ready.enclaveSigner, "indexed enclave signer");
     const health = await waitFor("a signed health report", async () => (await this.pg.psql(`SELECT body::text FROM health_reports WHERE deployment_id = '${a.deploymentId}'`)) || undefined, { timeoutMs: 20_000 });
@@ -802,16 +805,10 @@ export class Devnet {
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(join(dir, "home"), { recursive: true });
     if (evidence) writeFileSync(join(dir, "evidence.json"), JSON.stringify(evidence));
-    // A local chain has no embedded defaults: its public description (chain id, release asset base, addresses).
-    const defaults = parseYaml(readFileSync(join(this.o.repo, "config", "defaults.yaml"), "utf8")) as { chain: Record<string, unknown>; catalog: Record<string, unknown> };
-    defaults.chain = { ...defaults.chain, name: "devnet", chain_id: CHAIN_ID, public_rpc_url: this.chain.node.rpcUrl, fee_token: TOKENS.pathUsd };
-    defaults.catalog = { ...defaults.catalog, release_asset_base: this.assets.base };
-    writeFileSync(join(dir, "defaults.yaml"), stringifyYaml(defaults));
+    // The local chain's deployments file is all the CLI needs besides the RPC and the asset base (verifyArgs.ts).
     cpSync(this.chain.c.file, join(dir, "deployments.json"));
-    const r = await this.sup.run(`sealed-verify-${label}`, this.o.bins.sealed, [
-      "verify", "--deployment", id, ...(evidence ? ["--evidence", "evidence.json"] : []), "--rpc", this.chain.node.rpcUrl, "--deployments", "deployments.json", "--defaults", "defaults.yaml",
-      "--dev-allow-simulated", "--dev-allow-http-assets", "--json", "--report", "report.json", "--bundle-cache", "cache/bundles", "--collateral-cache", "cache/pcs", ...extra,
-    ], { cwd: dir, cleanEnv: true, env: { PATH: "/usr/bin:/bin", HOME: join(dir, "home"), SEALED_DEV_SIM: "1" } });
+    const args = sealedVerifyArgs({ deployment: id, evidence: evidence !== null, rpcUrl: this.chain.node.rpcUrl, assetBase: this.assets.base, extra });
+    const r = await this.sup.run(`sealed-verify-${label}`, this.o.bins.sealed, args, { cwd: dir, cleanEnv: true, env: { PATH: "/usr/bin:/bin", HOME: join(dir, "home"), SEALED_DEV_SIM: "1" } });
     const report = existsSync(join(dir, "report.json")) ? readJson<{ ok: boolean }>(join(dir, "report.json")) : { ok: false };
     if (!existsSync(join(dir, "report.json"))) this.log.warn(`sealed verify wrote no report (exit ${r.code}): ${r.output.slice(-1500)}`);
     return { code: r.code, report: report as never };
@@ -948,6 +945,7 @@ export class Devnet {
     const signers = await this.pg.psql(`SELECT DISTINCT signer FROM usage_reports WHERE deployment_id = '${c.deploymentId}'`);
     const [, , enclaveSigner] = await this.chain.read<[number, Address, Address]>("DeploymentRegistry", "deploymentParties", [c.deploymentId]);
     checkEq(signers, lower(enclaveSigner), "usage reports signed by the onchain enclave signer");
+    await this.chain.mine(); // the agent has stopped settling, so the last FeesPaid leg sits at head; advance for the indexer
     const indexedFees = await waitFor(
       "the api indexer sees every FeesPaid leg",
       async () => {
@@ -1239,6 +1237,7 @@ export class Devnet {
     const a = run.composed;
     await this.chain.write(KEYS.customer, "DeploymentRegistry", "revokeStack", [a.stackHash]);
     check(!(await this.chain.read<boolean>("DeploymentRegistry", "isStackApproved", [ADDR.customer, a.stackHash])), "stack no longer approved");
+    await this.chain.mine(); // revokeStack is the last write before this wait; advance so the indexer (head-1) sees it
     await waitFor("the api indexer sees the revoked approval", async () => (await this.pg.psql(`SELECT revoked FROM stack_approvals WHERE stack_hash = '${a.stackHash}'`)) === "t" || undefined, { timeoutMs: 20_000 });
     await run.proc.stop();
     this.clearTmpfs(run.paths);
@@ -1270,6 +1269,7 @@ export class Devnet {
     check(!(await this.chain.read<boolean>("AppRegistry", "isApprovableRelease", [rel.releaseId])), "release revoked");
     check(!(await this.chain.read<boolean>("DeploymentRegistry", "isStackApproved", [ADDR.customer, a.stackHash])), "a stack with a revoked release is no longer approved");
     check(await this.chain.reverts(KEYS.customer, "DeploymentRegistry", "approveStack", [a.stackHash, a.releaseIds, a.imageId, 0n]), "re-approving cannot undo a revoked release");
+    await this.chain.mine(); // revokeRelease may sit at head (the failed re-approval never mines); advance for the indexer
     const indexed = await waitFor("the api indexer sees the revoked release", async () => (await this.pg.psql(`SELECT status || ' ' || revoke_reason FROM releases WHERE release_id = '${rel.releaseId}'`)).startsWith("revoked") ? true : undefined, { timeoutMs: 20_000 });
     check(indexed, "release indexed as revoked");
     const listed = await http<Array<{ releaseId: Hex; revocation?: { reason: string } }>>(`${this.apiUrl}/v1/catalog/apps/llm-gateway/releases`);

@@ -1,0 +1,4 @@
+go test fuzz v1
+uint8(0)
+uint8(2)
+[]byte("version: 1\ndefault_allow:\n  - \"*.co.uk:443\"\ncustomer_additions_allowed: true\n")

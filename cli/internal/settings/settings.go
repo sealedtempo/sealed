@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,9 +25,7 @@ import (
 
 // Defaults is the part of config/defaults.yaml the CLI reads.
 type Defaults struct {
-	Cloud struct {
-		Region string `yaml:"region"`
-	} `yaml:"cloud"`
+	Cloud                    Cloud   `yaml:"cloud"`
 	SpendLimitPerDayUSD      float64 `yaml:"spend_limit_per_day_usd"`
 	GracePeriodMinutes       int64   `yaml:"grace_period_minutes"`
 	SettlementIntervalMinute int64   `yaml:"settlement_interval_minutes"`
@@ -45,6 +44,65 @@ type Defaults struct {
 		Registry         string `yaml:"registry"`
 		ReleaseAssetBase string `yaml:"release_asset_base"`
 	} `yaml:"catalog"`
+}
+
+// Cloud is the cloud block of config/defaults.yaml: where deployments run (spec 2.4).
+type Cloud struct {
+	Provider      string `yaml:"provider"`
+	TEE           string `yaml:"tee"`
+	MachineFamily string `yaml:"machine_family"`
+	Region        string `yaml:"region"`
+}
+
+// The one cloud the CLI deploys to: Google Cloud with Intel TDX. Nothing else is built or measured, so Load refuses
+// a defaults file that names another provider or TEE.
+const (
+	ProviderGCP = "gcp"
+	TEEIntelTDX = "intel-tdx"
+)
+
+// confidentialInstanceTypes maps each cloud.tee the CLI deploys on to its Compute Engine confidentialInstanceType.
+var confidentialInstanceTypes = map[string]string{TEEIntelTDX: "TDX"}
+
+// ConfidentialInstanceType is the Compute Engine confidentialInstanceType of a cloud.tee value.
+func ConfidentialInstanceType(tee string) (string, error) {
+	t, ok := confidentialInstanceTypes[tee]
+	if !ok {
+		return "", fmt.Errorf("cloud.tee %q: the CLI deploys on %s only", tee, TEEIntelTDX)
+	}
+	return t, nil
+}
+
+// RegisteredMachineTypes are the machine types with a registered production image (D-070, D-083). Each
+// PlatformRegistry image entry is measured on one machine shape, and RTMR0 follows the shape, so the key broker
+// denies a VM of any other type at first boot (measurements_mismatch), after the wallet approved the stack and the
+// VM exists. Today that is c3-standard-8 (D-087). The relay's c3-standard-4 (D-078) is added only once its own
+// measurement set is registered.
+var RegisteredMachineTypes = []string{"c3-standard-8"}
+
+// MachineTypes are the registered machine types of cloud.machine_family.
+func (c Cloud) MachineTypes() []string {
+	var out []string
+	for _, t := range RegisteredMachineTypes {
+		if c.MachineFamily != "" && strings.HasPrefix(t, c.MachineFamily+"-") {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// check refuses a cloud block the CLI cannot deploy to.
+func (c Cloud) check() error {
+	if c.Provider != ProviderGCP {
+		return fmt.Errorf("cloud.provider %q: the CLI deploys to %s only", c.Provider, ProviderGCP)
+	}
+	if _, err := ConfidentialInstanceType(c.TEE); err != nil {
+		return err
+	}
+	if len(c.MachineTypes()) == 0 {
+		return fmt.Errorf("cloud.machine_family %q has no machine type with a registered image (%s)", c.MachineFamily, strings.Join(RegisteredMachineTypes, ", "))
+	}
+	return nil
 }
 
 // Settings is everything a command needs to reach the chain and the catalog.
@@ -107,7 +165,8 @@ type deploymentsFile struct {
 	DeployBlock uint64 `json:"deployBlock"`
 }
 
-// Load reads the defaults and deployments.
+// Load reads the defaults and deployments. It refuses defaults whose cloud block is not Google Cloud with Intel TDX,
+// or whose default_machine_type is not a registered machine type of cloud.machine_family.
 func Load(o Options) (*Settings, error) {
 	s := &Settings{DefaultsRaw: embedded.DefaultsYAML}
 	if o.DefaultsFile != "" {
@@ -122,6 +181,13 @@ func Load(o Options) (*Settings, error) {
 	}
 	if s.Defaults.Chain.ChainID == 0 || s.Defaults.Catalog.Registry == "" || s.Defaults.Catalog.ReleaseAssetBase == "" {
 		return nil, fmt.Errorf("defaults: chain.chain_id, catalog.registry and catalog.release_asset_base are required")
+	}
+	if err := s.Defaults.Cloud.check(); err != nil {
+		return nil, fmt.Errorf("defaults: %w", err)
+	}
+	if !slices.Contains(s.Defaults.Cloud.MachineTypes(), s.Defaults.DefaultMachineType) {
+		return nil, fmt.Errorf("defaults: default_machine_type %q is not a machine type of family %s with a registered image (%s)",
+			s.Defaults.DefaultMachineType, s.Defaults.Cloud.MachineFamily, strings.Join(s.Defaults.Cloud.MachineTypes(), ", "))
 	}
 	raw := embedded.MainnetDeployments
 	if o.DeploymentsFile != "" {

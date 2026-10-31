@@ -203,6 +203,9 @@ func verifyMachineDir(t *testing.T, dir string, appCompose []byte) (gcpMachineGo
 		if err := q.CheckProductionAttributes(); err != nil {
 			t.Errorf("%s/%s: %v", dir, c.Name, err)
 		}
+		if err := CheckXFAM(q.XFAM[:], repoXFAM(t)); err != nil {
+			t.Errorf("%s/%s: %v", dir, c.Name, err)
+		}
 		hexEq(t, dir+" td_attributes", q.TDAttributes[:], exp.TDAttributes)
 		hexEq(t, dir+" xfam", q.XFAM[:], exp.XFAM)
 		hexEq(t, dir+" tee_tcb_svn", q.TeeTcbSvn[:], exp.TeeTcbSvn)

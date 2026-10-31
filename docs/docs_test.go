@@ -1,13 +1,17 @@
 // Package docs_test checks that the public docs name what the code does: the composer version and golden stackHash,
 // the key broker's reason codes and key tags, the verifier's checks, the in-VM network layout, the agent's local API
 // and exact health fields, the payer's error types, the access-key selectors, and that every Go test the threat model
-// and the README cite exists. The docs carry no em-dashes.
+// and the README cite exists. It also keeps the pre-publish review's wording fixes: no tracked text file carries an
+// em-dash or a phrase BUILD_SPEC 1.2 rule 12 bans, no Markdown file presents an AI review as an audit, and the docs do
+// not claim release signature checks, name-scoped deployer addresses or an old composer version.
 package docs_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -58,22 +62,285 @@ func mustContain(t *testing.T, where, text string, wants ...string) {
 	}
 }
 
-func TestNoEmDashes(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
+// trackedFiles lists the repository's tracked files, relative to root, from `git ls-files`. In a tree without git
+// metadata (an exported copy) it falls back to every file outside the dependency, build and cache directories.
+func trackedFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	if out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output(); err == nil && len(out) > 0 {
+		for _, f := range strings.Split(string(out), "\x00") {
+			if f != "" {
+				files = append(files, filepath.FromSlash(f))
+			}
+		}
+		return files
+	}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "node_modules", "dependencies", ".git", "tmp", "out", "dist", "cache", "broadcast", ".terraform", "__pycache__":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		files = append(files, rel)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	files = append(files, filepath.Join(root, "README.md"))
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
+	return files
+}
+
+// textOf returns a tracked file's bytes, or nil when it is not a text file to check: missing from the work tree,
+// not a regular file, over 8 MiB, or binary (a NUL byte in its first 8000 bytes, git's own test).
+func textOf(t *testing.T, rel string) []byte {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 8<<20 {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
+		return nil
+	}
+	return b
+}
+
+func hasSegment(rel, seg string) bool {
+	for _, s := range strings.Split(filepath.ToSlash(rel), "/") {
+		if s == seg {
+			return true
 		}
-		for i, line := range strings.Split(string(b), "\n") {
-			if strings.ContainsRune(line, '—') {
-				t.Errorf("%s:%d has an em-dash", filepath.Base(f), i+1)
+	}
+	return false
+}
+
+// upstream reports a file whose text is not ours: an SPDX document (syft output) or an upstream license text under
+// a LICENSES directory.
+func upstream(rel string) bool {
+	base := filepath.Base(rel)
+	return strings.HasSuffix(base, ".spdx.json") || strings.HasSuffix(base, ".spdx") || hasSegment(rel, "LICENSES")
+}
+
+var testSource = regexp.MustCompile(`(_test\.go|_test\.py|\.test\.[cm]?[jt]s)$|(^|/)test_[^/]*\.py$`)
+
+// detectorWords marks a line that searches for a string or lists banned ones.
+var detectorWords = regexp.MustCompile(`(?i)contains|index|includes|match|search|banned|forbidden`)
+
+// detector reports whether line, from a test source file, is a detector for needle: needle appears only inside quoted
+// literals, and the line's own code (outside those literals) searches for it or lists it as banned. Detectors in this
+// file use escapes or split strings. The detector word must sit in code, not inside a string literal, so a line like
+// `return "index <em-dash> here"` is a violation, not an exemption (review policy-7 repair).
+func detector(rel, line, needle string) bool {
+	if !testSource.MatchString(filepath.ToSlash(rel)) {
+		return false
+	}
+	quoted := make([]bool, len(line))
+	var q byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		quoted[i] = q != 0
+		switch {
+		case q != 0 && q != '`' && c == '\\' && i+1 < len(line):
+			quoted[i+1] = true
+			i++
+		case q != 0 && c == q:
+			q = 0
+		case q == 0 && (c == '"' || c == '\'' || c == '`'):
+			q = c
+		}
+	}
+	var code []byte
+	for i := 0; i < len(line); i++ {
+		if !quoted[i] {
+			code = append(code, line[i])
+		}
+	}
+	if !detectorWords.Match(code) {
+		return false
+	}
+	found := false
+	for off := 0; ; {
+		j := strings.Index(line[off:], needle)
+		if j < 0 {
+			return found
+		}
+		if !quoted[off+j] {
+			return false
+		}
+		found = true
+		off += j + len(needle)
+	}
+}
+
+// TestDetectorNeedsWordOutsideQuotes: the detector-word exemption counts only words in a line's code, outside the
+// string literals (review policy-7 repair). A line whose only "contains"/"index"/... sits inside the quoted literal
+// that holds the needle does not search for anything, so it is a violation, not a detector. The repro the verifier
+// planted (`return "index <em-dash> here"`) is the second case.
+func TestDetectorNeedsWordOutsideQuotes(t *testing.T) {
+	const dash = "\u2014"
+	for _, c := range []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"word in code, dash in literal", "\tif strings.Contains(s, \"" + dash + "\") {", true},
+		{"word only inside the literal", "\treturn \"index " + dash + " here\"", false},
+		{"word only inside the literal, banned-ish", "\twant := \"a match for " + dash + "\"", false},
+		{"ContainsAny detector like the release tests", "\tif strings.ContainsAny(notes, \"" + dash + "\") {", true},
+		{"bare dash in a comment is not a detector", "\t// a stray " + dash + " in prose", false},
+		{"no detector word at all", "\tx := \"" + dash + "\"", false},
+	} {
+		if got := detector("x_test.go", c.line, dash); got != c.want {
+			t.Errorf("%s: detector(%q) = %v, want %v", c.name, c.line, got, c.want)
+		}
+	}
+	if detector("notes.md", "contains an "+dash, dash) {
+		t.Error("a non-test file is never a detector")
+	}
+}
+
+// emDashEntities are the HTML entities that render as an em-dash in Markdown and HTML (review policy-7 repair).
+var emDashEntities = []string{"&mdash;", "&#8212;", "&#x2014;"}
+
+// TestNoEmDashes: no tracked text file carries an em-dash (BUILD_SPEC 1.2 rule 12; review policy-7), not only the
+// docs, and no Markdown or HTML file smuggles one in as an entity. Binaries, SPDX documents, upstream license texts
+// and testdata are skipped, and a test may name the character in a detector.
+func TestNoEmDashes(t *testing.T) {
+	const dash = "\u2014"
+	files := trackedFiles(t)
+	seen := map[string]bool{}
+	for _, rel := range files {
+		if upstream(rel) || hasSegment(rel, "testdata") {
+			continue
+		}
+		b := textOf(t, rel)
+		if b == nil {
+			continue
+		}
+		seen[filepath.ToSlash(rel)] = true
+		if ext := strings.ToLower(filepath.Ext(rel)); ext == ".md" || ext == ".html" || ext == ".htm" {
+			for i, line := range strings.Split(string(b), "\n") {
+				for _, ent := range emDashEntities {
+					if strings.Contains(strings.ToLower(line), ent) && !detector(rel, line, ent) {
+						t.Errorf("%s:%d has the em-dash entity %q", filepath.ToSlash(rel), i+1, ent)
+					}
+				}
 			}
 		}
+		if !bytes.Contains(b, []byte(dash)) {
+			continue
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, dash) && !detector(rel, line, dash) {
+				t.Errorf("%s:%d has an em-dash", filepath.ToSlash(rel), i+1)
+			}
+		}
+	}
+	for _, want := range []string{"README.md", "docs/THREAT_MODEL.md", "docs/docs_test.go", "runtime/caddy/payment-needed.html", "catalog/apps/crm/README.md"} {
+		if !seen[want] {
+			t.Errorf("the scan did not read %s; the tracked file list is wrong", want)
+		}
+	}
+}
+
+// bannedPhrases are the product phrases BUILD_SPEC 1.2 rule 12 forbids, split so that this file is not a match.
+var bannedPhrases = []string{
+	"no " + "breaches",
+	"unbreak" + "able",
+	"zero-knowledge proof that data was never " + "exposed",
+	"zero knowledge proof that data was never " + "exposed",
+}
+
+var spaces = regexp.MustCompile(`\s+`)
+
+// TestBannedPhrases: no tracked text file uses a phrase BUILD_SPEC 1.2 rule 12 bans (review policy-7), in any case and
+// also across a line break. Binaries, SPDX documents and upstream license texts are skipped; a test may name a phrase
+// in a detector.
+func TestBannedPhrases(t *testing.T) {
+	for _, rel := range trackedFiles(t) {
+		if upstream(rel) {
+			continue
+		}
+		b := textOf(t, rel)
+		if b == nil {
+			continue
+		}
+		text := strings.ToLower(string(b))
+		lines := strings.Split(text, "\n")
+		flat := spaces.ReplaceAllString(text, " ")
+		for _, p := range bannedPhrases {
+			if !strings.Contains(flat, p) {
+				continue
+			}
+			onLines := 0
+			for i, line := range lines {
+				if n := strings.Count(line, p); n > 0 {
+					onLines += n
+					if !detector(rel, line, p) {
+						t.Errorf("%s:%d says %q (BUILD_SPEC 1.2 rule 12)", filepath.ToSlash(rel), i+1, p)
+					}
+				}
+			}
+			if strings.Count(flat, p) > onLines {
+				t.Errorf("%s says %q across a line break (BUILD_SPEC 1.2 rule 12)", filepath.ToSlash(rel), p)
+			}
+		}
+	}
+}
+
+// TestNoThirdPartyAuditClaim: every review of this code so far was done by AI review agents, and no external audit
+// has been done (review policy-2). No tracked Markdown file may present a review as an audit or as independent:
+// "independent audit", "independent auditor", "independent review", "auditor", "audited" or "audited by", and
+// "third-party audit", "external audit" or "security audit" unless negated ("not a third-party audit", "no external
+// audit"). "license audit" and test paths such as `test/audit/` stay allowed.
+func TestNoThirdPartyAuditClaim(t *testing.T) {
+	claim := regexp.MustCompile(`(?i)\bindependent (audit|review)\w*|\bauditors?\b|\baudited\b|\b(third[- ]party|external|security) audit\w*`)
+	negated := regexp.MustCompile(`(?i)\b(not an?|no|never an?|without an?)\s+$`)
+	license := regexp.MustCompile(`(?i)license[- ]$`)
+	checked := 0
+	for _, rel := range trackedFiles(t) {
+		if filepath.Ext(rel) != ".md" || upstream(rel) {
+			continue
+		}
+		b := textOf(t, rel)
+		if b == nil {
+			continue
+		}
+		checked++
+		text := spaces.ReplaceAllString(string(b), " ")
+		for _, loc := range claim.FindAllStringIndex(text, -1) {
+			m := strings.ToLower(text[loc[0]:loc[1]])
+			before := text[max(0, loc[0]-16):loc[0]]
+			switch {
+			case strings.HasPrefix(m, "audited") && license.MatchString(before):
+				continue
+			case strings.HasPrefix(m, "third") || strings.HasPrefix(m, "external") || strings.HasPrefix(m, "security"):
+				if negated.MatchString(before) {
+					continue
+				}
+			}
+			t.Errorf("%s says %q (...%s...): the reviews were AI agent reviews, not an audit", filepath.ToSlash(rel), text[loc[0]:loc[1]],
+				text[max(0, loc[0]-40):min(len(text), loc[1]+40)])
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("checked only %d Markdown files", checked)
 	}
 }
 
@@ -308,28 +575,96 @@ func TestCitedTestsExist(t *testing.T) {
 	}
 }
 
-// TestXFAMIsNotClaimedPinned: the key broker records XFAM and does not compare it with a pinned value
-// (key-broker/pcs.go tdConfig.check; D-070 is open), and the verifier only reports it. The docs must not say
-// otherwise. When XFAM pinning lands, change this test with the docs.
-func TestXFAMIsNotClaimedPinned(t *testing.T) {
-	stale := []string{
-		"TD_ATTRIBUTES and XFAM equal the values pinned",
-		"so both are pinned per image",
-		"both pinned per image",
-		"TD_ATTRIBUTES and XFAM against an approved",
-		"pinned TD attributes",
-		"so they are pinned per image",
+// TestXFAMPinnedByAllowlist (D-077, amending D-070): the key broker and the verifier refuse a quote whose XFAM is not
+// in tdx.allowed_xfam of config/defaults.yaml, one list for every image. The docs and the code must agree: the list is
+// the one the code uses, both components call the check, the docs say XFAM is pinned to that list, none keeps the old
+// wording (recorded but not pinned, or pinned per image), and every XFAM value the docs give is in the list.
+func TestXFAMPinnedByAllowlist(t *testing.T) {
+	allowed, err := attest.XFAMAllowlistFromDefaults([]byte(read(t, "config/defaults.yaml")))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, f := range []string{"docs/THREAT_MODEL.md", "docs/VERIFY.md", "docs/ARCHITECTURE.md", "docs/INTERFACES.md", "README.md"} {
+	def := attest.DefaultAllowedXFAM()
+	if len(allowed) != len(def) {
+		t.Fatalf("config/defaults.yaml tdx.allowed_xfam %v differs from attest.DefaultAllowedXFAM %v", allowed, def)
+	}
+	inList := map[uint64]bool{}
+	for i, v := range allowed {
+		if v != def[i] {
+			t.Fatalf("config/defaults.yaml tdx.allowed_xfam %v differs from attest.DefaultAllowedXFAM %v", allowed, def)
+		}
+		inList[v] = true
+	}
+	le := func(v uint64) []byte {
+		b := make([]byte, 8)
+		for i := range b {
+			b[i] = byte(v >> (8 * i))
+		}
+		return b
+	}
+	for _, v := range allowed {
+		if err := attest.CheckXFAM(le(v), allowed); err != nil {
+			t.Errorf("listed XFAM 0x%x refused: %v", v, err)
+		}
+		if out := v ^ 1<<9; !inList[out] && attest.CheckXFAM(le(out), allowed) == nil {
+			t.Errorf("XFAM 0x%x outside the list accepted", out)
+		}
+	}
+	// Both components call the shared check with their configured list.
+	for f, call := range map[string]string{
+		"key-broker/pcs.go":     "attest.CheckXFAM(td.XFAM, allowedXFAM)",
+		"key-broker/release.go": "td.check(s.b.cfg.AllowedXFAM)",
+		"verifier/core.go":      "s.deps.Quotes.CheckXFAM(s.quote)",
+	} {
+		mustContain(t, f, read(t, f), call)
+	}
+
+	stale := []string{
+		// recorded, not pinned (before D-077)
+		"not pinned yet", "XFAM is not pinned", "does not pin XFAM", "not compared with a pinned value", "XFAM is recorded, not pinned",
+		"XFAM only recorded", "XFAM recorded but not pinned", "XFAM and MROWNER are logged, not pinned", "until it is pinned",
+		"record XFAM", "but not pinned",
+		// pinned per image (D-077: one list for every image)
+		"TD_ATTRIBUTES and XFAM equal the values pinned", "so both are pinned per image", "both pinned per image",
+		"TD_ATTRIBUTES and XFAM against an approved", "pinned TD attributes", "so they are pinned per image", "pinned for its image",
+	}
+	const digits = "0123456789abcdef"
+	hexInBackticks := regexp.MustCompile("`0x([0-9a-f]{1,16})`")
+	for _, f := range []string{"docs/THREAT_MODEL.md", "docs/VERIFY.md", "docs/ARCHITECTURE.md", "docs/INTERFACES.md", "README.md",
+		"key-broker/README.md", "verifier/README.md"} {
 		text := read(t, f)
 		for _, s := range stale {
 			if strings.Contains(text, s) {
-				t.Errorf("%s claims XFAM is pinned (%q); the code records it only (D-070 open)", f, s)
+				t.Errorf("%s still says %q; XFAM is pinned to tdx.allowed_xfam (D-077)", f, s)
+			}
+		}
+		if f != "README.md" {
+			mustContain(t, f, text, "`tdx.allowed_xfam`", "D-077")
+		}
+		// An XFAM value named in the docs is a listed one. These lines also give TD_ATTRIBUTES 0x10000000.
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.Contains(strings.ToLower(line), "xfam") {
+				continue
+			}
+			for _, m := range hexInBackticks.FindAllStringSubmatch(line, -1) {
+				var v uint64
+				for _, c := range m[1] {
+					v = v<<4 | uint64(strings.IndexRune(digits, c))
+				}
+				if v != 1<<28 && !inList[v] {
+					t.Errorf("%s names XFAM `0x%s`, which is not in tdx.allowed_xfam %v", f, m[1], allowed)
+				}
 			}
 		}
 	}
-	if !strings.Contains(read(t, "key-broker/pcs.go"), "not pinned (deferred)") {
-		t.Error("key-broker/pcs.go no longer says XFAM is not pinned; if it is pinned now, update the docs and this test")
+	// VERIFY step 3 gives the listed value in the quote's byte order for the manual check.
+	verifyDoc := read(t, "docs/VERIFY.md")
+	for _, v := range allowed {
+		var hex []byte
+		for _, b := range le(v) {
+			hex = append(hex, digits[b>>4], digits[b&15])
+		}
+		mustContain(t, "docs/VERIFY.md", verifyDoc, "xfam `"+string(hex)+"`")
 	}
 }
 
@@ -469,5 +804,150 @@ func TestRepositoryNamedSealedtempo(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestVerifyReleaseRecipe: the slsa-verifier recipe in VERIFY.md pins the source branch and the builder (review
+// supply-8), the builder is the generator version release.yml calls, and cosign checks release.yml on main.
+func TestVerifyReleaseRecipe(t *testing.T) {
+	m := regexp.MustCompile(`uses: (slsa-framework/slsa-github-generator/\.github/workflows/generator_generic_slsa3\.yml)@(v[0-9]+\.[0-9]+\.[0-9]+)`).
+		FindStringSubmatch(read(t, ".github/workflows/release.yml"))
+	if m == nil {
+		t.Fatal("release.yml no longer calls generator_generic_slsa3.yml at a version tag; update VERIFY.md and this test")
+	}
+	builder := "https://github.com/" + m[1] + "@refs/tags/" + m[2]
+	doc := read(t, "docs/VERIFY.md")
+	i := strings.Index(doc, "slsa-verifier verify-artifact ")
+	if i < 0 {
+		t.Fatal("VERIFY.md has no slsa-verifier command")
+	}
+	cmd := doc[i:]
+	if j := strings.Index(cmd, "\n\n"); j >= 0 {
+		cmd = cmd[:j]
+	}
+	mustContain(t, "VERIFY.md's slsa-verifier command", cmd, "--source-uri github.com/sealedtempo/sealed", "--source-branch main", "--builder-id "+builder)
+	mustContain(t, "VERIFY.md's cosign command", doc,
+		"--certificate-identity https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main",
+		"--certificate-oidc-issuer https://token.actions.githubusercontent.com")
+}
+
+// TestReleaseSignaturesChecked: release CI signs each release with cosign keyless and adds SLSA provenance, and
+// `sealed verify` and sealed-verifierd check both in the `release_signature` check (review supply-2, PUB-N). The docs
+// name that check. The key broker's residual stays: it releases secrets on the bundleHash alone and checks neither
+// the signature nor the provenance, so for secret release a release is anchored by the OPS key and the release CI
+// (PUB-N does not touch the key broker). This test reads only the docs, so it holds whether or not the merged tree
+// already carries the verifier's signature check.
+func TestReleaseSignaturesChecked(t *testing.T) {
+	verify := read(t, "docs/VERIFY.md")
+	mustContain(t, "VERIFY.md's check table", verify, "| `release_signature` |", "cosign keyless", "SLSA provenance")
+	for _, line := range strings.Split(verify, "\n") {
+		if strings.HasPrefix(line, "| `stack_recompute` |") && strings.Contains(line, "signed") && !strings.Contains(line, "`release_signature` shows") {
+			t.Errorf("VERIFY.md's stack_recompute row claims signed releases on its own; the release_signature check proves that: %s", line)
+		}
+	}
+	mustContain(t, "THREAT_MODEL.md", read(t, "docs/THREAT_MODEL.md"),
+		"The key broker does not check release signatures.",
+		"accepts a bundle whose sha256 equals its onchain bundleHash",
+		"anchored by the OPS key and the release CI")
+}
+
+// TestDeployerScopeDocumented: the deployer's address permissions carry no name condition, because Google Cloud
+// cannot scope addresses by name, and it may set the metadata of sealed-* VMs (reviews kb-5 and kb-4). The docs must
+// not say its rights stop at sealed-* addresses, and must say what setMetadata lets it do.
+func TestDeployerScopeDocumented(t *testing.T) {
+	iam := read(t, "infra/terraform/customer-bootstrap/modules/iam/main.tf")
+	project := quoted(t, iam, "deployer_project_permissions = sort([", "])")
+	named := quoted(t, iam, "deployer_named_permissions = sort([", "])")
+	tm, readme := read(t, "docs/THREAT_MODEL.md"), read(t, "README.md")
+	if strings.Contains(strings.Join(project, " "), "compute.addresses.") {
+		for _, f := range []string{"README.md", "docs/THREAT_MODEL.md", "docs/ARCHITECTURE.md", "docs/INTERFACES.md"} {
+			if strings.Contains(read(t, f), "`sealed-*` VMs, disks and addresses") {
+				t.Errorf("%s says the deployer's rights stop at sealed-* addresses; its address permissions are project-wide", f)
+			}
+		}
+		mustContain(t, "THREAT_MODEL.md", tm, "cover every address in the project", "a project of its own")
+		mustContain(t, "README.md", readme, "cover every address in the project")
+	}
+	for _, p := range named {
+		if p == "compute.instances.setMetadata" {
+			mustContain(t, "THREAT_MODEL.md", tm, "`compute.instances.setMetadata`", "`serial-port-enable`", "`ssh-keys`")
+		}
+	}
+}
+
+// TestStatusNamesCurrentComposer: wherever the README, the threat model and the architecture doc name a composer
+// version, it is the current one, and the README and the threat model give the same devnet assertion count (the
+// README said composer 1.3.0 after 1.4.0 had merged).
+func TestStatusNamesCurrentComposer(t *testing.T) {
+	version := regexp.MustCompile(`(?i)\bcomposer (\d+\.\d+\.\d+)`)
+	count := regexp.MustCompile(`\b(\d+) assertions\b`)
+	counts := map[string]string{}
+	for _, f := range []string{"README.md", "docs/THREAT_MODEL.md", "docs/ARCHITECTURE.md"} {
+		text := read(t, f)
+		for _, m := range version.FindAllStringSubmatch(text, -1) {
+			if m[1] != composer.Version {
+				t.Errorf("%s names composer %s; the composer is %s", f, m[1], composer.Version)
+			}
+		}
+		for _, m := range count.FindAllStringSubmatch(text, -1) {
+			counts[m[1]] = f
+		}
+	}
+	if len(counts) != 1 {
+		t.Errorf("the README and the threat model give different devnet assertion counts: %v", counts)
+	}
+}
+
+// TestPrePublishWording: claims the pre-publish review found false stay out of the public docs.
+func TestPrePublishWording(t *testing.T) {
+	stale := []struct{ file, text, why string }{
+		{"docs/THREAT_MODEL.md", "from a chain head that is at most 60 seconds old (D-060); the platform", "kb-2: the approval is read at a head checked again before the seal"},
+		{"docs/THREAT_MODEL.md", "the block every later read is pinned to has a timestamp within 60 seconds", "kb-2: the image, release and recomputation reads pin that block; the approval reads use a freshly pinned head (step 9)"},
+		{"docs/THREAT_MODEL.md", "every check of one decision reads one pinned block", "kb-2: the approval is read at a fresh head"},
+		{"docs/INTERFACES.md", "every chain read is pinned to one block", "kb-2: the approval is read at a fresh head"},
+		{"docs/INTERFACES.md", "every later read is pinned to that block", "kb-2: the approval is read at a fresh head"},
+		{"docs/INTERFACES.md", "only inside `allowedPrivateCidrs`, and", "runtime-1: private addresses only for the caller's own IP-literal entries"},
+		{"docs/ARCHITECTURE.md", "dials private ranges only inside the config's `allowedVpcRanges`", "runtime-1: private addresses only for the caller's own IP-literal entries"},
+		{"docs/THREAT_MODEL.md", "A fresh review of the hardened code is still open", "status: the pre-publish review ran"},
+		{"README.md", "fresh security review of the hardened", "status: the pre-publish review ran"},
+		{"README.md", "will be recorded", "status: describe what is true now"},
+	}
+	for _, s := range stale {
+		if strings.Contains(read(t, s.file), s.text) {
+			t.Errorf("%s still says %q (%s)", s.file, s.text, s.why)
+		}
+	}
+	tm := read(t, "docs/THREAT_MODEL.md")
+	mustContain(t, "THREAT_MODEL.md", tm, "both when it reads the approval and when it seals the secrets", "IP-literal allow entry of that caller inside `allowedVpcRanges`",
+		"not by a third party; no external audit has been done")
+	mustContain(t, "INTERFACES.md section 12", section(t, read(t, "docs/INTERFACES.md"), "12"), "one of the caller's own allow entries", "every private address too")
+	mustContain(t, "INTERFACES.md section 11", section(t, read(t, "docs/INTERFACES.md"), "11"), "the settlement's outcome is `partial`")
+	mustContain(t, "contracts/README.md", read(t, "contracts/README.md"), "This is not a third-party audit; no external audit has been done.")
+}
+
+// TestVerifyReleaseDownloadUsesTagRule: the download recipe in VERIFY.md builds the release tag the way the composer
+// does (one leading v before a digit dropped). It used `$APP-v$VERSION`, which gives coding-agent-vv1.58.2. The TAG
+// line runs in sh for versions of each shape and must give composer.ReleaseTag.
+func TestVerifyReleaseDownloadUsesTagRule(t *testing.T) {
+	doc := read(t, "docs/VERIFY.md")
+	if strings.Contains(doc, "$APP-v$VERSION/") {
+		t.Error("VERIFY.md builds the release tag as $APP-v$VERSION; the tag is <appId>-v<tagVersion>")
+	}
+	m := regexp.MustCompile(`(?m)^(TAG=[^#\n]*?)\s+#`).FindStringSubmatch(doc)
+	if m == nil {
+		t.Fatal("VERIFY.md's release recipe has no TAG= line")
+	}
+	mustContain(t, "VERIFY.md's release recipe", doc, "curl -LO $B/$TAG/$APP-$VERSION.bundle.tar\n")
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	for _, v := range []string{"v1.58.2", "V2.0.1", "10.0.11", "v3.20.251-lts", "vnext", "0.1.0"} {
+		out, err := exec.Command("sh", "-c", "APP=coding-agent VERSION='"+v+"'\n"+m[1]+"\nprintf %s \"$TAG\"").Output()
+		if err != nil {
+			t.Fatalf("running %q: %v", m[1], err)
+		}
+		if want := composer.ReleaseTag("coding-agent", v); string(out) != want {
+			t.Errorf("VERIFY.md's TAG line gives %q for version %s; the composer's tag is %q", out, v, want)
+		}
 	}
 }

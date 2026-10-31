@@ -116,15 +116,41 @@ same as without this hook.
 | 3 comment lines | Explain the condition |
 | `if [[ ${SEALED_IMAGE_VARIANT:-prod} == debug ]]; then components+=(sealed-logship); fi` | The `sealed-debug` profile (overlay) sets `SEALED_IMAGE_VARIANT=debug`; nothing else does, so the production variant never builds or ships the exporter |
 
+## 0008 mkosi: ship the Go and project license texts for sysbox and the container stack
+
+`os/mkosi/components/sysbox/sysbox-build.sh`, 21 lines added before the final
+`find "$STAGE" ... touch`
+
+| Lines | Why |
+|---|---|
+| comment (8 lines) | Explains why the texts are installed under `/usr/share/licenses` |
+| `goroot=$(go env GOROOT)`, two `sha256sum -c` checks, two `install -Dm0644 "$goroot/..."` | Go's `LICENSE` and `PATENTS` (BSD-3-Clause, the same sha256 as `runtime/envexec` and `sealed-logship`) into `/usr/share/licenses/sysbox/go`. The binaries are Go programs, so they carry the standard library notice |
+| `for mod in sysbox-runc sysbox-fs sysbox-mgr` loop (sha256 check, `install -Dm0644 "$B/$mod/LICENSE"`) | Each module's Apache-2.0 `LICENSE` from its pinned source checkout into `/usr/share/licenses/sysbox/<mod>-LICENSE` (git blobs `sysbox-runc` `385b1fd2`, `sysbox-fs`/`sysbox-mgr` `c6087d5b`) |
+
+`os/mkosi/components/container-stack/container-stack-build.sh`, 23 lines added
+before the final `find "$STAGE" ... touch`
+
+| Lines | Why |
+|---|---|
+| comment (8 lines) | Explains the pinned texts (the release tarballs carry no license file) |
+| `goroot=$(go env GOROOT)`, two `sha256sum -c` checks, two `install -Dm0644 "$goroot/..."` | Go's `LICENSE` and `PATENTS` into `/usr/share/licenses/container-stack/go` |
+| `LICENSES="$SELF/components/container-stack/licenses"`, `for proj in nerdctl cni-plugins stargz-snapshotter` loop (sha256 check, `install -Dm0644 "$LICENSES/$proj-LICENSE"`) | Each project's Apache-2.0 `LICENSE`, pinned in the overlay, into `/usr/share/licenses/container-stack/<proj>-LICENSE` (git blobs nerdctl/stargz `d6456956`, CNI `8dada3ed`) |
+
+Neither change touches a measured removal or a required path, so upstream's
+static contract and `check-parity.py` are unaffected. `check_image.py` requires
+all ten paths on both the prod and the debug disk.
+
 ## Overlay commit (`overlay/`, not a patch)
 
 New files, added verbatim in one commit with fixed metadata:
 
 | File | Purpose |
 |---|---|
+| `os/mkosi/mkosi.skeleton/usr/lib/sysctl.d/90-sealed-sysrq.conf` | `-kernel.sysrq = 0` in both variants (review kb-4). The kernel is built with `CONFIG_MAGIC_SYSRQ=n`, so this only matters if a later kernel config turns SysRq on; the leading `-` makes systemd-sysctl ignore the missing key until then. The host owns the serial port, and SysRq over a serial BREAK can reboot, crash or dump the guest. `check_image.py` fails the build unless `kernel.sysrq` ends up 0, the UKI command line does not turn SysRq on (`sysrq_always_enabled`, or `sysctl.kernel.sysrq` other than 0), and a kernel with SysRq starts with it off |
 | `os/mkosi/mkosi.profiles/sealed-debug/mkosi.conf` | `[Build] Environment=SEALED_IMAGE_VARIANT=debug`. Always used as `--profile=prod,sealed-debug`, so it inherits every production removal and adds nothing else (`build.sh lint` rejects `Packages=`, `RemoveFiles=` or `ExtraTrees=` in it) |
 | `os/mkosi/components/sealed-logship/sealed-logship.sh` | Component descriptor in upstream's component framework (cache key inputs for development builds, build entry point) |
 | `os/mkosi/components/sealed-logship/sealed-logship-build.sh` | `go build -trimpath -buildvcs=false -ldflags='-s -w -buildid='` with `CGO_ENABLED=0`, `GOPROXY=off` and upstream's pinned Go 1.26.2 (`GOTOOLCHAIN=local`), then installs the unit and preset |
 | `os/mkosi/components/sealed-logship/sealed-logship.service` | Runs the exporter after Docker, restart always, systemd sandboxing (read-only system, no capabilities, no new privileges), status to the serial console |
 | `os/mkosi/components/sealed-logship/82-dstack-sealed-debug.preset` | `enable sealed-logship.service`. The name contains `dstack` because upstream's `mkosi.postinst` deletes every other preset file |
 | `os/sealed/logship/*.go`, `go.mod` | Copied by `build.sh prepare` from `runtime/images/dstack-os/logship` (tests excluded), module `sealed.dev/logship`, `go 1.26`, no requirements |
+| `os/mkosi/components/container-stack/licenses/{nerdctl,cni-plugins,stargz-snapshotter}-LICENSE` | The three projects' Apache-2.0 texts at the pinned release tags (the binary tarballs ship no license file). Patch 0008 sha256-checks and installs them. Kept byte for byte by `runtime/images/dstack-os/.gitattributes` (`-text`) |

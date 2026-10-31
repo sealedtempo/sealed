@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stripe/goproxy"
+	"github.com/stripe/smokescreen/pkg/smokescreen"
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
 
 	"github.com/sealedtempo/sealed/runtime/egress/auth"
@@ -156,9 +159,93 @@ func TestDeciderDeniesUnlessAllowlisted(t *testing.T) {
 func TestDialRechecksIP(t *testing.T) {
 	p := newTestProxy(t)
 	for _, addr := range []string{"169.254.169.254:80", "127.0.0.1:443", "10.0.0.1:443", "[fe80::1]:443", "api.example.com:443", "garbage"} {
-		if _, err := p.dial(context.Background(), "tcp", addr, time.Second); err == nil {
-			t.Errorf("dial(%s) allowed", addr)
+		// As the raw IP itself, as an allowlisted name resolving to it, and
+		// with no smokescreen decision at all.
+		for _, ctx := range []context.Context{decisionCtx("alpha", addr), decisionCtx("alpha", "api.example.com:443"), context.Background()} {
+			if _, err := p.dial(ctx, "tcp", addr, time.Second); err == nil {
+				t.Errorf("dial(%s) allowed", addr)
+			}
 		}
+	}
+}
+
+// decisionCtx is the context smokescreen hands to dial: the goproxy ctx
+// carrying its decision for role and the requested host:port.
+func decisionCtx(role, outboundHost string) context.Context {
+	sctx := &smokescreen.SmokescreenContext{Decision: &smokescreen.ACLDecision{Role: role, OutboundHost: outboundHost}}
+	return context.WithValue(context.Background(), goproxy.ProxyContextKey, &goproxy.ProxyCtx{UserData: sctx})
+}
+
+// TestDialChecksTheCallerAndRequestedHost: dial admits a private address
+// only for the caller that lists it as a raw IP entry and only when the
+// request named that address, never for a hostname (runtime-1).
+func TestDialChecksTheCallerAndRequestedHost(t *testing.T) {
+	for _, v := range proxyEnvVars {
+		t.Setenv(v, "")
+	}
+	cfg := &policy.Config{
+		Listen:      &policy.Listen{Proxy: "127.0.0.1:0", DNS: "127.0.0.1:0", Stats: "127.0.0.1:0"},
+		UpstreamDNS: []string{"127.0.0.1:53"},
+		Callers: []policy.Caller{
+			{Name: "alpha", IP: "172.30.0.16", Allow: []string{"10.20.0.5:443", "api.example.com:443"}},
+			{Name: "beta", IP: "172.30.0.17", Allow: []string{"beta-site.example:443"}},
+		},
+		AllowedPrivateCIDRs: []string{"10.20.0.0/16"},
+		StatsReaders:        []string{},
+	}
+	pol, err := policy.Compile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dialed []string
+	p, err := New(Options{
+		Policy:   pol,
+		Resolver: upstream.New(pol.Upstreams(), time.Second),
+		Stats:    stats.New(time.Now(), 0),
+		SourceIP: func(ap netip.AddrPort) netip.Addr { return ap.Addr() },
+		Dial: func(_ context.Context, _, addr string) (net.Conn, error) {
+			dialed = append(dialed, addr)
+			c, peer := net.Pipe()
+			peer.Close()
+			return c, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		ctx  context.Context
+		addr string
+		ok   bool
+	}{
+		{decisionCtx("alpha", "10.20.0.5:443"), "10.20.0.5:443", true},
+		{decisionCtx("alpha", "api.example.com:443"), "203.0.113.10:443", true},
+		{decisionCtx("beta", "beta-site.example:443"), "10.20.0.5:443", false}, // rebinding onto alpha's entry
+		{decisionCtx("alpha", "api.example.com:443"), "10.20.0.5:443", false},  // rebinding onto its own entry
+		{decisionCtx("beta", "10.20.0.5:443"), "10.20.0.5:443", false},         // not beta's entry
+		{decisionCtx("alpha", "10.20.0.5:443"), "10.20.0.5:80", false},         // another port
+		{decisionCtx("nobody", "10.20.0.5:443"), "10.20.0.5:443", false},       // unknown role
+		{context.Background(), "203.0.113.10:443", false},                      // no decision
+	}
+	for _, c := range cases {
+		conn, err := p.dial(c.ctx, "tcp", c.addr, time.Second)
+		if conn != nil {
+			conn.Close()
+		}
+		if (err == nil) != c.ok {
+			t.Errorf("dial(%s) err = %v, want ok=%v", c.addr, err, c.ok)
+		}
+	}
+	if fmt.Sprint(dialed) != "[10.20.0.5:443 203.0.113.10:443]" {
+		t.Errorf("dialed = %v", dialed)
+	}
+	// Smokescreen's own rules: only the vpc instance admits a private
+	// address, and only the listed ip:port.
+	if len(p.cfgs[0].AllowRanges) != 0 {
+		t.Errorf("names instance allows %v", p.cfgs[0].AllowRanges)
+	}
+	if r := p.cfgs[1].AllowRanges; len(r) != 1 || r[0].Net.String() != "10.20.0.5/32" || r[0].Port != 443 {
+		t.Errorf("vpc instance allows %v", r)
 	}
 }
 

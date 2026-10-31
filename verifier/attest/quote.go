@@ -5,6 +5,7 @@ package attest
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
 	"fmt"
 
@@ -74,7 +75,10 @@ type ParseOptions struct {
 //
 // raw must be exactly the signed quote: header, body and signature data. Bytes after the signature data are covered
 // by no signature, so accepting them would let anyone derive new quoteHash values from one real quote; producers
-// strip padding with TrimQuote.
+// strip padding with TrimQuote. For the same reason the PCK certificate chain must be in canonical PEM form
+// (checkCertChainEncoding). What stays malleable is ECDSA itself: the quote signature and the QE report signature
+// each also verify as (r, n-s), so one attestation has up to four encodings and quoteHash does not name it uniquely.
+// Freshness rests on report_data (nonces, attestedAt), never on quoteHash.
 func ParseQuote(raw []byte, opts ParseOptions) (*Quote, error) {
 	if IsSimulatedQuote(raw) {
 		if !opts.AllowSimulated {
@@ -96,11 +100,50 @@ func ParseQuote(raw []byte, opts ParseOptions) (*Quote, error) {
 		}
 		return nil, fmt.Errorf("%w: %d unsigned bytes (%s) after the signature data; send exactly the signed quote", ErrQuoteInvalid, len(extra), kind)
 	}
+	if err := checkCertChainEncoding(p); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrQuoteInvalid, err)
+	}
 	q := &Quote{Raw: bytes.Clone(raw), proto: p}
 	if err := q.extract(p); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrQuoteInvalid, err)
 	}
 	return q, nil
+}
+
+// checkCertChainEncoding requires the PCK certificate chain of the signature data to be exactly the PEM encoding
+// pem.Encode gives its certificates (64-column base64, LF line ends, no headers), optionally followed by the one NUL
+// byte some quote generation libraries write. Only the decoded certificates are authenticated, through the chain to
+// the Intel SGX Root CA: PEM decoding skips spaces, tabs and CRs in the base64 and ignores padding bits, so without
+// this check anyone could rewrite one real quote into many byte strings that verify (fuzz finding, FuzzVerifyQuote).
+// Every captured quote (GCE C3 on three machine shapes, the Intel and go-tdx-guest samples) is canonical.
+func checkCertChainEncoding(p any) error {
+	s, ok := p.(interface {
+		GetSignedData() *pb.Ecdsa256BitQuoteV4AuthData
+	})
+	if !ok {
+		return fmt.Errorf("unsupported quote type %T", p)
+	}
+	chain := s.GetSignedData().GetCertificationData().GetQeReportCertificationData().GetPckCertificateChainData().GetPckCertChain()
+	var canon []byte
+	rest := chain
+	for {
+		blk, r := pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		canon = append(canon, pem.EncodeToMemory(&pem.Block{Type: blk.Type, Bytes: blk.Bytes})...)
+		rest = r
+	}
+	if len(canon) == 0 {
+		return errors.New("the signature data carries no PEM PCK certificate chain")
+	}
+	if len(rest) == 1 && rest[0] == 0 {
+		canon = append(canon, 0)
+	}
+	if !bytes.Equal(canon, chain) {
+		return errors.New("the PCK certificate chain is not in canonical PEM form; send the quote exactly as it was generated")
+	}
+	return nil
 }
 
 func extraBytes(p any) []byte {

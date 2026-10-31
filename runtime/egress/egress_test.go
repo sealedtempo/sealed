@@ -213,6 +213,7 @@ func startEnvWith(t *testing.T, mutate func(cfg *policy.Config, opts *egress.Opt
 		"203.0.113.30:80":  httpAddr,
 		"198.51.100.7:443": tlsAddr,
 		"10.20.0.5:443":    tlsAddr,
+		"10.20.0.5:80":     httpAddr,
 		"203.0.113.66:443": tlsAddr, // must never be used
 		"203.0.113.66:80":  httpAddr,
 	}}
@@ -234,6 +235,7 @@ func startEnvWith(t *testing.T, mutate func(cfg *policy.Config, opts *egress.Opt
 				"vpc.alpha.test:443",
 				"big.alpha.test:443",
 				"198.51.100.7:443",
+				"10.20.0.5:443",
 			}},
 			{Name: "beta", IP: betaIP.String(), Allow: []string{"beta.test:443"}},
 		},
@@ -390,12 +392,12 @@ func TestAllowedHostWorksOverConnectAndHTTP(t *testing.T) {
 	if code, body := e.get(alphaIP, "https://198.51.100.7/ip"); code != http.StatusOK {
 		t.Fatalf("allowlisted raw IP: %d %q", code, body)
 	}
-	if code, body := e.get(alphaIP, "https://vpc.alpha.test/vpc"); code != http.StatusOK {
-		t.Fatalf("private address inside allowedPrivateCidrs: %d %q", code, body)
+	if code, body := e.get(alphaIP, "https://10.20.0.5/vpc"); code != http.StatusOK {
+		t.Fatalf("allowlisted raw IP inside allowedPrivateCidrs: %d %q", code, body)
 	}
 	_, s := e.stats(agentIP)
 	a := s.Callers["alpha"].Allowed
-	for _, key := range []string{"api.alpha.test:443", "api.alpha.test:80", "*.wild.alpha.test:443", "198.51.100.7:443", "vpc.alpha.test:443"} {
+	for _, key := range []string{"api.alpha.test:443", "api.alpha.test:80", "*.wild.alpha.test:443", "198.51.100.7:443", "10.20.0.5:443"} {
 		if a[key] != 1 {
 			t.Errorf("allowed[%s] = %d, want 1 (all: %v)", key, a[key], a)
 		}
@@ -965,6 +967,91 @@ func TestRebindingBlockedOverPlainHTTP(t *testing.T) {
 	}
 }
 
+// TestVPCRangeIsPerCallerAndNeverReachedByName is the runtime-1 regression.
+// allowedPrivateCidrs is stack-wide, but only a raw IP entry opens a private
+// address, and only for the caller that lists it, on its port. A hostname
+// entry never reaches a private address, so a caller that controls a
+// listed name's DNS cannot rebind it onto a VPC host, not even onto one
+// another caller (or the same caller) lists as a raw IP.
+func TestVPCRangeIsPerCallerAndNeverReachedByName(t *testing.T) {
+	e := startEnvWith(t, func(cfg *policy.Config, _ *egress.Options) {
+		for i := range cfg.Callers {
+			switch cfg.Callers[i].Name {
+			case "alpha":
+				cfg.Callers[i].Allow = append(cfg.Callers[i].Allow, "10.20.0.7:80")
+			case "beta":
+				cfg.Callers[i].Allow = []string{"beta-other.test:443", "beta-site.test:443", "beta-site.test:80"}
+			}
+		}
+	})
+	e.routes.mu.Lock()
+	e.routes.table["10.20.0.7:80"] = e.routes.table["203.0.113.10:80"]
+	e.routes.mu.Unlock()
+	// beta controls beta-site.test and answers with alpha's VPC host, then
+	// with a VPC host nobody lists.
+	e.dns.AddA("beta-site.test", "10.20.0.5")
+	e.dns.AddA("beta-other.test", "10.20.0.9")
+
+	for _, name := range []string{"beta-site.test", "beta-other.test"} {
+		r := e.lookup(betaIP, "udp", name, dns.TypeA)
+		if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
+			t.Errorf("DNS %s for beta: rcode %s, answers %v; want NOERROR without the VPC address", name, dns.RcodeToString[r.Rcode], r.Answer)
+		}
+	}
+	r := e.lookup(alphaIP, "udp", "vpc.alpha.test", dns.TypeA)
+	if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
+		t.Errorf("DNS vpc.alpha.test for alpha: answers %v; want none", r.Answer)
+	}
+
+	for _, c := range []struct {
+		as     netip.Addr
+		target string
+	}{
+		{betaIP, "beta-site.test:443"},  // rebinding onto alpha's raw IP entry
+		{betaIP, "beta-other.test:443"}, // rebinding onto a VPC host nobody lists
+		{betaIP, "10.20.0.5:443"},       // alpha's raw IP entry is not beta's
+		{alphaIP, "vpc.alpha.test:443"}, // a name, even onto the caller's own raw IP entry
+		{alphaIP, "10.20.0.5:80"},       // the raw IP entry opens one port only
+	} {
+		if code := e.connect(c.as, c.target); code != http.StatusForbidden {
+			t.Errorf("CONNECT %s as %s = %d, want 403", c.target, c.as, code)
+		}
+	}
+	if code, body := e.get(betaIP, "https://beta-site.test/internal"); code == http.StatusOK {
+		t.Errorf("beta GET https://beta-site.test/internal = %d %q", code, body)
+	}
+	if code := e.raw(betaIP, http.MethodGet, "http://beta-site.test/internal"); code != http.StatusForbidden {
+		t.Errorf("beta plain HTTP rebinding = %d, want 403", code)
+	}
+	if e.routes.wasDialed("10.20.") {
+		t.Fatalf("proxy dialed a VPC address for a name or another caller: %v", e.routes.dialed)
+	}
+
+	// The caller that lists the raw IP still reaches it, over CONNECT and
+	// over plain HTTP.
+	if code, body := e.get(alphaIP, "https://10.20.0.5/vpc"); code != http.StatusOK || body != "tls 10.20.0.5 /vpc" {
+		t.Errorf("alpha's raw IP entry 10.20.0.5:443 = %d %q", code, body)
+	}
+	if code, body := e.get(alphaIP, "http://10.20.0.7/plain"); code != http.StatusOK || body != "http 10.20.0.7 /plain" {
+		t.Errorf("alpha's raw IP entry 10.20.0.7:80 = %d %q", code, body)
+	}
+
+	_, s := e.stats(agentIP)
+	beta := s.Callers["beta"]
+	if len(beta.Allowed) != 0 {
+		t.Errorf("beta allowed = %v, want nothing", beta.Allowed)
+	}
+	// Name denials count under the entry: the raw CONNECT and the HTTPS
+	// client on :443, the plain HTTP request on :80.
+	if beta.Blocked["beta-site.test:443"] != 2 || beta.Blocked["beta-site.test:80"] != 1 || beta.Blocked["beta-other.test:443"] != 1 || beta.Blocked["ip-private:443"] != 1 {
+		t.Errorf("beta blocked = %v", beta.Blocked)
+	}
+	alpha := s.Callers["alpha"]
+	if alpha.Allowed["10.20.0.5:443"] != 1 || alpha.Allowed["10.20.0.7:80"] != 1 || alpha.Blocked["vpc.alpha.test:443"] != 1 {
+		t.Errorf("alpha allowed = %v, blocked = %v", alpha.Allowed, alpha.Blocked)
+	}
+}
+
 // TestKeepAliveSecondRequestIsCheckedToo sends two pipelined requests on one
 // proxy connection; the second targets a blocked host.
 func TestKeepAliveSecondRequestIsCheckedToo(t *testing.T) {
@@ -1022,11 +1109,14 @@ func TestLocalNetworksAreDenied(t *testing.T) {
 }
 
 // TestSelfConnectionIsDenied resolves an allowed name to one of this host's
-// own interface addresses; smokescreen's self-connection guard must stop it.
+// own interface addresses, and lists that address as a raw IP entry too;
+// smokescreen's self-connection guard must stop both. (A name resolving to
+// a private address is refused before that guard; the raw IP entry still
+// reaches it.)
 func TestSelfConnectionIsDenied(t *testing.T) {
 	self := ownInterfaceIPv4(t)
 	e := startEnvWith(t, func(cfg *policy.Config, _ *egress.Options) {
-		cfg.Callers[1].Allow = append(cfg.Callers[1].Allow, "self.alpha.test:443")
+		cfg.Callers[1].Allow = append(cfg.Callers[1].Allow, "self.alpha.test:443", self.String()+":443")
 		if policy.Classify(self) == policy.ClassPrivate {
 			pfx := netip.PrefixFrom(self, 32)
 			for _, s := range cfg.AllowedPrivateCIDRs {
@@ -1041,8 +1131,10 @@ func TestSelfConnectionIsDenied(t *testing.T) {
 	e.routes.mu.Lock()
 	e.routes.table[self.String()+":443"] = e.routes.table["203.0.113.10:443"]
 	e.routes.mu.Unlock()
-	if code := e.connect(alphaIP, "self.alpha.test:443"); code != http.StatusForbidden {
-		t.Errorf("CONNECT to the proxy's own address = %d, want 403", code)
+	for _, target := range []string{"self.alpha.test:443", self.String() + ":443"} {
+		if code := e.connect(alphaIP, target); code != http.StatusForbidden {
+			t.Errorf("CONNECT %s, the proxy's own address = %d, want 403", target, code)
+		}
 	}
 	if e.routes.wasDialed(self.String()) {
 		t.Error("proxy dialed itself")

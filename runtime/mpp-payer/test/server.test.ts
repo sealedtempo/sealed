@@ -174,11 +174,66 @@ describe('payer OpenAI passthrough', () => {
       expect((await broken.app.request('/v1/chat/completions', post(ask))).status).toBe(424)
     })
 
-    it('answers 502 relay_session_failed when a session request failed after it was sent', async () => {
+    // payments-6: a 502 here was retried by the OpenAI SDKs and OpenHands, and each retry was a new paid session.
+    it('answers 424 relay_session_failed (not retried) when a session request failed after it was sent', async () => {
       const { app } = setup(async () => Promise.reject(new RelaySessionFailedError('sent', { cause: new Error('reset') })))
       const res = await app.request('/v1/chat/completions', post(ask))
-      expect(res.status).toBe(502)
+      expect(res.status).toBe(424)
       expect((await res.json()).error.type).toBe('relay_session_failed')
+    })
+  })
+
+  describe('sessions the relay could not serve (payments-6)', () => {
+    const unserved = (error: Record<string, unknown>, tail: string[] = []) =>
+      setup(async () => ({
+        kind: 'session',
+        events: (async function* () {
+          yield JSON.stringify({ error })
+          yield* tail
+        })(),
+      }))
+
+    it('answers 503 with charged: false when the relay credited everything back, so a retry is free', async () => {
+      for (const body of [ask, { ...ask, stream: true }]) {
+        const { app, pokes } = unserved({ type: 'upstream_unreachable', charged: false })
+        const res = await app.request('/v1/chat/completions', post(body))
+        expect(res.status).toBe(503)
+        expect(res.headers.get('content-type')).toContain('application/json')
+        expect((await res.json()).error).toMatchObject({ type: 'upstream_unreachable', charged: false })
+        expect(pokes()).toBeGreaterThan(0)
+      }
+      const upstream = await unserved({ type: 'upstream_error', status: 500, charged: false }).app.request('/v1/chat/completions', post(ask))
+      expect(upstream.status).toBe(503)
+      expect((await upstream.json()).error).toMatchObject({ type: 'upstream_error', charged: false, upstream_status: 500 })
+    })
+
+    it('answers 424 when the relay kept a charge or does not say, for stream and non-stream callers', async () => {
+      for (const error of [{ type: 'upstream_unreachable', charged: true }, { type: 'upstream_error' }, { message: 'provider dropped' }]) {
+        for (const body of [ask, { ...ask, stream: true }]) {
+          const res = await unserved(error).app.request('/v1/chat/completions', post(body))
+          expect(res.status).toBe(424)
+          expect((await res.json()).error.type).toBe('relay_failed_after_payment')
+        }
+      }
+    })
+
+    it('reads the session to its end before answering, and still streams a session whose first event is content', async () => {
+      let drained = false
+      const { app } = setup(async () => ({
+        kind: 'session',
+        events: (async function* () {
+          yield JSON.stringify({ error: { type: 'upstream_unreachable', charged: false } })
+          drained = true
+        })(),
+      }))
+      expect((await app.request('/v1/chat/completions', post({ ...ask, stream: true }))).status).toBe(503)
+      expect(drained).toBe(true)
+      const ok = setup(async () => ({ kind: 'session', events: sessionEvents(['Hel', 'lo']) }))
+      const res = await ok.app.request('/v1/chat/completions', post({ ...ask, stream: true }))
+      expect(res.status).toBe(200)
+      const frames = (await res.text()).split('\n\n').filter(Boolean)
+      expect(frames.filter((f) => f.includes('"content":"Hel"'))).toHaveLength(1)
+      expect(frames.at(-1)).toBe('data: [DONE]')
     })
   })
 })

@@ -12,7 +12,12 @@ import {IPlatformRegistry} from "../src/interfaces/IPlatformRegistry.sol";
 ///         Idempotent: images and apps that already exist are skipped, so the script can be re-run after adding
 ///         entries.
 /// @dev Environment:
-///      OWNER_PRIVATE_KEY           required.
+///      OWNER_PRIVATE_KEY           the owner's key; or, without it,
+///      OWNER_ADDRESS               the owner's address, signed for by the wallet on forge's command line, e.g.
+///                                  `--ledger --sender $OWNER_ADDRESS` (hardware wallet) or `--unlocked --sender
+///                                  $OWNER_ADDRESS` (an anvil fork that impersonates the owner). When both are set
+///                                  they must name the same account. Either way the account must own AppRegistry
+///                                  and PlatformRegistry, or the script stops before sending anything.
 ///      CATALOG_FILE                default catalog/catalog.mainnet.json (forge reads only under ./catalog and
 ///                                  ./test/fixtures).
 ///      DEPLOYMENTS_FILE            default deployments/<network>.json (addresses are read from it).
@@ -25,6 +30,9 @@ import {IPlatformRegistry} from "../src/interfaces/IPlatformRegistry.sol";
 ///                      "metadataURI", "appId" (optional; must equal keccak256(slug)) } ] }
 ///      Keys starting with "_" are comments, except "_pending": an app that carries it is not ready, and the
 ///      whole file is refused before anything is sent (slug, name and licenseSpdx are permanent onchain).
+///      An image whose measurementsHash is already registered under another imageId is skipped too: PlatformRegistry
+///      keeps one image per measurement set (CR-5), so two machine shapes that measured the same (D-070, D-078) share
+///      the first one's imageId.
 contract RegisterCatalog is Script {
     struct ImageEntry {
         bytes32 imageId;
@@ -52,21 +60,36 @@ contract RegisterCatalog is Script {
     error AppIdMismatch(string slug, bytes32 appId, bytes32 expected);
     /// @notice The entry carries "_pending": a value is still a placeholder.
     error PendingEntry(string slug);
+    /// @notice Neither OWNER_PRIVATE_KEY nor OWNER_ADDRESS is set.
+    error NoOwner();
+    /// @notice OWNER_ADDRESS is not the address of OWNER_PRIVATE_KEY.
+    error OwnerMismatch(address ownerAddress, address keyAddress);
+    /// @notice The broadcasting account does not own both registries.
+    error NotOwner(address sender, address appRegistryOwner, address platformRegistryOwner);
 
     function run() external {
-        uint256 ownerKey = vm.envUint("OWNER_PRIVATE_KEY");
+        address owner = resolveOwner(vm.envOr("OWNER_PRIVATE_KEY", uint256(0)), vm.envOr("OWNER_ADDRESS", address(0)));
         string memory catalog = vm.readFile(vm.envOr("CATALOG_FILE", string("catalog/catalog.mainnet.json")));
         string memory deployments = vm.readFile(vm.envOr("DEPLOYMENTS_FILE", _defaultDeploymentsFile()));
         AppRegistry apps = AppRegistry(vm.parseJsonAddress(deployments, ".contracts.AppRegistry.address"));
         PlatformRegistry platform =
             PlatformRegistry(vm.parseJsonAddress(deployments, ".contracts.PlatformRegistry.address"));
         address defaultMaintainer = vm.envOr("MAINTAINER_DEFAULT_ADDRESS", address(0));
-        register(catalog, apps, platform, ownerKey, defaultMaintainer);
+        registerAs(catalog, apps, platform, owner, defaultMaintainer);
     }
 
-    /// @notice Registers every image and app of `catalog` that is not registered yet.
-    /// @return imagesAdded Number of images added.
-    /// @return appsAdded Number of apps registered.
+    /// @notice The account that broadcasts. With a key, its address, and forge remembers the key to sign with it.
+    ///         Without one, `ownerAddress`, which forge signs for with the wallet given on its command line.
+    function resolveOwner(uint256 ownerKey, address ownerAddress) public returns (address owner) {
+        if (ownerKey == 0) {
+            if (ownerAddress == address(0)) revert NoOwner();
+            return ownerAddress;
+        }
+        owner = vm.rememberKey(ownerKey);
+        if (ownerAddress != address(0) && ownerAddress != owner) revert OwnerMismatch(ownerAddress, owner);
+    }
+
+    /// @notice registerAs with the account of `ownerKey`.
     function register(
         string memory catalog,
         AppRegistry apps,
@@ -74,14 +97,37 @@ contract RegisterCatalog is Script {
         uint256 ownerKey,
         address defaultMaintainer
     ) public returns (uint256 imagesAdded, uint256 appsAdded) {
+        return registerAs(catalog, apps, platform, resolveOwner(ownerKey, address(0)), defaultMaintainer);
+    }
+
+    /// @notice Registers, from `owner`, every image and app of `catalog` that is not registered yet.
+    /// @return imagesAdded Number of images added.
+    /// @return appsAdded Number of apps registered.
+    function registerAs(
+        string memory catalog,
+        AppRegistry apps,
+        PlatformRegistry platform,
+        address owner,
+        address defaultMaintainer
+    ) public returns (uint256 imagesAdded, uint256 appsAdded) {
         ImageEntry[] memory images = parseImages(catalog);
         AppEntry[] memory appEntries = parseApps(catalog, defaultMaintainer);
+        if (apps.owner() != owner || platform.owner() != owner) {
+            revert NotOwner(owner, apps.owner(), platform.owner());
+        }
 
-        vm.startBroadcast(ownerKey);
+        vm.startBroadcast(owner);
         for (uint256 i; i < images.length; ++i) {
             ImageEntry memory e = images[i];
             if (platform.imageStatus(e.imageId) != IPlatformRegistry.ImageStatus.None) {
                 console.log("image exists, skipping:", e.name, e.version);
+                continue;
+            }
+            bytes32 registered =
+                platform.imageByMeasurements(keccak256(abi.encodePacked(e.mrtd, e.rtmr0, e.rtmr1, e.rtmr2)));
+            if (registered != bytes32(0)) {
+                console.log("image measurements already registered under another imageId, skipping:", e.name, e.version);
+                console.logBytes32(registered);
                 continue;
             }
             platform.addImage(e.imageId, e.name, e.version, e.mrtd, e.rtmr0, e.rtmr1, e.rtmr2, e.isDebug, e.sourceURI);

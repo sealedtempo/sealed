@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sealedtempo/sealed/internal/sigstoretest"
 	"github.com/sealedtempo/sealed/runtime/composer"
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/attest"
@@ -25,6 +26,7 @@ import (
 	"github.com/sealedtempo/sealed/verifier/internal/catalogtest"
 	"github.com/sealedtempo/sealed/verifier/internal/fixture"
 	"github.com/sealedtempo/sealed/verifier/internal/hexb"
+	"github.com/sealedtempo/sealed/verifier/releasesig"
 )
 
 // composedWorld is one deployment of a stack composed from real release bundles on a local chain.
@@ -331,8 +333,34 @@ func TestComposedStackEndToEnd(t *testing.T) {
 		verifyEvidence(t, w.daemon(t, "--bundle-cache-dir", cacheDir), w.evidence) // refetched
 	})
 	t.Run("simulated quote on a production verifier", func(t *testing.T) {
-		verifyEvidence(t, w.prodDaemon(t), w.evidence, verify.CheckQuote, verify.CheckTDAttributes, verify.CheckImageMeasurements,
-			verify.CheckRTMR3, verify.CheckComposeHash, verify.CheckReportData)
+		rep := verifyEvidence(t, w.prodDaemon(t), w.evidence, verify.CheckQuote, verify.CheckTDAttributes, verify.CheckImageMeasurements,
+			verify.CheckRTMR3, verify.CheckComposeHash, verify.CheckReportData, verify.CheckReleaseSignature)
+		if c := rep.Check(verify.CheckReleaseSignature); !strings.Contains(c.Detail, ".sigstore.json: HTTP 404") {
+			t.Fatalf("release_signature: %s", c.Detail)
+		}
+	})
+	t.Run("releases signed outside release CI on a production verifier", func(t *testing.T) {
+		// Assets in exactly the shape release CI publishes, with release.yml's identity, from a Sigstore of our own:
+		// the production verifier trusts only the public-good Fulcio and Rekor, so release_signature fails.
+		local := sigstoretest.New(t)
+		signer := sigstoretest.GitHubActions(releasesig.ReleaseWorkflow, releasesig.SourceRepository, releasesig.SourceRef, releasesig.ReleaseWorkflow)
+		builder := sigstoretest.GitHubActions(releasesig.SLSABuilder, releasesig.SourceRepository, releasesig.SourceRef, releasesig.ReleaseWorkflow)
+		for _, b := range w.bundles {
+			sig, prov := local.ReleaseAssets(signer, builder, releasesig.SLSAPredicateType, composer.BundleAssetName(b.Manifest.ID, b.Version()), [32]byte(b.Hash))
+			w.assets.PublishNext(t, b.Manifest.ID, b.Version(), releasesig.SignatureSuffix, sig)
+			w.assets.PublishNext(t, b.Manifest.ID, b.Version(), releasesig.ProvenanceSuffix, prov)
+		}
+		rep := verifyEvidence(t, w.prodDaemon(t), w.evidence, verify.CheckQuote, verify.CheckTDAttributes, verify.CheckImageMeasurements,
+			verify.CheckRTMR3, verify.CheckComposeHash, verify.CheckReportData, verify.CheckReleaseSignature)
+		c := rep.Check(verify.CheckReleaseSignature)
+		if !strings.Contains(c.Detail, "not signed by "+releasesig.ReleaseWorkflow) || strings.Contains(c.Detail, "HTTP 404") {
+			t.Fatalf("release_signature: %s", c.Detail)
+		}
+		// A dev daemon still reports what it found, and passes.
+		rep = verifyEvidence(t, w.daemon(t), w.evidence)
+		if c := rep.Check(verify.CheckReleaseSignature); !c.OK || !strings.HasPrefix(c.Detail, "DEV: ") || !strings.Contains(c.Detail, "not signed by") {
+			t.Fatalf("dev release_signature: %s", c.Detail)
+		}
 	})
 	t.Run("compose refuses a config whose release belongs to another app", func(t *testing.T) {
 		bad := strings.Replace(string(w.config), notes.ReleaseID.Hex(), gw.ReleaseID.Hex(), 1)

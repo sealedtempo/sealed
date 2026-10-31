@@ -25,6 +25,7 @@ func TestImagesWorkflowEndToEnd(t *testing.T) {
 	commit := gitRun(t, root, "rev-parse", "HEAD")
 
 	f := newFakes(t)
+	installImageFakes(t, f) // the build job signs every pushed image
 	bins := t.TempDir()
 	for src, dst := range map[string]string{releaseBin(t): "release", sealedComposeBin(t): "sealed-compose"} {
 		if err := copyFile(src, filepath.Join(bins, dst)); err != nil {
@@ -42,7 +43,7 @@ func TestImagesWorkflowEndToEnd(t *testing.T) {
 	}
 	sim := &simulator{t: t, wf: wf, workspace: root, temp: t.TempDir(), artifacts: t.TempDir(), path: f.bin + ":" + os.Getenv("PATH"),
 		baseEnv: append(cleanEnv(), "FAKE_STATE="+f.state, "FAKE_LOG="+f.log, "FAKE_GO_BINS="+bins, "FAKE_GRYPE_REPORT="+report,
-			"GITHUB_SHA="+commit, "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid"),
+			"GITHUB_SHA="+commit, "GITHUB_WORKFLOW_REF=sealedtempo/sealed/.github/workflows/images.yml@refs/heads/main", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid"),
 		ctx: map[string]any{
 			"github": map[string]any{"event_name": "workflow_dispatch", "token": "fake-token", "repository": "sealedtempo/sealed",
 				"server_url": "https://github.com", "run_id": "7", "actor": "sealedtempo", "event": map[string]any{"before": ""}},
@@ -50,7 +51,7 @@ func TestImagesWorkflowEndToEnd(t *testing.T) {
 			"secrets": map[string]any{},
 			"vars":    map[string]any{},
 		},
-		ifs:  map[string]bool{"needs.build.result != 'success'": false},
+		ifs:  map[string]bool{"needs.build.result != 'success'": false, "env.DOCKERHUB_USERNAME != ''": false},
 		skip: map[string]bool{"Free disk space": true},
 	}
 	plan := sim.runJob("plan", nil)
@@ -71,8 +72,12 @@ func TestImagesWorkflowEndToEnd(t *testing.T) {
 	if n := strings.Count(calls, "--no-cache"); n != 6 {
 		t.Fatalf("%d reproducibility rebuilds, want 6", n)
 	}
-	if n := strings.Count(calls, "syft scan registry:ghcr.io/sealedtempo/"); n != 6 {
-		t.Fatalf("%d scans, want 6", n)
+	// Two syft runs per image: the shipped SBOM and the every-file listing for lint (review policy-1).
+	if n := strings.Count(calls, "syft scan registry:ghcr.io/sealedtempo/"); n != 12 {
+		t.Fatalf("%d scans, want 12", n)
+	}
+	if n := strings.Count(calls, "/scan/files/"); n != 6 {
+		t.Fatalf("%d file listings, want 6", n)
 	}
 	sim.runJob("pin", nil)
 

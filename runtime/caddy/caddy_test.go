@@ -3,9 +3,13 @@ package caddy
 import (
 	"bytes"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func testInput() Input {
@@ -85,6 +89,7 @@ func TestRenderNormal(t *testing.T) {
 	for _, want := range []string{
 		"admin unix//run/sealed/caddy-admin/admin.sock|0660",
 		"persist_config off",
+		"\tcert_issuer acme {\n\t\tdir " + letsEncryptProduction + "\n\t\ttest_dir " + letsEncryptProduction + "\n\t}\n",
 		"protocols h1 h2",
 		"\ncrm.34-1-2-3.sslip.io {",
 		"forward_auth sealed-agent:7070 {\n\t\t\t\turi /v1/gate?route=crm\n",
@@ -178,6 +183,76 @@ func TestRenderNormal(t *testing.T) {
 	again, _ := Render(testInput(), false)
 	if !bytes.Equal(cf, again) {
 		t.Fatal("not deterministic")
+	}
+}
+
+// letsEncryptProduction is the only ACME directory sealed-egress lets Caddy
+// reach (the composer's caddy caller allows acme-v02.api.letsencrypt.org:443
+// only; runtime/composer TestCaddyfileACMEIssuerStaysOnAllowedHost ties the
+// two).
+const letsEncryptProduction = "https://acme-v02.api.letsencrypt.org/directory"
+
+// TestRenderACMEIssuer pins the global ACME issuer in both variants
+// (spec-conformance G06). certmagic sends every retry after a failed first
+// issuance to the issuer's test directory, Let's Encrypt staging by default,
+// which egress refuses; so the test directory is production too, and no
+// other issuer, CA or account option is set.
+func TestRenderACMEIssuer(t *testing.T) {
+	block := "\n\tocsp_stapling off\n\tcert_issuer acme {\n\t\tdir " + letsEncryptProduction + "\n\t\ttest_dir " + letsEncryptProduction + "\n\t}\n\tservers {\n"
+	for _, pn := range []bool{false, true} {
+		cf, err := Render(testInput(), pn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkBalanced(t, cf)
+		s := string(cf)
+		global := s[strings.Index(s, "\n{\n"):]
+		global = global[:strings.Index(global, "\n}\n")+3]
+		if !strings.Contains(global, block) {
+			t.Errorf("payment-needed=%v: global options lack the issuer block %q:\n%s", pn, block, global)
+		}
+		if strings.Count(s, "cert_issuer") != 1 || strings.Count(s, "acme-v02.api.letsencrypt.org") != 2 {
+			t.Errorf("payment-needed=%v: want exactly one issuer naming production twice:\n%s", pn, s)
+		}
+		for _, never := range []string{"staging", "acme_ca", "zerossl", "local_certs", "email", "tls "} {
+			if strings.Contains(s, never) {
+				t.Errorf("payment-needed=%v: has %q", pn, never)
+			}
+		}
+	}
+}
+
+// TestPaymentCopyNamesCodename ties the product name in the payment-needed
+// copy to config/defaults.yaml codename (spec-conformance G30): both the
+// plain 402 message and the static page send the owner to the console.
+func TestPaymentCopyNamesCodename(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "defaults.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defaults struct {
+		Codename string `yaml:"codename"`
+	}
+	if err := yaml.Unmarshal(raw, &defaults); err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Codename == "" {
+		t.Fatal("config/defaults.yaml has no codename")
+	}
+	console := "the " + defaults.Codename + " console"
+	if !strings.Contains(PaymentMessage, console) {
+		t.Errorf("PaymentMessage %q does not name %q (config/defaults.yaml codename)", PaymentMessage, console)
+	}
+	if !strings.Contains(string(PaymentNeededHTML), console) {
+		t.Errorf("payment-needed.html does not name %q (config/defaults.yaml codename)", console)
+	}
+	// No other product name: every capitalized word before "console" is the codename.
+	for _, copy := range []string{PaymentMessage, string(PaymentNeededHTML)} {
+		for _, m := range regexp.MustCompile(`\b([A-Z][A-Za-z]+) console\b`).FindAllStringSubmatch(copy, -1) {
+			if m[1] != defaults.Codename {
+				t.Errorf("payment copy names %q console, the codename is %q", m[1], defaults.Codename)
+			}
+		}
 	}
 }
 

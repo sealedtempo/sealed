@@ -14,12 +14,15 @@ import { createPayerApp } from './server.js'
 import { AgentSpendBudget } from './shared-budget.js'
 import { FileSpendStore, SpendGuard } from './spend-guard.js'
 import { SpendReporter, spendSnapshot } from './spend-reporter.js'
+import { privateStateDir } from './state-dir.js'
 import { ChainTxWatcher, receiptReader } from './tx-watcher.js'
 
 const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ t: new Date().toISOString(), ...event }))
 
 function main(): void {
   const config = loadPayerConfig()
+  // Before any state is read or written (defense in depth beside the composer's envexec private).
+  privateStateDir(config.stateDir)
   // access-key mode: the enclave key signs for the customer's root account (D-026, INTERFACES 15)
   const account =
     config.mode === 'access-key'

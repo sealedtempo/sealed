@@ -2,11 +2,13 @@ package keybroker
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,10 +16,13 @@ import (
 	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
-// TestTDConfigFields (F7): MRCONFIGID and MROWNERCONFIG must be zero (they are on GCE and on dstack on GCP); XFAM and
-// MROWNER are read for the decision log.
+// TestTDConfigFields (F7, kb-3): MRCONFIGID and MROWNERCONFIG must be zero (they are on GCE and on dstack on GCP) and
+// XFAM must be in tdx.allowed_xfam (D-077); MROWNER is read for the decision log and not pinned.
 func TestTDConfigFields(t *testing.T) {
-	for _, name := range []string{"v4_gce_cos113", "v5_sample"} {
+	allowed := attest.DefaultAllowedXFAM()
+	// native is each fixture's own XFAM: Google's COS 113 C3 quote predates PKRU (0x600e7), Intel's v5 sample has the
+	// value every Sealed capture on C3 shows (0x602e7).
+	for name, native := range map[string]uint64{"v4_gce_cos113": 0x600e7, "v5_sample": 0x602e7} {
 		raw, err := os.ReadFile(filepath.Join("testdata", "tdx", "quotes", name+".dat"))
 		if err != nil {
 			t.Fatal(err)
@@ -33,30 +38,61 @@ func TestTDConfigFields(t *testing.T) {
 		if len(td.XFAM) != 8 || len(td.MrOwner) != 48 {
 			t.Fatalf("%s: fields %+v", name, td)
 		}
-		if err := td.check(); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		// MRCONFIGID sits after the 48-byte header and TEE_TCB_SVN, MRSEAM, MRSIGNERSEAM, SEAMATTRIBUTES,
-		// TDATTRIBUTES, XFAM and MRTD (184 bytes) in both versions' TD body; v5 adds a 6-byte body descriptor.
-		off := 48 + 184
+		// XFAM follows the 48-byte header, TEE_TCB_SVN (16), MRSEAM (48), MRSIGNERSEAM (48), SEAMATTRIBUTES (8) and
+		// TDATTRIBUTES (8); v5 adds a 6-byte body descriptor. MRCONFIGID sits after XFAM and MRTD (48).
+		xoff := 48 + 16 + 48 + 48 + 8 + 8
 		if name == "v5_sample" {
-			off += 6
+			xoff += 6
 		}
+		if got := binary.LittleEndian.Uint64(raw[xoff:]); got != native || !bytes.Equal(raw[xoff:xoff+8], td.XFAM) {
+			t.Fatalf("%s: offset %d holds XFAM 0x%x, want 0x%x", name, xoff, got, native)
+		}
+		err = td.check(allowed)
+		if inList := slices.Contains(allowed, native); (err == nil) != inList || err != nil && !errors.Is(err, attest.ErrXFAM) {
+			t.Fatalf("%s: XFAM 0x%x in the list %v, check: %v", name, native, inList, err)
+		}
+		if err := td.check([]uint64{native}); err != nil {
+			t.Fatalf("%s: a list holding its XFAM refused it: %v", name, err)
+		}
+
+		// The kb-3 repro, inverted: every XFAM outside the list is refused, and 0x602e7 passes.
+		withXFAM := func(v uint64) []byte {
+			b := bytes.Clone(raw)
+			binary.LittleEndian.PutUint64(b[xoff:], v)
+			return b
+		}
+		for _, v := range []uint64{0x602e7 | 1<<8 | 1<<15, 0x602e7 &^ (0x3 << 17), 0x3, 0x600e7, 0} {
+			td, err := readTDConfig(withXFAM(v))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := td.check(allowed); !errors.Is(err, attest.ErrXFAM) || !strings.Contains(err.Error(), "tdx.allowed_xfam") {
+				t.Fatalf("%s: XFAM 0x%x: %v", name, v, err)
+			}
+		}
+		base := withXFAM(0x602e7)
+		if td, err := readTDConfig(base); err != nil || td.check(allowed) != nil {
+			t.Fatalf("%s: XFAM 0x602e7 refused: %v", name, err)
+		} else if td.check(nil) == nil {
+			t.Fatalf("%s: an empty allowlist accepted XFAM", name)
+		}
+
+		off := xoff + 8 + 48
 		for _, field := range []int{off, off + 96} { // MRCONFIGID, MROWNERCONFIG
-			bad := bytes.Clone(raw)
+			bad := bytes.Clone(base)
 			bad[field] ^= 0x01
 			td, err := readTDConfig(bad)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := td.check(); err == nil {
+			if err := td.check(allowed); err == nil {
 				t.Fatalf("%s: a non-zero field at %d was accepted", name, field)
 			}
 		}
 		// MROWNER (GCP sets it) is not pinned.
-		owner := bytes.Clone(raw)
+		owner := bytes.Clone(base)
 		owner[off+48] ^= 0x01
-		if td, _ := readTDConfig(owner); td.check() != nil {
+		if td, _ := readTDConfig(owner); td.check(allowed) != nil {
 			t.Fatalf("%s: MROWNER refused", name)
 		}
 	}
@@ -112,10 +148,20 @@ func TestClientAddr(t *testing.T) {
 	}
 }
 
+// TestLimitKey (kb-6): IPv6 clients count per /48, the prefix one site usually gets, so a host that rotates through
+// the 65536 /64s of its own /48 still shares one bucket.
 func TestLimitKey(t *testing.T) {
-	if limitKey("2001:db8:1:2:3:4:5:6") != "2001:db8:1:2::/64" || limitKey("2001:db8:1:2:ffff::1") != "2001:db8:1:2::/64" ||
-		limitKey("203.0.113.7") != "203.0.113.7" || limitKey("x") != "x" {
-		t.Fatal("limit keys")
+	for addr, want := range map[string]string{
+		"2001:db8:1:2:3:4:5:6": "2001:db8:1::/48",
+		"2001:db8:1:2:ffff::1": "2001:db8:1::/48",
+		"2001:db8:1:ffff::1":   "2001:db8:1::/48",
+		"2001:db8:2::1":        "2001:db8:2::/48",
+		"203.0.113.7":          "203.0.113.7",
+		"x":                    "x",
+	} {
+		if got := limitKey(addr); got != want {
+			t.Errorf("limitKey(%s) = %s, want %s", addr, got, want)
+		}
 	}
 }
 

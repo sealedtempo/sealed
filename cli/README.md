@@ -21,7 +21,7 @@ never printed. The CLI only reads Tempo (eth_call); it holds no keys and sends n
 ```sh
 sealed bootstrap --project <id> --customer-address <0x...> --platform-sa <email> \
   --key-broker-image ghcr.io/sealedtempo/sealed-key-broker@sha256:<digest> [--region us-central1] [--plan] [--yes] \
-  [--allowed-images 0x<imageId>,...] [--fee-splitter 0x... --fee-token 0x...]
+  [--allowed-images 0x<imageId>,...] [--fee-splitter 0x... --fee-token 0x...] [--os-image-version 0.6.1-s4] [--no-os-images]
 sealed connect gcp --project <id> ...                  # the same command (D-032)
 
 sealed secrets set --config stack.yaml --missing       # generate or ask for every required secret, once
@@ -47,7 +47,7 @@ there or in `--state-bucket`, and runs `terraform init` and `apply` with your to
 a key broker image that is not pinned by digest or still has the all-zero placeholder. The key broker reads Tempo
 through `--tempo-rpc`, else the RPC the command was given (`--rpc` or `TEMPO_RPC_URL`), else the public RPC; the
 RPC and chain are printed before Terraform runs and the RPC again in the summary, so your choice is never replaced
-silently. The broker's Cloud Run environment is fixed by `modules/key-broker-env` and checked against the broker's
+silently; only its scheme and host are printed, never the path, query or credentials, where provider API keys live. The broker's Cloud Run environment is fixed by `modules/key-broker-env` and checked against the broker's
 own parser (see the module README). The broker checks every config's FeeSplitter and fee token against its
 settings, which default to mainnet's: when the deployments file names other ones, bootstrap passes them
 (`SEALED_FEE_SPLITTER`, `SEALED_FEE_TOKEN`), and it stops when the registries are not mainnet's and the file names no
@@ -55,7 +55,15 @@ FeeSplitter (or, on another chain, no `config.feeToken`). `--fee-splitter` and `
 and `--allowed-images 0x<imageId>,...` gives the broker your own imageId allowlist on top of PlatformRegistry
 approval (`SEALED_ALLOWED_IMAGES`); the CLI also reads all three from its environment under those names.
 `--debug-logging` also creates `sealed-debug-logs`, the log writer identity
-that only debug VMs get (spec 5.8). The output is the `sct_`
+that only debug VMs get (spec 5.8). After the apply, bootstrap creates the project's boot and system disk images with
+your credentials (D-075): `sealed-dstack-os-<version>` and `sealed-dstack-os-debug-<version>` from the OS image
+release `<release asset base>/os-image-v<version>/` (`--os-image-version`, default the version
+`runtime/images/dstack-os/upstream.env` pins), each tarball checked against the release's `-hashes.txt` before it
+is staged in the boot bucket and imported, and `sealed-dstack-data-v1`, the dstack system disk. An image already in
+place from the same tarball is kept, one from other bytes stops the command, and a failed run can simply be run
+again; `--no-os-images` skips the step. The summary names the refs for `image.boot` and `image.systemDisk`, and the
+connection binding written on `sealed-subnet` (`sealed-binding/v1 customer=<wallet> key_broker=<url>`), which the
+platform checks before it uses the connection. The output is the `sct_`
 token: `sct_` + base64url(JSON) with `v`, `project`, `region`, `deployerAccount`, `keyBrokerUrl`, `customer`,
 `subnetwork` and `issuedAt`. It holds no secret.
 
@@ -82,7 +90,8 @@ Reads `stack.yaml` (`sealed-deploy/v1`, see `examples/stack.yaml`), resolves eac
 sslip hostnames are part of the config), composes the stack with `runtime/composer`, and checks: the image is
 approved and not debug; `isStackApproved` and the approval's releases and image equal the stack's (D-014); every
 required secret has a value. Until your wallet approved exactly that stackHash it prints the `approveStack`
-arguments and stops (exit 3) without creating anything else. Then it builds the dstack shared disk (FAT volume
+arguments and stops (exit 3) without creating anything else; its `cast send` line reads an RPC URL with a path or
+query from `$TEMPO_RPC_URL` instead of printing it. Then it builds the dstack shared disk (FAT volume
 `DSTACKSHR` with `app-compose.json`, `.sys-config.json`, `.instance_info`) as an image through the boot bucket,
 creates the `sealed-<name>-data` disk (kept across redeploys) and the VM: TDX, host maintenance TERMINATE, no
 service account and so no scopes, `enable-oslogin=FALSE`, `serial-port-enable=FALSE`,

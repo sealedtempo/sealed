@@ -410,6 +410,18 @@ func SelectBuilds(set *ImageSet, changed []string, all bool, names []string) []B
 	return out
 }
 
+// ChangedBuilds returns the builds whose inputs a changed file touches, by the rules of SelectBuilds but
+// without the unbuilt images it adds. The pull request check (images-pr.yml) builds these.
+func ChangedBuilds(set *ImageSet, changed []string) []BuildImage {
+	var out []BuildImage
+	for _, b := range set.Build {
+		if buildChanged(b, changed) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func buildChanged(b BuildImage, changed []string) bool {
 	for _, f := range changed {
 		f = strings.TrimSpace(f)
@@ -454,15 +466,18 @@ type ScanApp struct {
 }
 
 // ScanImage is one image to scan. Mirrored images are scanned at their upstream source by digest (the
-// same bytes the mirror serves); built images at the catalog registry. Unbuilt images have no digest yet.
+// same bytes the mirror serves); built images at the catalog registry, after the scan checks images.yml's
+// signature on them (Built, supply-3). Unbuilt images have no digest yet.
 type ScanImage struct {
 	Name    string `json:"name"`
 	Ref     string `json:"ref,omitempty"`
+	Built   bool   `json:"built,omitempty"`
 	Unbuilt bool   `json:"unbuilt,omitempty"`
 	Blocked string `json:"blocked,omitempty"`
 }
 
-// ScanMatrix lists the top-level apps (all when apps is empty) with their images.
+// ScanMatrix lists the top-level apps (all when apps is empty) with their images, then the runtime images
+// as the RuntimeScanApp entry when apps is empty or names it.
 func ScanMatrix(set *ImageSet, root string, apps []string) []ScanApp {
 	list, err := LoadApps(root, false)
 	if err != nil {
@@ -484,7 +499,7 @@ func ScanMatrix(set *ImageSet, root string, apps []string) []ScanApp {
 			case img.Unbuilt():
 				si.Unbuilt = true
 			case strings.HasPrefix(img.Source, "build:"):
-				si.Ref = set.Registry + "/" + img.Name + "@" + img.Digest
+				si.Ref, si.Built = set.Registry+"/"+img.Name+"@"+img.Digest, true
 			default:
 				m := upstream[img.Name+"@"+img.Digest]
 				si.Ref, si.Blocked = m.From, m.Blocked
@@ -493,5 +508,43 @@ func ScanMatrix(set *ImageSet, root string, apps []string) []ScanApp {
 		}
 		out = append(out, sa)
 	}
+	if len(apps) == 0 || contains(apps, RuntimeScanApp) {
+		out = append(out, runtimeScanApp(set, upstream))
+	}
 	return out
+}
+
+// RuntimeScanApp is the scan matrix entry for the images every stack runs but no app manifest names: Caddy
+// and the sidecars (runtime-images.json) and the key broker (extra-images.json). App ids starting with
+// "sealed-" are reserved, so no catalog app can take this name. It has no app directory, so the scan job
+// skips the catalog lint for it, and runtime-waivers.yaml applies (supply-5).
+const RuntimeScanApp = "sealed-runtime"
+
+func runtimeScanApp(set *ImageSet, upstream map[string]MirrorImage) ScanApp {
+	sa := ScanApp{App: RuntimeScanApp, Waivers: RuntimeWaiversFile, Images: []ScanImage{}}
+	for _, b := range set.Build {
+		for _, p := range b.Pins {
+			if p.Kind != "runtime" && p.Kind != "extra" {
+				continue
+			}
+			si := ScanImage{Name: b.Name}
+			if b.Unbuilt() {
+				si.Unbuilt = true
+			} else {
+				si.Ref = b.Repository + "@" + b.CurrentDigest
+			}
+			sa.Images = append(sa.Images, si)
+			break
+		}
+	}
+	for _, m := range upstream {
+		if contains(m.Users, RuntimeImagesFile) {
+			sa.Images = append(sa.Images, ScanImage{Name: m.Name, Ref: m.From, Blocked: m.Blocked})
+		}
+	}
+	sort.Slice(sa.Images, func(i, j int) bool {
+		a, b := sa.Images[i], sa.Images[j]
+		return a.Name < b.Name || (a.Name == b.Name && a.Ref < b.Ref)
+	})
+	return sa
 }

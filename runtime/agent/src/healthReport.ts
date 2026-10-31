@@ -65,6 +65,7 @@ export const EXACT_PAYMENT_FIELDS: ReadonlySet<string> = new Set([
   // The signed usage reports the platform stores carry every fee exactly.
   "metered",
   "unpaid",
+  "previous_unpaid",
   "budget_limit",
   // Settlement transactions and the access key's limit are public onchain.
   "budget_fees",

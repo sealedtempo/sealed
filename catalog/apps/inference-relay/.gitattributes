@@ -1,0 +1,3 @@
+# Upstream license texts stay byte for byte as upstream (the tests compare git blob hashes),
+# whatever the checkout's line ending settings.
+LICENSES/** -text

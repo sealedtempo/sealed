@@ -300,11 +300,20 @@ func LintCatalog(root string, opts Options) ([]Finding, error) {
 
 // lintSameAs checks cross-app secret references (D-043) against the
 // catalog: the referenced app exists and declares the secret, which is not
-// itself a reference. Compose repeats the check for each stack.
+// itself a reference and lists the referencing app in share_with (D-059), as
+// Compose and sealed secrets require. Compose repeats the check for each
+// stack. A share_with entry that names no catalog app is a warning: it shares
+// with nobody today, and is most likely a typo.
 func lintSameAs(manifests map[string]*composer.Manifest) []Finding {
 	var out []Finding
 	for _, id := range sortedKeys(manifests) {
 		for i, s := range manifests[id].Secrets {
+			for j, peer := range s.ShareWith {
+				if _, ok := manifests[peer]; !ok {
+					out = append(out, Finding{Severity: Warning, App: id, File: composer.ManifestFile, Field: fmt.Sprintf("secrets[%d].share_with[%d]", i, j),
+						Code: CodeSameAs, Message: fmt.Sprintf("%s is shared with %q, which is not a catalog app", s.Name, peer)})
+				}
+			}
 			app, name, ok := s.SameAsRef()
 			if !ok {
 				continue
@@ -324,6 +333,8 @@ func lintSameAs(manifests map[string]*composer.Manifest) []Finding {
 				add("%q: app %q declares no secret %q", s.SameAs, app, name)
 			case ref.SameAs != "":
 				add("%q is itself a reference (same_as %q)", s.SameAs, ref.SameAs)
+			case !ref.SharedWith(id):
+				add("%q: %s does not share %s with %s (its share_with must list %q, D-059)", s.SameAs, app, name, id, id)
 			case ref.Optional && !s.Optional:
 				add("%q is optional in %s, but %s is required", s.SameAs, app, s.Name)
 			}

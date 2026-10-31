@@ -170,13 +170,17 @@ func TestScanImageScript(t *testing.T) {
 	if r.code != 5 || !strings.Contains(r.output, "has critical findings that") {
 		t.Fatalf("unwaived: %d\n%s", r.code, r.output)
 	}
-	for _, p := range []string{"sbom/notes-web.spdx.json", "scan/notes-web.json", "summary/notes-web.summary.json"} {
+	for _, p := range []string{"sbom/notes-web.spdx.json", "files/notes-web.spdx.json", "scan/notes-web.json", "summary/notes-web.summary.json"} {
 		if !fileExists(filepath.Join(out, p)) {
 			t.Fatalf("%s missing", p)
 		}
 	}
 	calls := f.calls(t)
-	mustContain(t, calls, "syft scan registry:"+ref+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "sbom/notes-web.spdx.json"))
+	// -c scripts/release/syft.yaml pins the config (syftenv_test.go checks it shuts out a planted .syft.yaml).
+	cfg := filepath.Join(root, "scripts/release/syft.yaml")
+	mustContain(t, calls, "syft scan registry:"+ref+" -c "+cfg+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "sbom/notes-web.spdx.json"))
+	// The every-file listing for lint (review policy-1); syftenv_test.go checks the settings of both runs.
+	mustContain(t, calls, "syft scan registry:"+ref+" -c "+cfg+" --platform linux/amd64 -o spdx-json="+filepath.Join(out, "files/notes-web.spdx.json")+" -q")
 	mustContain(t, calls, "grype sbom:")
 
 	writeFile(t, waivers, `version: 1
@@ -257,13 +261,24 @@ func TestGithubReleaseScript(t *testing.T) {
 	if strings.TrimSpace(runScriptIn(t, root, "github-release.sh", env, "state", "--tag", "notes-v1.0.0").output) != "published" {
 		t.Fatal("published after publish")
 	}
-	// A published release is never changed.
+	// A published release is never changed. One the release job created (github-actions[bot]) is reported
+	// as "exists"; one created by anyone else fails the script and stays as it is (supply-1).
+	if a := strings.TrimSpace(runScriptIn(t, root, "github-release.sh", env, "author", "--tag", "notes-v1.0.0").output); a != "github-actions[bot]" {
+		t.Fatalf("author: %q", a)
+	}
 	writeFile(t, filepath.Join(assets, "notes-1.0.0.bundle.tar"), "other bundle")
 	r = runScriptIn(t, root, "github-release.sh", env, pub...)
 	if r.code != 0 || !strings.HasSuffix(strings.TrimSpace(r.output), "exists") ||
 		readFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/assets/notes-1.0.0.bundle.tar")) != "bundle" {
 		t.Fatalf("existing release: %d\n%s", r.code, r.output)
 	}
+	writeFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/author"), "mallory\n")
+	r = runScriptIn(t, root, "github-release.sh", env, pub...)
+	if r.code == 0 || strings.HasSuffix(strings.TrimSpace(r.output), "exists") || !strings.Contains(r.output, "created by mallory, not by the release workflow") ||
+		readFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/assets/notes-1.0.0.bundle.tar")) != "bundle" {
+		t.Fatalf("existing release by another author: %d\n%s", r.code, r.output)
+	}
+	writeFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/author"), "github-actions[bot]\n")
 	// Fetch by URL with the sha256 check.
 	out := filepath.Join(t.TempDir(), "dl.tar")
 	url := "https://github.com/sealedtempo/sealed/releases/download/notes-v1.0.0/notes-1.0.0.bundle.tar"
@@ -285,10 +300,18 @@ func TestGithubReleaseScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(f.state, "gh/notes-v2/draft"), "")
+	writeFile(t, filepath.Join(f.state, "gh/notes-v2/author"), "mallory\n")
+	r = runScriptIn(t, root, "github-release.sh", env, "publish", "--tag", "notes-v2", "--target", commit, "--notes", notes, "--assets", assets)
+	if r.code == 0 || !strings.Contains(r.output, "is a draft created by mallory") || !fileExists(filepath.Join(f.state, "gh/notes-v2/draft")) {
+		t.Fatalf("someone else's draft must be left alone: %d\n%s", r.code, r.output)
+	}
+	writeFile(t, filepath.Join(f.state, "gh/notes-v2/author"), "github-actions[bot]\n")
 	r = runScriptIn(t, root, "github-release.sh", env, "publish", "--tag", "notes-v2", "--target", commit, "--notes", notes, "--assets", assets)
 	if r.code != 0 || !strings.Contains(r.output, "update draft release notes-v2") || fileExists(filepath.Join(f.state, "gh/notes-v2/draft")) {
 		t.Fatalf("draft: %d\n%s", r.code, r.output)
 	}
+	// The reused draft is moved to this run's commit before it is published (its tag is created then).
+	mustContain(t, f.calls(t), "gh release edit notes-v2 --notes-file "+notes+" --target "+commit+" --repo sealedtempo/sealed")
 	// Asset names GitHub would rename are refused.
 	writeFile(t, filepath.Join(assets, "bad name.json"), "{}")
 	if r = runScriptIn(t, root, "github-release.sh", env, "publish", "--tag", "notes-v3", "--target", commit, "--notes", notes, "--assets", assets); r.code == 0 {
@@ -305,7 +328,9 @@ func TestBuildBundleScript(t *testing.T) {
 	app := filepath.Join(root, CatalogDir, "notes")
 	out := filepath.Join(t.TempDir(), "notes-1.0.0-sealed.1.bundle.tar")
 	info := filepath.Join(t.TempDir(), "info.json")
-	args := []string{"--app", "notes", "--sbom-dir", filepath.Join(app, "sbom"), "--scan-dir", filepath.Join(app, "scan"), "--out", out, "--info", info}
+	files := t.TempDir()
+	copyTree(t, filepath.Join(app, "sbom"), files)
+	args := []string{"--app", "notes", "--sbom-dir", filepath.Join(app, "sbom"), "--files-dir", files, "--scan-dir", filepath.Join(app, "scan"), "--out", out, "--info", info}
 	compose := "SEALED_COMPOSE_BIN=" + sealedComposeBin(t)
 
 	// No CLI: refused unless explicitly allowed.
@@ -342,6 +367,25 @@ exit 0
 	r = runScriptIn(t, root, "build-bundle.sh", f.env(compose, "SEALED_CLI="+good, "FAKE_CLI_DIFFERENT=1"), args...)
 	if r.code == 0 || !strings.Contains(r.output, "built different bundles") {
 		t.Fatalf("differing CLI: %d\n%s", r.code, r.output)
+	}
+
+	// The bundle's SBOMs list only the files a package owns. The every-file listing shows an enterprise
+	// tree that no package owns, and the second lint pass blocks it (review policy-1, license audit F6).
+	listing := filepath.Join(files, "notes-web.spdx.json")
+	clean := readFile(t, listing)
+	writeFile(t, listing, strings.TrimSuffix(strings.TrimSpace(clean), "}")+`,"files":[{"SPDXID":"SPDXRef-F1","fileName":"/app/enterprise/billing.py"}]}`)
+	r = runScriptIn(t, root, "build-bundle.sh", f.env(compose, "ALLOW_MISSING_SEALED_CLI=1"), args...)
+	if r.code == 0 || !strings.Contains(r.output, "the images' file listings fail the release lint") || !strings.Contains(r.output, "/app/enterprise/") {
+		t.Fatalf("unowned enterprise file: %d\n%s", r.code, r.output)
+	}
+	writeFile(t, listing, clean)
+	noFiles := append([]string{}, args...)
+	noFiles[5] = t.TempDir()
+	if r = runScriptIn(t, root, "build-bundle.sh", f.env(compose, "ALLOW_MISSING_SEALED_CLI=1"), noFiles...); r.code == 0 || !strings.Contains(r.output, "holds no file listing") {
+		t.Fatalf("empty --files-dir: %d\n%s", r.code, r.output)
+	}
+	if r = runScriptIn(t, root, "build-bundle.sh", f.env(compose, "ALLOW_MISSING_SEALED_CLI=1"), append(args[:4:4], args[6:]...)...); r.code != 2 {
+		t.Fatalf("missing --files-dir: %d\n%s", r.code, r.output)
 	}
 
 	// The release-mode lint on the bundle blocks a license the policy bans.

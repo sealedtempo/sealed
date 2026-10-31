@@ -11,6 +11,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
@@ -30,6 +31,9 @@ type Config struct {
 	// AllowedImages, when not empty, is the customer's own allowlist of imageIds on top of
 	// PlatformRegistry.isApprovedImage, so the platform alone cannot make an image count as production.
 	AllowedImages [][32]byte
+	// AllowedXFAM is the XFAM allowlist (config/defaults.yaml tdx.allowed_xfam, D-077): a hardware quote whose XFAM is
+	// not in it is refused (measurements_mismatch). Empty means attest.DefaultAllowedXFAM.
+	AllowedXFAM []uint64
 	// MaxHeadAge bounds how far the pinned head block's timestamp may be from the broker's clock (D-060); 0 means
 	// DefaultMaxHeadAge, at most MaxMaxHeadAge.
 	MaxHeadAge time.Duration
@@ -96,6 +100,10 @@ func New(cfg Config, deps Deps) (*Broker, error) {
 		return nil, fmt.Errorf("keybroker: max head age %s must be between 1s and %s", cfg.MaxHeadAge, MaxMaxHeadAge)
 	}
 	cfg.AllowedImages = append([][32]byte(nil), cfg.AllowedImages...)
+	if len(cfg.AllowedXFAM) == 0 {
+		cfg.AllowedXFAM = attest.DefaultAllowedXFAM()
+	}
+	cfg.AllowedXFAM = append([]uint64(nil), cfg.AllowedXFAM...)
 	for name, v := range map[string]any{"Nonces": deps.Nonces, "Quotes": deps.Quotes, "Chain": deps.Chain, "Bundles": deps.Bundles,
 		"Secrets": deps.Secrets, "MAC": deps.MAC, "Log": deps.Log} {
 		if isNil(v) {

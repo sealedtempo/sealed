@@ -64,6 +64,24 @@ def linked_binary(*needed):
     return elf([(".dynstr", 3, dynstr, ""), (".dynamic", 6, dyn, ".dynstr")])
 
 
+# Upstream's command line (os/image/kernel-cmdline.sh) with placeholder verity values.
+CMDLINE = ("console=ttyS0 init=/init panic=1 net.ifnames=0 biosdevname=0 mce=off oops=panic pci=noearly "
+           "random.trust_cpu=y random.trust_bootloader=n tsc=reliable no-kvmclock dstack.rootfs_hash=00 dstack.rootfs_size=1")
+SYSRQ_DROPIN = "usr/lib/sysctl.d/90-sealed-sysrq.conf"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def make_uki(cmdline):
+    """A minimal PE image with only a .cmdline section, like the UKI's (ukify)."""
+    body = cmdline.encode() + b"\0"
+    pe = 0x40
+    raw = pe + 24 + 40
+    dos = b"MZ" + b"\0" * 0x3A + struct.pack("<I", pe)
+    coff = b"PE\0\0" + struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 0, 0x22)
+    section = b".cmdline" + struct.pack("<IIIIIIHHI", len(body), 0x1000, len(body), raw, 0, 0, 0, 0, 0x40000040)
+    return dos + coff + section + body
+
+
 def write(root, rel, data, mode=0o644):
     path = os.path.join(root, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -72,7 +90,7 @@ def write(root, rel, data, mode=0o644):
     os.chmod(path, mode)
 
 
-def make_disk(work, populate):
+def make_disk(work, populate, uki_bytes=None):
     root = os.path.join(work, "root")
     populate(root)
     sq = os.path.join(work, "rootfs.squashfs")
@@ -98,7 +116,7 @@ def make_disk(work, populate):
     subprocess.run(["mmd", "-i", esp, "::/EFI", "::/EFI/BOOT"], check=True)
     uki = os.path.join(work, "BOOTX64.EFI")
     with open(uki, "wb") as f:
-        f.write(b"MZ uki")
+        f.write(uki_bytes if uki_bytes is not None else make_uki(CMDLINE))
     subprocess.run(["mcopy", "-i", esp, uki, "::/EFI/BOOT/BOOTX64.EFI"], check=True)
     with open(disk, "r+b") as d:
         for img, start in ((esp, esp_start), (sq, root_start)):
@@ -131,8 +149,15 @@ class CheckImageTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.work, ignore_errors=True)
 
-    def scan(self, populate, packages, exceptions=(), variant=None):
-        disk = make_disk(self.work, populate)
+    def scan(self, populate, packages, exceptions=(), variant=None, sysrq_dropin=True, uki_bytes=None):
+        def tree(root):
+            # Every image carries the overlay's drop-in unless a test leaves it out.
+            if sysrq_dropin:
+                with open(os.path.join(HERE, "overlay/os/mkosi/mkosi.skeleton", SYSRQ_DROPIN), "rb") as f:
+                    write(root, SYSRQ_DROPIN, f.read())
+            populate(root)
+
+        disk = make_disk(self.work, tree, uki_bytes)
         inv = make_inventory(self.work, packages)
         out = os.path.join(self.work, "inventory.json")
         violations = check_image.scan(disk, inv, out, list(exceptions), variant)
@@ -197,18 +222,105 @@ class CheckImageTest(unittest.TestCase):
         self.assertEqual(report["waived"][0]["decision"], "D-999")
 
 
+    def test_sysrq_dropin_is_required(self):
+        violations, report = self.scan(lambda root: write(root, "etc/hostname", b"dstack"), [], sysrq_dropin=False)
+        self.assertEqual([(v["kind"], v["subject"]) for v in violations], [("sysrq", "kernel.sysrq")])
+        self.assertIsNone(report["sysrq"]["sysctl"])
+
+    def test_sysrq_later_file_or_mask_turns_it_back_on(self):
+        def later(root):
+            # Sorts after 90-sealed-sysrq.conf; "/" separates like ".".
+            write(root, "etc/sysctl.d/99-zz-debug.conf", b"kernel/sysrq = 1\n")
+
+        violations, report = self.scan(later, [])
+        self.assertEqual([(v["kind"], v["subject"]) for v in violations], [("sysrq", "kernel.sysrq")])
+        self.assertIn("etc/sysctl.d/99-zz-debug.conf", violations[0]["detail"])
+        shutil.rmtree(self.work)
+        os.makedirs(self.work)
+
+        def masked(root):
+            # A same-named file in /etc hides the one in /usr/lib; /dev/null masks it.
+            os.makedirs(os.path.join(root, "etc/sysctl.d"))
+            os.symlink("/dev/null", os.path.join(root, "etc/sysctl.d/90-sealed-sysrq.conf"))
+            write(root, "usr/lib/sysctl.d/10-magic-sysrq.conf", b"kernel.sysrq = 438\n")
+
+        violations, report = self.scan(masked, [])
+        self.assertEqual([(v["kind"], v["subject"]) for v in violations], [("sysrq", "kernel.sysrq")])
+        self.assertEqual(report["sysrq"]["sysctl"], "438")
+
+    def test_sysrq_earlier_file_and_clean_image_pass(self):
+        def earlier(root):
+            write(root, "usr/lib/sysctl.d/10-magic-sysrq.conf", b"kernel.sysrq = 438\n")
+            write(root, "usr/lib/modules/6.18.40-dstack/config", b"CONFIG_IKCONFIG=y\n# CONFIG_MAGIC_SYSRQ is not set\n")
+
+        violations, report = self.scan(earlier, [])
+        self.assertEqual(violations, [])
+        self.assertEqual(report["sysrq"], {"sysctl": "0", "sysctl_file": SYSRQ_DROPIN, "kernel_config": {"6.18.40-dstack": "n"}})
+        self.assertEqual(report["uki_cmdline"], CMDLINE)
+
+    def test_sysrq_on_the_measured_cmdline(self):
+        for token in ("sysrq_always_enabled", "sysrq_always_enabled=1", "sysctl.kernel.sysrq=1", "sysctl.kernel/sysrq=438"):
+            shutil.rmtree(self.work)
+            os.makedirs(self.work)
+            violations, _ = self.scan(lambda root: None, [], uki_bytes=make_uki(CMDLINE + " " + token))
+            self.assertEqual([(v["kind"], v["subject"]) for v in violations], [("sysrq", "cmdline:" + token)], token)
+        shutil.rmtree(self.work)
+        os.makedirs(self.work)
+        violations, _ = self.scan(lambda root: None, [], uki_bytes=make_uki(CMDLINE + " sysctl.kernel.sysrq=0"))
+        self.assertEqual(violations, [])
+
+    def test_uki_without_cmdline(self):
+        violations, report = self.scan(lambda root: None, [], uki_bytes=b"MZ uki")
+        self.assertEqual([(v["kind"], v["subject"]) for v in violations], [("uki", "cmdline")])
+        self.assertIsNone(report["uki_cmdline"])
+
+    def test_kernel_with_sysrq_must_start_with_it_off(self):
+        def kernel(root):
+            write(root, "usr/lib/modules/6.18.40-dstack/config", b"CONFIG_MAGIC_SYSRQ=y\nCONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0x1\n")
+
+        violations, _ = self.scan(kernel, [])
+        self.assertEqual([(v["kind"], v["subject"]) for v in violations], [("sysrq", "usr/lib/modules/6.18.40-dstack/config")])
+        shutil.rmtree(self.work)
+        os.makedirs(self.work)
+        violations, report = self.scan(lambda root: write(root, "usr/lib/modules/6.18.40-dstack/config",
+                                                          b"CONFIG_MAGIC_SYSRQ=y\nCONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0x0\n"), [])
+        self.assertEqual(violations, [])
+        self.assertEqual(report["sysrq"]["kernel_config"], {"6.18.40-dstack": "y"})
+
     def test_variant_contents(self):
         def debug_tree(root):
-            for path in check_image.DEBUG_ONLY:
+            for path in check_image.DEBUG_ONLY + check_image.REQUIRED_LICENSES:
                 write(root, path, b"x")
 
         violations, _ = self.scan(debug_tree, [], variant="prod")
         self.assertEqual({v["kind"] for v in violations}, {"variant"})
-        self.assertEqual(len(violations), 3)
+        self.assertEqual(len(violations), len(check_image.DEBUG_ONLY))
         shutil.rmtree(self.work)
         os.makedirs(self.work)
         violations, _ = self.scan(lambda root: write(root, "etc/hostname", b"dstack"), [], variant="debug")
-        self.assertEqual(len(violations), 3)
+        self.assertEqual(len(violations), len(check_image.DEBUG_ONLY) + len(check_image.REQUIRED_LICENSES))
+
+    def test_required_licenses(self):
+        # Both variants must carry every hand-staged binary's license text. A
+        # tree without them fails in each variant; a tree with them does not.
+        # No variant means no license check, as for the old callers.
+        def full(root):
+            for path in check_image.DEBUG_ONLY + check_image.REQUIRED_LICENSES:
+                write(root, path, b"x")
+
+        for variant in ("prod", "debug"):
+            violations, _ = self.scan(lambda root: write(root, "etc/hostname", b"x"), [], variant=variant)
+            missing = {v["subject"] for v in violations if v["kind"] == "license"}
+            self.assertEqual(missing, set(check_image.REQUIRED_LICENSES))
+            shutil.rmtree(self.work)
+            os.makedirs(self.work)
+
+        violations, _ = self.scan(full, [], variant="debug")
+        self.assertEqual([v for v in violations if v["kind"] == "license"], [])
+        shutil.rmtree(self.work)
+        os.makedirs(self.work)
+        violations, _ = self.scan(lambda root: write(root, "etc/hostname", b"x"), [])
+        self.assertEqual([v for v in violations if v["kind"] == "license"], [])
 
 
 class ParserTest(unittest.TestCase):
@@ -219,6 +331,16 @@ class ParserTest(unittest.TestCase):
         with open(mod, "wb") as f:
             f.write(kernel_module("Dual BSD/GPL"))
         self.assertEqual(check_image.module_info(mod), ("Dual BSD/GPL", True))
+
+    def test_overlay_turns_sysrq_off(self):
+        # The file build.sh prepare adds to upstream's mkosi.skeleton, read the way check_image.py reads a rootfs.
+        skeleton = os.path.join(HERE, "overlay/os/mkosi/mkosi.skeleton")
+        self.assertEqual(check_image.sysctl_value(skeleton, "kernel.sysrq"), ("0", SYSRQ_DROPIN))
+
+    def test_pe_section(self):
+        self.assertEqual(check_image.pe_section(make_uki("console=ttyS0"), ".cmdline"), b"console=ttyS0\0")
+        self.assertIsNone(check_image.pe_section(make_uki("x"), ".linux"))
+        self.assertIsNone(check_image.pe_section(b"MZ uki", ".cmdline"))
 
     def test_dep5(self):
         self.assertEqual(check_image.dep5_licenses(DEP5.format("MIT") + "\nFiles: x\nLicense: GPL-2+\n License text\n"),

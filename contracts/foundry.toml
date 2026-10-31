@@ -52,6 +52,15 @@ runs = 1000
 runs = 256
 depth = 100
 
+# Deep campaign (make test-invariant-deep): every invariant suite with long call sequences, fixed seed.
+[profile.deep.fuzz]
+runs = 1000
+seed = "0x5ea1ed"
+
+[profile.deep.invariant]
+runs = 1000
+depth = 256
+
 # Foundry has no "${VAR:-default}" syntax: `tempo` needs TEMPO_RPC_URL set. The Makefile exports it with a
 # fallback to the public RPC when it is unset or empty; outside make use `tempo_public` or export it yourself.
 # The fork tests fall back to the public RPC on their own.

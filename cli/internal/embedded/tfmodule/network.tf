@@ -19,6 +19,14 @@ resource "google_compute_subnetwork" "sealed" {
   ip_cidr_range = var.subnet_cidr
   stack_type    = "IPV4_ONLY"
 
+  # The connection binding: the wallet and key broker this project was
+  # bootstrapped for. The platform reads it with the deployer's token
+  # (compute.subnetworks.get on this subnet only) and refuses a connection
+  # whose wallet or key broker differ, so no other wallet can register this
+  # project. The deployer cannot change it, and Compute Engine sets a subnet
+  # description only when the subnet is created.
+  description = local.connection_binding
+
   # Sealed VMs have no service account, so they never call Google APIs.
   private_ip_google_access = false
 }

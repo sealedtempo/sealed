@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/sealedtempo/sealed/cli/internal/bootstrap"
 	"github.com/sealedtempo/sealed/cli/internal/embedded"
+	"github.com/sealedtempo/sealed/cli/internal/gcp"
 	"github.com/sealedtempo/sealed/cli/internal/settings"
 	"github.com/sealedtempo/sealed/verifier/chain"
 )
@@ -19,8 +21,8 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	var c commonFlags
 	c.register(fs)
 	p := &bootstrap.Params{EnableAPIs: true}
-	var workDir, stateBucket, subnet, kms, allowedImages string
-	var planOnly, yes, noAPIs, debugLogging bool
+	var workDir, stateBucket, subnet, kms, allowedImages, osVersion string
+	var planOnly, yes, noAPIs, debugLogging, noOSImages bool
 	fs.StringVar(&p.Project, "project", "", "your Google Cloud project id (required)")
 	fs.StringVar(&p.Region, "region", "", "region with C3 TDX zones (default cloud.region, us-central1)")
 	fs.StringVar(&p.Customer, "customer-address", "", "your Tempo wallet address; the key broker serves only stacks it approved (required)")
@@ -38,6 +40,8 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	fs.StringVar(&p.FeeSplitter, "fee-splitter", e.getenv("SEALED_FEE_SPLITTER"), "FeeSplitter the key broker requires in every config (SEALED_FEE_SPLITTER; default the deployments file's when the registries are not mainnet's)")
 	fs.StringVar(&p.FeeToken, "fee-token", e.getenv("SEALED_FEE_TOKEN"), "fee token the key broker requires in every config (SEALED_FEE_TOKEN; default the deployments file's when it is not mainnet's)")
 	fs.StringVar(&allowedImages, "allowed-images", e.getenv("SEALED_ALLOWED_IMAGES"), "comma-separated 0x imageIds: the only images the key broker releases to, on top of PlatformRegistry approval (SEALED_ALLOWED_IMAGES)")
+	fs.StringVar(&osVersion, "os-image-version", bootstrap.DefaultOSImageVersion, "Sealed dstack OS release whose boot images bootstrap creates in the project (release tag os-image-v<version>)")
+	fs.BoolVar(&noOSImages, "no-os-images", false, "do not create the boot and system disk images (sealed-dstack-os-*, sealed-dstack-data-v1) after the apply")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -74,6 +78,9 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	if err := p.Validate(); err != nil {
 		return usagef("%s", err)
 	}
+	if err := bootstrap.ValidOSImageVersion(osVersion); err != nil {
+		return usagef("%s", err)
+	}
 	if workDir == "" {
 		base, err := os.UserConfigDir()
 		if err != nil {
@@ -98,6 +105,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 		if e.getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
 			return err
 		}
+		ts = nil
 	} else if accessToken, err = ts.Token(ctx); err != nil {
 		return err
 	}
@@ -105,7 +113,7 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 		return usagef("not a terminal: pass --yes to apply without confirmation, or --plan to only plan")
 	}
 	e.errorf("Bootstrapping project %s in %s for wallet %s. Module and state: %s\n", p.Project, p.Region, p.Customer, workDir)
-	e.errorf("The key broker will read Tempo chain %d through %s.\n", p.ChainID, p.TempoRPC)
+	e.errorf("The key broker will read Tempo chain %d through %s.\n", p.ChainID, showRPC(p.TempoRPC))
 	if p.FeeSplitter != "" || p.FeeToken != "" {
 		e.errorf("It requires FeeSplitter %s and fee token %s in every config (not mainnet's).\n", orMainnet(p.FeeSplitter), orMainnet(p.FeeToken))
 	}
@@ -119,9 +127,33 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	if err != nil {
 		return err
 	}
+	osImages := &bootstrap.OSImages{Project: p.Project, AssetBase: p.ReleaseAssetBase, Version: osVersion, Dir: filepath.Join(workDir, "os-images"),
+		HTTP: e.httpClient(), AllowHTTP: e.AllowHTTPBundles || c.devHTTPAssets, Log: e.errorf}
 	if planOnly {
 		e.errorf("Plan only: nothing was created.\n")
+		if !noOSImages {
+			e.errorf("After the apply, bootstrap also creates the images %s from %s with your credentials, each tarball checked against the release's hashes file (D-075).\n",
+				strings.Join(osImages.Planned(), ", "), osImages.ReleaseURL())
+		}
 		return nil
+	}
+	// D-075: the boot and system disk images, with the customer's own credentials, staged in the boot bucket the
+	// deployer cannot write.
+	var images []bootstrap.OSImage
+	switch {
+	case noOSImages:
+	case ts == nil:
+		e.errorf("Warning: no gcloud access token, so the OS images were not created; run sealed bootstrap again from gcloud (Cloud Shell) before the first deploy.\n")
+	case out.BootBucket == "":
+		e.errorf("Warning: the module created no boot bucket, so the OS images were not created.\n")
+	default:
+		osImages.Bucket = out.BootBucket
+		gc := e.gcpClient(ts)
+		osImages.Images, osImages.Storage = &gcp.Compute{C: gc, Project: out.Project}, &gcp.Storage{C: gc}
+		e.errorf("Creating the boot and system disk images in %s from %s.\n", out.Project, osImages.ReleaseURL())
+		if images, err = e.importOSImages(ctx, osImages); err != nil {
+			return fmt.Errorf("the project is bootstrapped, but its OS images are not ready: %w\nRun the same sealed bootstrap command again: it keeps everything already in place", err)
+		}
 	}
 	tok, err := out.Token(e.now())
 	if err != nil {
@@ -132,7 +164,8 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 			"token": tok, "project": out.Project, "region": out.Region, "deployerAccount": out.DeployerAccount,
 			"keyBrokerUrl": out.KeyBrokerURL, "customer": out.Customer, "subnetwork": out.Subnetwork,
 			"keyBrokerServiceAccount": out.KeyBrokerSA, "kmsKeyVersion": out.KMSKeyVersion, "bootBucket": out.BootBucket,
-			"tempoRpc": out.TempoRPC, "debugLogServiceAccount": out.DebugLogSA,
+			"tempoRpc": redactedRPC(out.TempoRPC), "debugLogServiceAccount": out.DebugLogSA,
+			"connectionBinding": out.Binding, "osImages": imageRefs(images),
 		})
 	}
 	e.printf("\nYour project is ready.\n\n")
@@ -141,13 +174,20 @@ func runBootstrap(ctx context.Context, args []string, e *Env) error {
 	e.printf("  Key broker account %s\n", out.KeyBrokerSA)
 	e.printf("  KMS HMAC key       %s\n", out.KMSKeyVersion)
 	if out.TempoRPC != "" {
-		e.printf("  Key broker RPC     %s\n", out.TempoRPC)
+		e.printf("  Key broker RPC     %s\n", showRPC(out.TempoRPC))
+	}
+	if out.Binding != "" {
+		e.printf("  Binding            %s (sealed-subnet description)\n", out.Binding)
 	}
 	if out.DebugLogSA != "" {
 		e.printf("  Debug log writer   %s (debug VMs only)\n", out.DebugLogSA)
 	}
 	if out.BootBucket != "" {
 		e.printf("  Boot bucket        %s\n", out.BootBucket)
+	}
+	for _, img := range images {
+		label := map[string]string{"boot": "Boot image", "debugBoot": "Debug boot image", "systemDisk": "System disk image"}[img.Role]
+		e.printf("  %-18s %s\n", label, img.Ref)
 	}
 	e.printf("\nConnection token (paste it in the console, or use it as connection: in stack.yaml):\n\n%s\n\n", tok)
 	e.printf("Next: store your secrets with sealed secrets set, then check the IAM rules with scripts/iam-checks/check.sh.\n")
@@ -178,6 +218,32 @@ func brokerFees(p *bootstrap.Params, s *settings.Settings) error {
 		return usagef("the deployments file for chain %d names no config.feeToken: pass --fee-token (SEALED_FEE_TOKEN), or the key broker would require mainnet's USDC.e", s.ChainID)
 	}
 	return nil
+}
+
+// showRPC prints an RPC URL without its path, query or credentials, where provider API keys live.
+func showRPC(u string) string {
+	r := chain.RedactURL(u)
+	if r != strings.TrimRight(u, "/") {
+		return r + " (path and query not shown)"
+	}
+	return r
+}
+
+// redactedRPC is the scheme and host of an RPC URL, or empty.
+func redactedRPC(u string) string {
+	if u == "" {
+		return ""
+	}
+	return chain.RedactURL(u)
+}
+
+// imageRefs maps the OS images to the stack file fields they fill (image.boot, image.systemDisk).
+func imageRefs(images []bootstrap.OSImage) map[string]string {
+	m := map[string]string{}
+	for _, img := range images {
+		m[img.Role] = img.Ref
+	}
+	return m
 }
 
 func orMainnet(a string) string {

@@ -76,7 +76,7 @@ describe('spend reporter', () => {
     const reporter = new SpendReporter({
       agentUrl: 'http://sealed-agent:7070',
       intervalSeconds: 60,
-      snapshot: () => ({ mode: 'access-key', currency: '0x20c0000000000000000000000000000000000000', counters: guard.counters(), relay: { attested: true, checkedAt: 1, sessionsAvailable: true }, recovery: { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0 } }),
+      snapshot: () => ({ mode: 'access-key', currency: '0x20c0000000000000000000000000000000000000', counters: guard.counters(), relay: { attested: true, checkedAt: 1, sessionsAvailable: true }, recovery: { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0, deferred: 0, deferredAmount: '0' } }),
       fetch: async (url, init) => {
         sent.push({ url, body: JSON.parse(String(init.body)) })
         return new Response(null, { status: 204 })
@@ -85,19 +85,20 @@ describe('spend reporter', () => {
     expect(await reporter.send()).toBe(true)
     expect(sent[0].url).toBe('http://sealed-agent:7070/v1/spend')
     expect(sent[0].body).toMatchObject({ source: 'sealed-mpp-payer', mode: 'access-key', counters: { charges: 1, chargeAmount: '1234', limit: '2000000' }, relay: { attested: true } })
-    // The recovery counters travel as the agent's spend schema reads them (requestCloses, withdrawals, recovered, failures).
+    // The recovery counters travel as the agent's spend schema reads them (requestCloses, withdrawals, recovered, failures,
+    // and the deferred recoveries of payments-8).
     const withRecovery = new SpendReporter({
       agentUrl: 'http://sealed-agent:7070',
       intervalSeconds: 60,
-      snapshot: () => ({ mode: 'access-key', currency: 'c', counters: guard.counters(), relay: { attested: true, sessionsAvailable: true }, recovery: { requestCloses: 1, withdrawals: 1, recovered: '500', failures: 0 } }),
+      snapshot: () => ({ mode: 'access-key', currency: 'c', counters: guard.counters(), relay: { attested: true, sessionsAvailable: true }, recovery: { requestCloses: 1, withdrawals: 1, recovered: '500', failures: 0, deferred: 1, deferredAmount: '400000' } }),
       fetch: async (url, init) => {
         sent.push({ url, body: JSON.parse(String(init.body)) })
         return new Response(null, { status: 204 })
       },
     })
     expect(await withRecovery.send()).toBe(true)
-    expect(Object.keys(sent[1].body.recovery).sort()).toEqual(['failures', 'recovered', 'requestCloses', 'withdrawals'])
-    const failing = new SpendReporter({ agentUrl: 'http://x', intervalSeconds: 60, snapshot: () => ({ mode: 'm', currency: 'c', counters: guard.counters(), relay: { attested: false, sessionsAvailable: false }, recovery: { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0 } }), fetch: async () => new Response(null, { status: 500 }) })
+    expect(Object.keys(sent[1].body.recovery).sort()).toEqual(['deferred', 'deferredAmount', 'failures', 'recovered', 'requestCloses', 'withdrawals'])
+    const failing = new SpendReporter({ agentUrl: 'http://x', intervalSeconds: 60, snapshot: () => ({ mode: 'm', currency: 'c', counters: guard.counters(), relay: { attested: false, sessionsAvailable: false }, recovery: { requestCloses: 0, withdrawals: 0, recovered: '0', failures: 0, deferred: 0, deferredAmount: '0' } }), fetch: async () => new Response(null, { status: 500 }) })
     expect(await failing.send()).toBe(false)
   })
 
@@ -131,7 +132,7 @@ describe('spend reporter', () => {
       currency: '0x20c0000000000000000000000000000000000000',
       counters: guard.counters(),
       relay: { attested: true, checkedAt: 990, stackHash: '0x' + 'cd'.repeat(32), sessionsAvailable: false },
-      recovery: { requestCloses: 1, withdrawals: 0, recovered: '0', failures: 0 },
+      recovery: { requestCloses: 1, withdrawals: 0, recovered: '0', failures: 0, deferred: 0, deferredAmount: '0' },
     })
     const sent: any[] = []
     const reporter = new SpendReporter({
@@ -144,7 +145,7 @@ describe('spend reporter', () => {
       },
     })
     expect(await reporter.send()).toBe(true)
-    expect(sent[0].recovery).toEqual({ requestCloses: 1, withdrawals: 0, recovered: '0', failures: 0 })
+    expect(sent[0].recovery).toEqual({ requestCloses: 1, withdrawals: 0, recovered: '0', failures: 0, deferred: 0, deferredAmount: '0' })
     // main.ts reports through spendSnapshot with the payer's own ChannelRecovery.
     const main = readFileSync(join(import.meta.dirname, '../src/main.ts'), 'utf8')
     expect(main).toMatch(/snapshot: \(\) => spendSnapshot\(\{[^}]*\brecovery\b[^}]*\}\)/)

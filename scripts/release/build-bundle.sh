@@ -3,9 +3,13 @@
 #   1. catalog/tools/release builds the same bundle with the composer library directly; both tars must be
 #      byte-identical (this is the maintainer's reproducibility promise, spec 6.9);
 #   2. the composer's catalog lint runs on the bundle in release mode (licenses per D-021 and D-050 with
-#      license_exceptions, digests, telemetry, egress, SBOM package licenses), and any error fails.
+#      license_exceptions, digests, telemetry, egress, SBOM package licenses), and any error fails. It runs
+#      a second time on the app with the every-file listings of --files-dir (scan-image.sh files/) in place
+#      of the bundle's SBOMs, which list only the files a package owns, so excluded paths that no package
+#      owns are found too (license audit F6).
 #
-#   scripts/release/build-bundle.sh --app <id> --sbom-dir <dir> --scan-dir <dir> --out <file.bundle.tar> --info <info.json>
+#   scripts/release/build-bundle.sh --app <id> --sbom-dir <dir> --files-dir <dir> --scan-dir <dir> \
+#     --out <file.bundle.tar> --info <info.json>
 #
 # The CLI comes from SEALED_CLI, else from `go build ./cli/cmd/sealed`. Its interface (cli/ owns it):
 #   sealed release build <app> --catalog catalog/apps --sbom-dir <dir> --scan-dir <dir> --out <file>
@@ -15,19 +19,20 @@
 # shellcheck source=scripts/release/lib.sh
 . "$(dirname "$0")/lib.sh"
 
-APP="" SBOM="" SCAN="" OUT="" INFO=""
+APP="" SBOM="" FILES="" SCAN="" OUT="" INFO=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--app) APP="${2:-}"; shift 2 ;;
 	--sbom-dir) SBOM="${2:-}"; shift 2 ;;
+	--files-dir) FILES="${2:-}"; shift 2 ;;
 	--scan-dir) SCAN="${2:-}"; shift 2 ;;
 	--out) OUT="${2:-}"; shift 2 ;;
 	--info) INFO="${2:-}"; shift 2 ;;
 	*) die "unknown argument: $1" 2 ;;
 	esac
 done
-[ -n "$APP" ] && [ -d "$SBOM" ] && [ -d "$SCAN" ] && [ -n "$OUT" ] && [ -n "$INFO" ] ||
-	die "usage: build-bundle.sh --app <id> --sbom-dir <dir> --scan-dir <dir> --out <file> --info <info.json>" 2
+[ -n "$APP" ] && [ -d "$SBOM" ] && [ -d "$FILES" ] && [ -d "$SCAN" ] && [ -n "$OUT" ] && [ -n "$INFO" ] ||
+	die "usage: build-bundle.sh --app <id> --sbom-dir <dir> --files-dir <dir> --scan-dir <dir> --out <file> --info <info.json>" 2
 need jq
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sealed-bundle.XXXXXX")"
@@ -66,6 +71,15 @@ fi
 "${compose_cmd[@]}" lint --bundle "$WORK/reference.tar" --require-sbom --json >"$WORK/lint.json" || true
 jq -e 'type == "array"' "$WORK/lint.json" >/dev/null || die "the composer lint did not run on the bundle"
 release_tool lint-gate --findings "$WORK/lint.json" --mode release || die "the bundle fails the release lint"
+# The same lint with every file of each image (the bundle's SBOMs list only files a package owns).
+mkdir -p "$WORK/files-app"
+cp -R "$RELEASE_ROOT/catalog/apps/$APP/." "$WORK/files-app/"
+rm -rf "$WORK/files-app/sbom" "$WORK/files-app/scan"
+mkdir -p "$WORK/files-app/sbom"
+cp "$FILES"/*.spdx.json "$WORK/files-app/sbom/" 2>/dev/null || die "--files-dir $FILES holds no file listing"
+"${compose_cmd[@]}" lint --app-dir "$WORK/files-app" --require-sbom --json >"$WORK/lint-files.json" || true
+jq -e 'type == "array"' "$WORK/lint-files.json" >/dev/null || die "the composer lint did not run on the file listings"
+release_tool lint-gate --findings "$WORK/lint-files.json" --mode release || die "the images' file listings fail the release lint"
 
 mv "$WORK/reference.tar" "$OUT"
 jq --arg f "$OUT" '.file = $f' "$WORK/info.json" >"$INFO"

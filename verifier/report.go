@@ -31,6 +31,7 @@ const (
 	CheckReportData        = "report_data"
 	CheckFreshness         = "freshness"
 	CheckReleasesActive    = "releases_active"
+	CheckReleaseSignature  = "release_signature"
 	CheckStackRecompute    = "stack_recompute"
 	CheckStackApproved     = "stack_approved"
 	CheckApprovalReleases  = "approval_releases"

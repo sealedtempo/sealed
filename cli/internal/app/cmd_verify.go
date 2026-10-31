@@ -21,6 +21,7 @@ import (
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/chain"
+	"github.com/sealedtempo/sealed/verifier/releasesig"
 )
 
 var aliasRe = regexp.MustCompile(`^dep_[0-9A-Za-z]{8}$`)
@@ -102,45 +103,88 @@ var newQuoteVerifier = func(defaults []byte, allowSimulated bool, cacheDir strin
 	if err != nil {
 		return nil, err
 	}
+	xfam, err := attest.XFAMAllowlistFromDefaults(defaults)
+	if err != nil {
+		return nil, err
+	}
 	getter, err := attest.NewCachingGetter(attest.CacheOptions{Dir: cacheDir})
 	if err != nil {
 		return nil, err
 	}
-	return attest.NewVerifier(attest.VerifierOptions{AllowSimulated: allowSimulated, Getter: getter, TCBPolicy: policy})
+	return attest.NewVerifier(attest.VerifierOptions{AllowSimulated: allowSimulated, Getter: getter, TCBPolicy: policy, AllowedXFAM: xfam})
+}
+
+// DefaultPlatformAPI is the built-in platform api URL sealed verify falls back to when neither --api nor
+// SEALED_PLATFORM_API is given, so the command the console and website copy (`sealed verify <id>`, with no
+// flags) resolves dep_ aliases and downloads evidence on its own. It is the placeholder platform host derived
+// from the codename (D-029) and is the same api URL the rest of the project uses for the platform.
+const DefaultPlatformAPI = "https://api.sealed.example"
+
+// verifyFlags holds every sealed verify flag, plus the deployment id and api URL after the positional and
+// defaulting rules have been applied.
+type verifyFlags struct {
+	common                                                                                  commonFlags
+	deployment, evidence, live, api, expectCustomer, expectApps, reportOut, collateralCache string
+	maxAge, liveTimeout                                                                     time.Duration
+	allowSim, insecureTLS, livePrivate                                                      bool
+}
+
+// parseVerifyFlags parses the raw sealed verify arguments. The deployment id is given exactly once: either as
+// the single positional argument (the form the console and website copy, ui console/src/lib/product.ts:50) or
+// with --deployment, never both and never neither. --api defaults to SEALED_PLATFORM_API and then to the
+// built-in DefaultPlatformAPI, so `sealed verify <id>` works with no --api.
+func parseVerifyFlags(e *Env, args []string) (*verifyFlags, error) {
+	fs := newFlags("sealed verify", e)
+	var f verifyFlags
+	f.common.register(fs)
+	fs.StringVar(&f.deployment, "deployment", "", "0x deploymentId, or a dep_ alias the platform api resolves (default: the positional argument)")
+	fs.StringVar(&f.evidence, "evidence", "", "sealed-evidence/v1 file (default: downloaded from --api when --live is not given)")
+	fs.StringVar(&f.live, "live", "", "attest URL to check live (fresh nonce, TLS key binding)")
+	fs.StringVar(&f.api, "api", "", "platform api URL, for dep_ aliases and evidence downloads (SEALED_PLATFORM_API; default the built-in platform url)")
+	fs.StringVar(&f.expectCustomer, "expect-customer", "", "fail unless the deployment belongs to this wallet")
+	fs.StringVar(&f.expectApps, "expect-apps", "", "comma-separated app ids that must be in the stack")
+	fs.StringVar(&f.reportOut, "report", "", "also write the JSON report to this file")
+	fs.StringVar(&f.collateralCache, "collateral-cache", "", "directory for cached Intel PCS collateral (default the user cache dir)")
+	fs.DurationVar(&f.maxAge, "max-age", 0, "fail when the evidence is older than this (for example 26h)")
+	fs.DurationVar(&f.liveTimeout, "live-timeout", 30*time.Second, "timeout of the live /attest round trip")
+	fs.BoolVar(&f.allowSim, "dev-allow-simulated", false, "DEV ONLY (SEALED_DEV_SIM=1): accept dev simulator quotes and releases without release CI's signature; reports say simulated")
+	fs.BoolVar(&f.insecureTLS, "dev-insecure-live-tls", false, "DEV ONLY (SEALED_DEV_SIM=1): skip WebPKI checks of the attest certificate (the key binding is still checked)")
+	fs.BoolVar(&f.livePrivate, "dev-live-allow-private", false, "DEV ONLY (SEALED_DEV_SIM=1): allow loopback and private attest addresses")
+	pos, err := parse(fs, args)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case len(pos) > 1:
+		return nil, usagef("usage: sealed verify <0x id | dep_ alias> [--evidence <file>] [--live <attest url>] [--json]")
+	case len(pos) == 1 && f.deployment != "":
+		return nil, usagef("pass the deployment id once: as the positional argument or with --deployment, not both")
+	case len(pos) == 1:
+		f.deployment = pos[0]
+	case f.deployment == "":
+		return nil, usagef("usage: sealed verify <0x id | dep_ alias> [--evidence <file>] [--live <attest url>] [--json]")
+	}
+	if f.api == "" {
+		f.api = e.getenv("SEALED_PLATFORM_API")
+	}
+	if f.api == "" {
+		f.api = DefaultPlatformAPI
+	}
+	return &f, nil
 }
 
 func runVerify(ctx context.Context, args []string, e *Env) error {
-	fs := newFlags("sealed verify", e)
-	var c commonFlags
-	c.register(fs)
-	var deployment, evidence, live, api, expectCustomer, expectApps, reportOut, collateralCache string
-	var maxAge, liveTimeout time.Duration
-	var allowSim, insecureTLS, livePrivate bool
-	fs.StringVar(&deployment, "deployment", "", "0x deploymentId, or a dep_ alias the platform api resolves (required)")
-	fs.StringVar(&evidence, "evidence", "", "sealed-evidence/v1 file (default: downloaded from --api when --live is not given)")
-	fs.StringVar(&live, "live", "", "attest URL to check live (fresh nonce, TLS key binding)")
-	fs.StringVar(&api, "api", "", "platform api URL, for dep_ aliases and evidence downloads (SEALED_PLATFORM_API)")
-	fs.StringVar(&expectCustomer, "expect-customer", "", "fail unless the deployment belongs to this wallet")
-	fs.StringVar(&expectApps, "expect-apps", "", "comma-separated app ids that must be in the stack")
-	fs.StringVar(&reportOut, "report", "", "also write the JSON report to this file")
-	fs.StringVar(&collateralCache, "collateral-cache", "", "directory for cached Intel PCS collateral (default the user cache dir)")
-	fs.DurationVar(&maxAge, "max-age", 0, "fail when the evidence is older than this (for example 26h)")
-	fs.DurationVar(&liveTimeout, "live-timeout", 30*time.Second, "timeout of the live /attest round trip")
-	fs.BoolVar(&allowSim, "dev-allow-simulated", false, "DEV ONLY (SEALED_DEV_SIM=1): accept dev simulator quotes; reports say simulated")
-	fs.BoolVar(&insecureTLS, "dev-insecure-live-tls", false, "DEV ONLY (SEALED_DEV_SIM=1): skip WebPKI checks of the attest certificate (the key binding is still checked)")
-	fs.BoolVar(&livePrivate, "dev-live-allow-private", false, "DEV ONLY (SEALED_DEV_SIM=1): allow loopback and private attest addresses")
-	pos, err := parse(fs, args)
+	f, err := parseVerifyFlags(e, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) > 0 || deployment == "" {
-		return usagef("usage: sealed verify --deployment <0x id | dep_ alias> [--evidence <file>] [--live <attest url>] [--json]")
-	}
+	c := f.common
+	deployment, evidence, live, api := f.deployment, f.evidence, f.live, f.api
+	expectCustomer, expectApps, reportOut, collateralCache := f.expectCustomer, f.expectApps, f.reportOut, f.collateralCache
+	maxAge, liveTimeout := f.maxAge, f.liveTimeout
+	allowSim, insecureTLS, livePrivate := f.allowSim, f.insecureTLS, f.livePrivate
 	if (allowSim || insecureTLS || livePrivate) && e.getenv("SEALED_DEV_SIM") != "1" {
 		return usagef("the --dev-* flags need SEALED_DEV_SIM=1 and are never valid for a production check")
-	}
-	if api == "" {
-		api = e.getenv("SEALED_PLATFORM_API")
 	}
 	s, err := c.settings(e)
 	if err != nil {
@@ -203,9 +247,15 @@ func runVerify(ctx context.Context, args []string, e *Env) error {
 	if rc, ok := reader.(*registry.Client); ok {
 		chainReader = rc.Chain() // pins every read of a verification to one block
 	}
-	deps := verify.Deps{Quotes: quotes, Chain: chainReader, Composer: &bundles.Composer{Fetcher: c.fetcher(e, s)}, Now: e.now}
+	fetcher := c.fetcher(e, s)
+	// Release CI's signature and SLSA provenance of every release (supply-2), from the bundles' release asset base.
+	sigs, err := releasesig.New(releasesig.Options{Bases: []string{fetcher.Base}, AllowHTTP: fetcher.AllowHTTP, HTTP: e.httpClient()})
+	if err != nil {
+		return err
+	}
+	deps := verify.Deps{Quotes: quotes, Chain: chainReader, Composer: &bundles.Composer{Fetcher: fetcher}, Signatures: sigs, Now: e.now}
 	opts := verify.Options{ChainID: s.ChainID, RequireOnchainRecord: true, MaxEvidenceAge: maxAge, ExpectedDeploymentID: &id,
-		AcceptSimulated: allowSim}
+		AcceptSimulated: allowSim, AcceptUnsignedReleases: allowSim}
 	if expectCustomer != "" {
 		if !common.IsHexAddress(expectCustomer) {
 			return usagef("--expect-customer is not an address")

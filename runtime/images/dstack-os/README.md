@@ -14,6 +14,9 @@ NVIDIA userspace and ZFS removed and ext4 as the only data-disk filesystem
 Both inherit upstream's production profile: no getty, no `login`, no debug
 shell, no `systemd-logind`, no SSH daemon, no TEE simulator, and the serial
 console is output only (`console=ttyS0`, boot progress and errors only). The
+kernel has no magic SysRq key (`CONFIG_MAGIC_SYSRQ=n`), and the overlay also
+sets `kernel.sysrq = 0`, so a serial BREAK from the host cannot reboot, crash
+or dump the guest; `check_image.py` fails the build if SysRq could be on. The
 debug variant adds one thing: `sealed-logship`, which exports container logs to
 the customer project's Cloud Logging (spec 5.8). The key broker never releases
 production secrets to a debug image, and acceptance tests run on production.
@@ -23,12 +26,12 @@ production secrets to a debug image, and acceptance tests run on production.
 | Path | What |
 |---|---|
 | `upstream.env` | Pins: upstream repo and commit, Sealed version, image names, fixed commit identity and time |
-| `patches/` | Seven `git am` patches on the upstream commit, documented line by line in `patches/README.md` |
-| `overlay/` | New files added to the upstream tree in one commit: the `sealed-debug` profile and the `sealed-logship` component |
+| `patches/` | Eight `git am` patches on the upstream commit, documented line by line in `patches/README.md` |
+| `overlay/` | New files added to the upstream tree in one commit: the `kernel.sysrq = 0` sysctl file, the `sealed-debug` profile, the `sealed-logship` component and the container-stack license texts |
 | `logship/` | `sealed-logship` (Go, standard library only), copied into the tree as `os/sealed/logship` |
 | `source.lock` | The resulting patched commit and tree; CI fails when it drifts |
 | `build.sh` | Prepare, lock, lint, build and package |
-| `check_image.py` | License and attack-surface check of the built disk (fails on NVIDIA, ZFS or CDDL content) |
+| `check_image.py` | License and attack-surface check of the built disk (fails on NVIDIA, ZFS or CDDL content, a login surface, SysRq left on, or a missing hand-staged license text) |
 | `rust_inventory.py` | License inventory of the Rust crates compiled into the guest |
 | `license-exceptions.json` | Waivers for `check_image.py`, each tied to a decision id. Empty |
 | `tools/osimage/` | Go helper: Authenticode, image identity, measurement compose, quote verification, catalog JSON |
@@ -40,7 +43,10 @@ production secrets to a debug image, and acceptance tests run on production.
 
 CI (`.github/workflows/os-image.yml`) builds both variants on `ubuntu-24.04`
 for every `workflow_dispatch` and `os-image-v*` tag, and publishes the assets
-on the tag. Pull requests that touch this directory run the static checks only
+on the tag. The release job refuses a tag whose commit is not on main, and
+signs every disk tarball and identity file keyless with cosign (GitHub OIDC,
+Fulcio certificate for `os-image.yml` at that tag, Rekor entry) before it
+uploads anything. Pull requests that touch this directory run the static checks only
 (Go and Python tests, shellcheck, actionlint, patch application against
 `source.lock`, upstream's static contract on the patched tree).
 
@@ -83,6 +89,7 @@ minutes cold on 4 vCPUs.
 | `<name>-<version>-identity.json` | The same `image-identity.json`: `os_image_hash`, UKI Authenticode (sha256 = dstack's `gcp_uki_auth`, sha384 for the TDX RTMR1 event), tarball sha256, source commit and tree, the `vm_config` string for `.sys-config.json` |
 | `<name>-<version>-license-inventory.json` | Every Debian package with its version, source package, section and DEP-5 licenses; kernel module license counts; check results |
 | `<name>-<version>-rust-crates.json` | The Rust crates compiled into the guest with their license expressions |
+| `<name>-<version>-gce.tar.gz.sigstore.json`, `-identity.tar.gz.sigstore.json`, `-identity.json.sigstore.json` | Sigstore bundles (certificate, signature, Rekor entry) for the disk tarball and the identity files, signed by `os-image.yml` at the release tag |
 | `<name>-<version>-hashes.txt`, `<name>-<version>.sha256` | `os_image_hash`, `gcp_uki_auth`, UKI sha384 Authenticode, `disk.raw` sha256 and the sha256 of every asset |
 
 ## Measure and register
@@ -96,15 +103,21 @@ TDX quota:
 ```bash
 runtime/images/dstack-os/import-and-measure.sh \
   --project P --zone us-central1-a --bucket gs://P-sealed-images \
-  --tarball sealed-dstack-os-0.6.1-s1-gce.tar.gz \
-  --identity sealed-dstack-os-0.6.1-s1-identity.tar.gz \
+  --tarball sealed-dstack-os-0.6.1-s4-gce.tar.gz \
+  --identity sealed-dstack-os-0.6.1-s4-identity.tar.gz \
   --machine-types c3-standard-8,c3-standard-4 --boots 2 \
   --release-base https://github.com/<owner>/<repo>/releases/download
 ```
 
-It checks the tarball sha256 against the identity, imports the image
-(`UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC`), and boots it once per machine type and
-boot, one VM at a time, with no service account, no scopes, no external IP,
+Download the `.sigstore.json` bundles next to the tarball and the identity.
+The script first verifies them with cosign: both must be signed by
+`os-image.yml` of the release repository (`--repo`, else the `--release-base`
+repository) at the tag `os-image-v<version>` the identity names, so only an
+image released from main can be measured. `--allow-unsigned` skips this for a
+local or `workflow_dispatch` build, which must never be registered for
+production. It then checks the tarball sha256 against the identity, imports
+the image (`UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC`), and boots it once per machine
+type and boot, one VM at a time, with no service account, no scopes, no external IP,
 project SSH keys blocked and OS Login off. Each VM gets a data disk with the
 `dstack-data` partition and a `DSTACKSHR` disk whose `app-compose.json` uses the
 `bash` runner: it asks the guest agent for a quote over a fresh 64-byte nonce
@@ -125,7 +138,7 @@ machine type, groups machine types with identical measurements (PlatformRegistry
 keeps images unique by `measurementsHash`, CR-5), and writes
 `measurements/<name>-<version>.json` in the `CATALOG_FILE` format of
 `contracts/script/RegisterCatalog.s.sol`: `name`, `version` (for example
-`0.6.1-s1+c3-standard-4.c3-standard-8`), `mrtd`, `rtmr0` to `rtmr2`,
+`0.6.1-s4+c3-standard-4.c3-standard-8`), `mrtd`, `rtmr0` to `rtmr2`,
 `isDebug`, `sourceURI` (the release URL with `#sha256=` of the tarball) and
 `imageId = keccak256(abi.encode(name, version, measurementsHash))`. Registering
 it onchain (`addImage` from OWNER) is a separate operator step.

@@ -26,35 +26,5136 @@
       "blockNumber": 46314880,
       "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb",
       "txHash": "0x0db65dce37b276e6980a670781d9f2976d65f03aa89d2dc955e06d0a7c79022f",
-      "gasUsed": 10300154
+      "gasUsed": 10300154,
+      "abi": [
+        {
+          "type": "constructor",
+          "inputs": [
+            {
+              "name": "initialOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "DEFAULT_ADMIN_ROLE",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "MAX_MAINTAINER_SHARE_BPS",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "REGISTRAR_ROLE",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "VERSION",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "acceptOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "appAt",
+          "inputs": [
+            {
+              "name": "index",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "appCount",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "appExists",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "appOfRelease",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "computeAppId",
+          "inputs": [
+            {
+              "name": "slug",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "pure"
+        },
+        {
+          "type": "function",
+          "name": "computeReleaseId",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "bundleHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "pure"
+        },
+        {
+          "type": "function",
+          "name": "deprecateRelease",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "getApp",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "internalType": "struct IAppRegistry.App",
+              "components": [
+                {
+                  "name": "slug",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "name",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "licenseSpdx",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "metadataURI",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "maintainer",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "maintainerShareBps",
+                  "type": "uint16",
+                  "internalType": "uint16"
+                },
+                {
+                  "name": "registeredAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                }
+              ]
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "getRelease",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "internalType": "struct IAppRegistry.Release",
+              "components": [
+                {
+                  "name": "appId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "bundleHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "egressPolicyHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "sbomHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "status",
+                  "type": "uint8",
+                  "internalType": "enum IAppRegistry.ReleaseStatus"
+                },
+                {
+                  "name": "publishedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                },
+                {
+                  "name": "version",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "provenanceURI",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "signatureURI",
+                  "type": "string",
+                  "internalType": "string"
+                }
+              ]
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "getRoleAdmin",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "grantRegistrar",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "grantRole",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "hasRole",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "isActiveRelease",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "isApprovableRelease",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "latestRelease",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "owner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "payoutInfo",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "maintainer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "maintainerShareBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "pendingOwner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "publishRelease",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "bundleHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "egressPolicyHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "sbomHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "provenanceURI",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "signatureURI",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "registerApp",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "slug",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "licenseSpdx",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "maintainer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "maintainerShareBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            },
+            {
+              "name": "metadataURI",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "releaseAt",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "index",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "releaseByBundle",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "bundleHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "releaseByVersion",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "releaseCount",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "releaseStatus",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint8",
+              "internalType": "enum IAppRegistry.ReleaseStatus"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "renounceOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "renounceRole",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "callerConfirmation",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "revokeRegistrar",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "revokeRelease",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "reason",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "revokeRole",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "setMaintainer",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "newMaintainer",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "setMaintainerShare",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "maintainerShareBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "setMetadataURI",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "metadataURI",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "supportsInterface",
+          "inputs": [
+            {
+              "name": "interfaceId",
+              "type": "bytes4",
+              "internalType": "bytes4"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "transferOwnership",
+          "inputs": [
+            {
+              "name": "newOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "event",
+          "name": "AppRegistered",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "maintainer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "slug",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "licenseSpdx",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "maintainerShareBps",
+              "type": "uint16",
+              "indexed": false,
+              "internalType": "uint16"
+            },
+            {
+              "name": "metadataURI",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "MaintainerChanged",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "previousMaintainer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newMaintainer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "changedBy",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "MaintainerShareChanged",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "previousShareBps",
+              "type": "uint16",
+              "indexed": false,
+              "internalType": "uint16"
+            },
+            {
+              "name": "newShareBps",
+              "type": "uint16",
+              "indexed": false,
+              "internalType": "uint16"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "MetadataURIChanged",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "metadataURI",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferStarted",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferred",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "ReleaseDeprecated",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "ReleasePublished",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "publisher",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "bundleHash",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "egressPolicyHash",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "sbomHash",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "provenanceURI",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "signatureURI",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "ReleaseRevoked",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "previousStatus",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "enum IAppRegistry.ReleaseStatus"
+            },
+            {
+              "name": "reason",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "RoleAdminChanged",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "previousAdminRole",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "newAdminRole",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "RoleGranted",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "sender",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "RoleRevoked",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "sender",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "error",
+          "name": "AccessControlBadConfirmation",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "AccessControlUnauthorizedAccount",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "neededRole",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AlreadyRegistrar",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AppAlreadyRegistered",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AppIdMismatch",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "expected",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AppNotFound",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "BundleAlreadyPublished",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "bundleHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "EmptyField",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "IndexOutOfBounds",
+          "inputs": [
+            {
+              "name": "index",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "length",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidReleaseStatus",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "status",
+              "type": "uint8",
+              "internalType": "enum IAppRegistry.ReleaseStatus"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "MaintainerShareTooHigh",
+          "inputs": [
+            {
+              "name": "shareBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "NotMaintainerOrOwner",
+          "inputs": [
+            {
+              "name": "caller",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "NotRegistrar",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableInvalidOwner",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableUnauthorizedAccount",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ReleaseAlreadyExists",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ReleaseNotFound",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "RenounceOwnershipDisabled",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "VersionAlreadyPublished",
+          "inputs": [
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "internalType": "string"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ZeroAddress",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ZeroBundleHash",
+          "inputs": []
+        }
+      ],
+      "verification": {
+        "verifier": "sourcify",
+        "url": "https://contracts.tempo.xyz/v2/contract/4217/0x88C91CAcB74cCeC3b8A1823977EEC42aE3b93b43",
+        "match": "exact_match",
+        "runtimeMatch": "exact_match",
+        "creationMatch": "match",
+        "checkedAt": "2026-10-29T08:53:00Z"
+      }
     },
     "DeploymentRegistry": {
       "address": "0x254eFB9d1809A95Ec6d233cC57b3a10849bd2C8E",
       "blockNumber": 46314885,
       "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb00000000000000000000000018ab956ea44757587896dfd25632fb3e89f7002d00000000000000000000000088c91cacb74ccec3b8a1823977eec42ae3b93b43",
       "txHash": "0xdf36bd2a090a150804343ac89309b35be841cb39c2024a865730841f5df3e2ac",
-      "gasUsed": 12069223
+      "gasUsed": 12069223,
+      "abi": [
+        {
+          "type": "constructor",
+          "inputs": [
+            {
+              "name": "initialOwner",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "platformRegistry_",
+              "type": "address",
+              "internalType": "contract IPlatformRegistry"
+            },
+            {
+              "name": "appRegistry_",
+              "type": "address",
+              "internalType": "contract IAppRegistry"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "DEFAULT_MAX_ATTESTATION_AGE",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "HEARTBEAT_TYPEHASH",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "MAX_ATTESTATION_AGE_LIMIT",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "MAX_FUTURE_SKEW",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "MAX_RELEASES_PER_STACK",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "METHOD_ORACLE_SIG_V1",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "METHOD_ZK_DCAP_V1",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "RECORD_TYPEHASH",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "VERSION",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "acceptOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "appInDeployment",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "appRegistry",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "contract IAppRegistry"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "approveStack",
+          "inputs": [
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "releaseIds",
+              "type": "bytes32[]",
+              "internalType": "bytes32[]"
+            },
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "expiry",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "closeDeployment",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "deploymentCount",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "deploymentParties",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "status",
+              "type": "uint8",
+              "internalType": "enum IDeploymentRegistry.DeploymentStatus"
+            },
+            {
+              "name": "customer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "enclaveSigner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "domainSeparator",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "eip712Domain",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "fields",
+              "type": "bytes1",
+              "internalType": "bytes1"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "chainId",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "verifyingContract",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "salt",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "extensions",
+              "type": "uint256[]",
+              "internalType": "uint256[]"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "getDeployment",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "internalType": "struct IDeploymentRegistry.Deployment",
+              "components": [
+                {
+                  "name": "deploymentId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "customer",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "attestedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                },
+                {
+                  "name": "method",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "lastMethod",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "status",
+                  "type": "uint8",
+                  "internalType": "enum IDeploymentRegistry.DeploymentStatus"
+                },
+                {
+                  "name": "stackHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "imageId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "quoteHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "eventLogHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "configHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "enclaveSigner",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "lastAttestedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                },
+                {
+                  "name": "registeredAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                },
+                {
+                  "name": "closedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                }
+              ]
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "getStackApproval",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "releaseIds",
+              "type": "bytes32[]",
+              "internalType": "bytes32[]"
+            },
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "expiry",
+              "type": "uint64",
+              "internalType": "uint64"
+            },
+            {
+              "name": "revoked",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "approvedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "heartbeat",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "quoteHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "attestedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            },
+            {
+              "name": "method",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "evidence",
+              "type": "bytes",
+              "internalType": "bytes"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "heartbeatDigest",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "quoteHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "attestedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "isStackApproved",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "maxAttestationAge",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "owner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "pause",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "paused",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "pendingOwner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "platformRegistry",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "contract IPlatformRegistry"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "recordDigest",
+          "inputs": [
+            {
+              "name": "r",
+              "type": "tuple",
+              "internalType": "struct IDeploymentRegistry.Record",
+              "components": [
+                {
+                  "name": "deploymentId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "customer",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "stackHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "imageId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "quoteHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "eventLogHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "configHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "enclaveSigner",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "attestedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                }
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "registerDeployment",
+          "inputs": [
+            {
+              "name": "r",
+              "type": "tuple",
+              "internalType": "struct IDeploymentRegistry.Record",
+              "components": [
+                {
+                  "name": "deploymentId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "customer",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "stackHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "imageId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "quoteHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "eventLogHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "configHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "enclaveSigner",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "attestedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                }
+              ]
+            },
+            {
+              "name": "method",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "evidence",
+              "type": "bytes",
+              "internalType": "bytes"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "renounceOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "revokeStack",
+          "inputs": [
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "setMaxAttestationAge",
+          "inputs": [
+            {
+              "name": "maxAge",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "setVerifier",
+          "inputs": [
+            {
+              "name": "method",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "verifier",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "transferOwnership",
+          "inputs": [
+            {
+              "name": "newOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "unpause",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "verifiers",
+          "inputs": [
+            {
+              "name": "method",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "verifier",
+              "type": "address",
+              "internalType": "contract IAttestationVerifier"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "event",
+          "name": "DeploymentClosed",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "closedBy",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "DeploymentHeartbeat",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "quoteHash",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "attestedAt",
+              "type": "uint64",
+              "indexed": false,
+              "internalType": "uint64"
+            },
+            {
+              "name": "method",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "DeploymentRegistered",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "customer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "record",
+              "type": "tuple",
+              "indexed": false,
+              "internalType": "struct IDeploymentRegistry.Record",
+              "components": [
+                {
+                  "name": "deploymentId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "customer",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "stackHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "imageId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "quoteHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "eventLogHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "configHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "enclaveSigner",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "attestedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                }
+              ]
+            },
+            {
+              "name": "method",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "submitter",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "EIP712DomainChanged",
+          "inputs": [],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "MaxAttestationAgeSet",
+          "inputs": [
+            {
+              "name": "previousMaxAge",
+              "type": "uint64",
+              "indexed": false,
+              "internalType": "uint64"
+            },
+            {
+              "name": "newMaxAge",
+              "type": "uint64",
+              "indexed": false,
+              "internalType": "uint64"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferStarted",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferred",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "Paused",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "StackApproved",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "releaseIds",
+              "type": "bytes32[]",
+              "indexed": false,
+              "internalType": "bytes32[]"
+            },
+            {
+              "name": "expiry",
+              "type": "uint64",
+              "indexed": false,
+              "internalType": "uint64"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "StackRevoked",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "Unpaused",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "VerifierSet",
+          "inputs": [
+            {
+              "name": "method",
+              "type": "uint8",
+              "indexed": true,
+              "internalType": "uint8"
+            },
+            {
+              "name": "previousVerifier",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newVerifier",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "error",
+          "name": "ApprovalAlreadyRevoked",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ApprovalNotFound",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AttestationInFuture",
+          "inputs": [
+            {
+              "name": "attestedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            },
+            {
+              "name": "blockTime",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AttestationTooOld",
+          "inputs": [
+            {
+              "name": "attestedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            },
+            {
+              "name": "blockTime",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AttestedBeforeApproval",
+          "inputs": [
+            {
+              "name": "attestedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            },
+            {
+              "name": "approvedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "DeploymentAlreadyRegistered",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "DeploymentNotActive",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "DeploymentNotFound",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "DuplicateRelease",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "EnforcedPause",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ExpectedPause",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ImageMismatch",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "approvedImageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ImageNotApproved",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidAttestation",
+          "inputs": [
+            {
+              "name": "method",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidExpiry",
+          "inputs": [
+            {
+              "name": "expiry",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidMaxAttestationAge",
+          "inputs": [
+            {
+              "name": "maxAge",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidMethod",
+          "inputs": [
+            {
+              "name": "method",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidReleaseCount",
+          "inputs": [
+            {
+              "name": "count",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidShortString",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "NotCustomerOrOwner",
+          "inputs": [
+            {
+              "name": "caller",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableInvalidOwner",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableUnauthorizedAccount",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "QuoteReused",
+          "inputs": [
+            {
+              "name": "quoteHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ReleaseNotApprovable",
+          "inputs": [
+            {
+              "name": "releaseId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ReleasesChanged",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "RenounceOwnershipDisabled",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "StackNotApproved",
+          "inputs": [
+            {
+              "name": "customer",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "stackHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "StaleHeartbeat",
+          "inputs": [
+            {
+              "name": "attestedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            },
+            {
+              "name": "lastAttestedAt",
+              "type": "uint64",
+              "internalType": "uint64"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "StringTooLong",
+          "inputs": [
+            {
+              "name": "str",
+              "type": "string",
+              "internalType": "string"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "VerifierNotContract",
+          "inputs": [
+            {
+              "name": "verifier",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "VerifierNotSet",
+          "inputs": [
+            {
+              "name": "method",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ZeroAddress",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ZeroDeploymentId",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ZeroStackHash",
+          "inputs": []
+        }
+      ],
+      "verification": {
+        "verifier": "sourcify",
+        "url": "https://contracts.tempo.xyz/v2/contract/4217/0x254eFB9d1809A95Ec6d233cC57b3a10849bd2C8E",
+        "match": "exact_match",
+        "runtimeMatch": "exact_match",
+        "creationMatch": "match",
+        "checkedAt": "2026-10-29T08:53:00Z"
+      }
     },
     "FeeSplitter": {
       "address": "0x3D288c0756c3F26Da0f41257D688bAB3dB3d94AD",
       "blockNumber": 46314891,
       "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb000000000000000000000000254efb9d1809a95ec6d233cc57b3a10849bd2c8e00000000000000000000000088c91cacb74ccec3b8a1823977eec42ae3b93b4300000000000000000000000020c000000000000000000000b9537d11c60e8b50000000000000000000000000755a1e289503c7109d01a74ed253ba0f724ca3eb00000000000000000000000000000000000000000000000000000000004c4b400000000000000000000000000000000000000000000000000000000001312d00",
       "txHash": "0x6e8724ebe875cf299fd535ea3bdac61b99cc46bd19924681a50ff45c1aba3f5f",
-      "gasUsed": 9234891
+      "gasUsed": 9234891,
+      "abi": [
+        {
+          "type": "constructor",
+          "inputs": [
+            {
+              "name": "initialOwner",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "deploymentRegistry_",
+              "type": "address",
+              "internalType": "contract IDeploymentRegistry"
+            },
+            {
+              "name": "appRegistry_",
+              "type": "address",
+              "internalType": "contract IAppRegistry"
+            },
+            {
+              "name": "feeToken",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "treasury_",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "perPaymentCap",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "perDeploymentDailyCap",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "BPS_DENOMINATOR",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "FEE_TOKEN",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "TIP20_ADDRESS_PREFIX",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes12",
+              "internalType": "bytes12"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "VERSION",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "acceptOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "appRegistry",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "contract IAppRegistry"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "credited",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "amount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "dailyPaid",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "day",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "amount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "deploymentRegistry",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "contract IDeploymentRegistry"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "isTokenAllowed",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "owner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "pause",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "paused",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "payFees",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "amount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "pendingOwner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "remainingDailyAllowance",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "renounceOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "setCaps",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "perPaymentCap",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "perDeploymentDailyCap",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "setToken",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "allowed",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "perPaymentCap",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "perDeploymentDailyCap",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "setTreasury",
+          "inputs": [
+            {
+              "name": "newTreasury",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "splitAmount",
+          "inputs": [
+            {
+              "name": "amount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "shareBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "maintainerAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "treasuryAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "pure"
+        },
+        {
+          "type": "function",
+          "name": "sweepUnaccounted",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "tokenConfig",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "internalType": "struct FeeSplitter.TokenConfig",
+              "components": [
+                {
+                  "name": "allowed",
+                  "type": "bool",
+                  "internalType": "bool"
+                },
+                {
+                  "name": "perPaymentCap",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "perDeploymentDailyCap",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                }
+              ]
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "topUpFees",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "total",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "totalCredited",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "amount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "transferOwnership",
+          "inputs": [
+            {
+              "name": "newOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "treasury",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "unpause",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "usagePaid",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "amount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "usageToken",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "withdraw",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "event",
+          "name": "Credited",
+          "inputs": [
+            {
+              "name": "recipient",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "kind",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "enum FeeSplitter.CreditKind"
+            },
+            {
+              "name": "amount",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "newBalance",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "FeesPaid",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "payer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            },
+            {
+              "name": "amount",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "maintainerAmount",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferStarted",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferred",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "Paused",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "Swept",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "treasury",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "amount",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "TokenConfigured",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "allowed",
+              "type": "bool",
+              "indexed": false,
+              "internalType": "bool"
+            },
+            {
+              "name": "perPaymentCap",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "perDeploymentDailyCap",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "TreasurySet",
+          "inputs": [
+            {
+              "name": "previousTreasury",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newTreasury",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "Unpaused",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "Withdrawn",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "amount",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "error",
+          "name": "AppNotInDeployment",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "AppRegistryMismatch",
+          "inputs": [
+            {
+              "name": "deploymentRegistryApps",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "appRegistry",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "DailyCapExceeded",
+          "inputs": [
+            {
+              "name": "newDailyTotal",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "cap",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "DeploymentNotActive",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "EnforcedPause",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ExpectedPause",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "InvalidTreasury",
+          "inputs": [
+            {
+              "name": "treasury",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "NothingToSweep",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "NothingToTopUp",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "paid",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "NothingToWithdraw",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableInvalidOwner",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableUnauthorizedAccount",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "PerPaymentCapExceeded",
+          "inputs": [
+            {
+              "name": "amount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "cap",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ReentrancyGuardReentrantCall",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "RenounceOwnershipDisabled",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "SafeERC20FailedOperation",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "TokenNotAllowed",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "TransferAmountMismatch",
+          "inputs": [
+            {
+              "name": "expected",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "received",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "UnauthorizedPayer",
+          "inputs": [
+            {
+              "name": "caller",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "UsageAlreadyPaid",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "UsageNotPaid",
+          "inputs": [
+            {
+              "name": "deploymentId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "usageHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "appId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "UsageTokenMismatch",
+          "inputs": [
+            {
+              "name": "legToken",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "token",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ZeroAddress",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ZeroAmount",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ZeroUsageHash",
+          "inputs": []
+        }
+      ],
+      "verification": {
+        "verifier": "sourcify",
+        "url": "https://contracts.tempo.xyz/v2/contract/4217/0x3D288c0756c3F26Da0f41257D688bAB3dB3d94AD",
+        "match": "exact_match",
+        "runtimeMatch": "exact_match",
+        "creationMatch": "match",
+        "checkedAt": "2026-10-29T08:53:00Z"
+      }
     },
     "OracleSignatureVerifier": {
       "address": "0xf680E602758222d5aE1CcD797a03022bCE2dd353",
       "blockNumber": 46314882,
       "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb",
       "txHash": "0xde1c4846b358b65b83edeef7a49a1b6de3d3a410a955e74cbab8cd52bae033ea",
-      "gasUsed": 3091768
+      "gasUsed": 3091768,
+      "abi": [
+        {
+          "type": "constructor",
+          "inputs": [
+            {
+              "name": "initialOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "METHOD_ID",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "VERSION",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "acceptOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "addSigner",
+          "inputs": [
+            {
+              "name": "signer",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "isSigner",
+          "inputs": [
+            {
+              "name": "signer",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "allowed",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "owner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "pendingOwner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "recoverSigner",
+          "inputs": [
+            {
+              "name": "recordDigest",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "evidence",
+              "type": "bytes",
+              "internalType": "bytes"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "ok",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "signer",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "pure"
+        },
+        {
+          "type": "function",
+          "name": "removeSigner",
+          "inputs": [
+            {
+              "name": "signer",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "renounceOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "signerCount",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "transferOwnership",
+          "inputs": [
+            {
+              "name": "newOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "verify",
+          "inputs": [
+            {
+              "name": "recordDigest",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "evidence",
+              "type": "bytes",
+              "internalType": "bytes"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferStarted",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferred",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "SignerAdded",
+          "inputs": [
+            {
+              "name": "signer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "SignerRemoved",
+          "inputs": [
+            {
+              "name": "signer",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "error",
+          "name": "OwnableInvalidOwner",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableUnauthorizedAccount",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "RenounceOwnershipDisabled",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "SignerAlreadyAdded",
+          "inputs": [
+            {
+              "name": "signer",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "SignerNotFound",
+          "inputs": [
+            {
+              "name": "signer",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ZeroSigner",
+          "inputs": []
+        }
+      ],
+      "verification": {
+        "verifier": "sourcify",
+        "url": "https://contracts.tempo.xyz/v2/contract/4217/0xf680E602758222d5aE1CcD797a03022bCE2dd353",
+        "match": "exact_match",
+        "runtimeMatch": "exact_match",
+        "creationMatch": "match",
+        "checkedAt": "2026-10-29T08:53:00Z"
+      }
     },
     "PlatformRegistry": {
       "address": "0x18AB956ea44757587896dfD25632FB3e89F7002d",
       "blockNumber": 46314877,
       "constructorArgs": "0x00000000000000000000000017273df738510fd3d3fe6ff7d3de2e0122c832cb",
       "txHash": "0x92146d357cfedea43a0454d9602b9b6e61aaad28f2eccb1e6ecbf6e35c81dfb7",
-      "gasUsed": 5681019
+      "gasUsed": 5681019,
+      "abi": [
+        {
+          "type": "constructor",
+          "inputs": [
+            {
+              "name": "initialOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "MEASUREMENT_LENGTH",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "VERSION",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "acceptOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "addImage",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "internalType": "string"
+            },
+            {
+              "name": "mrtd",
+              "type": "bytes",
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr0",
+              "type": "bytes",
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr1",
+              "type": "bytes",
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr2",
+              "type": "bytes",
+              "internalType": "bytes"
+            },
+            {
+              "name": "isDebug",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "sourceURI",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "measurementsHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "computeMeasurementsHash",
+          "inputs": [
+            {
+              "name": "mrtd",
+              "type": "bytes",
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr0",
+              "type": "bytes",
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr1",
+              "type": "bytes",
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr2",
+              "type": "bytes",
+              "internalType": "bytes"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "pure"
+        },
+        {
+          "type": "function",
+          "name": "deprecateImage",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "getImage",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "internalType": "struct IPlatformRegistry.Image",
+              "components": [
+                {
+                  "name": "measurementsHash",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "isDebug",
+                  "type": "bool",
+                  "internalType": "bool"
+                },
+                {
+                  "name": "status",
+                  "type": "uint8",
+                  "internalType": "enum IPlatformRegistry.ImageStatus"
+                },
+                {
+                  "name": "addedAt",
+                  "type": "uint64",
+                  "internalType": "uint64"
+                },
+                {
+                  "name": "name",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "version",
+                  "type": "string",
+                  "internalType": "string"
+                },
+                {
+                  "name": "sourceURI",
+                  "type": "string",
+                  "internalType": "string"
+                }
+              ]
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "imageByMeasurements",
+          "inputs": [
+            {
+              "name": "measurementsHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "imageCount",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "imageStatus",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "status",
+              "type": "uint8",
+              "internalType": "enum IPlatformRegistry.ImageStatus"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "isApprovedImage",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "owner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "pendingOwner",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "renounceOwnership",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "view"
+        },
+        {
+          "type": "function",
+          "name": "revokeImage",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "reason",
+              "type": "string",
+              "internalType": "string"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "function",
+          "name": "transferOwnership",
+          "inputs": [
+            {
+              "name": "newOwner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "type": "event",
+          "name": "ImageAdded",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "measurementsHash",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "mrtd",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr0",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr1",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "rtmr2",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "isDebug",
+              "type": "bool",
+              "indexed": false,
+              "internalType": "bool"
+            },
+            {
+              "name": "sourceURI",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "ImageDeprecated",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "ImageRevoked",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "previousStatus",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "enum IPlatformRegistry.ImageStatus"
+            },
+            {
+              "name": "reason",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferStarted",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "event",
+          "name": "OwnershipTransferred",
+          "inputs": [
+            {
+              "name": "previousOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "newOwner",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "error",
+          "name": "EmptyField",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ImageAlreadyExists",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "ImageNotFound",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidImageStatus",
+          "inputs": [
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "status",
+              "type": "uint8",
+              "internalType": "enum IPlatformRegistry.ImageStatus"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "InvalidMeasurementLength",
+          "inputs": [
+            {
+              "name": "index",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "length",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "MeasurementsAlreadyRegistered",
+          "inputs": [
+            {
+              "name": "measurementsHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "imageId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableInvalidOwner",
+          "inputs": [
+            {
+              "name": "owner",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "OwnableUnauthorizedAccount",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
+        },
+        {
+          "type": "error",
+          "name": "RenounceOwnershipDisabled",
+          "inputs": []
+        },
+        {
+          "type": "error",
+          "name": "ZeroImageId",
+          "inputs": []
+        }
+      ],
+      "verification": {
+        "verifier": "sourcify",
+        "url": "https://contracts.tempo.xyz/v2/contract/4217/0x18AB956ea44757587896dfD25632FB3e89F7002d",
+        "match": "exact_match",
+        "runtimeMatch": "exact_match",
+        "creationMatch": "match",
+        "checkedAt": "2026-10-29T08:53:00Z"
+      }
     }
   },
   "deployer": "0x17273df738510FD3d3Fe6Ff7D3De2E0122c832cB",

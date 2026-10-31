@@ -16,7 +16,29 @@ script and test live in `key-broker/third_party/`; keep the two copies identical
 
 The module set is `go list -deps` of `./verifier/cmd/sealed-verifierd` for the target the build stage sets once
 with `ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64`, so it is exactly what the binary links (29 modules on 2026-10-28, with
-go-ethereum v1.17.10).
+go-ethereum v1.17.10; 86 on 2026-10-29, with sigstore-go v1.3.0).
+
+## sigstore-go (release signatures, supply-2)
+
+`verifier/releasesig` links github.com/sigstore/sigstore-go v1.3.0 (Apache-2.0), pinned in `go.mod`, into
+sealed-verifierd and the `sealed` CLI (not the key broker). With it come 56 modules, none copyleft, checked on
+2026-10-29 from each module's root license text:
+
+- Apache-2.0 (43): sigstore-go, sigstore/sigstore, sigstore/rekor, sigstore/rekor-tiles/v2,
+  sigstore/timestamp-authority/v2, sigstore/protobuf-specs, theupdateframework/go-tuf/v2, in-toto/attestation,
+  in-toto/in-toto-golang, google/certificate-transparency-go, google/go-containerregistry, transparency-dev/formats,
+  transparency-dev/merkle, cyberphone/json-canonicalization, opencontainers/go-digest, oklog/ulid/v2, shibumi/go-pathspec,
+  go-openapi (analysis, errors, jsonpointer, jsonreference, loads, runtime, runtime/server-middleware, spec, strfmt,
+  validate, swag and its 11 submodules), google.golang.org/grpc, genproto googleapis/api and googleapis/rpc,
+  k8s.io/klog/v2. go-openapi/runtime ships a NOTICE, which the collector copies.
+- MIT (7): asaskevich/govalidator, blang/semver, cenkalti/backoff/v5, digitorus/pkcs7, go-viper/mapstructure/v2,
+  secure-systems-lab/go-securesystemslib, youmark/pkcs8.
+- BSD-3-Clause (4): google/uuid, grpc-ecosystem/grpc-gateway/v2, golang.org/x/mod, golang.org/x/term.
+- BSD-2-Clause (2): digitorus/timestamp, pkg/errors.
+
+The new requirements also raise github.com/gorilla/websocket (BSD-2-Clause, linked through go-ethereum's rpc package)
+from v1.4.2 to v1.5.1 in every binary that links it. The tests below run the collector over this set, so a later
+version that drops a license text fails them.
 
 ## go-ethereum and the LGPL
 

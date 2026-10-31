@@ -1,21 +1,26 @@
 # syntax=docker/dockerfile:1.7
 # sealed-mpp-payer sidecar (apps network .5, port 8090). Its digest is pinned in
 # runtime/composer/runtime-images.json by the runtime image workflow.
-# Build context: the repository root. Target platform: linux/amd64.
+# Build context: the repository root. Production images are linux/amd64 (the runtime image workflow
+# passes --platform); no stage names a platform, so an image built for another platform carries that
+# platform's node and not an amd64 one under an arm64 label (images-preflight, like docker-checks bug 4).
 #   docker build -f runtime/mpp-payer/Dockerfile .
 
-FROM --platform=linux/amd64 docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c AS build
+FROM docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c AS build
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 WORKDIR /src
 COPY . .
+# pnpm stamps .modules.yaml and the workspace state file with the install time; they are removed so a
+# no-cache rebuild gives the same digest (D-028).
 RUN pnpm install --frozen-lockfile --filter @sealed/mpp-payer... \
  && pnpm --filter @sealed/mpp-payer build \
  && pnpm --filter @sealed/mpp-payer deploy --legacy --prod /out \
  && test -f /out/dist/main.js \
- && rm -rf /out/test /out/src
+ && rm -rf /out/test /out/src \
+ && rm -f /out/node_modules/.modules.yaml /out/node_modules/.pnpm-workspace-state*.json
 
-FROM --platform=linux/amd64 docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
+FROM docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
 ENV NODE_ENV=production \
     NODE_USE_ENV_PROXY=1 \
     NPM_CONFIG_UPDATE_NOTIFIER=false \

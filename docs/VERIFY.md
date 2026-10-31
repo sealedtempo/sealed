@@ -9,10 +9,11 @@ Limits: confidential VMs do not stop physical attacks on the server, bugs inside
 ## What a passing verification shows
 
 - The quote was produced by an Intel TDX confidential VM whose TCB status the policy allows, and is exactly the signed quote.
-- The TD is not a debug TD, and the host launched it with the TD attributes and CPU features pinned for its image.
+- The TD is not a debug TD, its TD attributes pass the production rule, and the host launched it with CPU features (XFAM) in the allowlist `tdx.allowed_xfam` (D-077).
 - The VM booted a platform image registered and approved in PlatformRegistry, identified by its MRTD and RTMR0 to RTMR2.
 - Every chain read came from one block that was at most 60 seconds old when the verification ran, so a lagging RPC cannot hide a revocation.
 - The VM runs exactly the stack whose hash is in RTMR3, and that stack is what the deterministic composer produces from the public config and the onchain releases' bundles, byte for byte.
+- Every release was signed by the release workflow of the public repo on its main branch (cosign keyless, logged in Rekor) and comes with that workflow's SLSA provenance.
 - Every release is active onchain, and the customer's wallet approved exactly this stack with exactly these releases and this image.
 - The onchain deployment record matches the evidence, and the quote binds the enclave signer that pays fees.
 - With `--live`: the quote is fresh (it binds your nonce), and the TLS key you connected to belongs to that VM.
@@ -77,8 +78,8 @@ Every check is listed in the report, and a check whose inputs are missing fails 
 | `bundle` | the evidence or `/attest` document has every field, with the right schema and sizes; JSON keys are unique and case-exact | no ambiguous input reaches the checks |
 | `chain` | the RPC's chain id, the bundle's and the config's are equal (4217 on mainnet), their registry addresses are the verifier's, and the block every read is pinned to has a timestamp within 60 seconds of your clock (D-060) | evidence from another chain or a look-alike contract fails, and a stale or lagging RPC fails this check instead of hiding a revocation |
 | `quote_hash` | `sha256(quote)` equals `quoteHash` | ties the quote to the record |
-| `quote` | the quote is exactly the signed quote, with no trailing bytes (D-052); its signature, PCK chain to Intel's root, QE report, collateral and CRLs verify; the TCB status is in the policy | proves real TDX hardware with an allowed TCB; unsigned padding would let one quote carry many quoteHash values |
-| `td_attributes` | no debug bits, not migratable, `SEPT_VE_DISABLE` set, no reserved bits (on Google Cloud C3 TD_ATTRIBUTES is `0x10000000`); the data shows `tdAttributes` and `xfam`, and XFAM (`0x602e7` on C3) is not compared with a pinned value yet (D-070) | a debug TD can be inspected by the host, and the host chooses both fields while no register measures them; check XFAM yourself (step 3) until it is pinned |
+| `quote` | the quote is exactly the signed quote, with no trailing bytes (D-052) and its PCK certificate chain in canonical PEM form; its signature, PCK chain to Intel's root, QE report, collateral and CRLs verify; the TCB status is in the policy | proves real TDX hardware with an allowed TCB; unsigned padding would let one quote carry many quoteHash values |
+| `td_attributes` | no debug bits, not migratable, `SEPT_VE_DISABLE` set, no reserved bits (on Google Cloud C3 TD_ATTRIBUTES is `0x10000000`), and XFAM is in `tdx.allowed_xfam` of `config/defaults.yaml` (`0x602e7` on C3, D-077); the data shows `tdAttributes`, `xfam` and `allowedXfam` | a debug TD can be inspected by the host, and the host chooses both fields while no register measures them |
 | `image_measurements` | `keccak256(mrtd, rtmr0, rtmr1, rtmr2)` equals `PlatformRegistry.getImage(imageId).measurementsHash` | the VM booted that registered OS image |
 | `image_approved` | `isApprovedImage(imageId)` and the image is not a debug image | the image is still approved |
 | `event_log_hash` | `sha256(CJSON(eventLog))` equals `eventLogHash` | ties the event log to the record |
@@ -90,7 +91,8 @@ Every check is listed in the report, and a check whose inputs are missing fails 
 | `report_data` | the quote's report_data is `sha256("sealed/evidence/v1" \|\| stackHash \|\| configHash \|\| enclaveSigner \|\| nonce2 \|\| uint64be(attestedAt))` then 32 zero bytes (D-047), or the live construction | the quote was made for this evidence, at this time, for this signer |
 | `freshness` | evidence: attestedAt within `--max-age` and at most 5 minutes in the future; live: your nonce is bound | old evidence cannot be passed off as new |
 | `releases_active` | each release exists, is active (or deprecated) and belongs to the app named in the config | a revoked release fails |
-| `stack_recompute` | each bundle, fetched from `<release_asset_base>/<app>-v<tagVersion>/<app>-<version>.bundle.tar` (`tagVersion` is the version without a leading `v` before a digit), hashes to the onchain bundleHash and names the same app and version; the composer then recomputes appCompose byte for byte | the stack is built only from published, signed releases with nothing added |
+| `release_signature` | next to each bundle, from the same release asset base: `<bundle>.sigstore.json` is a cosign keyless signature over exactly the onchain bundleHash by `https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main` on the GitHub OIDC issuer, with a Rekor entry, and `<bundle>.intoto.jsonl` is SLSA provenance signed by slsa-github-generator `generator_generic_slsa3.yml@refs/tags/v2.1.0` for that workflow, with the bundleHash as a subject. Both are checked offline against the Sigstore public-good trusted root built into the verifier; the identities are fixed in the verifier, never read from the release or the chain. A dev verification (`--dev-allow-simulated` under `SEALED_DEV_SIM=1`) passes unsigned releases with a `DEV:` detail | each release was built from this repository's main branch by its release workflow, not only registered by the OPS key |
+| `stack_recompute` | each bundle, fetched from `<release_asset_base>/<app>-v<tagVersion>/<app>-<version>.bundle.tar` (`tagVersion` is the version without a leading `v` before a digit), hashes to the onchain bundleHash and names the same app and version; the composer then recomputes appCompose byte for byte | the stack is built only from the bundles registered onchain, with nothing added; `release_signature` shows release CI built and signed those bundles |
 | `stack_approved` | `DeploymentRegistry.isStackApproved(customer, stackHash)` | the customer's wallet approved this stack, unrevoked and unexpired |
 | `approval_releases` | `getStackApproval` names exactly the config's releases and image (D-014) | the approval covers what runs |
 | `onchain_record` | `getDeployment` is Active and its customer, stackHash, imageId, configHash and enclaveSigner match; in evidence mode also eventLogHash, quoteHash and attestedAt equal to `lastAttestedAt` | the onchain record describes this evidence |
@@ -99,23 +101,26 @@ Every check is listed in the report, and a check whose inputs are missing fails 
 
 ## Verify a release
 
-Each release in a stack can be checked on its own:
+`release_signature` runs these signature and provenance checks for every release of a verification. Each release in a stack can also be checked on its own:
 
 ```sh
 B=https://github.com/sealedtempo/sealed/releases/download
 APP=crm VERSION=<version>                                  # version as published in AppRegistry
-curl -LO $B/$APP-v$VERSION/$APP-$VERSION.bundle.tar
-curl -LO $B/$APP-v$VERSION/$APP-$VERSION.bundle.tar.sigstore.json
-curl -LO $B/$APP-v$VERSION/$APP-$VERSION.bundle.tar.intoto.jsonl
+TAG=$APP-v$(printf %s "$VERSION" | sed -E 's/^[vV]([0-9])/\1/')   # the tag drops one leading v before a digit
+curl -LO $B/$TAG/$APP-$VERSION.bundle.tar
+curl -LO $B/$TAG/$APP-$VERSION.bundle.tar.sigstore.json
+curl -LO $B/$TAG/$APP-$VERSION.bundle.tar.intoto.jsonl
 
 # Signed by the release workflow of the public repo (cosign keyless, logged in Rekor)
 cosign verify-blob --bundle $APP-$VERSION.bundle.tar.sigstore.json \
   --certificate-identity https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com $APP-$VERSION.bundle.tar
 
-# Built by GitHub Actions from this repository (SLSA provenance)
+# Built by GitHub Actions from the main branch of this repository (SLSA provenance)
 slsa-verifier verify-artifact $APP-$VERSION.bundle.tar \
-  --provenance-path $APP-$VERSION.bundle.tar.intoto.jsonl --source-uri github.com/sealedtempo/sealed
+  --provenance-path $APP-$VERSION.bundle.tar.intoto.jsonl --source-uri github.com/sealedtempo/sealed \
+  --source-branch main \
+  --builder-id https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@refs/tags/v2.1.0
 
 # The bundle is the one registered onchain, and it rebuilds from source
 sha256sum $APP-$VERSION.bundle.tar                         # = bundleHash from AppRegistry.getRelease (step 7 below)
@@ -176,7 +181,7 @@ jq -r .chainId,.contracts $E                          # same chain, same registr
      -td_attributes <td_attributes> -xfam <xfam>
    ```
 
-   Its TCB rule is its own; compare the reported status with `tcb_policy.allowed_statuses` in `config/defaults.yaml` (`UpToDate`, `SWHardeningNeeded`). The checker accepts trailing bytes, which is why step 2 checks the length. td_attributes must have no debug bit (bit 0 of the first byte). On Google Cloud C3, td_attributes must be `0000001000000000` and xfam `e702060000000000`, the values `0x10000000` (`SEPT_VE_DISABLE` only) and `0x602e7` in the quote's little-endian byte order; the host chooses both and no register measures them. `sealed verify` checks TD_ATTRIBUTES by rule but does not pin XFAM yet (D-070), so compare XFAM here.
+   Its TCB rule is its own; compare the reported status with `tcb_policy.allowed_statuses` in `config/defaults.yaml` (`UpToDate`, `SWHardeningNeeded`). The checker accepts trailing bytes, which is why step 2 checks the length. td_attributes must have no debug bit (bit 0 of the first byte). On Google Cloud C3, td_attributes must be `0000001000000000` and xfam `e702060000000000`, the values `0x10000000` (`SEPT_VE_DISABLE` only) and `0x602e7` in the quote's little-endian byte order; the host chooses both and no register measures them. `sealed verify` checks TD_ATTRIBUTES by rule and XFAM against `tdx.allowed_xfam` (D-077); this step checks both with your own tools.
 
 4. RTMR3 replay and the compose hash:
 
@@ -260,6 +265,7 @@ If every step matches, you have checked the deployment with your own tools again
 
 ## What verification does not show
 
+- That the key broker checked release signatures. `sealed verify` and sealed-verifierd check them (`release_signature`), but the key broker, which releases the secrets, accepts a bundle whose sha256 equals its onchain bundleHash and checks neither the signature nor the provenance. For secret release, a release is anchored by the registrar (OPS) key and the release CI that registers it ([THREAT_MODEL.md](THREAT_MODEL.md#trust-anchors)).
 - That the apps are free of bugs or behave well with the data they are given. Read the app's README, LICENSE-NOTICE and egress policy, and the customer's `egressAdditions` in the config.
 - That the config says what you want. `debug`, `endpoints` (the key broker, platform api, Tempo RPC and relay the deployment uses), `egressAdditions` and `allowedVpcRanges` are inside the stackHash, so a passing verification shows they are what the customer approved: `jq '.config | {debug, endpoints, egressAdditions, allowedVpcRanges}' evidence.json`. A secret one app takes from another (`same_as`) is allowed only when the source app's manifest lists the taking app in `share_with` (D-059); both are in the release bundles' manifests.
 - That the hardware resists physical attacks, or that the cloud provider with physical access does not attack it.

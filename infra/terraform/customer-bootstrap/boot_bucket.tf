@@ -1,7 +1,9 @@
 # Staging bucket for the per-deployment dstack shared disk (docs/notes/dstack.md
 # 4.3). `sealed deploy` uploads a gzip raw disk holding the public, measured
-# app-compose.json and imports it as an image. Objects are only needed until
-# the import finishes. Neither the deployer nor the key broker has access.
+# app-compose.json and imports it as an image, and `sealed bootstrap` stages
+# the OS release tarballs here before it imports the boot and system disk
+# images (D-075). Objects are only needed until the import finishes. Neither
+# the deployer nor the key broker has access.
 
 resource "google_storage_bucket" "boot" {
   count = var.create_boot_bucket ? 1 : 0

@@ -20,20 +20,24 @@ CONTRACTS := PlatformRegistry AppRegistry OracleSignatureVerifier DeploymentRegi
 # Toolchain pin. Older releases run Tempo T4 rules: forks read token policy ids as 0 and CREATE gas is ~2.3x mainnet.
 FOUNDRY_VERSION := 1.8.6
 
-.PHONY: help foundry-check deps build test test-ci test-fork local-e2e catalog-check rehearse-catalog deploy-mainnet \
-	record-mainnet verify-mainnet fee-token-pref estimate-mainnet abi coverage gas-report fmt fmt-check clean
+.PHONY: help foundry-check deps build test test-ci test-invariant-deep test-fork local-e2e catalog-check rehearse-catalog deploy-mainnet \
+	record-mainnet verify-mainnet record-verification deployments-check fee-token-pref estimate-mainnet abi coverage \
+	gas-report fmt fmt-check clean
 
 help:
 	@echo "deps            install pinned Soldeer dependencies (soldeer.lock)"
 	@echo "build           forge build"
-	@echo "test            unit, fuzz, invariant and script tests (no network)"
+	@echo "test            unit, fuzz, invariant and script tests, and deployments-check (no network)"
 	@echo "test-ci         same with the ci profile (fuzz 1000 runs, invariant depth 100)"
+	@echo "test-invariant-deep  invariant suites with the deep profile (1000 runs x depth 256, seed $(INVARIANT_SEED))"
 	@echo "test-fork       fork tests against Tempo mainnet (TEMPO_RPC_URL or $(TEMPO_PUBLIC_RPC_URL))"
 	@echo "local-e2e       full flow on a local anvil --network tempo node"
 	@echo "catalog-check   preflight of $(CATALOG_FILE) against ../catalog/apps manifests (read only)"
 	@echo "rehearse-catalog  RegisterCatalog.s.sol with $(CATALOG_FILE) on a local node, mainnet command shape, gas"
 	@echo "deploy-mainnet  dry run of script/Deploy.s.sol against mainnet; BROADCAST=1 sends it"
-	@echo "verify-mainnet  verify every contract of $(MAINNET_DEPLOYMENTS) at $(TEMPO_VERIFIER_URL)"
+	@echo "verify-mainnet  verify every contract of $(MAINNET_DEPLOYMENTS) at $(TEMPO_VERIFIER_URL), then record-verification"
+	@echo "record-verification  write each contract's verifier lookup into $(MAINNET_DEPLOYMENTS) (read only)"
+	@echo "deployments-check  $(MAINNET_DEPLOYMENTS) has every spec 4.8 field, and the scripts that write them pass their tests"
 	@echo "estimate-mainnet  eth_estimateGas of each contract creation on mainnet (read only)"
 	@echo "abi             regenerate abi/*.json"
 	@echo "coverage        coverage summary + lcov.info"
@@ -49,11 +53,22 @@ deps:
 build:
 	forge build
 
-test:
+test: deployments-check
 	forge test --no-match-path 'test/fork/*'
 
-test-ci:
+test-ci: deployments-check
 	FOUNDRY_PROFILE=ci forge test --no-match-path 'test/fork/*'
+
+# Spec 4.8: addresses, tx hashes, block numbers, ABIs and source verification of every contract (read only).
+deployments-check:
+	script/check-deployments.sh $(MAINNET_DEPLOYMENTS)
+	script/test/deployments.sh
+
+# Long invariant campaign with a fixed seed, so a failure reproduces. Two test threads, one invariant worker each.
+INVARIANT_SEED ?= 0x5ea1ed
+test-invariant-deep: foundry-check
+	FOUNDRY_PROFILE=deep forge test --match-path 'test/invariant/*' --fuzz-seed $(INVARIANT_SEED) \
+		--threads 2 --invariant-workers 1
 
 test-fork: foundry-check
 	forge test --match-path 'test/fork/*' -vv
@@ -80,15 +95,15 @@ deploy-mainnet: foundry-check
 ifeq ($(BROADCAST),1)
 	@test "$$(cast call 0xfeec000000000000000000000000000000000000 'userTokens(address)(address)' $$(cast wallet address --private-key $$OWNER_PRIVATE_KEY) --rpc-url $(RPC) | tr A-F a-f)" = "$$(echo $(FEE_TOKEN_ADDRESS) | tr A-F a-f)" || { echo "OWNER's fee token preference is not FEE_TOKEN; run make fee-token-pref KEY_VAR=OWNER_PRIVATE_KEY"; exit 1; }
 	FOUNDRY_PROFILE=deploy forge script script/Deploy.s.sol:Deploy --rpc-url $(RPC) --broadcast --skip-simulation --slow
-	script/record-deployment.sh $(MAINNET_DEPLOYMENTS) broadcast/Deploy.s.sol/4217/run-latest.json
 	$(MAKE) abi
+	script/record-deployment.sh $(MAINNET_DEPLOYMENTS) broadcast/Deploy.s.sol/4217/run-latest.json
 	@echo "Deployed. Next: make verify-mainnet, then log the fees in MAINNET_LEDGER.md."
 else
 	forge script script/Deploy.s.sol:Deploy --rpc-url $(RPC)
 	@echo "Dry run only (deployments/tempo-mainnet.dry-run.json). Re-run with BROADCAST=1 to send."
 endif
 
-record-mainnet:
+record-mainnet: abi
 	script/record-deployment.sh $(MAINNET_DEPLOYMENTS) broadcast/Deploy.s.sol/4217/run-latest.json
 
 # Sourcify-compatible verification. Pass the host only: forge appends /v2/verify/<chainId>/<address>.
@@ -111,6 +126,13 @@ verify-mainnet:
 			--verifier sourcify --verifier-url $(TEMPO_VERIFIER_URL) \
 			--constructor-args $$args --retries 10 --delay 10 --watch; \
 	done
+	$(MAKE) record-verification
+
+# Reads each contract's Sourcify v2 lookup and writes it into the deployments file (spec 4.8). Then refresh the copies
+# the CLI and the verifier embed: go generate ./cli/internal/embedded and make -C ../verifier abi.
+record-verification:
+	script/record-verification.sh $(MAINNET_DEPLOYMENTS)
+	@echo "Recorded. Refresh the embedded copies: go generate ./cli/internal/embedded; make -C ../verifier abi"
 
 # FeeSplitter's constructor reads appRegistry() from the DeploymentRegistry argument, so its estimate overrides the
 # placeholder registry address with a stub whose every call returns the placeholder AppRegistry address.

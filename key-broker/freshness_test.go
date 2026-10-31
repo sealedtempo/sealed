@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	keybroker "github.com/sealedtempo/sealed/key-broker"
 	"github.com/sealedtempo/sealed/key-broker/internal/kbtest"
+	"github.com/sealedtempo/sealed/runtime/composer"
 	"github.com/sealedtempo/sealed/verifier/attest"
 )
 
@@ -62,6 +66,204 @@ func TestChainFreshness(t *testing.T) {
 				t.Fatal("secrets read on a stale chain")
 			}
 		})
+	}
+}
+
+// fetchHook runs its hook once, on the first bundle fetch. The bundle fetches and the compose sit between the first
+// pin and the approval read, and can take most of the 90 s release deadline.
+type fetchHook struct {
+	inner keybroker.BundleSource
+	once  sync.Once
+	hook  func()
+}
+
+func (f *fetchHook) Fetch(ctx context.Context, ref keybroker.BundleRef) (*composer.Bundle, error) {
+	f.once.Do(f.hook)
+	return f.inner.Fetch(ctx, ref)
+}
+
+// macHook runs its hook once, on the first KMS call, which comes after the secret reads and right before the seal.
+type macHook struct {
+	inner keybroker.MACSigner
+	once  sync.Once
+	hook  func()
+}
+
+func (m *macHook) MAC(ctx context.Context, data []byte) ([]byte, error) {
+	m.once.Do(m.hook)
+	return m.inner.MAC(ctx, data)
+}
+
+// chainChecks returns the decision's chain checks in order.
+func chainChecks(d *keybroker.Decision) []keybroker.Check {
+	var out []keybroker.Check
+	for _, c := range d.Checks {
+		if c.Name == keybroker.CheckChain {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func blockOf(t *testing.T, c keybroker.Check) uint64 {
+	t.Helper()
+	n, ok := c.Data["blockNumber"].(uint64)
+	if !ok {
+		t.Fatalf("chain check without blockNumber: %+v", c)
+	}
+	return n
+}
+
+// TestFreshnessAtApproval (kb-2): the approval and deployment reads are pinned again to the current head right before
+// they are made, and that head must be within MaxHeadAge too. A revocation mined while the bundles were fetched is
+// seen, and a release whose first pin aged past the bound during the fetch is refused, so the approval read is never
+// more than MaxHeadAge old. Ported from the verifier's TestKBVerifyFreshnessCheckedOnlyAtPin, which got 200 for a
+// stack revoked during the fetch with the broker's clock 85 s past the pinned head.
+func TestFreshnessAtApproval(t *testing.T) {
+	for name, mk := range registrars(t) {
+		t.Run(name, func(t *testing.T) {
+			w := kbtest.NewWorld(t, mk(t))
+			for i, c := range []struct {
+				name    string
+				revoke  bool
+				advance time.Duration
+				reasons []string
+			}{
+				{"85 s pass during the fetch", false, 85 * time.Second, []string{keybroker.ReasonChainStale}},
+				// On the memory chain every read sees the latest state, so only anvil shows the stale read here.
+				{"revoked during the fetch", true, 0, []string{keybroker.ReasonStackNotApproved}},
+				{"revoked and 85 s pass during the fetch", true, 85 * time.Second, []string{keybroker.ReasonChainStale, keybroker.ReasonStackNotApproved}},
+			} {
+				t.Run(c.name, func(t *testing.T) {
+					salt := fmt.Sprintf("0x%064x", i+1)
+					s := w.Compose(t, kbtest.StackOptions{Edit: func(cfg *composer.Config) { cfg.Salt = salt }})
+					w.Approve(t, s)
+					hook := &fetchHook{}
+					h := newHarness(t, w, harnessOpts{bundles: hook})
+					src, err := keybroker.NewHTTPBundleSource(keybroker.HTTPBundleSourceOptions{Base: h.bundles.Base()})
+					if err != nil {
+						t.Fatal(err)
+					}
+					hook.inner = src
+					hook.hook = func() {
+						if c.revoke {
+							w.Reg.RevokeStack(t, kbtest.Customer, s.Result.StackHash)
+						}
+						h.clock.advance(c.advance)
+					}
+					reads := w.Secrets.Reads("sealed-notes-APP_SECRET")
+					out := h.release(t, h.attempt(t, s))
+					if out.Status == http.StatusOK || !slices.Contains(c.reasons, out.Decision.Reason) {
+						t.Fatalf("got %d %s (%s), want one of %v", out.Status, out.Decision.Reason, out.Decision.Detail, c.reasons)
+					}
+					if out.Decision.Released != nil || w.Secrets.Reads("sealed-notes-APP_SECRET") != reads {
+						t.Fatal("secrets read or released")
+					}
+					cc := chainChecks(out.Decision)
+					if len(cc) != 2 || !cc[0].OK {
+						t.Fatalf("chain checks %+v, want the first pin and the repin", cc)
+					}
+					if out.Decision.Reason == keybroker.ReasonStackNotApproved {
+						// The approval was read at a block that includes the revocation, after the first pin.
+						if !cc[1].OK || blockOf(t, cc[1]) <= blockOf(t, cc[0]) || out.Decision.Hashes.BlockNumber != blockOf(t, cc[1]) {
+							t.Fatalf("approval not read at a newer head: %+v, logged block %d", cc, out.Decision.Hashes.BlockNumber)
+						}
+					}
+				})
+			}
+
+			// Without delay or revocation the release goes through, with both pins logged.
+			s := w.Compose(t, kbtest.StackOptions{})
+			w.Approve(t, s)
+			h := newHarness(t, w, harnessOpts{})
+			a := h.attempt(t, s)
+			out := h.release(t, a)
+			expectAllowed(t, out, a)
+			cc := chainChecks(out.Decision)
+			if len(cc) != 2 || !cc[0].OK || !cc[1].OK || out.Decision.Hashes.BlockNumber != blockOf(t, cc[1]) {
+				t.Fatalf("chain checks %+v, logged block %d", cc, out.Decision.Hashes.BlockNumber)
+			}
+		})
+	}
+}
+
+// TestFreshnessAtSeal (kb-2): the release decision is made when the secrets are sealed. If the secret reads and the
+// KMS derivation took so long that the head the approval was read at is now older than MaxHeadAge, nothing is
+// sealed and the answer is 503 chain_stale.
+func TestFreshnessAtSeal(t *testing.T) {
+	for name, mk := range registrars(t) {
+		t.Run(name, func(t *testing.T) {
+			w := kbtest.NewWorld(t, mk(t))
+			s := w.Compose(t, kbtest.StackOptions{})
+			w.Approve(t, s)
+			for _, c := range []struct {
+				advance time.Duration
+				ok      bool
+			}{{30 * time.Second, true}, {70 * time.Second, false}} {
+				t.Run(c.advance.String(), func(t *testing.T) {
+					inner, err := keybroker.NewLocalHMAC(w.MACKey)
+					if err != nil {
+						t.Fatal(err)
+					}
+					mac := &macHook{inner: inner}
+					h := newHarness(t, w, harnessOpts{mac: mac})
+					mac.hook = func() { h.clock.advance(c.advance) }
+					a := h.attempt(t, s)
+					out := h.release(t, a)
+					if c.ok {
+						expectAllowed(t, out, a)
+						return
+					}
+					expectDenied(t, out, http.StatusServiceUnavailable, keybroker.ReasonChainStale)
+					last := out.Decision.Checks[len(out.Decision.Checks)-1]
+					if last.Name != keybroker.CheckChain || last.Data["ageSeconds"] == nil || out.Decision.Released != nil || out.RetryAfter == 0 {
+						t.Fatalf("failing check %+v, released %v", last, out.Decision.Released)
+					}
+					for _, ch := range out.Decision.Checks {
+						if ch.Name == keybroker.CheckSeal {
+							t.Fatal("sealed on a stale head")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// rewindingChain answers its second Pin with a head one block behind the first, like an RPC whose load balancer
+// moved to a lagging backend.
+type rewindingChain struct {
+	*kbtest.MemChain
+	mu   sync.Mutex
+	pins int
+}
+
+func (c *rewindingChain) Pin(ctx context.Context) (keybroker.Registry, keybroker.Head, error) {
+	reg, head, err := c.MemChain.Pin(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pins++
+	if c.pins == 2 {
+		head.Number--
+	}
+	return reg, head, err
+}
+
+// TestRepinKeepsNewerHead (kb-2): when the second pin comes back behind the first, the approval reads stay at the
+// first pin's block, the newer view, and its age is checked again.
+func TestRepinKeepsNewerHead(t *testing.T) {
+	reg := kbtest.NewMemRegistrar()
+	w := kbtest.NewWorld(t, reg)
+	s := w.Compose(t, kbtest.StackOptions{})
+	w.Approve(t, s)
+	rc := &rewindingChain{MemChain: reg.C}
+	h := newHarness(t, w, harnessOpts{chain: rc})
+	a := h.attempt(t, s)
+	out := h.release(t, a)
+	expectAllowed(t, out, a)
+	cc := chainChecks(out.Decision)
+	if rc.pins != 2 || len(cc) != 2 || blockOf(t, cc[1]) != blockOf(t, cc[0]) || out.Decision.Hashes.BlockNumber != blockOf(t, cc[0]) {
+		t.Fatalf("%d pins, chain checks %+v, logged block %d", rc.pins, cc, out.Decision.Hashes.BlockNumber)
 	}
 }
 

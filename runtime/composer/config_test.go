@@ -62,7 +62,7 @@ func TestParseConfigRejects(t *testing.T) {
 		"checksummed address":   {`0x00000000000000000000000000000000000000c1`, `0x00000000000000000000000000000000000000C1`},
 		"short salt":            {`"salt": "0x5a5a`, `"salt": "0x5a`},
 		"zero image":            {`"imageId": "0x1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d"`, `"imageId": "0x0000000000000000000000000000000000000000000000000000000000000000"`},
-		"composer version":      {`"composerVersion": "1.4.0"`, `"composerVersion": "0.9.0"`},
+		"composer version":      {`"composerVersion": "` + Version + `"`, `"composerVersion": "0.9.0"`},
 		"unsorted apps":         {`{ "id": "llm-gateway"`, `{ "id": "zz-gateway"`},
 		"bad scheme":            {`"scheme": "sslip"`, `"scheme": "nip"`},
 		"bad ip":                {`"ip": "34.1.2.3"`, `"ip": "34.1.2"`},
@@ -85,6 +85,9 @@ func TestParseConfigRejects(t *testing.T) {
 		"http platform api": {`https://api.sealed.example`, `http://api.sealed.example`},
 		"http relay attest": {`"https://attest.relay.sealed.example/attest"`, `"http://attest.relay.sealed.example/attest"`},
 		"opaque endpoint":   {`https://rpc.tempo.xyz`, `https:rpc.tempo.xyz`},
+		// An endpoint is one host; *.tempo.xyz:443 would open the whole domain to the agent (fix-parity).
+		"wildcard endpoint":       {`https://rpc.tempo.xyz`, `https://*.tempo.xyz`},
+		"wildcard relay endpoint": {`"https://attest.relay.sealed.example"`, `"https://*.relay.sealed.example"`},
 		// Review C-11: relayAttest is the relay agent's /attest.
 		"relay attest path":     {`relay.sealed.example/attest"`, `relay.sealed.example/v1/attest"`},
 		"relay attest slash":    {`relay.sealed.example/attest"`, `relay.sealed.example/attest/"`},

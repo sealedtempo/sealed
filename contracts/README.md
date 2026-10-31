@@ -46,8 +46,9 @@ script/
   check-catalog.sh              preflight of a catalog file against the app manifests (read only)
   rehearse-catalog.sh           RegisterCatalog.s.sol with the mainnet catalog on a local node, gas per transaction
 test/                           unit, fuzz, EIP-712, ZK-method, script, integration tests
-test/invariant/                 handler-based invariants (FeeSplitter balances, approval logic)
-test/fork/                      Tempo mainnet fork tests with real pathUSD and USDC.e
+test/invariant/                 handler-based invariants (FeeSplitter on mock and real TIP-20 tokens, approval
+                                logic, deployment lifecycle, catalog access control, oracle verifier, strangers)
+test/fork/                      Tempo mainnet fork tests: real pathUSD and USDC.e, and the deployed contracts
 test/fixtures/catalog.example.json  test fixture catalog (placeholder measurements, old app entries)
 catalog/catalog.mainnet.json    the mainnet catalog: the six seed apps, registered by OWNER
 abi/                            exported ABIs (`make abi`)
@@ -174,10 +175,10 @@ allowed. The digest is the EIP-712 digest itself: no re-hashing, no EIP-191 pref
 
 ## Contract review (2026-10-28)
 
-Three independent auditor agents (logic and state machine, funds and FeeSplitter, attestation and signatures)
-reviewed the contracts. The two medium issues and the cheap low ones are fixed, and a verification pass over the
-fixes added `topUpFees` (item 7); every PoC is replayed in `test/audit/`. Changes against the original interface
-spec, all small:
+Three AI review agents (fresh Claude Code subagents, one lens each: logic and state machine, funds and FeeSplitter,
+attestation and signatures) reviewed the contracts. This is not a third-party audit; no external audit has been done.
+The two medium issues and the cheap low ones are fixed, and a verification pass over the fixes added `topUpFees`
+(item 7); every PoC is replayed in `test/audit/`. Changes against the original interface spec, all small:
 
 1. FeeSplitter dedupes usage per `(deploymentId, usageHash, appId)` (spec: per `(usageHash, appId)`) and
    `usagePaid` returns the amount paid. A usageHash already names its deployment, so honest flows are unchanged.
@@ -253,9 +254,10 @@ nor time. Method 2 needs a report_data v2 binding first (contract review, crypto
 ```bash
 make deps          # forge soldeer install (from soldeer.lock)
 make build
-make test          # 376 tests, no network: unit, fuzz (256 runs), invariants (128 runs x depth 64), scripts, audit
+make test          # 388 tests, no network: unit, fuzz (256 runs), invariants (128 runs x depth 64), scripts, audit
 make test-ci       # FOUNDRY_PROFILE=ci: fuzz 1000 runs, invariants 256 runs x depth 100
-make test-fork     # 8 tests against Tempo mainnet (TEMPO_RPC_URL or https://rpc.tempo.xyz)
+make test-invariant-deep  # FOUNDRY_PROFILE=deep: invariants 1000 runs x depth 256, seed 0x5ea1ed, 2 threads
+make test-fork     # 13 tests against Tempo mainnet (TEMPO_RPC_URL or https://rpc.tempo.xyz)
 make local-e2e     # anvil --network tempo, deploy, full flow with cast
 make catalog-check     # catalog/catalog.mainnet.json against ../catalog/apps/*/manifest.yaml
 make rehearse-catalog  # register the mainnet catalog on a local node in the mainnet command shape
@@ -277,12 +279,13 @@ revert). Suites:
 | `test/DeploymentRegistryEIP712.t.sol` | 14: typehashes, domain, hand-rolled digests (fuzzed), vm.sign with a generated oracle key, cross-chain and cross-contract replay, cast vector |
 | `test/ZkMethod.t.sol` | 7: method 2 unset, pluggable, coexisting with method 1 |
 | `test/FeeSplitter.t.sol` | 78: payments, top-ups of short legs (retry safety, caps, daily cap, exact approval, reentrancy), per-deployment usage keys, caps, day rollover, fee-on-transfer, reentrancy, withdraw, sweep, admin (treasury and registry checks); fuzzed split math (payments and top-ups) and caps |
-| `test/invariant/*` | 12: 7 FeeSplitter invariants (credits == total == balance, ghost flows, daily cap, exact withdrawals, each leg's usagePaid == what payFees and topUpFees pulled), 4 approval invariants (isStackApproved and approveStack outcomes equal an independent model, including fixed approval content; never true after revoke / expiry / release revoke / image revoke), 1 handler sanity test |
+| `test/invariant/*` | 33 invariants in 7 campaigns plus 6 handler sanity tests (forge counts each campaign as one test). FeeSplitter (7): credits == total == balance, ghost flows, daily cap, exact withdrawals, each leg's usagePaid == what payFees and topUpFees pulled. Approval (4): isStackApproved and approveStack outcomes equal an independent model; never true after revoke / expiry / release revoke / image revoke. FeeSplitterTip20 (4): real TIP-20 precompile tokens with TIP-403 blacklists and pauses; each payment credits exactly the maintainer's floor share and the treasury's rest and nothing else, no credit owed to an address that cannot withdraw, a payment or withdrawal stopped by `PolicyForbids` / `ContractPaused` changes nothing and can be retried. Lifecycle (7): DeploymentRegistry as a state machine with the real verifier and FeeSplitter; Active only after a verified record of a then-approved stack, Closed and revocations final, no heartbeat on an unapproved stack, usage legs never overlap across deployments. Catalog (5): every AppRegistry and PlatformRegistry call by every kind of caller against a model, state changes only through owner, registrar, maintainer or pending-owner paths, deactivated releases and debug or deactivated images never approvable. OracleVerifier (5): verify follows the current signer set (removal takes effect for old evidence), high-s, wrong-v and non-canonical evidence never verify. Stranger (1): callers without a role change nothing in any of the five contracts |
 | `test/script/Scripts.t.sol` | 9: Deploy, RegisterCatalog (idempotent, appId check, `_pending` refused before sending), Transfer/AcceptOwnership in-process |
 | `test/script/CatalogMainnet.t.sol` | 2: pins every field of `catalog/catalog.mainnet.json` and registers it on a fresh deployment |
 | `test/Integration.t.sol` | 1: whole lifecycle including an incident revoke |
-| `test/audit/*` | 27: every PoC of the contract review replayed; fixed findings assert the fix, acknowledged ones pin the documented behavior |
+| `test/audit/*` | 29: every PoC of the contract review replayed; fixed findings assert the fix, acknowledged ones pin the documented behavior; `AuditInvariants.t.sol` pins two behaviors the invariant work surfaced (splitAmount above a full share, a withheld heartbeat accepted after re-approval) |
 | `test/fork/TempoMainnetFork.t.sol` | 8: real pathUSD and USDC.e through FeeSplitter, TIP-403 checks |
+| `test/fork/DeployedContractsFork.t.sol` | 5: the deployed mainnet contracts: runtime code equals this source built with the recorded constructor arguments, configuration equals `deployments/tempo-mainnet.json`, pure helpers agree with a fresh build (fuzzed), live solvency and catalog sanity, and a 54-step lifecycle with the same outcome on the deployed contracts and on a fresh build |
 
 ### Fork tests
 
@@ -292,6 +295,13 @@ five contracts, and moves real pathUSD and USDC.e (the mainnet FEE_TOKEN, D-035)
 accounts are funded by impersonating the Stablecoin DEX precompile (`0xDEc0…`, the largest pathUSD and USDC.e
 holder), so balances and `totalSupply` stay consistent.
 Every test is skipped (not failed) when the RPC is unreachable or `SKIP_FORK_TESTS=true`.
+
+`test/fork/DeployedContractsFork.t.sol` checks the contracts at the addresses in `deployments/tempo-mainnet.json`.
+It runs this source's creation code with the recorded constructor arguments at each deployed address (so the EIP-712
+immutables match) and requires the result to equal the code on mainnet byte for byte, metadata hash included. It
+then impersonates OWNER and ops on the local fork and runs the same scenario on the deployed contracts and on a
+fresh build from a state snapshot, comparing the success flag and return or revert data of every step. Nothing is
+sent to the network.
 
 TIP-403: pathUSD uses policy 2, a BLACKLIST; freshly deployed contracts are authorized to send and receive. The
 tests assert this for FeeSplitter and show the two failure modes: a blacklisted maintainer's `withdraw` reverts

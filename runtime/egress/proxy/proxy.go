@@ -62,10 +62,20 @@ type Options struct {
 }
 
 // Proxy serves the egress proxy on a listener.
+//
+// Smokescreen's IP rules see only the resolved address, not whether the
+// request named a hostname or an IP literal, so there are two smokescreen
+// instances (runtime-1). names serves every request except one for a
+// private IP literal, and its rules deny every private address: a hostname
+// never reaches one, whatever its DNS answers. vpc serves requests for a
+// private IP literal, and its rules admit only the private raw IP entries
+// (ip and port); the decider has already checked that the caller lists the
+// literal. dial checks the caller once more (Policy.CheckDial).
 type Proxy struct {
 	opts         Options
-	cfg          *smokescreen.Config
-	gp           *goproxy.ProxyHttpServer
+	cfgs         []*smokescreen.Config
+	names        *goproxy.ProxyHttpServer
+	vpc          *goproxy.ProxyHttpServer
 	server       *http.Server
 	tracker      *conntrack.Tracker
 	closing      atomic.Bool
@@ -114,19 +124,52 @@ func New(opts Options) (*Proxy, error) {
 	quiet.SetOutput(io.Discard)
 	quiet.SetLevel(logrus.PanicLevel)
 
+	deny := ruleRanges(append(opts.Policy.IP().DeniedPrefixes(), policy.PrivatePrefixes()...))
+	names := p.smokescreenConfig(quiet, deny, nil)
+	vpc := p.smokescreenConfig(quiet, deny, entryRanges(opts.Policy.PrivateEntries()))
+	p.tracker = conntrack.NewTracker(names.IdleTimeout, names.MetricsClient, names.Log, atomic.Value{}, nil)
+	for _, cfg := range []*smokescreen.Config{names, vpc} {
+		cfg.ConnTracker = p.tracker
+		if err := cfg.InitializeSelfConnectionDetection(); err != nil {
+			return nil, fmt.Errorf("proxy: %w", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			return nil, fmt.Errorf("proxy: %w", err)
+		}
+	}
+	p.cfgs = []*smokescreen.Config{names, vpc}
+	p.names = buildProxy(names)
+	p.vpc = buildProxy(vpc)
+
+	// No read or write timeout: tunnels and long plain-HTTP transfers are
+	// bounded by the idle timeout instead (smokescreen wraps hijacked conns).
+	p.server = &http.Server{
+		Handler:           p.rateLimit(http.HandlerFunc(p.route)),
+		ReadHeaderTimeout: opts.ReadHeaderTimeout,
+		IdleTimeout:       opts.IdleTimeout,
+		ErrorLog:          log.New(io.Discard, "", 0),
+	}
+	return p, nil
+}
+
+// smokescreenConfig is the smokescreen setup shared by both instances.
+// Most-specific matching lets an allow rule for one private ip:port beat
+// the deny rule for its range, and any deny rule for a smaller range
+// (metadata, the VM and local networks) beat a broader allow.
+func (p *Proxy) smokescreenConfig(quiet *logrus.Logger, deny, allow []smokescreen.RuleRange) *smokescreen.Config {
 	cfg := smokescreen.NewConfig()
 	cfg.Log = quiet
 	cfg.EgressACL = decider{p}
 	cfg.RoleFromRequest = p.roleFromRequest
 	cfg.AllowMissingRole = false
-	cfg.Resolver = opts.Resolver
+	cfg.Resolver = p.opts.Resolver
 	cfg.Network = "ip"
 	cfg.MostSpecificIPRules = true
-	cfg.DenyRanges = ruleRanges(opts.Policy.IP().DeniedPrefixes())
-	cfg.AllowRanges = ruleRanges(opts.Policy.IP().AllowedPrivate())
-	cfg.ConnectTimeout = opts.ConnectTimeout
-	cfg.IdleTimeout = opts.IdleTimeout
-	cfg.ReadHeaderTimeout = opts.ReadHeaderTimeout
+	cfg.DenyRanges = deny
+	cfg.AllowRanges = allow
+	cfg.ConnectTimeout = p.opts.ConnectTimeout
+	cfg.IdleTimeout = p.opts.IdleTimeout
+	cfg.ReadHeaderTimeout = p.opts.ReadHeaderTimeout
 	cfg.ProxyDialTimeout = p.dial
 	cfg.PostDecisionRequestHandler = p.countAllowed
 	cfg.RejectResponseHandlerWithCtx = p.onReject
@@ -137,16 +180,10 @@ func New(opts Options) (*Proxy, error) {
 	cfg.MaxConcurrentConnectTunnels = 0
 	cfg.TunnelLimiter = nil
 	cfg.ShuttingDown.Store(false)
-	p.tracker = conntrack.NewTracker(cfg.IdleTimeout, cfg.MetricsClient, cfg.Log, atomic.Value{}, nil)
-	cfg.ConnTracker = p.tracker
-	if err := cfg.InitializeSelfConnectionDetection(); err != nil {
-		return nil, fmt.Errorf("proxy: %w", err)
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("proxy: %w", err)
-	}
-	p.cfg = cfg
+	return cfg
+}
 
+func buildProxy(cfg *smokescreen.Config) *goproxy.ProxyHttpServer {
 	gp := smokescreen.BuildProxy(cfg)
 	gp.Logger = log.New(io.Discard, "", 0)
 	gp.Tr.Proxy = nil
@@ -155,17 +192,19 @@ func New(opts Options) (*Proxy, error) {
 	gp.NonproxyHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "sealed-egress is a forward proxy; send CONNECT or an absolute http:// URL", http.StatusBadRequest)
 	})
-	p.gp = gp
+	return gp
+}
 
-	// No read or write timeout: tunnels and long plain-HTTP transfers are
-	// bounded by the idle timeout instead (smokescreen wraps hijacked conns).
-	p.server = &http.Server{
-		Handler:           p.rateLimit(gp),
-		ReadHeaderTimeout: opts.ReadHeaderTimeout,
-		IdleTimeout:       opts.IdleTimeout,
-		ErrorLog:          log.New(io.Discard, "", 0),
+// route sends a request for a private IP literal to the vpc instance and
+// every other request, every hostname above all, to names (see Proxy).
+func (p *Proxy) route(w http.ResponseWriter, r *http.Request) {
+	if host, _, err := destination(r); err == nil {
+		if ip, err := netip.ParseAddr(host); err == nil && policy.Classify(ip) == policy.ClassPrivate {
+			p.vpc.ServeHTTP(w, r)
+			return
+		}
 	}
-	return p, nil
+	p.names.ServeHTTP(w, r)
 }
 
 // Serve accepts proxy clients on ln until Shutdown.
@@ -181,7 +220,9 @@ func (p *Proxy) Serve(ln net.Listener) error {
 // ends, then closes whatever is left.
 func (p *Proxy) Shutdown(ctx context.Context) error {
 	p.closing.Store(true)
-	p.cfg.ShuttingDown.Store(true)
+	for _, cfg := range p.cfgs {
+		cfg.ShuttingDown.Store(true)
+	}
 	err := p.server.Shutdown(ctx)
 	drained := make(chan struct{})
 	go func() {
@@ -196,7 +237,8 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 		_ = k.(*conntrack.InstrumentedConn).Close()
 		return true
 	})
-	p.gp.Tr.CloseIdleConnections()
+	p.names.Tr.CloseIdleConnections()
+	p.vpc.Tr.CloseIdleConnections()
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return nil
 	}
@@ -425,19 +467,58 @@ func requestKey(allow *policy.Allowlist, r *http.Request) (string, bool) {
 }
 
 // dial is smokescreen's ProxyDialTimeout. address is always the resolved
-// ip:port smokescreen already checked; check it once more against the
-// egress IP policy before dialing.
+// ip:port smokescreen already checked. Check it once more, for the caller
+// and the host its request named (smokescreen's decision, carried in ctx),
+// before dialing. smokescreen's rules already refuse every address this
+// refuses, with a 403; reaching a refusal here means those rules are wrong,
+// so it fails closed.
 func (p *Proxy) dial(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
 	ap, err := netip.ParseAddrPort(address)
 	if err != nil {
 		return nil, fmt.Errorf("refusing to dial unresolved address %q", address)
 	}
-	if err := p.opts.Policy.IP().Check(ap.Addr()); err != nil {
+	if err := p.checkDial(ctx, ap); err != nil {
 		return nil, err
 	}
 	dctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return p.opts.Dial(dctx, network, address)
+}
+
+// checkDial applies Policy.CheckDial to the caller (smokescreen's Role)
+// and the requested host (OutboundHost) of the request being dialed.
+func (p *Proxy) checkDial(ctx context.Context, ap netip.AddrPort) error {
+	pctx, _ := ctx.Value(goproxy.ProxyContextKey).(*goproxy.ProxyCtx)
+	if pctx == nil {
+		return errors.New("refusing to dial without a proxy decision")
+	}
+	sctx, _ := pctx.UserData.(*smokescreen.SmokescreenContext)
+	if sctx == nil || sctx.Decision == nil {
+		return errors.New("refusing to dial without a proxy decision")
+	}
+	c, ok := p.opts.Policy.CallerByName(sctx.Decision.Role)
+	if !ok {
+		return errors.New("refusing to dial for a request with no caller")
+	}
+	host, _, err := net.SplitHostPort(sctx.Decision.OutboundHost)
+	if err != nil {
+		return fmt.Errorf("refusing to dial: requested host %q is not host:port", sctx.Decision.OutboundHost)
+	}
+	return p.opts.Policy.CheckDial(c, host, ap)
+}
+
+// entryRanges turns private raw IP entries into allow rules for exactly
+// that address and port.
+func entryRanges(entries []netip.AddrPort) []smokescreen.RuleRange {
+	out := make([]smokescreen.RuleRange, 0, len(entries))
+	for _, ap := range entries {
+		addr := ap.Addr()
+		out = append(out, smokescreen.RuleRange{
+			Net:  net.IPNet{IP: net.IP(addr.AsSlice()), Mask: net.CIDRMask(addr.BitLen(), addr.BitLen())},
+			Port: int(ap.Port()),
+		})
+	}
+	return out
 }
 
 func ruleRanges(prefixes []netip.Prefix) []smokescreen.RuleRange {

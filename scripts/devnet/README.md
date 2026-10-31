@@ -59,8 +59,8 @@ inside a VM. Configs carry the `composerVersion` that `sealed-compose version` p
    ready flag, the password gate, evidence; the oracle verifies with verifierd and registers onchain; the
    record, the api's evidence row, indexer row and a signed health report are checked.
 7. `sealed verify --deployment <id> --evidence <file>` in an empty directory with an empty environment (only
-   the evidence file, the RPC and the local chain's public description: deployments file and a defaults file
-   naming chain 31337 and the asset base): every check passes, simulated flagged. Also `POST /v1/verify`, the
+   the evidence file, the local chain's deployments file, `--rpc` and `--release-asset-base`, as docs/VERIFY.md
+   says for another chain; no defaults file): every check passes, simulated flagged. Also `POST /v1/verify`, the
    `dep_` alias through `--api`, and `--live` against a local TLS front for the attest host (a self-signed
    certificate; the agent reads its key by a TLS handshake as it reads Caddy's): the quote binds that key, and a
    front with another certificate fails `tls_binding`.

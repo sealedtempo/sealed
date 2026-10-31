@@ -81,6 +81,12 @@ jobs:
             sealed-release images --format mirror-matrix >"$RUNNER_TEMP/mirror.json"
             scripts/release/mirror-images.sh "$RUNNER_TEMP/mirror.json" --skip-blocked
           fi
+      # spec 5.3.1 (G21): VMs pull from ghcr.io anonymously, so prove every mirrored image is publicly
+      # pullable with an anonymous crane digest. A private package fails here with a pointer to the
+      # make-the-packages-public step (github-readiness D1). Only the mirrored "include" images are
+      # checked, so --skip-blocked is not needed.
+      - name: Public visibility
+        run: scripts/release/mirror-images.sh "$RUNNER_TEMP/mirror.json" --check-public
       - name: Summary
         if: always()
         run: |

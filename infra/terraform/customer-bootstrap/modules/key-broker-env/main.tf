@@ -25,6 +25,8 @@ variable "customer_address" {
 variable "tempo_rpc_url" {
   type        = string
   description = "Tempo JSON-RPC URL chosen by the customer."
+  # May embed an API key, so it is redacted from plan and output (cli-1).
+  sensitive = true
 }
 
 variable "chain_id" {
