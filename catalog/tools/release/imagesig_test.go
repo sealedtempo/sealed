@@ -81,11 +81,43 @@ func TestCatalogScanRequiresImagesSignature(t *testing.T) {
 	var m struct {
 		Include []map[string]any `json:"include"`
 	}
-	if err := json.Unmarshal(out, &m); err != nil || len(m.Include) != 2 || m.Include[0]["app"] != "llm-gateway" {
+	if err := json.Unmarshal(out, &m); err != nil || len(m.Include) != 3 || m.Include[0]["app"] != "llm-gateway" {
 		t.Fatalf("scan matrix: %s %v", out, err)
 	}
 	if img := m.Include[0]["images"].([]any)[0].(map[string]any); img["built"] != true || img["ref"] != gatewayRef {
 		t.Fatalf("the gateway is a built image: %v", img)
+	}
+
+	// supply-5: the third include is the sealed-runtime entry (Caddy, the sidecars and the key broker), with
+	// no app directory, so the scan job skips the catalog lint for it and runtime-waivers.yaml applies.
+	runtime := m.Include[2]
+	if runtime["app"] != RuntimeScanApp || runtime["waivers"] != RuntimeWaiversFile || runtime["dir"] != "" {
+		t.Fatalf("the runtime images are the third include: %v", runtime)
+	}
+	rtImages := map[string]map[string]any{}
+	for _, raw := range runtime["images"].([]any) {
+		img := raw.(map[string]any)
+		rtImages[img["name"].(string)] = img
+	}
+	// This fixture builds every sidecar but the key broker (no key-broker Dockerfile), so it is not scanned.
+	wantRuntime := []string{"caddy", "sealed-agent", "sealed-egress", "sealed-init", "sealed-mpp-payer", "sealed-verifierd"}
+	if len(rtImages) != len(wantRuntime) {
+		t.Fatalf("the runtime include scans %v: %v", wantRuntime, runtime["images"])
+	}
+	for _, name := range wantRuntime {
+		if _, ok := rtImages[name]; !ok {
+			t.Fatalf("%s is a runtime image: %v", name, runtime["images"])
+		}
+	}
+	// Caddy is mirrored, so it keeps its upstream digest and is neither built nor unbuilt.
+	if c := rtImages["caddy"]; c["ref"] != "docker.io/library/caddy@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f" || c["built"] == true || c["unbuilt"] == true {
+		t.Fatalf("caddy is a mirrored runtime image at its upstream digest: %v", c)
+	}
+	// The sidecars are unbuilt in this fixture (zero digest), so they carry no reference yet.
+	for _, name := range []string{"sealed-agent", "sealed-egress", "sealed-init", "sealed-mpp-payer", "sealed-verifierd"} {
+		if img := rtImages[name]; img["unbuilt"] != true || img["ref"] != nil {
+			t.Fatalf("%s is an unbuilt sidecar in this fixture: %v", name, img)
+		}
 	}
 
 	var wf simWorkflow
@@ -100,7 +132,8 @@ func TestCatalogScanRequiresImagesSignature(t *testing.T) {
 			"secrets": map[string]any{},
 			"vars":    map[string]any{},
 		},
-		ifs: map[string]bool{"always()": true},
+		// The gateway and notes scans run with app != sealed-runtime, so the catalog lint step runs.
+		ifs: map[string]bool{"always()": true, "matrix.app != 'sealed-runtime'": true},
 	}
 	gateway, notes := m.Include[0], m.Include[1]
 
