@@ -247,9 +247,10 @@ func verifyManifestCmd(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&pins.Template, "template", "", "template blob sha256")
 	fs.StringVar(&pins.License, "license", "", "license blob sha256")
 	fs.StringVar(&pins.Params, "params", "", "params blob sha256")
+	fs.StringVar(&pins.Nested, "nested", "", "nested manifest blob sha256 (hex)")
 	fs.StringVar(&pins.ManifestSHA256, "sha256", "", "optional sha256 of the manifest file")
 	if err := fs.Parse(args); err != nil || path == "" {
-		fmt.Fprintln(stderr, "usage: sealed-ollama-gate verify-manifest -manifest <file> -config <hex> -model <hex> -template <hex> -license <hex> -params <hex> [-sha256 <hex>]")
+		fmt.Fprintln(stderr, "usage: sealed-ollama-gate verify-manifest -manifest <file> -config <hex> -model <hex> -template <hex> -license <hex> -params <hex> -nested <hex> [-sha256 <hex>]")
 		return 2
 	}
 	digest, err := verifyManifest(path, pins)

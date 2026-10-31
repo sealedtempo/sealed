@@ -17,6 +17,8 @@ const (
 	mediaTemplate = "application/vnd.ollama.image.template"
 	mediaLicense  = "application/vnd.ollama.image.license"
 	mediaParams   = "application/vnd.ollama.image.params"
+	// Ollama 0.40.x stores the upstream registry manifest as a final layer of this media type.
+	mediaNested = "application/vnd.docker.distribution.manifest.v2+json"
 )
 
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -36,8 +38,8 @@ type ollamaManifest struct {
 // manifestPins are the expected blob digests (64 hex chars, no prefix) per role, plus an
 // optional sha256 of the manifest file itself.
 type manifestPins struct {
-	Config, Model, Template, License, Params string
-	ManifestSHA256                           string
+	Config, Model, Template, License, Params, Nested string
+	ManifestSHA256                                   string
 }
 
 // verifyManifest checks the pulled manifest file against the pins and returns its sha256.
@@ -52,7 +54,7 @@ func verifyManifest(path string, pins manifestPins) (string, error) {
 		return digest, fmt.Errorf("manifest sha256 %s, want %s", digest, pins.ManifestSHA256)
 	}
 	want := map[string]string{
-		mediaModel: pins.Model, mediaTemplate: pins.Template, mediaLicense: pins.License, mediaParams: pins.Params,
+		mediaModel: pins.Model, mediaTemplate: pins.Template, mediaLicense: pins.License, mediaParams: pins.Params, mediaNested: pins.Nested,
 	}
 	for role, pin := range want {
 		if !hex64.MatchString(pin) {
@@ -73,7 +75,7 @@ func verifyManifest(path string, pins manifestPins) (string, error) {
 		return digest, fmt.Errorf("config digest %s, want sha256:%s", m.Config.Digest, pins.Config)
 	}
 	if len(m.Layers) != len(want) {
-		return digest, fmt.Errorf("%d layers, want exactly %d (model, template, license, params)", len(m.Layers), len(want))
+		return digest, fmt.Errorf("%d layers, want exactly %d (model, template, license, params, nested manifest)", len(m.Layers), len(want))
 	}
 	seen := map[string]bool{}
 	for _, layer := range m.Layers {

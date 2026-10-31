@@ -18,6 +18,7 @@ var pins = manifestPins{
 	Template: "eade0a07cac7712787bbce23d12f9306adb4781d873d1df6e16f7840fa37afec",
 	License:  "d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12",
 	Params:   "0914c7781e001948488d937994217538375b4fd8c1466c5e7a625221abd3ea7a",
+	Nested:   "0edcdef34593eac1aa2be9c7d06c432dcf81945adca5eca2f27662c18f168ba0",
 }
 
 func goodManifest() map[string]any {
@@ -33,6 +34,7 @@ func goodManifest() map[string]any {
 			layer(mediaTemplate, pins.Template, 1600),
 			layer(mediaLicense, pins.License, 11338),
 			layer(mediaParams, pins.Params, 119),
+			layer(mediaNested, pins.Nested, 859),
 		},
 	}
 }
@@ -122,7 +124,7 @@ func TestVerifyManifestRejectsBadInput(t *testing.T) {
 func TestVerifyManifestCommand(t *testing.T) {
 	path := writeManifest(t, goodManifest())
 	args := []string{"verify-manifest", "-manifest", path, "-config", pins.Config, "-model", pins.Model,
-		"-template", pins.Template, "-license", pins.License, "-params", pins.Params}
+		"-template", pins.Template, "-license", pins.License, "-params", pins.Params, "-nested", pins.Nested}
 	var out, errOut bytes.Buffer
 	if code := run(args, nil, &out, &errOut); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut.String())

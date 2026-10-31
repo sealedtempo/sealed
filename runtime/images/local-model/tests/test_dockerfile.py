@@ -24,6 +24,7 @@ MODEL_PINS = {
     "LICENSE_BLOB": "d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12",
     "PARAMS_BLOB": "0914c7781e001948488d937994217538375b4fd8c1466c5e7a625221abd3ea7a",
     "CONFIG_BLOB": "b72accf9724e93698c57cbd3b1af2d3341b3d05ec2089d86d273d97964853cd2",
+    "NESTED_MANIFEST_BLOB": "0edcdef34593eac1aa2be9c7d06c432dcf81945adca5eca2f27662c18f168ba0",
     "MODEL_MANIFEST_SHA256": "",
 }
 GPU_DIRS = ("cuda_v12", "cuda_v13", "mlx_cuda_v13", "vulkan")
@@ -113,13 +114,13 @@ class LocalModelDockerfileTest(unittest.TestCase):
         run = " ".join(stage.all("RUN"))
         self.assertIn('[ "$id" = "$MODEL_ID" ]', run)
         self.assertIn("sha256sum -c", run)
-        for key in ("MODEL_BLOB", "TEMPLATE_BLOB", "LICENSE_BLOB", "PARAMS_BLOB", "CONFIG_BLOB"):
+        for key in ("MODEL_BLOB", "TEMPLATE_BLOB", "LICENSE_BLOB", "PARAMS_BLOB", "CONFIG_BLOB", "NESTED_MANIFEST_BLOB"):
             self.assertIn(f'"${key}"', run)
         self.assertIn("unexpected blobs", run)
         self.assertIn("rm -rf /root/.ollama", run)
         self.assertIn('sealed-ollama-gate verify-manifest -manifest "$MODEL_MANIFEST" -config "$CONFIG_BLOB" '
                       '-model "$MODEL_BLOB" -template "$TEMPLATE_BLOB" -license "$LICENSE_BLOB" '
-                      '-params "$PARAMS_BLOB" -sha256 "$MODEL_MANIFEST_SHA256"', " ".join(run.split()))
+                      '-params "$PARAMS_BLOB" -nested "$NESTED_MANIFEST_BLOB" -sha256 "$MODEL_MANIFEST_SHA256"', " ".join(run.split()))
         self.assertIn("chmod -R a+rX,go-w /models", run)
         self.assertTrue(MODEL_PINS["MODEL_MANIFEST"].endswith(MODEL_PINS["MODEL"].replace(":", "/")))
         self.assertEqual(stage.env().get("OLLAMA_NO_CLOUD"), "1")
