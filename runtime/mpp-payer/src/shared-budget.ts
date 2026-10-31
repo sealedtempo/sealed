@@ -18,13 +18,19 @@ export class BudgetUnavailableError extends Error {
 export type SharedReservation = { id: string; amount: bigint; remaining?: bigint }
 
 /**
+ * What a reservation is for. `recovery`: the network fee of a requestClose or withdraw that takes an orphaned
+ * deposit back, which the agent lets past its fee priority by a small allowance (payments-8).
+ */
+export type ReservePurpose = 'recovery'
+
+/**
  * The daily budget the payer shares with the agent's fee settlement (D-048). `reserve` either
  * returns a reservation or throws SpendLimitError (refused for lack of budget) or
  * BudgetUnavailableError. `release` reports what the reservation was actually used for and
  * never throws.
  */
 export interface SpendBudget {
-  reserve(amount: bigint): Promise<SharedReservation>
+  reserve(amount: bigint, purpose?: ReservePurpose): Promise<SharedReservation>
   release(reservation: SharedReservation, used: bigint): Promise<void>
 }
 
@@ -65,7 +71,7 @@ function decimal(value: unknown): bigint | undefined {
 /**
  * Client of sealed-agent's shared spend budget (brief item 21, D-048):
  *
- *   POST /v1/spend/reserve {"amount":"<base units>","currency"?:"0x…"}  ->  {"ok":true,"reservationId":"…","remaining":"…"}
+ *   POST /v1/spend/reserve {"amount":"<base units>","currency"?:"0x…","purpose"?:"recovery"}  ->  {"ok":true,"reservationId":"…","remaining":"…"}
  *                                                        {"ok":false,"remaining":"…","reason"?} when refused
  *   POST /v1/spend/release {"reservationId":"…","used":"<base units>"}
  *
@@ -87,9 +93,9 @@ export class AgentSpendBudget implements SpendBudget {
     return { ...this.current }
   }
 
-  async reserve(amount: bigint): Promise<SharedReservation> {
+  async reserve(amount: bigint, purpose?: ReservePurpose): Promise<SharedReservation> {
     if (amount <= 0n) throw new BudgetUnavailableError(`refusing to reserve a non-positive amount ${amount}`)
-    const request = { amount: amount.toString(), ...(this.deps.currency ? { currency: this.deps.currency } : {}) }
+    const request = { amount: amount.toString(), ...(this.deps.currency ? { currency: this.deps.currency } : {}), ...(purpose ? { purpose } : {}) }
     const { status, json } = await this.call('/v1/spend/reserve', request).catch((error: Error) => {
       this.current.lastError = error.message
       throw new BudgetUnavailableError(`sealed-agent spend budget unreachable: ${error.message}`)

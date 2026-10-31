@@ -61,6 +61,17 @@ function hasPaymentCredential(request: Request): boolean {
   return /^Payment\s+/i.test(request.headers.get('authorization') ?? '')
 }
 
+/** Reading the upstream's SSE stream failed (a reset or a timeout), as opposed to the meter's own errors. */
+class UpstreamStreamError extends Error {}
+
+async function* readUpstream(response: Response): AsyncGenerator<string> {
+  try {
+    yield* sseData(response)
+  } catch (error) {
+    throw new UpstreamStreamError('the upstream stream failed', { cause: error })
+  }
+}
+
 type ChatBody = Record<string, unknown> & { model?: unknown; max_tokens?: unknown; max_completion_tokens?: unknown; stream?: unknown }
 
 function errorResponse(status: number, type: string, message: string, extra: Record<string, unknown> = {}): Response {
@@ -320,35 +331,61 @@ export function createRelayApp(deps: RelayDeps): Hono {
       })
       await meter.reservePrompt(quote.promptTokens)
       let upstreamStatus = 0
+      let delivered = false
+      let voided = false
+      // Nothing was served (payments-6): owe nothing, give the whole prepayment back now, and tell the payer
+      // whether any of it is still kept (`charged`), so it can offer a free retry when none is.
+      const nothingServed = async (type: string, extra: Record<string, unknown> = {}) => {
+        voided = true
+        meter.voidAll()
+        await meter.settleUnused().catch(() => {})
+        return JSON.stringify({ error: { type, ...extra, charged: meter.result().chargedBaseUnits > 0n } })
+      }
       try {
-        const response = await upstream.chatCompletions(
-          { ...upstreamBody, stream: true, stream_options: { include_usage: true } },
-          stream.signal,
-        )
-        upstreamStatus = response.status
-        if (!response.ok) {
-          meter.voidAll()
-          await response.body?.cancel().catch(() => {})
-          yield JSON.stringify({ error: { type: 'upstream_error', status: response.status } })
+        let response: Response
+        try {
+          response = await upstream.chatCompletions(
+            { ...upstreamBody, stream: true, stream_options: { include_usage: true } },
+            stream.signal,
+          )
+        } catch {
+          // Refused, reset or timed out before any answer (the relay's LiteLLM is down or restarting).
+          yield await nothingServed('upstream_unreachable')
           return
         }
-        for await (const data of sseData(response)) {
-          if (data === '[DONE]') break
-          let chunk: ChatChunk
-          try {
-            chunk = JSON.parse(data) as ChatChunk
-          } catch {
-            continue
+        upstreamStatus = response.status
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => {})
+          yield await nothingServed('upstream_error', { status: response.status })
+          return
+        }
+        try {
+          for await (const data of readUpstream(response)) {
+            if (data === '[DONE]') break
+            let chunk: ChatChunk
+            try {
+              chunk = JSON.parse(data) as ChatChunk
+            } catch {
+              continue
+            }
+            if (chunk.usage) await meter.reconcile(chunk.usage)
+            await meter.beforeDeliver(chunk)
+            yield data
+            delivered = true
           }
-          if (chunk.usage) await meter.reconcile(chunk.usage)
-          await meter.beforeDeliver(chunk)
-          yield data
+        } catch (error) {
+          // A failed charge keeps the prompt charge as before; only a broken upstream stream voids it.
+          if (!(error instanceof UpstreamStreamError)) throw error
+          if (delivered) throw error.cause
+          // The upstream's stream broke before its first chunk reached the payer.
+          yield await nothingServed('upstream_unreachable')
+          return
         }
         yield '[DONE]'
       } finally {
         await meter.settleUnused().catch(() => {})
         const r = meter.result()
-        onUsage({ model: model.id, promptTokens: upstreamStatus === 200 ? r.promptTokens : 0, completionTokens: r.completionTokens })
+        onUsage({ model: model.id, promptTokens: upstreamStatus === 200 && !voided ? r.promptTokens : 0, completionTokens: r.completionTokens })
         log({
           requestId,
           model: model.id,

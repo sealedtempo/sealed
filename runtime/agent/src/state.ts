@@ -25,12 +25,26 @@ export interface PaymentStatus {
   unpayable?: Record<string, "over_payment_cap" | "leg_token_mismatch" | "not_in_deployment">;
 }
 
+/**
+ * A deployment this data disk ran before a same-salt stack upgrade (D-058), kept until everything it metered is
+ * reported and paid under its own deploymentId (payments-5).
+ */
+export interface PreviousDeployment {
+  deploymentId: string;
+  /** When a boot found the state on the disk belonged to it. */
+  since: number;
+  ledger: LedgerState;
+  payments: PaymentStatus;
+}
+
 export interface AgentState {
   version: 1;
   /** The deployment this state belongs to. D-058 keeps the disk across stack upgrades, which change the id. */
   deploymentId?: string;
   ledger: LedgerState;
   payments: PaymentStatus;
+  /** Earlier deployments on this disk that still have usage to report or legs to pay (payments-5). */
+  previous?: PreviousDeployment[];
   /** The shared daily spend budget (D-048). */
   budget?: BudgetState;
   /** Apps whose bootstrap job reported done (only jobs without a done file on the data disk). */

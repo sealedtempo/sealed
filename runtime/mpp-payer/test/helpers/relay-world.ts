@@ -96,6 +96,10 @@ export function relayWorld(options: {
   words?: string[]
 }) {
   const llm = fakeLiteLLM({ words: options.words ?? ['Metered', ' per', ' token', ' over', ' SSE'], usage: { prompt_tokens: 12, completion_tokens: 5 } })
+  // While true, the relay's LiteLLM refuses connections (it is down or restarting).
+  const upstreamState = { down: false }
+  const llmFetch: typeof llm.fetch = (input, init) =>
+    upstreamState.down ? Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })) : llm.fetch(input, init)
   const indexed = indexedStore()
   const credited: bigint[] = []
   const prices = options.prices ?? testPrices()
@@ -122,7 +126,7 @@ export function relayWorld(options: {
         return payments.credit(channelId, amount, key)
       },
     },
-    upstream: new Upstream({ baseURL: 'http://litellm/v1', apiKey: 'sk-master', fetch: llm.fetch }),
+    upstream: new Upstream({ baseURL: 'http://litellm/v1', apiKey: 'sk-master', fetch: llmFetch }),
     batchTokens: 2,
   })
   const wire: WireEntry[] = []
@@ -141,7 +145,7 @@ export function relayWorld(options: {
     wire.push({ ...entry, status: response.status })
     return response
   }
-  return { fetch, llm, wire, credited, channels: indexed.channels, prices }
+  return { fetch, llm, upstream: upstreamState, wire, credited, channels: indexed.channels, prices }
 }
 
 /** sealed-mpp-payer as main.ts wires it, minus the TLS-pinned transport (the relay is in process). */

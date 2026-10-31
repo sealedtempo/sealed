@@ -13,6 +13,11 @@
 // The window is the onchain period when known (Tempo periodic limits roll from authorization time), else the UTC
 // day. It sets the fee-reservation horizon and the counters in the health report.
 //
+// Recovery of an orphaned escrow deposit (payments-8): the payer's requestClose and withdraw only pay a network fee
+// and give back more, so a reservation for one may go past reserved_for_fees by a small allowance per transaction
+// and per window, never past what the limit itself allows. Otherwise a limit below the fee floor would leave such a
+// deposit in escrow for good.
+//
 // Nothing that may have left the limit is dropped (review M4): open reservations survive the window roll and are
 // counted in the window they are released in; reservations the payer does not release within the TTL count as
 // spent; a settlement transaction whose outcome is unknown counts as its full amount plus its fee reserve until
@@ -77,7 +82,12 @@ export interface BudgetState {
   /** Network fee of the last settlement transaction, the estimate for later ones. */
   networkFeePerTx?: string;
   pendingFees?: Record<string, PendingFee>;
+  /** Recovery reservations in this window that went past reserved_for_fees (payments-8). */
+  recoveryOverReserve?: string;
 }
+
+/** What a reservation is for: `recovery` is the payer's recovery of an orphaned escrow deposit (payments-8). */
+export type ReservePurpose = "recovery";
 
 export type ReserveResult =
   | { ok: true; reservationId: string; remaining: string }
@@ -102,6 +112,11 @@ export interface SpendBudgetOptions {
   onchainLimit?: boolean;
   /** reserved_for_fees: what settlement will still pay until `windowEnd`, in fee-token base units. */
   feeReserve: (windowEnd: number, now: number) => bigint;
+  /**
+   * How far recovery reservations may go past reserved_for_fees: at most `perTx` each and `perWindow` in all per
+   * window (payments-8). None without it.
+   */
+  recoveryAllowance?: { perTx: bigint; perWindow: bigint };
   ttlSec?: number;
   onChange?: () => void;
 }
@@ -153,6 +168,7 @@ export class SpendBudget {
       }
       s.fees = "0";
       s.payer = "0";
+      delete s.recoveryOverReserve;
       // Open reservations stay: what the payer spends on them counts in the window it releases them in.
       this.changed();
     }
@@ -219,16 +235,25 @@ export class SpendBudget {
     return nonNeg(this.headroom() - this.outstanding() - this.o.feeReserve(end, now));
   }
 
-  reserve(amount: bigint, now: number): ReserveResult {
+  reserve(amount: bigint, now: number, purpose?: ReservePurpose): ReserveResult {
     if (amount <= 0n) throw new SpendBudgetError("amount must be positive");
     const remaining = this.available(now);
     const open = Object.values(this.state.reservations).filter((r) => !r.expired).length;
     if (open >= MAX_OPEN_RESERVATIONS) return { ok: false, remaining: remaining.toString(), reason: "too_many_reservations" };
-    if (amount > remaining) return { ok: false, remaining: remaining.toString(), reason: "budget" };
+    const overReserve = amount > remaining;
+    if (overReserve && !(purpose === "recovery" && this.recoveryFits(amount))) return { ok: false, remaining: remaining.toString(), reason: "budget" };
+    if (overReserve) this.state.recoveryOverReserve = (big(this.state.recoveryOverReserve) + amount).toString();
     const reservationId = `0x${randomBytes(16).toString("hex")}`;
     this.state.reservations[reservationId] = { amount: amount.toString(), at: now, window: this.state.windowEnd };
     this.changed();
-    return { ok: true, reservationId, remaining: (remaining - amount).toString() };
+    return { ok: true, reservationId, remaining: nonNeg(remaining - amount).toString() };
+  }
+
+  /** A recovery reservation past reserved_for_fees: within the allowance and within what the limit itself allows. */
+  private recoveryFits(amount: bigint): boolean {
+    const a = this.o.recoveryAllowance;
+    if (!a || amount > a.perTx || big(this.state.recoveryOverReserve) + amount > a.perWindow) return false;
+    return amount <= this.headroom() - this.outstanding();
   }
 
   /** Undoes a reservation that was never handed out (the state could not be saved). */

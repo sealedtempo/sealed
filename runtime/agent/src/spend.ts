@@ -44,12 +44,20 @@ const spendReportSchema = z.object({
     .partial()
     .optional(),
   /** Orphaned-channel recovery (ws/fix-payments ChannelRecovery.snapshot()): counts and the refunded amount. */
-  recovery: z.object({ requestCloses: count, withdrawals: count, recovered: decimal, failures: count }).partial().optional(),
+  recovery: z.object({ requestCloses: count, withdrawals: count, recovered: decimal, failures: count, deferred: count, deferredAmount: decimal }).partial().optional(),
   sentAt: count.optional(),
 });
 
 /** Flat names of the recovery counters in the health report. */
-const RECOVERY_FIELDS = { requestCloses: "mpp_recoveryRequestCloses", withdrawals: "mpp_recoveryWithdrawals", recovered: "mpp_recovered", failures: "mpp_recoveryFailures" } as const;
+const RECOVERY_FIELDS = {
+  requestCloses: "mpp_recoveryRequestCloses",
+  withdrawals: "mpp_recoveryWithdrawals",
+  recovered: "mpp_recovered",
+  failures: "mpp_recoveryFailures",
+  // payments-8: channels whose recovery waits for budget, and the deposits they hold.
+  deferred: "mpp_recoveryDeferred",
+  deferredAmount: "mpp_recoveryDeferredAmount",
+} as const;
 
 export type SpendCounters = Record<string, string | number | boolean>;
 
@@ -77,5 +85,5 @@ export function parseSpendReport(body: unknown): SpendReport | undefined {
   return { counters: out, ...(r.data.currency ? { currency: r.data.currency.toLowerCase() } : {}) };
 }
 
-export const reserveRequestSchema = z.object({ amount, currency: address.optional() }).strict();
+export const reserveRequestSchema = z.object({ amount, currency: address.optional(), purpose: z.literal("recovery").optional() }).strict();
 export const releaseRequestSchema = z.object({ reservationId: z.string().regex(/^0x[0-9a-f]{32}$/), used: amount }).strict();
