@@ -28,12 +28,18 @@
 #      and imports it as a GCE image with UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC
 #      (reused if an image of that name already carries the same tarball
 #      sha256).
-#   2. Builds two small auxiliary disks: a dstack-data GPT disk and a DSTACKSHR
-#      FAT32 disk holding a measurement app-compose.json (runner "bash", no
-#      containers, no network, no secrets) and .sys-config.json (no KMS, no
-#      gateway, this image's vm_config).
-#   3. For every machine type and boot, creates a TDX VM (no service account,
-#      no scopes, no external IP, project SSH keys blocked, OS Login off),
+#   2. Builds the auxiliary disks of the production 4-disk layout: a dstack-data
+#      GPT disk (the dstack-system disk) and a DSTACKSHR FAT32 disk (the
+#      dstack-shared disk) holding a measurement app-compose.json (runner
+#      "bash", no containers, no network, no secrets) and .sys-config.json (no
+#      KMS, no gateway, this image's vm_config). The blank sealed-data disk is
+#      created with the VM.
+#   3. For every machine type and boot, creates a TDX VM with exactly the
+#      cli/internal/deploy BuildInstance disk layout (boot 10 GB, dstack-system
+#      20 GB, dstack-shared 10 GB, sealed-data 50 GB) and an external IP, so its
+#      RTMR0 (EV_EFI_VARIABLE_BOOT entries depend on the disk count) and
+#      measurementsHash match production VMs (no service account, no scopes,
+#      project SSH keys blocked, OS Login off),
 #      waits until the measurement app prints a quote over a fresh 64-byte
 #      nonce to the serial console, verifies it (Intel PCS collateral,
 #      report_data == nonce, production TD attributes) and deletes the VM.
@@ -81,7 +87,7 @@ while [[ $# -gt 0 ]]; do
     --timeout) timeout=$2; shift 2 ;;
     --keep) keep=1; shift ;;
     --dry-run) dry_run=1; shift ;;
-    -h|--help) sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
@@ -250,9 +256,12 @@ mformat -i "$work/shared/disk.raw" -F -v DSTACKSHR -T 131072 -h 64 -s 32 ::
 mcopy -i "$work/shared/disk.raw" "$work/files/app-compose.json" "$work/files/.sys-config.json" ::
 gce_tar "$work/data" "$work/data.tar.gz"
 gce_tar "$work/shared" "$work/shared.tar.gz"
-data_image="sealed-measure-data-$run_id"
+# The dstack-data GPT disk is the production dstack-system disk; the DSTACKSHR
+# disk is the production dstack-shared disk. The sealed-data disk is created
+# blank with the VM (production never images it either).
+system_image="sealed-measure-system-$run_id"
 shared_image="sealed-measure-shared-$run_id"
-for pair in "$data_image:$work/data.tar.gz" "$shared_image:$work/shared.tar.gz"; do
+for pair in "$system_image:$work/data.tar.gz" "$shared_image:$work/shared.tar.gz"; do
   img=${pair%%:*} file=${pair#*:}
   gc storage cp "$file" "$bucket/sealed-os/$img.tar.gz" --project "$project"
   created_objects+=("$bucket/sealed-os/$img.tar.gz")
@@ -273,12 +282,17 @@ for mt in "${types[@]}"; do
   while [[ $b -le $boots ]]; do
     vm="sealed-measure-$run_id-$mt-$b"
     log "boot $b/$boots on $mt: $vm"
+    # Exactly the BuildInstance 4-disk layout (cli/internal/deploy/instance.go), in the same order and with the
+    # same device names and sizes, and an external IP, so RTMR0 and measurementsHash match production VMs. On c3
+    # every persistent disk is attached over NVMe, as in production, so no interface flag is needed.
     gc compute instances create "$vm" --project "$project" --zone "$zone" --machine-type "$mt" \
       --confidential-compute-type=TDX --maintenance-policy=TERMINATE \
-      --image "$image_name" --image-project "$project" --boot-disk-size=10GB --boot-disk-type=pd-balanced \
-      --create-disk="name=$vm-data,size=10GB,type=pd-balanced,image=$data_image,image-project=$project,auto-delete=yes" \
-      --create-disk="name=$vm-shared,size=1GB,type=pd-balanced,image=$shared_image,image-project=$project,auto-delete=yes" \
-      --no-service-account --no-scopes --no-address \
+      --image "$image_name" --image-project "$project" \
+      --boot-disk-device-name=boot --boot-disk-size=10GB --boot-disk-type=pd-balanced \
+      --create-disk="name=$vm-system,device-name=dstack-system,size=20GB,type=pd-balanced,image=$system_image,image-project=$project,auto-delete=yes" \
+      --create-disk="name=$vm-shared,device-name=dstack-shared,size=10GB,type=pd-balanced,image=$shared_image,image-project=$project,auto-delete=yes" \
+      --create-disk="name=$vm-data,device-name=sealed-data,size=50GB,type=pd-balanced,auto-delete=yes" \
+      --no-service-account --no-scopes \
       --shielded-vtpm --no-shielded-secure-boot \
       --metadata=block-project-ssh-keys=TRUE,enable-oslogin=FALSE \
       --labels="purpose=sealed-os-measure" "${net_flags[@]+"${net_flags[@]}"}"
