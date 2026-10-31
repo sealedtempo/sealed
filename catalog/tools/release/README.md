@@ -53,6 +53,13 @@ assets) or start with `v` before anything but a digit (`vnext` would be tagged `
 `v1.2.3` share the tag `<appId>-v1.2.3`, so once one is released, pr-check refuses the other ("already
 released").
 
+Onchain, `signatureURI` is the `.sigstore.json` URL (signature, certificate and Rekor proof in one file, which
+cosign 3 verifies with `--bundle`) and `provenanceURI` the `.intoto.jsonl` URL. The publish job uses a GitHub
+Release that already exists only when `github-actions[bot]` created it and its bundle is the one the run built
+or verifies with cosign against `release.yml@refs/heads/main`. Built images (`source: build:`) must carry the
+cosign signature of `images.yml@refs/heads/main` before the PR scan or the release uses them
+(`scripts/release/verify-image.sh`).
+
 ## Waivers (`catalog/apps/<id>/waivers.yaml`)
 
 ```yaml

@@ -17,11 +17,19 @@ import (
 
 // SLSAGenerator is the provenance generator reference used by release.yml. It must be a vX.Y.Z tag (the
 // generator rejects SHA references); release.yml checks the tag still resolves to SLSAGeneratorCommit.
+// SLSABuilderID is the builder id its provenance carries, which slsa-verifier --builder-id checks.
 const (
 	SLSAGenerator       = "slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0"
 	SLSAGeneratorCommit = "f7dd8c54c2067bafc12ca7a55595d5ee9b75204a"
+	SLSABuilderID       = "https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@refs/tags/v2.1.0"
 	OIDCIssuer          = "https://token.actions.githubusercontent.com"
 )
+
+// ReleaseIdentity is the certificate identity of the release workflow on main: the only identity a release
+// bundle signature is accepted from (cosign keyless, GitHub OIDC).
+func ReleaseIdentity(d Defaults) string {
+	return d.RepoURL() + "/.github/workflows/release.yml@refs/heads/main"
+}
 
 // ReleaseDoc is the machine-readable release summary uploaded as <appId>-<version>.release.json
 // (schema sealed-release/v1) and rendered into the release notes.
@@ -206,7 +214,7 @@ func BuildReleaseDoc(d Defaults, in ReleaseInputs) (*ReleaseDoc, error) {
 		SBOMHash: b.SBOMHash.Hex(), BundleSize: len(raw), Repository: d.RepoURL(), Commit: in.Commit, WorkflowRun: in.RunURL,
 		SignerIdentity: in.Identity, OIDCIssuer: OIDCIssuer, ProvenanceBy: SLSAGenerator, Assets: assets}
 	if doc.SignerIdentity == "" {
-		doc.SignerIdentity = d.RepoURL() + "/.github/workflows/release.yml@refs/heads/main"
+		doc.SignerIdentity = ReleaseIdentity(d)
 	}
 	for _, img := range b.Manifest.Images {
 		ri := ReleaseImage{Name: img.Name, Ref: img.Ref, Source: img.Source, License: img.LicenseSPDX}
@@ -248,12 +256,17 @@ func BuildReleaseDoc(d Defaults, in ReleaseInputs) (*ReleaseDoc, error) {
 }
 
 // Notes renders the GitHub Release notes. Plain words, no em-dashes (operating rule 12).
+//
+// The repository, signer identity, OIDC issuer and provenance builder come from config/defaults.yaml and
+// the constants above, never from release.json: release.json is a release asset, and anyone who can edit
+// assets could otherwise make the verify recipe accept their own signature (supply-8).
 func (doc *ReleaseDoc) Notes(d Defaults) string {
 	var b strings.Builder
 	a := doc.Assets
+	repo, identity := d.RepoURL(), ReleaseIdentity(d)
 	fmt.Fprintf(&b, "Release `%s` of the catalog app `%s`, built and signed by the release workflow", doc.Version, doc.App)
 	if doc.Commit != "" {
-		fmt.Fprintf(&b, " from commit [`%s`](%s/commit/%s)", short(doc.Commit, 12), doc.Repository, doc.Commit)
+		fmt.Fprintf(&b, " from commit [`%s`](%s/commit/%s)", short(doc.Commit, 12), repo, doc.Commit)
 	}
 	b.WriteString(".\n\n")
 
@@ -295,18 +308,19 @@ func (doc *ReleaseDoc) Notes(d Defaults) string {
 	b.WriteString("\nSBOMs (Syft, SPDX JSON) and Grype reports are attached per image and are also inside the bundle at `sbom/<image>.spdx.json` and `scan/<image>.json`.\n\n")
 
 	b.WriteString("## Signature and provenance\n\n")
-	fmt.Fprintf(&b, "- Signed with cosign keyless signing through GitHub OIDC (identity `%s`, issuer `%s`).\n", doc.SignerIdentity, doc.OIDCIssuer)
+	fmt.Fprintf(&b, "- Signed with cosign keyless signing through GitHub OIDC (identity `%s`, issuer `%s`).\n", identity, OIDCIssuer)
 	if doc.Rekor != nil {
 		fmt.Fprintf(&b, "- Rekor transparency log entry %d: %s\n", doc.Rekor.LogIndex, doc.Rekor.URL)
 	}
-	fmt.Fprintf(&b, "- SLSA build provenance from `%s`: `%s`.\n", doc.ProvenanceBy, a.Provenance)
-	fmt.Fprintf(&b, "- `%s` and `%s` hold the signature and certificate; `%s` holds both plus the Rekor inclusion proof.\n\n", a.Signature, a.Certificate, a.SigstoreBundle)
+	fmt.Fprintf(&b, "- SLSA build provenance from `%s`: `%s`.\n", SLSAGenerator, a.Provenance)
+	fmt.Fprintf(&b, "- `%s` holds the signature, the certificate and the Rekor inclusion proof; onchain `signatureURI` points at it. `%s` and `%s` hold the signature and certificate alone.\n\n", a.SigstoreBundle, a.Signature, a.Certificate)
 
 	b.WriteString("## Verify\n\n```sh\n")
 	fmt.Fprintf(&b, "gh release download %s --repo %s --dir %s\ncd %s\n", doc.Tag, d.RepoSlug(), doc.Tag, doc.Tag)
 	fmt.Fprintf(&b, "sha256sum %s   # %s\n", a.Bundle, strings.TrimPrefix(doc.BundleHash, "0x"))
-	fmt.Fprintf(&b, "cosign verify-blob --bundle %s \\\n  --certificate-identity %s \\\n  --certificate-oidc-issuer %s %s\n", a.SigstoreBundle, doc.SignerIdentity, doc.OIDCIssuer, a.Bundle)
-	fmt.Fprintf(&b, "slsa-verifier verify-artifact %s --provenance-path %s --source-uri %s\n", a.Bundle, a.Provenance, strings.TrimPrefix(doc.Repository, "https://"))
+	fmt.Fprintf(&b, "cosign verify-blob --bundle %s \\\n  --certificate-identity %s \\\n  --certificate-oidc-issuer %s %s\n", a.SigstoreBundle, identity, OIDCIssuer, a.Bundle)
+	fmt.Fprintf(&b, "slsa-verifier verify-artifact %s --provenance-path %s \\\n  --source-uri %s --source-branch main \\\n  --builder-id %s\n",
+		a.Bundle, a.Provenance, strings.TrimPrefix(repo, "https://"), SLSABuilderID)
 	b.WriteString("# Rebuild the bundle from the source tree at the release commit with the attached SBOMs and scans:\n")
 	b.WriteString("mkdir -p sbom scan\n")
 	for _, img := range doc.Images {

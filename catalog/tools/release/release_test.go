@@ -324,7 +324,9 @@ func TestReleaseDocAndNotes(t *testing.T) {
 		"Rekor transparency log entry 42: https://search.sigstore.dev/?logIndex=42",
 		"cosign verify-blob --bundle notes-1.0.0-sealed.1.bundle.tar.sigstore.json",
 		"--certificate-oidc-issuer https://token.actions.githubusercontent.com",
-		"slsa-verifier verify-artifact notes-1.0.0-sealed.1.bundle.tar --provenance-path notes-1.0.0-sealed.1.bundle.tar.intoto.jsonl --source-uri github.com/sealedtempo/sealed",
+		"slsa-verifier verify-artifact notes-1.0.0-sealed.1.bundle.tar --provenance-path notes-1.0.0-sealed.1.bundle.tar.intoto.jsonl \\\n" +
+			"  --source-uri github.com/sealedtempo/sealed --source-branch main \\\n" +
+			"  --builder-id https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@refs/tags/v2.1.0\n",
 		"cp sbom.postgres.spdx.json sbom/postgres.spdx.json && cp scan.postgres.json scan/postgres.json",
 		"gh release download notes-v1.0.0-sealed.1 --repo sealedtempo/sealed",
 	} {
@@ -368,6 +370,37 @@ func TestReleaseDocAndNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustContain(t, so.String(), "## Verify")
+
+	// supply-8: release.json is a release asset anyone with contents:write can replace. The notes' verify
+	// recipe ignores its identity, issuer, repository and builder and always names release.yml on main.
+	var evil ReleaseDoc
+	if err := readJSONFile(rj, &evil); err != nil {
+		t.Fatal(err)
+	}
+	evil.SignerIdentity = "https://github.com/mallory/fork/.github/workflows/release.yml@refs/heads/evil"
+	evil.OIDCIssuer = "https://accounts.example.invalid"
+	evil.Repository = "https://github.com/mallory/fork"
+	evil.ProvenanceBy = "mallory/builder/.github/workflows/b.yml@v1"
+	evilPath := filepath.Join(t.TempDir(), "evil.json")
+	if err := writeJSONFile(evilPath, evil); err != nil {
+		t.Fatal(err)
+	}
+	so.Reset()
+	if err := run([]string{"notes", "--root", root, "--release", evilPath}, &so, &se); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--certificate-identity https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main \\\n  --certificate-oidc-issuer https://token.actions.githubusercontent.com notes-1.0.0-sealed.1.bundle.tar\n",
+		"--source-uri github.com/sealedtempo/sealed --source-branch main",
+		"--builder-id https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@refs/tags/v2.1.0",
+		"identity `https://github.com/sealedtempo/sealed/.github/workflows/release.yml@refs/heads/main`, issuer `https://token.actions.githubusercontent.com`",
+		"(https://github.com/sealedtempo/sealed/commit/" + in.Commit + ")",
+	} {
+		mustContain(t, so.String(), want)
+	}
+	if strings.Contains(so.String(), "mallory") || strings.Contains(so.String(), "example.invalid") {
+		t.Fatalf("the notes took an identity from release.json:\n%s", so.String())
+	}
 
 	// --base adds the onchain record to an existing release.json (the re-run path).
 	if err := writeJSONFile(onchain, OnchainRecord{ChainID: 4217, TxHash: tx, BlockNumber: 7, ReleaseID: info.ReleaseID}); err != nil {

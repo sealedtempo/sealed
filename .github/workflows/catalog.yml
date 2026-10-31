@@ -2,6 +2,8 @@
 # D-021 and D-050 with license_exceptions, digests, telemetry-off variables, egress policy), waivers.yaml
 # format, the release_version bump rule, compose lint with the real composer and the composer golden tests,
 # and a Syft SBOM plus a Grype scan per image with the waivers gate (critical findings fail unless waived).
+# A built image (manifest `source: build:`) is scanned only after its digest is shown to carry the cosign
+# signature of images.yml on main (supply-3), so a pull request cannot pin a digest built anywhere else.
 #
 # Images that are still unbuilt (all-zero digest) cannot be scanned on a pull request: the runtime image
 # workflow builds them after merge, scans them, and opens the pin PR, which runs this workflow in full.
@@ -33,6 +35,7 @@ env:
   GO_VERSION: "1.27.3"
   SYFT_VERSION: v1.55.0
   GRYPE_VERSION: v0.121.0
+  COSIGN_VERSION: v3.1.4
 jobs:
   lint:
     runs-on: ubuntu-24.04
@@ -138,6 +141,8 @@ jobs:
         with: { syft-version: "${{ env.SYFT_VERSION }}" }
       - uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with: { grype-version: "${{ env.GRYPE_VERSION }}" }
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with: { cosign-release: "${{ env.COSIGN_VERSION }}" }
       - run: go build -o "$RUNNER_TEMP/bin/sealed-release" ./catalog/tools/release && go build -o "$RUNNER_TEMP/bin/sealed-compose" ./runtime/composer/cmd/sealed-compose
       # Built images live in the catalog registry (read access for packages that are still private).
       - name: Registry login
@@ -150,18 +155,23 @@ jobs:
           APP: ${{ matrix.app }}
           WAIVERS: ${{ matrix.waivers }}
           IMAGES: ${{ toJSON(matrix.images) }}
+          GH_REPO: ${{ github.repository }}
           SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
         run: |
           out="$RUNNER_TEMP/scan/$APP"
           failed=0
           # No empty fields: read collapses consecutive tabs.
-          while IFS=$'\t' read -r name unbuilt ref; do
+          while IFS=$'\t' read -r name unbuilt built ref; do
             if [ "$unbuilt" = true ]; then
               echo "::notice title=unbuilt::$APP/$name is not built yet; the runtime image workflow scans it before its pin PR"
               continue
             fi
+            if [ "$built" = true ] && ! scripts/release/verify-image.sh --ref "$ref"; then
+              failed=1
+              continue
+            fi
             scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "$WAIVERS" --out "$out" || failed=1
-          done < <(jq -r '.[] | [.name, (.unbuilt // false | tostring), (.ref // "none")] | @tsv' <<<"$IMAGES")
+          done < <(jq -r '.[] | [.name, (.unbuilt // false | tostring), (.built // false | tostring), (.ref // "none")] | @tsv' <<<"$IMAGES")
           exit "$failed"
       # Licenses of every SBOM package (D-021, D-050), enterprise paths and license_exclusions, with the SBOMs.
       - name: Catalog lint with the SBOMs

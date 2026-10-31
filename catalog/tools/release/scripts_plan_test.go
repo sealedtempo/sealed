@@ -190,3 +190,62 @@ func TestOpenPinPRScript(t *testing.T) {
 		t.Fatalf("dirty tree: %d\n%s", r.code, r.output)
 	}
 }
+
+// A plan entry whose problem is an unbuilt image (all-zero placeholder digest) is skipped by
+// `release --apps all --skip-unready` with a title=not-ready notice and left out of the matrix, while the
+// same run without --skip-unready still fails (plan-releases.sh lines 89-92, supply-6 / G1). llm-gateway
+// is registered here so it reaches the readiness check rather than the not-registered path.
+func TestPlanReleasesScriptSkipsUnready(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short")
+	}
+	requireJQ(t)
+	c := deployContracts(t)
+	root := withScripts(t, fixtureRepo(t))
+	f := newFakes(t)
+	env := f.env("GH_REPO=sealedtempo/sealed", "TEMPO_RPC_URL="+c.rpc, "EXPECT_CHAIN_ID=31337", "DEPLOYMENTS_FILE="+c.deployments)
+	out := filepath.Join(t.TempDir(), "matrix.json")
+
+	// llm-gateway's only image keeps the all-zero placeholder digest: it is registered but not built.
+	man := filepath.Join(root, CatalogDir, "llm-gateway", "manifest.yaml")
+	writeFile(t, man, strings.Replace(readFile(t, man),
+		"digest: sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		"digest: sha256:0000000000000000000000000000000000000000000000000000000000000000", 1))
+
+	send := func(key string, args ...string) {
+		t.Helper()
+		full := append([]string{"send"}, args...)
+		full = append(full, "--private-key", key, "--rpc-url", c.rpc, "--tempo.fee-token", alphaUSD)
+		if b, err := exec.Command("cast", full...).CombinedOutput(); err != nil {
+			t.Fatalf("cast %v: %v %s", args, err, b)
+		}
+	}
+	for _, app := range []struct{ id, slug, name string }{{"notes", "notes", "Notes"}, {"llm-gateway", "llm-gateway", "Gateway"}} {
+		send(devOwner, c.registry, "registerApp(bytes32,string,string,string,address,uint16,string)", composer.AppID(app.id).Hex(),
+			app.slug, app.name, "MIT", castAddr(t, devMaintainer), "2000", "https://example.invalid/"+app.slug)
+	}
+
+	// --skip-unready: the unbuilt app is reported as not-ready, exits 0, and only notes is planned.
+	r := runScriptIn(t, root, "plan-releases.sh", env, "release", "--apps", "all", "--skip-unready", "--out", out)
+	if r.code != 0 {
+		t.Fatalf("--skip-unready must exit 0: %d\n%s", r.code, r.output)
+	}
+	if !strings.Contains(r.output, "title=not-ready::llm-gateway") || !strings.Contains(r.output, "all-zero placeholder digest") {
+		t.Fatalf("--skip-unready must report llm-gateway as not-ready:\n%s", r.output)
+	}
+	var m struct {
+		Include []struct {
+			App string `json:"app"`
+		} `json:"include"`
+		Count int `json:"count"`
+	}
+	if err := readJSONFile(out, &m); err != nil || m.Count != 1 || len(m.Include) != 1 || m.Include[0].App != "notes" {
+		t.Fatalf("an unbuilt app must be left out of the matrix: %+v %v\n%s", m, err, r.output)
+	}
+
+	// Without --skip-unready the same unbuilt app fails the plan.
+	r = runScriptIn(t, root, "plan-releases.sh", env, "release", "--apps", "all", "--out", out)
+	if r.code == 0 || !strings.Contains(r.output, "all-zero placeholder digest") {
+		t.Fatalf("without --skip-unready an unbuilt app must fail: %d\n%s", r.code, r.output)
+	}
+}

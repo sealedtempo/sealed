@@ -257,13 +257,24 @@ func TestGithubReleaseScript(t *testing.T) {
 	if strings.TrimSpace(runScriptIn(t, root, "github-release.sh", env, "state", "--tag", "notes-v1.0.0").output) != "published" {
 		t.Fatal("published after publish")
 	}
-	// A published release is never changed.
+	// A published release is never changed. One the release job created (github-actions[bot]) is reported
+	// as "exists"; one created by anyone else fails the script and stays as it is (supply-1).
+	if a := strings.TrimSpace(runScriptIn(t, root, "github-release.sh", env, "author", "--tag", "notes-v1.0.0").output); a != "github-actions[bot]" {
+		t.Fatalf("author: %q", a)
+	}
 	writeFile(t, filepath.Join(assets, "notes-1.0.0.bundle.tar"), "other bundle")
 	r = runScriptIn(t, root, "github-release.sh", env, pub...)
 	if r.code != 0 || !strings.HasSuffix(strings.TrimSpace(r.output), "exists") ||
 		readFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/assets/notes-1.0.0.bundle.tar")) != "bundle" {
 		t.Fatalf("existing release: %d\n%s", r.code, r.output)
 	}
+	writeFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/author"), "mallory\n")
+	r = runScriptIn(t, root, "github-release.sh", env, pub...)
+	if r.code == 0 || strings.HasSuffix(strings.TrimSpace(r.output), "exists") || !strings.Contains(r.output, "created by mallory, not by the release workflow") ||
+		readFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/assets/notes-1.0.0.bundle.tar")) != "bundle" {
+		t.Fatalf("existing release by another author: %d\n%s", r.code, r.output)
+	}
+	writeFile(t, filepath.Join(f.state, "gh/notes-v1.0.0/author"), "github-actions[bot]\n")
 	// Fetch by URL with the sha256 check.
 	out := filepath.Join(t.TempDir(), "dl.tar")
 	url := "https://github.com/sealedtempo/sealed/releases/download/notes-v1.0.0/notes-1.0.0.bundle.tar"
@@ -285,10 +296,18 @@ func TestGithubReleaseScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(f.state, "gh/notes-v2/draft"), "")
+	writeFile(t, filepath.Join(f.state, "gh/notes-v2/author"), "mallory\n")
+	r = runScriptIn(t, root, "github-release.sh", env, "publish", "--tag", "notes-v2", "--target", commit, "--notes", notes, "--assets", assets)
+	if r.code == 0 || !strings.Contains(r.output, "is a draft created by mallory") || !fileExists(filepath.Join(f.state, "gh/notes-v2/draft")) {
+		t.Fatalf("someone else's draft must be left alone: %d\n%s", r.code, r.output)
+	}
+	writeFile(t, filepath.Join(f.state, "gh/notes-v2/author"), "github-actions[bot]\n")
 	r = runScriptIn(t, root, "github-release.sh", env, "publish", "--tag", "notes-v2", "--target", commit, "--notes", notes, "--assets", assets)
 	if r.code != 0 || !strings.Contains(r.output, "update draft release notes-v2") || fileExists(filepath.Join(f.state, "gh/notes-v2/draft")) {
 		t.Fatalf("draft: %d\n%s", r.code, r.output)
 	}
+	// The reused draft is moved to this run's commit before it is published (its tag is created then).
+	mustContain(t, f.calls(t), "gh release edit notes-v2 --notes-file "+notes+" --target "+commit+" --repo sealedtempo/sealed")
 	// Asset names GitHub would rename are refused.
 	writeFile(t, filepath.Join(assets, "bad name.json"), "{}")
 	if r = runScriptIn(t, root, "github-release.sh", env, "publish", "--tag", "notes-v3", "--target", commit, "--notes", notes, "--assets", assets); r.code == 0 {
