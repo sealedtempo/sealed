@@ -155,8 +155,8 @@ jobs:
           SEALED_COMPOSE_BIN: ${{ runner.temp }}/bin/sealed-compose
         run: |
           mkdir -p "$RUNNER_TEMP/dist"
-          scripts/release/build-bundle.sh --app "$APP" --sbom-dir "$RUNNER_TEMP/scan/sbom" --scan-dir "$RUNNER_TEMP/scan/scan" \
-            --out "$RUNNER_TEMP/dist/$BUNDLE" --info "$RUNNER_TEMP/info.json"
+          scripts/release/build-bundle.sh --app "$APP" --sbom-dir "$RUNNER_TEMP/scan/sbom" --files-dir "$RUNNER_TEMP/scan/files" \
+            --scan-dir "$RUNNER_TEMP/scan/scan" --out "$RUNNER_TEMP/dist/$BUNDLE" --info "$RUNNER_TEMP/info.json"
       - name: Sign (cosign keyless, Rekor)
         env:
           BUNDLE: ${{ matrix.assets.bundle }}

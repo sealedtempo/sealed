@@ -71,8 +71,12 @@ func TestImagesWorkflowEndToEnd(t *testing.T) {
 	if n := strings.Count(calls, "--no-cache"); n != 6 {
 		t.Fatalf("%d reproducibility rebuilds, want 6", n)
 	}
-	if n := strings.Count(calls, "syft scan registry:ghcr.io/sealedtempo/"); n != 6 {
-		t.Fatalf("%d scans, want 6", n)
+	// Two syft runs per image: the shipped SBOM and the every-file listing for lint (review policy-1).
+	if n := strings.Count(calls, "syft scan registry:ghcr.io/sealedtempo/"); n != 12 {
+		t.Fatalf("%d scans, want 12", n)
+	}
+	if n := strings.Count(calls, "/scan/files/"); n != 6 {
+		t.Fatalf("%d file listings, want 6", n)
 	}
 	sim.runJob("pin", nil)
 

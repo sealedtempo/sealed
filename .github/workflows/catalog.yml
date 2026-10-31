@@ -90,7 +90,7 @@ jobs:
           CHANGED: ${{ steps.changed.outputs.file }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            if grep -qE '^(catalog/tools/release/|scripts/release/scan-image\.sh$)' "$CHANGED"; then
+            if grep -qE '^(catalog/tools/release/|scripts/release/(scan-image|syft-env)\.sh$)' "$CHANGED"; then
               APPS=""  # the gate itself changed: scan every app
             else
               APPS="$(sed -n 's#^catalog/apps/\([^/]*\)/.*#\1#p' "$CHANGED" | sort -u | paste -sd, -)"
@@ -173,7 +173,8 @@ jobs:
             scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "$WAIVERS" --out "$out" || failed=1
           done < <(jq -r '.[] | [.name, (.unbuilt // false | tostring), (.built // false | tostring), (.ref // "none")] | @tsv' <<<"$IMAGES")
           exit "$failed"
-      # Licenses of every SBOM package (D-021, D-050), enterprise paths and license_exclusions, with the SBOMs.
+      # Licenses of every SBOM package (D-021, D-050), enterprise paths and license_exclusions, with the
+      # every-file listings (scan-image.sh files/), which hold the same packages as the SBOMs.
       - name: Catalog lint with the SBOMs
         env:
           APP: ${{ matrix.app }}
@@ -184,8 +185,9 @@ jobs:
           mkdir -p "$work"
           cp -R "$DIR"/. "$work"/
           rm -rf "$work/sbom" "$work/scan"
-          if [ -d "$RUNNER_TEMP/scan/$APP/sbom" ]; then
-            cp -R "$RUNNER_TEMP/scan/$APP/sbom" "$RUNNER_TEMP/scan/$APP/scan" "$work"/
+          if [ -d "$RUNNER_TEMP/scan/$APP/files" ]; then
+            cp -R "$RUNNER_TEMP/scan/$APP/files" "$work/sbom"
+            cp -R "$RUNNER_TEMP/scan/$APP/scan" "$work"/
           fi
           "$RUNNER_TEMP/bin/sealed-compose" lint --app-dir "$work" --require-sbom --json >"$RUNNER_TEMP/lint-$APP.json" || true
           "$SEALED_RELEASE_BIN" lint-gate --findings "$RUNNER_TEMP/lint-$APP.json" --mode pr

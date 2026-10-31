@@ -87,3 +87,77 @@ overrides:
       LICENSE is Apache-2.0.
     evidence: https://github.com/sealedtempo/sealed/blob/main/LICENSE
     reviewed: 2026-10-28
+  # Found by real release scans (scripts/release/syft-env.sh, review policy-1) of the pinned upstream
+  # images and of the ollama binary and gate in local-model: what still has no license, or a license
+  # file syft cannot identify, after Go module licenses are read from the module proxy.
+  - purl: pkg:golang/github.com/tianon/gosu@v1.19.0
+    license: Apache-2.0
+    reason: >-
+      gosu 1.19 is the static Go binary /usr/local/bin/gosu of docker.io/library/postgres 16.15
+      (sha256:1beaa308...) and 17.11-alpine (sha256:266d3c25...), installed by a RUN step, so no OS
+      package owns it. syft names the main module v1.19.0 with no license: upstream tags are "1.19"
+      without the v, so proxy.golang.org has no version to read. LICENSE at tag 1.19 is the Apache
+      License 2.0. Its two dependencies (golang.org/x/sys, github.com/moby/sys/user) get their
+      licenses from the proxy.
+    evidence: https://github.com/tianon/gosu/blob/1.19/LICENSE
+    reviewed: 2026-10-29
+  - purl: pkg:golang/github.com/ollama/ollama@v0.40.12
+    license: MIT
+    reason: >-
+      The main module of /usr/bin/ollama in local-model (from ollama/ollama 0.40.12,
+      sha256:20d1bbfb...). The binary is built with -trimpath and no VCS stamp; syft reads the
+      version from its contents (SYFT_GOLANG_MAIN_MODULE_VERSION_FROM_CONTENTS) and records no
+      license, as for every main module. LICENSE at tag v0.40.12 is the MIT license, "Copyright (c)
+      Ollama". Its 55 module dependencies get their licenses from the proxy.
+    evidence: https://github.com/ollama/ollama/blob/v0.40.12/LICENSE
+    reviewed: 2026-10-29
+  - purl: pkg:golang/github.com/quic-go/quic-go@v0.64.1
+    license: MIT
+    reason: >-
+      syft reports "MIT AND LicenseRef-2c8d4ff4..." for this dependency of ollama 0.40.12. The
+      LicenseRef is assets/LICENSE.md, quic-go's policy for its logo files (assets/ holds only that
+      file, logo.svg and quic-go-logo.png, no Go code), which it excludes from the MIT license. No
+      binary links anything from assets/. The code is under LICENSE, the MIT license, "Copyright (c)
+      2016 the quic-go authors & Google, Inc.".
+    evidence: https://github.com/quic-go/quic-go/blob/v0.64.1/LICENSE
+    reviewed: 2026-10-29
+  - purl: pkg:golang/sealed.local/ollama-gate
+    any_version: true
+    license: Apache-2.0
+    reason: >-
+      sealed-ollama-gate, this repository's code (runtime/images/local-model/gate), built by
+      runtime/images/local-model/Dockerfile as its own main module after `go mod init
+      sealed.local/ollama-gate`, with the standard library only. syft lists it without a version or
+      license. The repository LICENSE is Apache-2.0, and the image's
+      /licenses/sealed-ollama-gate/README says so.
+    evidence: https://github.com/sealedtempo/sealed/blob/main/LICENSE
+    reviewed: 2026-10-29
+  - purl: pkg:generic/valkey@9.0.7
+    license: BSD-3-Clause AND BSD-2-Clause AND MIT AND BSL-1.0
+    reason: >-
+      /usr/local/bin/valkey-server of docker.io/valkey/valkey 9.0.7 (sha256:7e1deda0...), built
+      from source and identified by syft's binary classifier, which records no license. COPYING at
+      tag 9.0.7 is BSD-3-Clause (Valkey contributors, and Redis Ltd. for 2006-2020). The server
+      links deps/: jemalloc and linenoise (BSD-2-Clause), libvalkey (BSD-3-Clause), Lua 5.1 and
+      its bundled libraries (MIT), fpconv (BSL-1.0), hdr_histogram (CC0-1.0 or BSD-2-Clause, used
+      under BSD-2-Clause) and fast_float (Apache-2.0, MIT or BSL-1.0, used under MIT).
+    evidence: https://github.com/valkey-io/valkey/blob/9.0.7/COPYING
+    reviewed: 2026-10-29
+  - purl: pkg:generic/postgresql@17.11
+    license: PostgreSQL
+    reason: >-
+      /usr/local/bin/postgres of docker.io/library/postgres 17.11-alpine (sha256:266d3c25...),
+      built from the 17.11 source and identified by syft's binary classifier, which records no
+      license. COPYRIGHT at tag REL_17_11 is the PostgreSQL License (PostgreSQL Global Development
+      Group, and the Regents of the University of California for 1994).
+    evidence: https://github.com/postgres/postgres/blob/REL_17_11/COPYRIGHT
+    reviewed: 2026-10-29
+  - purl: pkg:nix/openssl-static-x86_64-unknown-linux-musl@3.0.13
+    license: Apache-2.0
+    reason: >-
+      The OpenSSL 3.0.13 nix store output in docker.io/postgrest/postgrest v12.2.12
+      (sha256:5f4ce744...), which the static postgrest binary is linked against. The nix
+      cataloger records no license. LICENSE.txt at tag openssl-3.0.13 is the Apache License 2.0,
+      as for every OpenSSL 3 release.
+    evidence: https://github.com/openssl/openssl/blob/openssl-3.0.13/LICENSE.txt
+    reviewed: 2026-10-29

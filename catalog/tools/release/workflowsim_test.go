@@ -311,6 +311,62 @@ install) exit 0 ;;
 esac
 `
 
+// TestReleaseWorkflowFailsOnUnownedExcludedFile drives the release `build` job with a syft that lists one
+// file no package owns under an excluded path, but only in the every-file listing (files/), not in the
+// shipped owned-by-package SBOM. build-bundle.sh must lint the app a second time with the --files-dir
+// listings, so that file is found and the job fails. Passing --files-dir the owned-by-package SBOMs (the
+// fix's old wiring), or dropping the second lint, makes the file invisible and the job passes, so this test
+// fails on that revert. No chain: the build job never touches it, so the matrix entry is built by hand.
+func TestReleaseWorkflowFailsOnUnownedExcludedFile(t *testing.T) {
+	requireJQ(t)
+	root := withScripts(t, fixtureRepo(t))
+	f := newFakes(t)
+
+	bins := t.TempDir()
+	for src, dst := range map[string]string{releaseBin(t): "release", sealedComposeBin(t): "sealed-compose"} {
+		if err := copyFile(src, filepath.Join(bins, dst)); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Chmod(filepath.Join(bins, dst), 0o755)
+	}
+	writeFile(t, filepath.Join(f.bin, "go"), fakeGo)
+	_ = os.Chmod(filepath.Join(f.bin, "go"), 0o755)
+	grypeReport := filepath.Join(t.TempDir(), "grype.json")
+	writeFile(t, grypeReport, `{"matches":[],"descriptor":{"name":"grype","version":"0.121.0"}}`)
+
+	var wf simWorkflow
+	if err := yaml.Unmarshal([]byte(readFile(t, filepath.Join(repoRoot(t), ".github/workflows/release.yml"))), &wf); err != nil {
+		t.Fatal(err)
+	}
+	sim := &simulator{t: t, wf: wf, workspace: root, temp: t.TempDir(), artifacts: t.TempDir(),
+		path: f.bin + ":" + os.Getenv("PATH"),
+		baseEnv: append(cleanEnv(), "FAKE_STATE="+f.state, "FAKE_LOG="+f.log, "FAKE_GO_BINS="+bins, "FAKE_GRYPE_REPORT="+grypeReport,
+			"FAKE_SYFT_UNOWNED=/app/enterprise/x.py"),
+		ctx: map[string]any{
+			"github":  map[string]any{"event_name": "workflow_dispatch", "token": "fake-token", "repository": "sealedtempo/sealed", "actor": "sealedtempo"},
+			"inputs":  map[string]any{"apps": "notes"},
+			"secrets": map[string]any{},
+			"vars":    map[string]any{"ALLOW_MISSING_SEALED_CLI": "1"},
+		},
+	}
+	// The matrix entry the plan job would emit for notes (only the fields the build job reads).
+	entry := map[string]any{
+		"app": "notes",
+		"imageRefs": []any{
+			map[string]any{"name": "notes-web", "ref": "ghcr.io/sealedtempo/notes-web@sha256:" + strings.Repeat("1", 64)},
+			map[string]any{"name": "postgres", "ref": "ghcr.io/sealedtempo/postgres@sha256:" + strings.Repeat("2", 64)},
+		},
+		"assets": map[string]any{"bundle": "notes-1.0.0-sealed.1.bundle.tar"},
+	}
+	_, err := sim.runJobErr("build", entry)
+	if err == nil {
+		t.Fatal("the build job passed, but the file listing has an excluded path no package owns")
+	}
+	if !strings.Contains(err.Error(), "the images' file listings fail the release lint") {
+		t.Fatalf("the build job failed, but not on the file-listing lint: %v", err)
+	}
+}
+
 func TestReleaseWorkflowEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short")

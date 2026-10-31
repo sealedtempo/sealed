@@ -1,0 +1,14 @@
+# The syft configuration scripts/release/syft-env.sh passes with -c, so that nothing outside this
+# repository can change what an SBOM lists. syft, given -c, loads only the configuration file(s)
+# named and ignores every auto-discovered one: .syft.yaml and .syft/config.yaml in the working
+# directory (the repository root in the catalog and release workflows), and ~/.syft.yaml and the XDG
+# config under HOME on the runner. Those files set exclude, scope, select-catalogers, enrich and more,
+# which the SYFT_* variables do not pin, so a committed or planted config would otherwise make the
+# release scan and the lint fixture list different files. The Go-license and file-metadata settings
+# stay in syft-env.sh (the two file selections differ per scan); this file pins the rest of what
+# decides an SBOM's contents to syft's defaults.
+check-for-app-update: false
+scope: squashed
+exclude: []
+select-catalogers: []
+enrich: []
