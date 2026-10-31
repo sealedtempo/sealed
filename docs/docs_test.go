@@ -143,9 +143,11 @@ var testSource = regexp.MustCompile(`(_test\.go|_test\.py|\.test\.[cm]?[jt]s)$|(
 var detectorWords = regexp.MustCompile(`(?i)contains|index|includes|match|search|banned|forbidden`)
 
 // detector reports whether line, from a test source file, is a detector for needle: needle appears only inside quoted
-// literals, and the line searches for it or lists it as banned. Detectors in this file use escapes or split strings.
+// literals, and the line's own code (outside those literals) searches for it or lists it as banned. Detectors in this
+// file use escapes or split strings. The detector word must sit in code, not inside a string literal, so a line like
+// `return "index <em-dash> here"` is a violation, not an exemption (review policy-7 repair).
 func detector(rel, line, needle string) bool {
-	if !testSource.MatchString(filepath.ToSlash(rel)) || !detectorWords.MatchString(line) {
+	if !testSource.MatchString(filepath.ToSlash(rel)) {
 		return false
 	}
 	quoted := make([]bool, len(line))
@@ -163,6 +165,15 @@ func detector(rel, line, needle string) bool {
 			q = c
 		}
 	}
+	var code []byte
+	for i := 0; i < len(line); i++ {
+		if !quoted[i] {
+			code = append(code, line[i])
+		}
+	}
+	if !detectorWords.Match(code) {
+		return false
+	}
 	found := false
 	for off := 0; ; {
 		j := strings.Index(line[off:], needle)
@@ -177,9 +188,39 @@ func detector(rel, line, needle string) bool {
 	}
 }
 
+// TestDetectorNeedsWordOutsideQuotes: the detector-word exemption counts only words in a line's code, outside the
+// string literals (review policy-7 repair). A line whose only "contains"/"index"/... sits inside the quoted literal
+// that holds the needle does not search for anything, so it is a violation, not a detector. The repro the verifier
+// planted (`return "index <em-dash> here"`) is the second case.
+func TestDetectorNeedsWordOutsideQuotes(t *testing.T) {
+	const dash = "\u2014"
+	for _, c := range []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"word in code, dash in literal", "\tif strings.Contains(s, \"" + dash + "\") {", true},
+		{"word only inside the literal", "\treturn \"index " + dash + " here\"", false},
+		{"word only inside the literal, banned-ish", "\twant := \"a match for " + dash + "\"", false},
+		{"ContainsAny detector like the release tests", "\tif strings.ContainsAny(notes, \"" + dash + "\") {", true},
+		{"bare dash in a comment is not a detector", "\t// a stray " + dash + " in prose", false},
+		{"no detector word at all", "\tx := \"" + dash + "\"", false},
+	} {
+		if got := detector("x_test.go", c.line, dash); got != c.want {
+			t.Errorf("%s: detector(%q) = %v, want %v", c.name, c.line, got, c.want)
+		}
+	}
+	if detector("notes.md", "contains an "+dash, dash) {
+		t.Error("a non-test file is never a detector")
+	}
+}
+
+// emDashEntities are the HTML entities that render as an em-dash in Markdown and HTML (review policy-7 repair).
+var emDashEntities = []string{"&mdash;", "&#8212;", "&#x2014;"}
+
 // TestNoEmDashes: no tracked text file carries an em-dash (BUILD_SPEC 1.2 rule 12; review policy-7), not only the
-// docs. Binaries, SPDX documents, upstream license texts and testdata are skipped, and a test may name the character in
-// a detector.
+// docs, and no Markdown or HTML file smuggles one in as an entity. Binaries, SPDX documents, upstream license texts
+// and testdata are skipped, and a test may name the character in a detector.
 func TestNoEmDashes(t *testing.T) {
 	const dash = "\u2014"
 	files := trackedFiles(t)
@@ -193,6 +234,15 @@ func TestNoEmDashes(t *testing.T) {
 			continue
 		}
 		seen[filepath.ToSlash(rel)] = true
+		if ext := strings.ToLower(filepath.Ext(rel)); ext == ".md" || ext == ".html" || ext == ".htm" {
+			for i, line := range strings.Split(string(b), "\n") {
+				for _, ent := range emDashEntities {
+					if strings.Contains(strings.ToLower(line), ent) && !detector(rel, line, ent) {
+						t.Errorf("%s:%d has the em-dash entity %q", filepath.ToSlash(rel), i+1, ent)
+					}
+				}
+			}
+		}
 		if !bytes.Contains(b, []byte(dash)) {
 			continue
 		}
@@ -713,27 +763,24 @@ func TestVerifyReleaseRecipe(t *testing.T) {
 		"--certificate-oidc-issuer https://token.actions.githubusercontent.com")
 }
 
-// TestReleaseSignaturesNotClaimedChecked: no verifier check reads a release's cosign signature or SLSA provenance and
-// the module has no Sigstore dependency (review supply-2), so the docs must not say `stack_recompute` proves signed
-// releases, and VERIFY.md and the threat model must say what anchors a release instead. When a release signature
-// check lands, change this test with the docs.
-func TestReleaseSignaturesNotClaimedChecked(t *testing.T) {
-	for _, m := range regexp.MustCompile(`Check[A-Za-z]+\s*=\s*"([a-z_]+)"`).FindAllStringSubmatch(read(t, "verifier/report.go"), -1) {
-		if strings.Contains(m[1], "signature") || strings.Contains(m[1], "provenance") {
-			t.Fatalf("the verifier has a %s check now; update VERIFY.md, THREAT_MODEL.md and this test", m[1])
+// TestReleaseSignaturesChecked: release CI signs each release with cosign keyless and adds SLSA provenance, and
+// `sealed verify` and sealed-verifierd check both in the `release_signature` check (review supply-2, PUB-N). The docs
+// name that check. The key broker's residual stays: it releases secrets on the bundleHash alone and checks neither
+// the signature nor the provenance, so for secret release a release is anchored by the OPS key and the release CI
+// (PUB-N does not touch the key broker). This test reads only the docs, so it holds whether or not the merged tree
+// already carries the verifier's signature check.
+func TestReleaseSignaturesChecked(t *testing.T) {
+	verify := read(t, "docs/VERIFY.md")
+	mustContain(t, "VERIFY.md's check table", verify, "| `release_signature` |", "cosign keyless", "SLSA provenance")
+	for _, line := range strings.Split(verify, "\n") {
+		if strings.HasPrefix(line, "| `stack_recompute` |") && strings.Contains(line, "signed") && !strings.Contains(line, "`release_signature` shows") {
+			t.Errorf("VERIFY.md's stack_recompute row claims signed releases on its own; the release_signature check proves that: %s", line)
 		}
 	}
-	if strings.Contains(read(t, "go.mod"), "github.com/sigstore/") {
-		t.Fatal("go.mod requires a Sigstore module; if releases are verified now, update VERIFY.md, THREAT_MODEL.md and this test")
-	}
-	doc := read(t, "docs/VERIFY.md")
-	for _, line := range strings.Split(doc, "\n") {
-		if strings.HasPrefix(line, "| `stack_recompute` |") && strings.Contains(line, "signed") && !strings.Contains(line, "does not verify") {
-			t.Errorf("VERIFY.md's stack_recompute row claims signed releases: %s", line)
-		}
-	}
-	mustContain(t, "VERIFY.md", doc, "does not check the cosign signature or the SLSA provenance")
-	mustContain(t, "THREAT_MODEL.md", read(t, "docs/THREAT_MODEL.md"), "No component checks release signatures.", "anchored by the OPS key and the release CI")
+	mustContain(t, "THREAT_MODEL.md", read(t, "docs/THREAT_MODEL.md"),
+		"The key broker does not check release signatures.",
+		"accepts a bundle whose sha256 equals its onchain bundleHash",
+		"anchored by the OPS key and the release CI")
 }
 
 // TestDeployerScopeDocumented: the deployer's address permissions carry no name condition, because Google Cloud
@@ -787,6 +834,7 @@ func TestStatusNamesCurrentComposer(t *testing.T) {
 func TestPrePublishWording(t *testing.T) {
 	stale := []struct{ file, text, why string }{
 		{"docs/THREAT_MODEL.md", "from a chain head that is at most 60 seconds old (D-060); the platform", "kb-2: the approval is read at a head checked again before the seal"},
+		{"docs/THREAT_MODEL.md", "the block every later read is pinned to has a timestamp within 60 seconds", "kb-2: the image, release and recomputation reads pin that block; the approval reads use a freshly pinned head (step 9)"},
 		{"docs/THREAT_MODEL.md", "every check of one decision reads one pinned block", "kb-2: the approval is read at a fresh head"},
 		{"docs/INTERFACES.md", "every chain read is pinned to one block", "kb-2: the approval is read at a fresh head"},
 		{"docs/INTERFACES.md", "every later read is pinned to that block", "kb-2: the approval is read at a fresh head"},
