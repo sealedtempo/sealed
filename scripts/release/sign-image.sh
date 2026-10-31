@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Sign a pushed image digest with cosign keyless signing (GitHub OIDC through Fulcio, logged in Rekor), then
-# verify the signature with the identity that catalog and release jobs require.
+# verify the signature it just made with the identity that catalog.yml and release.yml are meant to check.
+# Those jobs do not verify image signatures yet (the supply-3 verify half is not implemented); this script
+# only produces and self-checks the signature so that identity is available once they do.
 #
 #   scripts/release/sign-image.sh --ref <registry>/<name>@sha256:<64 hex>
 #
 # Runs only in the runtime image workflow on main: the identity is https://github.com/$GITHUB_WORKFLOW_REF and
-# must be <owner>/<repo>/.github/workflows/images.yml@refs/heads/main, the identity every consumer checks:
+# must be <owner>/<repo>/.github/workflows/images.yml@refs/heads/main, the identity a consumer is meant to check:
 #   cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com \
 #     --certificate-identity https://github.com/<owner>/<repo>/.github/workflows/images.yml@refs/heads/main <ref>
 # cosign stores the signature in the registry next to the image.
