@@ -181,7 +181,9 @@ describe("payments-5: a same-salt upgrade keeps the old deployment's debt", () =
     payerFor(w, oldId).budgetResult = FUNDED;
     payerFor(w, newId).budgetResult = FUNDED;
     now += 3600;
-    expect((await second.settle(now)).paymentNeeded).toBe(false);
+    // Paying part of a backlog is no recovery (payments-3): one settlement pays at most 10 old legs, so the routes
+    // stay on the payment-needed page until a later settlement leaves no old leg overdue.
+    expect((await second.settle(now)).paymentNeeded).toBe(true);
     for (let i = 0; i < 3 && second.store?.state.previous; i++) {
       now += 3600;
       await second.settle(now);

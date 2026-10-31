@@ -265,7 +265,14 @@ describe("D-062: a data disk rolled back to an older copy bills no leg twice", (
     expect(await use(x, 1_000)).toBe(202); // the ledger changed: a debounced save is pending
     await x.stop();
     const path = join(settings.dataMount, ".sealed-agent", "state.json");
-    expect(JSON.parse(await readFile(path, "utf8")).ledger.open["llm-gateway"].tokens).toBe("1000"); // stop saved it
+    // stop() runs the bounded final settlement (payments-5, D-068), so it cuts the open period into one paid report:
+    // the open period is empty and the 1000 tokens are billed exactly once (D-062). Either way stop saved the ledger.
+    const saved = JSON.parse(await readFile(path, "utf8")) as {
+      ledger: { open: Record<string, unknown>; reports: { report: { items: { unit: number; quantity: string }[] } }[] };
+    };
+    expect(saved.ledger.open["llm-gateway"]).toBeUndefined();
+    const items = saved.ledger.reports.flatMap((r) => r.report.items);
+    expect(items.filter((i) => i.unit === 1 && i.quantity === "1000")).toHaveLength(1);
     const next = JSON.stringify({ version: 1, written: "by the next boot on this disk" });
     await writeFile(path, next);
     await new Promise((r) => setTimeout(r, 2_500)); // past the debounce

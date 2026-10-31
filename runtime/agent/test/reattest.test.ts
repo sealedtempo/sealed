@@ -12,6 +12,7 @@ import {
   type EvidenceBundle,
   evidenceBundleSchema,
   evidenceReportData,
+  devSimSealedConfigSchema,
   type Hex,
   hexToBytes,
   loadDefaults,
@@ -132,7 +133,8 @@ describe("sealed-agent re-attestation timer", () => {
   const secrets = { crm: { APP_SECRET: "crm-secret-value" }, "llm-gateway": { LITELLM_MASTER_KEY: "sk-test" }, _gate: { GATE_PASSWORD_BCRYPT: "$2a$14$hash" } };
 
   const expectedSigner = () => enclaveSignerAddress(broker.derive(SIGNER_SEED_TAG, CUSTOMER, config.salt as Hex));
-  const bundle = (i: number): EvidenceBundle => evidenceBundleSchema.parse(platform.evidence[i]);
+  // The tests' endpoints are plain http on loopback, which only dev sim mode accepts (as boot.e2e does).
+  const bundle = (i: number): EvidenceBundle => evidenceBundleSchema.extend({ config: devSimSealedConfigSchema }).parse(platform.evidence[i]);
 
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), "sealed-agent-reattest-"));
