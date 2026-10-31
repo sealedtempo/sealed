@@ -67,6 +67,8 @@ ARG TEMPLATE_BLOB=eade0a07cac7712787bbce23d12f9306adb4781d873d1df6e16f7840fa37af
 ARG LICENSE_BLOB=d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12
 ARG PARAMS_BLOB=0914c7781e001948488d937994217538375b4fd8c1466c5e7a625221abd3ea7a
 ARG CONFIG_BLOB=b72accf9724e93698c57cbd3b1af2d3341b3d05ec2089d86d273d97964853cd2
+# The model-config blob, whose digest Ollama reports as the model id (MODEL_ID is its short form).
+ARG MODEL_CONFIG_BLOB=0edcdef34593eac1aa2be9c7d06c432dcf81945adca5eca2f27662c18f168ba0
 # Full sha256 of the manifest file. Empty until the first CI build prints it ("manifest
 # sha256:..."); the role-by-role layer check below applies either way.
 ARG MODEL_MANIFEST_SHA256=
@@ -81,11 +83,12 @@ RUN set -eu; \
     id="$(ollama list | awk -v m="$MODEL" '$1==m {print $2}')"; \
     kill "$pid"; wait "$pid" || true; \
     [ "$id" = "$MODEL_ID" ] || { echo "model id '$id' != '$MODEL_ID'"; exit 1; }; \
-    for b in "$MODEL_BLOB" "$TEMPLATE_BLOB" "$LICENSE_BLOB" "$PARAMS_BLOB" "$CONFIG_BLOB"; do \
+    for b in "$MODEL_BLOB" "$TEMPLATE_BLOB" "$LICENSE_BLOB" "$PARAMS_BLOB" "$CONFIG_BLOB" "$MODEL_CONFIG_BLOB"; do \
       echo "$b  /models/blobs/sha256-$b" | sha256sum -c -; \
     done; \
     extra="$(find /models/blobs -type f ! -name "sha256-$MODEL_BLOB" ! -name "sha256-$TEMPLATE_BLOB" \
-             ! -name "sha256-$LICENSE_BLOB" ! -name "sha256-$PARAMS_BLOB" ! -name "sha256-$CONFIG_BLOB" -print)"; \
+             ! -name "sha256-$LICENSE_BLOB" ! -name "sha256-$PARAMS_BLOB" ! -name "sha256-$CONFIG_BLOB" \
+             ! -name "sha256-$MODEL_CONFIG_BLOB" -print)"; \
     [ -z "$extra" ] || { echo "unexpected blobs: $extra"; exit 1; }; \
     [ "$(find /models/manifests -type f | wc -l)" -eq 1 ] || { echo "unexpected manifests"; exit 1; }; \
     sealed-ollama-gate verify-manifest -manifest "$MODEL_MANIFEST" -config "$CONFIG_BLOB" -model "$MODEL_BLOB" \
