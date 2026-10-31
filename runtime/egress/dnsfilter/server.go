@@ -192,8 +192,8 @@ func (s *Server) answer(remote net.Addr, req *dns.Msg) *dns.Msg {
 		}
 	}
 	if filtered {
-		// An allowed name pointing at metadata, loopback or a private range
-		// (DNS rebinding): drop those addresses and count the attempt.
+		// An allowed name pointing at metadata, loopback or any private
+		// address (DNS rebinding): drop those addresses and count the attempt.
 		s.stats.BlockEntry(callerName, key)
 	}
 	return reply
@@ -207,9 +207,12 @@ func (s *Server) callerFor(remote net.Addr) (*policy.CallerPolicy, bool) {
 	return s.policy.CallerByIP(s.sourceIP(ap))
 }
 
+// addressAllowed keeps an answer only if a hostname may reach it: never a
+// private address, even inside allowedPrivateCidrs, since the name's owner
+// chooses its answers (runtime-1). Raw IP entries need no DNS.
 func (s *Server) addressAllowed(ip net.IP) bool {
 	a, ok := netip.AddrFromSlice(ip)
-	return ok && s.policy.IP().Check(a) == nil
+	return ok && s.policy.IP().CheckResolved(a) == nil
 }
 
 func rcode(req *dns.Msg, rc int) *dns.Msg {

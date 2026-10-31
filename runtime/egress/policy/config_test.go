@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -295,5 +296,86 @@ func TestCompileLocalDeny(t *testing.T) {
 	denied := p.IP().DeniedPrefixes()
 	if denied[len(denied)-1] != netip.MustParsePrefix("203.0.113.0/24") {
 		t.Errorf("DeniedPrefixes does not end with the local networks: %v", denied[len(denied)-2:])
+	}
+}
+
+// TestPrivateDestinationsArePerCallerAndRawIPOnly is the runtime-1 rule at
+// the policy level: allowedPrivateCidrs is stack-wide, but a private
+// address is reached only by the caller that lists it as a raw IP entry,
+// on that entry's port, and never through a hostname.
+func TestPrivateDestinationsArePerCallerAndRawIPOnly(t *testing.T) {
+	c := sampleConfig()
+	c.AllowedPrivateCIDRs = []string{"10.20.0.0/16"}
+	c.Callers[0].Allow = append(c.Callers[0].Allow, "10.20.0.5:443", "10.20.0.7:5432", "10.20.9.9:443", "198.51.100.7:443")
+	c.Callers[1].Allow = append(c.Callers[1].Allow, "10.20.0.7:5432")
+	p, err := Compile(c, netip.MustParsePrefix("10.20.9.0/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, _ := p.CallerByName("sealed-agent")
+	scraper, _ := p.CallerByName("scraper")
+	// 10.20.9.9 sits on a local network, so it opens nothing; the public
+	// raw IP is not a private entry.
+	if got := fmt.Sprint(agent.PrivateEntries()); got != "[10.20.0.5:443 10.20.0.7:5432]" {
+		t.Errorf("agent private entries = %s", got)
+	}
+	if got := fmt.Sprint(scraper.PrivateEntries()); got != "[10.20.0.7:5432]" {
+		t.Errorf("scraper private entries = %s", got)
+	}
+	if got := fmt.Sprint(p.PrivateEntries()); got != "[10.20.0.5:443 10.20.0.7:5432]" {
+		t.Errorf("all private entries = %s", got)
+	}
+
+	ap := netip.MustParseAddrPort
+	allowed := []struct {
+		c    *CallerPolicy
+		host string
+		addr string
+	}{
+		{agent, "10.20.0.5", "10.20.0.5:443"},
+		{agent, "10.20.0.7", "10.20.0.7:5432"},
+		{scraper, "10.20.0.7", "10.20.0.7:5432"},
+		{agent, "198.51.100.7", "198.51.100.7:443"},
+		{scraper, "example.com", "203.0.113.10:443"},
+	}
+	for _, a := range allowed {
+		if err := p.CheckDial(a.c, a.host, ap(a.addr)); err != nil {
+			t.Errorf("CheckDial(%s, %s, %s) = %v", a.c.Name, a.host, a.addr, err)
+		}
+	}
+	denied := []struct {
+		c    *CallerPolicy
+		host string
+		addr string
+	}{
+		{scraper, "10.20.0.5", "10.20.0.5:443"},        // another caller's raw IP entry
+		{agent, "10.20.0.5", "10.20.0.5:80"},           // another port
+		{agent, "10.20.0.6", "10.20.0.6:443"},          // inside the range, but no entry
+		{agent, "10.20.9.9", "10.20.9.9:443"},          // a local network
+		{scraper, "example.com", "10.20.0.7:5432"},     // a name, rebinding onto the caller's own entry
+		{agent, "rpc.tempo.xyz", "10.20.0.5:443"},      // a name, rebinding onto the caller's own entry
+		{scraper, "example.com", "10.99.0.1:443"},      // a name onto a private address outside the range
+		{scraper, "example.com", "169.254.169.254:80"}, // a name onto metadata
+		{agent, "10.20.0.5", "10.20.0.7:443"},          // dialed address differs from the requested one
+		{nil, "10.20.0.5", "10.20.0.5:443"},            // no caller
+	}
+	for _, d := range denied {
+		name := "<nil>"
+		if d.c != nil {
+			name = d.c.Name
+		}
+		if err := p.CheckDial(d.c, d.host, ap(d.addr)); err == nil {
+			t.Errorf("CheckDial(%s, %s, %s) allowed", name, d.host, d.addr)
+		}
+	}
+
+	// The DNS-facing check refuses every private answer.
+	for _, s := range []string{"10.20.0.5", "10.20.0.6", "10.99.0.1", "fd12::1", "100.64.0.1"} {
+		if p.IP().CheckResolved(netip.MustParseAddr(s)) == nil {
+			t.Errorf("CheckResolved(%s) allowed", s)
+		}
+	}
+	if err := p.IP().CheckResolved(netip.MustParseAddr("203.0.113.10")); err != nil {
+		t.Errorf("CheckResolved(public) = %v", err)
 	}
 }

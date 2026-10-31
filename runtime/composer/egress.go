@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
+	"github.com/sealedtempo/sealed/runtime/egress/policy"
 )
 
 // EgressPolicy is a release's egress.yaml (INTERFACES section 7).
@@ -101,6 +102,8 @@ const MaxEgressAllowEntries = 256
 // need at least two labels; wildcards cover exactly one label and need at
 // least two labels after "*.". IPv4 literals must be public unicast
 // addresses; ParseHostPortIn also accepts private ones inside given ranges.
+// Every entry must also pass sealed-egress's own parser (policy.ParseEntry),
+// so wildcards over an ICANN public suffix (`*.co.uk`) are refused.
 func ParseHostPort(s string) (HostPort, error) { return ParseHostPortIn(s, nil) }
 
 // ParseHostPortIn is ParseHostPort that accepts private (RFC 1918) IPv4
@@ -134,7 +137,7 @@ func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 		if addr.IsPrivate() && !containsAddr(private, addr) {
 			return HostPort{}, fmt.Errorf("%q: private address %s is allowed only inside allowedVpcRanges", s, host)
 		}
-		return HostPort{Host: host, Port: port, IP: true}, nil
+		return egressAccepts(s, HostPort{Host: host, Port: port, IP: true})
 	}
 	hp := HostPort{Host: host, Port: port}
 	name := host
@@ -156,6 +159,17 @@ func ParseHostPortIn(s string, private []netip.Prefix) (HostPort, error) {
 	}
 	if _, err := strconv.Atoi(labels[len(labels)-1]); err == nil {
 		return HostPort{}, fmt.Errorf("%q: numeric top-level label", s)
+	}
+	return egressAccepts(s, hp)
+}
+
+// egressAccepts refuses an entry that sealed-egress would refuse when it
+// loads the composed config. Such a stack would compose and could be
+// approved, but sealed-egress would exit at start and the stack would
+// never come up (runtime-2).
+func egressAccepts(s string, hp HostPort) (HostPort, error) {
+	if _, err := policy.ParseEntry(s); err != nil {
+		return HostPort{}, fmt.Errorf("%v (sealed-egress refuses it)", err)
 	}
 	return hp, nil
 }
