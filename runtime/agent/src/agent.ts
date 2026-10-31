@@ -37,6 +37,7 @@ import { HttpKeyBroker, type KeyBroker, type ReleasedKeys, releaseKeys } from ".
 import { createLogger, errorFields, type Logger } from "./log.js";
 import { AppHealthPoller, type Probe } from "./metering/appHealth.js";
 import { Ledger, LedgerUnverifiedError, TooManyReportsError, type VerifiedReport } from "./metering/ledger.js";
+import { UsageJournal } from "./metering/usageJournal.js";
 import { UsageLimiter, UsageLimitError } from "./metering/limits.js";
 import { emptyBudgetState, SpendBudget } from "./payments/budget.js";
 import { type FeePayer, feeUnitsReserved, LOCAL_MIN_GAS, TempoFeePayer } from "./payments/feePayer.js";
@@ -168,6 +169,12 @@ export class Agent {
   gate?: Gate;
   bootstrap?: BootstrapTracker;
   budget?: SpendBudget;
+  /** B2 (D-089): write-ahead journal for accepted usage, so a crash in the batched-save window loses none. */
+  usageJournal?: UsageJournal;
+  /** B2 (D-089): highest journal seq whose ledger.record() has fully completed, so is reflected in the next save. */
+  private appliedWalSeq = 0;
+  /** B2 (D-089): serializes journal-append + ledger.record + applied-marker, so a save never stamps a half-applied event. */
+  private usageApply: Promise<void> = Promise.resolve();
 
   ctx?: DeploymentContext;
   keys?: ReleasedKeys;
@@ -346,6 +353,23 @@ export class Agent {
       perPaymentCap: () => this.perPaymentCap,
       onChange: scheduleSave,
     });
+    // B2 (D-089): replay usage that was answered 202 but not yet in a full state save, then let the normal D-062
+    // hold/adopt flow reconcile it. Only entries past what the saved snapshot covers, and for this deployment, are
+    // applied; a client retry of a replayed event is deduped by its recorded id. The journal is then kept consistent
+    // with every save (walThrough stamping and compaction).
+    const stateDir = s.stateDir ?? join(s.dataMount, ".sealed-agent");
+    const { journal, entries } = await UsageJournal.load(join(stateDir, "usage-wal.jsonl"));
+    this.usageJournal = journal;
+    const through = store.state.walThrough ?? 0;
+    for (const e of entries) {
+      if (e.seq <= through || e.deploymentId !== ctx.deploymentId || !this.ledger.hasApp(e.app)) continue;
+      if (e.id && this.ledger.seen(e.id)) continue;
+      this.ledger.restoreOpen(e.app, e.unit, BigInt(e.quantity));
+    }
+    // Everything in the journal is now reflected in the in-memory ledger (entries up to `through` were in the saved
+    // snapshot; the rest were just replayed), so the next full save covers all of it.
+    this.appliedWalSeq = journal.seq;
+    store.attachJournal({ seq: () => this.appliedWalSeq, truncateThrough: (n) => journal.truncateThrough(n) });
     // The state came from a disk the host may have rolled back (D-062).
     this.ledger.holdForRebuild(this.clock.now());
     store.state.budget ??= emptyBudgetState(this.clock.now());
@@ -583,15 +607,25 @@ export class Agent {
       total += e.fee;
       apps.add(e.app);
     }
+    // D-089 B1: reserve the fees each metered app will still accrue before the window ends, not only heartbeat
+    // app-hours. Heartbeat accrual is known from the price; callback apps (gateway tokens, scraper pages) are
+    // projected from their recent observed rate (ledger.projectedFee). Without this a payer that spends its whole
+    // share takes the budget that settlement needs for callback usage accruing later in the window, and settlement
+    // trips spend_limit on the period tail.
     let accruing = 0;
     for (const a of ctx.apps) {
       let fee = ledger.openFee(a.id);
+      let projected = 0n;
       if (a.metering.source === "heartbeat") {
         const rule = priceRuleFor(ctx.schedule, a.id, "app_hour");
-        if (rule.price > 0n) {
-          fee += (rule.price * BigInt(horizon) + rule.per - 1n) / rule.per;
-          accruing++;
-        }
+        if (rule.price > 0n) projected = (rule.price * BigInt(horizon) + rule.per - 1n) / rule.per;
+      } else {
+        projected = ledger.projectedFee(a.id, horizon, now);
+      }
+      if (projected > 0n) {
+        fee += projected;
+        // This app will have its own settlement transactions in the later settlements of the window.
+        accruing++;
       }
       if (fee > 0n) apps.add(a.id);
       total += fee;
@@ -826,7 +860,8 @@ export class Agent {
       throw new UsageRejected(`${ev.app} meters ${app.metering.unit} by ${app.metering.source}`);
     }
     const key = ev.id ?? (typeof ev.meta?.call_id === "string" ? ev.meta.call_id : undefined);
-    if (key && ledger.seen(`${ev.app}:${key}`)) return "duplicate";
+    const dedupId = key ? `${ev.app}:${key}` : undefined;
+    if (dedupId && ledger.seen(dedupId)) return "duplicate";
     const now = this.clock.now();
     const quantity = BigInt(ev.quantity);
     try {
@@ -836,7 +871,29 @@ export class Agent {
       throw err;
     }
     try {
-      await ledger.record(ev.app, ev.unit, quantity, now);
+      // B2 (D-089): write the accepted event to the journal (durably) before 202, so a crash before the batched
+      // save does not lose it. The journal append, the ledger.record and the applied-marker update run serialized as
+      // one step, so a concurrent save never stamps walThrough over a half-applied event. Journal only once the
+      // ledger is accepting cuts (verified); checkAcceptable rejects an oversized event before it is journaled, so
+      // once it passes ledger.record cannot fail for capacity reasons.
+      const run = this.usageApply.then(async () => {
+        const journal = this.usageJournal;
+        if (journal && ledger.verified) {
+          ledger.checkAcceptable(ev.app, ev.unit, quantity);
+          const seq = await journal.append({ deploymentId: this.ctx?.deploymentId as string, app: ev.app, unit: ev.unit, quantity: quantity.toString(), at: now, ...(dedupId ? { id: dedupId } : {}) });
+          await ledger.record(ev.app, ev.unit, quantity, now);
+          // Set only after record fully returns: until then a save keeps walThrough below this seq, so a crash
+          // replays the event instead of dropping it.
+          this.appliedWalSeq = seq;
+        } else {
+          await ledger.record(ev.app, ev.unit, quantity, now);
+        }
+      });
+      this.usageApply = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      await run;
     } catch (err) {
       this.limiter.release(ev.app, ev.unit, quantity, now);
       if (err instanceof TooManyReportsError) throw new UsageRejected(err.message, 422);
@@ -871,8 +928,14 @@ export class Agent {
     if (r.data.currency && r.data.currency.toLowerCase() !== feeToken) throw new UsageRejected("the reservation's currency is not the deployment's fee token", 422);
     const budget = this.budget as SpendBudget;
     if (budget.followsOnchain) {
-      const age = budget.onchainAge(this.clock.now());
-      if (age === Number.POSITIVE_INFINITY) await this.refreshSpendLimit();
+      const now = this.clock.now();
+      const age = budget.onchainAge(now);
+      // D-089 B1: a decreased access-key limit must bite at once, not after up to ONCHAIN_LIMIT_MAX_AGE_SEC of
+      // charging against the stale higher value. Read the chain synchronously before authorizing a reservation the
+      // cached reading would grant (so the fresh, possibly lower limit is the one applied), and when nothing has been
+      // read yet. A reservation the cache already refuses is left to the periodic async refresh: refusing on a stale
+      // reading is safe, and a stale increase it misses only defers the next grant briefly.
+      if (age === Number.POSITIVE_INFINITY || budget.wouldGrant(r.data.amount, now, r.data.purpose)) await this.refreshSpendLimit();
       else if (age >= ONCHAIN_LIMIT_MAX_AGE_SEC) void this.refreshSpendLimit();
     }
     const result = budget.reserve(r.data.amount, this.clock.now(), r.data.purpose);

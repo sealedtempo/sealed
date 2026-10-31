@@ -126,6 +126,14 @@ export interface AdoptResult {
 const MAX_EVENT_IDS = 5000;
 /** One usage event may cut at most this many reports (each fits one payFees call). */
 export const MAX_CUTS_PER_EVENT = 8;
+/**
+ * B1 (D-089): the trailing window over which `projectedFee` estimates a callback-metered app's fee-accrual rate,
+ * and the bucket width it keeps samples in. feeReserve projects this rate across the rest of the limit window, so a
+ * payer that spends its whole share cannot starve settlement on the period tail. The samples are in memory only
+ * (they rebuild within one window after a restart); the money invariant is enforced by the chain regardless.
+ */
+export const ACCRUAL_WINDOW_SEC = 300;
+const ACCRUAL_BUCKET_SEC = 5;
 
 export class TooManyReportsError extends Error {}
 /** A report would have to be cut before this boot's ledger rebuild (D-062): try again later. */
@@ -137,6 +145,8 @@ export class Ledger {
   private readonly slugs: Map<string, string>;
   /** False from holdForRebuild until adopt: nothing is cut or signed (D-062). */
   private rebuilt = true;
+  /** B1 (D-089): recent fee accrual per app, bucketed by ACCRUAL_BUCKET_SEC, for projectedFee. In memory only. */
+  private readonly accrual = new Map<string, Map<number, bigint>>();
   constructor(
     readonly state: LedgerState,
     private readonly deps: LedgerDeps,
@@ -278,6 +288,77 @@ export class Ledger {
   }
 
   /**
+   * Throws exactly what `record` would reject this event with before it mutates anything (unknown app, negative
+   * quantity, an event too large for the per-payment cap). B2 (D-089): recordUsage calls it before write-ahead, so
+   * an event it will reject is never journaled.
+   */
+  checkAcceptable(app: string, unit: UsageUnitName, quantity: bigint): void {
+    if (!this.hasApp(app)) throw new Error(`unknown app ${app}`);
+    if (quantity < 0n) throw new Error("negative quantity");
+    const rule = priceRuleFor(this.deps.schedule, app, unit);
+    const cap0 = this.deps.perPaymentCap();
+    if (cap0 > 0n && priceQuantity(quantity, rule, 0n).fee > cap0 * BigInt(MAX_CUTS_PER_EVENT)) {
+      throw new TooManyReportsError(`one ${unit} event of ${quantity} would cut more than ${MAX_CUTS_PER_EVENT} reports`);
+    }
+  }
+
+  /**
+   * B2 (D-089): adds write-ahead-journal usage straight into the open period at boot, without cutting or signing, so
+   * holdForRebuild sweeps it into `held` and adopt reconciles it against the platform's signed reports like any other
+   * disk-resident open usage (D-062). Not for live usage; use `record` for that.
+   */
+  restoreOpen(app: string, unit: UsageUnitName, quantity: bigint): void {
+    if (!this.hasApp(app) || quantity <= 0n) return;
+    this.setQty(app, unit, this.qty(app, unit) + quantity);
+    this.deps.onChange?.();
+  }
+
+  /** B1 (D-089): records a fee increment in the trailing accrual window and drops samples older than it. */
+  private noteAccrual(app: string, fee: bigint, now: number): void {
+    if (fee <= 0n) return;
+    let buckets = this.accrual.get(app);
+    if (!buckets) {
+      buckets = new Map();
+      this.accrual.set(app, buckets);
+    }
+    const bucket = Math.floor(now / ACCRUAL_BUCKET_SEC) * ACCRUAL_BUCKET_SEC;
+    buckets.set(bucket, (buckets.get(bucket) ?? 0n) + fee);
+    const oldest = now - ACCRUAL_WINDOW_SEC;
+    for (const b of buckets.keys()) if (b < oldest) buckets.delete(b);
+  }
+
+  /**
+   * B1 (D-089): the fee this app is estimated to accrue over `horizonSec`, from the rate of fees seen in the trailing
+   * ACCRUAL_WINDOW_SEC. feeReserve uses it for callback-metered apps (tokens, pages), whose future usage is not known
+   * analytically the way heartbeat app-hours are, so that a payer cannot spend its whole share and starve settlement
+   * on the period tail. The rate is taken over the actual span the samples cover and projected over the horizon
+   * (rounded up, so a steady rate is never under-reserved). A single isolated event is not a rate: at least two
+   * sampling buckets must hold usage, or the estimate is 0, so one burst does not reserve a whole window of fees.
+   */
+  projectedFee(app: string, horizonSec: number, now: number): bigint {
+    if (horizonSec <= 0) return 0n;
+    const buckets = this.accrual.get(app);
+    if (!buckets) return 0n;
+    const oldest = now - ACCRUAL_WINDOW_SEC;
+    let sum = 0n;
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    let seen = 0;
+    for (const [b, fee] of buckets) {
+      if (b < oldest) continue;
+      sum += fee;
+      if (b < min) min = b;
+      if (b > max) max = b;
+      seen++;
+    }
+    // Need a sustained rate (two or more buckets over a real span), not one instantaneous burst.
+    if (seen < 2 || sum <= 0n) return 0n;
+    const span = max - min + ACCRUAL_BUCKET_SEC;
+    if (span <= 0) return 0n;
+    return (sum * BigInt(horizonSec) + BigInt(span) - 1n) / BigInt(span);
+  }
+
+  /**
    * Adds usage. Returns the reports that had to be cut because an app reached the per-payment cap.
    * Rejects (recording nothing) an event that would cut more than `MAX_CUTS_PER_EVENT` reports.
    */
@@ -289,6 +370,8 @@ export class Ledger {
     if (cap0 > 0n && priceQuantity(quantity, rule, 0n).fee > cap0 * BigInt(MAX_CUTS_PER_EVENT)) {
       throw new TooManyReportsError(`one ${unit} event of ${quantity} would cut more than ${MAX_CUTS_PER_EVENT} reports`);
     }
+    // B1 (D-089): note the fee this event adds, so feeReserve can project future accrual for callback apps.
+    this.noteAccrual(app, priceQuantity(quantity, rule, this.carryOf(app, unit)).fee, now);
     const cut: StoredReport[] = [];
     let remaining = quantity;
     for (let rounds = 0; remaining > 0n; rounds++) {

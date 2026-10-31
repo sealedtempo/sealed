@@ -235,6 +235,20 @@ export class SpendBudget {
     return nonNeg(this.headroom() - this.outstanding() - this.o.feeReserve(end, now));
   }
 
+  /**
+   * Whether `reserve` would grant this amount under the current (possibly stale) reading, without mutating anything.
+   * D-089 B1: the agent reads the onchain limit synchronously before authorizing a reservation the cache would let
+   * through, so a decreased limit is not charged against the stale higher value.
+   */
+  wouldGrant(amount: bigint, now: number, purpose?: ReservePurpose): boolean {
+    if (amount <= 0n) return false;
+    this.tick(now);
+    const open = Object.values(this.state.reservations).filter((r) => !r.expired).length;
+    if (open >= MAX_OPEN_RESERVATIONS) return false;
+    if (amount <= this.available(now)) return true;
+    return purpose === "recovery" && this.recoveryFits(amount);
+  }
+
   reserve(amount: bigint, now: number, purpose?: ReservePurpose): ReserveResult {
     if (amount <= 0n) throw new SpendBudgetError("amount must be positive");
     const remaining = this.available(now);

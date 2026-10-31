@@ -49,18 +49,34 @@ export interface AgentState {
   budget?: BudgetState;
   /** Apps whose bootstrap job reported done (only jobs without a done file on the data disk). */
   bootstrapDone?: string[];
+  /** B2 (D-089): the usage write-ahead journal sequence this saved snapshot already reflects; entries past it are replayed at boot. */
+  walThrough?: number;
 }
 
 export function emptyState(now: number): AgentState {
   return { version: 1, ledger: emptyLedgerState(now), payments: { failingSince: null, paymentNeeded: false } };
 }
 
+/** B2 (D-089): the usage write-ahead journal StateStore keeps consistent with each saved snapshot. */
+export interface WalCoordinator {
+  /** The journal sequence covering every event appended so far. */
+  seq(): number;
+  /** Drop journaled entries the just-saved snapshot now reflects (seq <= through). */
+  truncateThrough(through: number): Promise<void>;
+}
+
 export class StateStore {
   private chain: Promise<void> = Promise.resolve();
+  private journal?: WalCoordinator;
   constructor(
     private readonly path: string,
     public state: AgentState,
   ) {}
+
+  /** B2 (D-089): attach the usage write-ahead journal so each save stamps and compacts it. */
+  attachJournal(journal: WalCoordinator): void {
+    this.journal = journal;
+  }
 
   static async open(path: string, now: number): Promise<StateStore> {
     try {
@@ -79,8 +95,18 @@ export class StateStore {
    * rename). A failed write rejects only its own caller: the next save starts fresh.
    */
   save(): Promise<void> {
+    // Stamp the journal sequence this snapshot covers BEFORE serializing, so the snapshot and walThrough agree. A
+    // usage event is journaled before the ledger is mutated, so every event this snapshot's ledger holds has
+    // seq <= through and is never replayed again (B2, D-089). Entries past `through` stay in the journal for replay.
+    const through = this.journal?.seq();
+    if (through !== undefined) this.state.walThrough = through;
     const snapshot = JSON.stringify(this.state);
-    const run = this.chain.catch(() => undefined).then(() => this.write(snapshot));
+    const run = this.chain
+      .catch(() => undefined)
+      .then(() => this.write(snapshot))
+      .then(() => {
+        if (through !== undefined) return this.journal?.truncateThrough(through).catch(() => undefined);
+      });
     this.chain = run;
     return run;
   }
