@@ -20,6 +20,14 @@ echo "crane $*" >>"$FAKE_LOG"
 key() { printf '%s' "$1" | tr '/:@' '___'; }
 case "$1" in
 digest)
+  # mirror-images.sh --check-public resolves targets with an empty DOCKER_CONFIG (no credentials). When a
+  # test lists a ref in FAKE_CRANE_PRIVATE, an anonymous digest (no config.json under DOCKER_CONFIG) fails,
+  # the way a private GHCR package does. FAKE_CRANE_LOG_CONFIG records the DOCKER_CONFIG so a test can
+  # prove the check ran anonymously.
+  [ -n "${FAKE_CRANE_LOG_CONFIG:-}" ] && echo "crane-config ${DOCKER_CONFIG:-unset}" >>"$FAKE_LOG"
+  case " ${FAKE_CRANE_PRIVATE:-} " in
+  *" $2 "*) [ -f "${DOCKER_CONFIG:-/nonexistent}/config.json" ] || { echo "UNAUTHORIZED: $2 is private" >&2; exit 1; } ;;
+  esac
   f="$FAKE_STATE/crane/$(key "$2")"
   [ -f "$f" ] || { echo "MANIFEST_UNKNOWN: $2" >&2; exit 1; }
   cat "$f" ;;

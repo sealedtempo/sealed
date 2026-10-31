@@ -155,6 +155,7 @@ func imagesSim(t *testing.T, file, root string, f *fakeEnv, event string, extraE
 			"secrets": map[string]any{},
 			"vars":    map[string]any{},
 		},
+		ifs:  map[string]bool{"env.DOCKERHUB_USERNAME != ''": false}, // no Docker Hub creds in tests
 		skip: map[string]bool{"Free disk space": true},
 	}
 }

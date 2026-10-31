@@ -331,6 +331,14 @@ jobs:
               echo "ok   $TAG serves bundle $hash, signed by $identity at $GITHUB_SHA"
             fi
           fi
+      # Spend guard (R5, G26): refuse before the OPS key is used if the mainnet ledger total would cross the
+      # $50 cap, or if this (non-acceptance) publishRelease is past the $40 line. The ledger lives in the
+      # private repo, so CI passes its running total through the SEALED_LEDGER_TOTAL_USD repo variable;
+      # keep it current from the ledger's running-total line. Unset, it is treated as $0 with a warning.
+      - name: Budget cap guard
+        env:
+          SEALED_LEDGER_TOTAL_USD: ${{ vars.SEALED_LEDGER_TOTAL_USD }}
+        run: scripts/release/check-budget.sh
       - name: AppRegistry.publishRelease on Tempo mainnet (OPS)
         env:
           OPS_PRIVATE_KEY: ${{ secrets.OPS_PRIVATE_KEY }}

@@ -51,7 +51,7 @@ func TestImagesWorkflowEndToEnd(t *testing.T) {
 			"secrets": map[string]any{},
 			"vars":    map[string]any{},
 		},
-		ifs:  map[string]bool{"needs.build.result != 'success'": false},
+		ifs:  map[string]bool{"needs.build.result != 'success'": false, "env.DOCKERHUB_USERNAME != ''": false},
 		skip: map[string]bool{"Free disk space": true},
 	}
 	plan := sim.runJob("plan", nil)

@@ -190,7 +190,13 @@ if [ "$by_bundle" != "$zero" ]; then
 	die "refusing to publish: this bundle is already published as release $by_bundle under another version" 3
 fi
 
-# 5. Fee token preference.
+# 5. Spend guard then fee token preference. publishRelease is not an acceptance transaction, so the guard
+# refuses it past the $40 line and never lets the ledger cross the $50 cap (R5, G26). A dry run sends
+# nothing, so it does not need the guard. LEDGER_FILE (docs/MAINNET_LEDGER.md) or SEALED_LEDGER_TOTAL_USD
+# supplies the running total.
+if [ "$DRY_RUN" != 1 ]; then
+	"$(dirname "$0")/check-budget.sh"
+fi
 ensure_fee_token "$OPS"
 balance="$(ccall "$FEE_TOKEN" 'balanceOf(address)(uint256)' "$OPS" | awk '{print $1}')"
 [ "$balance" != "0" ] || die "OPS holds no fee token ($FEE_TOKEN) to pay the fee"

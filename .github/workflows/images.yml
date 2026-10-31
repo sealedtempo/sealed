@@ -127,6 +127,9 @@ jobs:
       contents: read
       packages: write
       id-token: write # cosign keyless signing (Fulcio certificate for this workflow's identity)
+    # Set at job level so the Docker Hub login step's `if` can read it (secrets are not available in `if`).
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -164,6 +167,14 @@ jobs:
         run: |
           printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           printf '%s' "$TOKEN" | crane auth login ghcr.io -u "$ACTOR" --password-stdin
+      # Base images in the Dockerfiles come from Docker Hub; an authenticated login lifts the anonymous
+      # per-IP pull-rate limit (github-readiness finding 7). Optional: skipped when no credentials are set.
+      - name: Docker Hub login
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build, push and check reproducibility
         env:
           ENTRY: ${{ toJSON(matrix) }}
@@ -205,6 +216,18 @@ jobs:
           path: ${{ runner.temp }}/out
           if-no-files-found: error
           retention-days: 30
+      # spec 5.3.1 (G21): VMs pull from ghcr.io anonymously, so the pushed digest must resolve without
+      # credentials. This fails until the GHCR package is public (github-readiness D1); the artifact is
+      # already uploaded above, so the pin PR still opens.
+      - name: Public visibility
+        env:
+          NAME: ${{ matrix.name }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
+          digest="$(jq -r .digest "$RUNNER_TEMP/out/results/$NAME.json")"
+          jq -n --arg n "$NAME" --arg t "$REPOSITORY@$digest" --arg d "$digest" \
+            '{include: [{name: $n, target: $t, digest: $d}]}' >"$RUNNER_TEMP/visibility.json"
+          scripts/release/mirror-images.sh "$RUNNER_TEMP/visibility.json" --check-public
   pin:
     needs: [plan, build]
     if: always() && needs.plan.outputs.count != '0' && needs.plan.result == 'success'

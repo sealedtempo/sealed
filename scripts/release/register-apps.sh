@@ -319,6 +319,10 @@ if [ "$YES" != 1 ]; then
 	read -r answer
 	[ "$answer" = "$CHAIN_ID" ] || die "not confirmed; nothing sent"
 fi
+# Spend guard (R5, G26): registrations are not acceptance transactions, so they are refused once the
+# ledger total reaches the $40 line, and never if they would cross the $50 cap. LEDGER_FILE points at the
+# private repo's docs/MAINNET_LEDGER.md (or SEALED_LEDGER_TOTAL_USD gives the total directly).
+"$(dirname "$0")/check-budget.sh"
 ensure_fee_token "$OWNER"
 (cd "$CONTRACTS_DIR" && "${forge_env[@]}" forge script script/RegisterCatalog.s.sol:RegisterCatalog --rpc-url "$RPC" \
 	--broadcast --skip-simulation --slow) >&2 || die "forge broadcast failed (re-run to retry: registered apps are skipped)"
