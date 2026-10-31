@@ -282,8 +282,10 @@ jobs:
       # supply-1: anyone with contents:write can publish a GitHub Release under the tag while this job waits
       # for its reviewers. github-release.sh already refused a release github-actions[bot] did not create; an
       # existing release's bundle is then used only if it is the bundle this run built (same sha256) or
-      # cosign verifies it against release.yml on main and the GitHub OIDC issuer. Anything else stops here,
-      # before the OPS key is used.
+      # cosign verifies it against release.yml on main, the GitHub OIDC issuer and this run's own commit
+      # (--certificate-github-workflow-sha, OID 1.3.6.1.4.1.57264.1.3), so a signature from an earlier run
+      # of this same run's commit is accepted but one from any other commit on main is not. Anything else
+      # stops here, before the OPS key is used.
       - name: Fetch the bundle by its public URL (D-046)
         env:
           STATE: ${{ steps.gh.outputs.state }}
@@ -323,9 +325,10 @@ jobs:
               curl -fsSL --proto '=https' -o "$RUNNER_TEMP/public/$SIGSTORE" "$BASE_URL/$SIGSTORE" ||
                 { echo "::error::$TAG serves bundle $hash, not the bundle this run built ($own), and has no $SIGSTORE"; exit 1; }
               cosign verify-blob --bundle "$RUNNER_TEMP/public/$SIGSTORE" --certificate-identity "$identity" \
-                --certificate-oidc-issuer https://token.actions.githubusercontent.com "$RUNNER_TEMP/public/$BUNDLE" ||
-                { echo "::error::$TAG serves bundle $hash, not the bundle this run built ($own), and it is not signed by $identity; nothing is published onchain"; exit 1; }
-              echo "ok   $TAG serves bundle $hash, signed by $identity"
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                --certificate-github-workflow-sha "$GITHUB_SHA" "$RUNNER_TEMP/public/$BUNDLE" ||
+                { echo "::error::$TAG serves bundle $hash, not the bundle this run built ($own), and it is not signed by $identity at this run's commit $GITHUB_SHA; nothing is published onchain"; exit 1; }
+              echo "ok   $TAG serves bundle $hash, signed by $identity at $GITHUB_SHA"
             fi
           fi
       - name: AppRegistry.publishRelease on Tempo mainnet (OPS)

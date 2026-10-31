@@ -263,16 +263,32 @@ func TestReleasePublishRefusesPlantedRelease(t *testing.T) {
 	}
 }
 
-// supply-1, the other accepted case: an existing release whose bundle is not this run's build (for
-// example a full re-run after a non-reproducible build) is still used when release.yml on main signed it.
+// setSimSHA rewrites GITHUB_SHA in a simulator's base environment: Fulcio records the signing run's commit
+// in the certificate, so a bundle built by this simulator is signed at this commit.
+func setSimSHA(s *simulator, sha string) {
+	for i, e := range s.baseEnv {
+		if strings.HasPrefix(e, "GITHUB_SHA=") {
+			s.baseEnv[i] = "GITHUB_SHA=" + sha
+		}
+	}
+}
+
+// supply-1, the other accepted case: an existing release whose bundle is not this run's own build (for
+// example a full re-run after a non-reproducible build) is still used when release.yml on main signed it at
+// this run's commit. The bundle differs from CI's, but it was signed at the same GITHUB_SHA, so cosign
+// verify-blob --certificate-github-workflow-sha accepts it.
 func TestReleasePublishAcceptsReleaseSignedOnMain(t *testing.T) {
 	r := newReleaseSimRig(t)
+	commit := strings.Repeat("c", 40)
 	root := withScripts(t, fixtureRepo(t))
 	sim := r.sim(root, mainWorkflowRef)
+	setSimSHA(sim, commit)
 	entry := planOne(t, sim)
 	ciHash := buildRelease(t, sim, entry)
 
+	// An earlier attempt of this same run (same commit) produced a different bundle (non-reproducible build).
 	earlier := r.sim(evilTree(t), mainWorkflowRef)
+	setSimSHA(earlier, commit)
 	earlier.ctx["needs"] = sim.ctx["needs"]
 	earlierHash := buildRelease(t, earlier, entry)
 	r.plant(t, earlier, "github-actions[bot]")
@@ -283,5 +299,42 @@ func TestReleasePublishAcceptsReleaseSignedOnMain(t *testing.T) {
 		t.Fatalf("onchain: %s, want the published bundle %s", rel, earlierHash)
 	}
 	mustContain(t, r.f.calls(t), "/public/"+notesBundle+".sigstore.json --certificate-identity "+mainIdentity+
-		" --certificate-oidc-issuer https://token.actions.githubusercontent.com")
+		" --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-github-workflow-sha "+commit)
+}
+
+// supply-1 (ported from the verifier's TestZZReplayOfRejectedMainRun, inverted): a bundle that release.yml
+// on main signed in an EARLIER run at a DIFFERENT commit (run A, commit A, a wider egress allowlist) whose
+// publish the mainnet reviewers rejected must not be replayed under the tag while run B (commit B, the
+// corrected tree, same release_version) waits for approval. The identity and issuer match, but the Fulcio
+// certificate records commit A, so --certificate-github-workflow-sha "$GITHUB_SHA" (= commit B) refuses it.
+func TestReleasePublishRefusesReleaseSignedAtAnotherCommit(t *testing.T) {
+	r := newReleaseSimRig(t)
+
+	// Run A on main at commit A: built and signed by release.yml@refs/heads/main; publish rejected.
+	simA := r.sim(evilTree(t), mainWorkflowRef)
+	setSimSHA(simA, strings.Repeat("a", 40))
+	entryA := planOne(t, simA)
+	hashA := buildRelease(t, simA, entryA)
+
+	// Run B on main at commit B (egress fixed, version not bumped: no GitHub Release existed, so pr-check passed).
+	simB := r.sim(withScripts(t, fixtureRepo(t)), mainWorkflowRef)
+	setSimSHA(simB, strings.Repeat("b", 40))
+	entryB := planOne(t, simB)
+	hashB := buildRelease(t, simB, entryB)
+	if hashA == hashB {
+		t.Fatal("the rejected and the corrected bundles must differ")
+	}
+
+	// An insider with contents:write publishes run A's artifacts under the tag from a branch workflow
+	// (GITHUB_TOKEN, so the author is github-actions[bot]) while B's publish waits for its reviewers.
+	r.plant(t, simA, "github-actions[bot]")
+
+	_, err := simB.runJobErr("publish", entryB)
+	if err == nil {
+		t.Fatalf("BUG supply-1: publish accepted run A's bundle %s signed at commit A while run B built %s", hashA, hashB)
+	}
+	mustContain(t, err.Error(), "is not signed by "+mainIdentity+" at this run's commit "+strings.Repeat("b", 40))
+	if id, rel := r.onchainRelease(t); rel != "" {
+		t.Fatalf("REPLAY: approving run B published run A's rejected bundle %s onchain (release %s: %s)", hashA, id, rel)
+	}
 }
