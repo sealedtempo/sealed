@@ -36,7 +36,9 @@ Known limits:
   for the whole project.
 - The deployer can create and delete `sealed-*` images (D-074), including the boot and system disk images
   `sealed bootstrap` creates. A replaced boot image measures differently, so the key broker refuses it. Running
-  `sealed bootstrap` again restores a deleted image and refuses one that does not match the release.
+  `sealed bootstrap` again restores a deleted image and refuses one whose description names another tarball. It
+  cannot catch an image the deployer forged with a copied description, because an image's `rawDisk` source is not
+  returned when the image is read back; the key broker still refuses any image that measures differently.
 
 ### Connection binding
 

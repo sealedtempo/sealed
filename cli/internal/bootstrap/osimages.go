@@ -117,7 +117,9 @@ func (o *OSImages) logf(format string, a ...any) {
 }
 
 // Ensure makes sure the prod and debug boot images and the system disk image exist. It is idempotent: an image
-// made from the same tarball is kept, one made from other bytes stops it, and an interrupted run continues.
+// whose description names the release's tarball is kept, one whose description names other bytes stops it, and an
+// interrupted run continues. An image the deployer forged with a copied description is not caught here (the
+// rawDisk source is not returned when an image is read back); the key broker still refuses it on measurement.
 func (o *OSImages) Ensure(ctx context.Context) ([]OSImage, error) {
 	if o.Project == "" || o.Bucket == "" || o.Images == nil || o.Storage == nil {
 		return nil, errors.New("OS images need the project, its boot bucket and Compute Engine and Cloud Storage clients")
