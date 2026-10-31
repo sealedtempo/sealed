@@ -7,4 +7,154 @@
 #     expires: 2026-12-31         # date (UTC); the waiver stops applying after this day
 #     reason: why the finding does not apply or what blocks the fix
 version: 1
-waivers: []
+waivers:
+  - id: GHSA-v5rq-49vh-5v5c
+    image: tooljet
+    package: "@simple-git/argv-parser"
+    reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: CVE-2026-10536
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-11856
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-18924
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-19931
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-86414
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-8924
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-8927
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-92388
+    image: tooljet
+    package: "curl"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: GHSA-8r5x-fm3f-whwj
+    image: tooljet
+    package: "handlebars"
+    reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: GHSA-p8wg-vrv2-v86f
+    image: tooljet
+    package: "handlebars"
+    reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: CVE-2023-6879
+    image: tooljet
+    package: "libaom3"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: tooljet
+    package: "libc-bin"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: tooljet
+    package: "libc-dev-bin"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: tooljet
+    package: "libc-devtools"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: tooljet
+    package: "libc6"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: tooljet
+    package: "libc6-dev"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-10536
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-11856
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-18924
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-19931
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-86414
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-8924
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-8927
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-92388
+    image: tooljet
+    package: "libcurl4"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2025-7458
+    image: tooljet
+    package: "libsqlite3-0"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-52490
+    image: tooljet
+    package: "libtiff6"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-6653
+    image: tooljet
+    package: "libxml2"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: GHSA-jqcg-44mw-7w3h
+    image: tooljet
+    package: "proxy-addr"
+    reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: GHSA-x6jw-m9v5-85vh
+    image: tooljet
+    package: "simple-git"
+    reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
+    expires: 2026-12-31

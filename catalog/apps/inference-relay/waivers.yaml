@@ -6,3 +6,24 @@
 #     reason: why it does not apply or why it cannot be fixed yet
 #     expires: YYYY-MM-DD         # required; the waiver stops applying after this date
 []
+waivers:
+  - id: CVE-2026-115557
+    image: litellm-relay
+    package: "python-3.13"
+    reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: CVE-2026-115557
+    image: litellm-relay
+    package: "python-3.13-base"
+    reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: relay
+    package: "libc-bin"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: relay
+    package: "libc6"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31

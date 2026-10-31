@@ -7,4 +7,24 @@
 #     reason: why it does not apply or why it cannot be fixed yet
 #     expires: 2026-12-31           # YYYY-MM-DD, at most 90 days out
 version: 1
-waivers: []
+waivers:
+  - id: CVE-2026-5450
+    image: sealed-agent
+    package: "libc-bin"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: sealed-agent
+    package: "libc6"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: sealed-mpp-payer
+    package: "libc-bin"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-5450
+    image: sealed-mpp-payer
+    package: "libc6"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31

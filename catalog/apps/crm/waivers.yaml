@@ -7,4 +7,94 @@
 #     expires: 2026-12-31         # date (UTC); the waiver stops applying after this day
 #     reason: why the finding does not apply or what blocks the fix
 version: 1
-waivers: []
+waivers:
+  - id: CVE-2026-10536
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-11856
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-18924
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-19931
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-86414
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-8926
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-9079
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-92388
+    image: espocrm
+    package: "libcurl4t64"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-111497
+    image: espocrm
+    package: "libnode115"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-52490
+    image: espocrm
+    package: "libtiff6"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-6653
+    image: espocrm
+    package: "libxml2"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-25547
+    image: espocrm
+    package: "node-brace-expansion"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-109383
+    image: espocrm
+    package: "node-undici"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-109829
+    image: espocrm
+    package: "node-undici"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-13697
+    image: espocrm
+    package: "node-undici"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-1525
+    image: espocrm
+    package: "node-undici"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-84961
+    image: espocrm
+    package: "node-undici"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-111497
+    image: espocrm
+    package: "nodejs"
+    reason: "no upstream fix available (grype reports no fixed version); drop when the distro or package publishes a patch"
+    expires: 2026-12-31
