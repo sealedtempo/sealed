@@ -45,7 +45,7 @@ func newFuzzEnv(tb testing.TB) *fuzzEnv {
 		tb.Fatal(err)
 	}
 	e := &fuzzEnv{w: w, m: m, b: b,
-		deps: verify.Deps{Quotes: v, Chain: m, Composer: fixture.Composer{}, Now: func() time.Time { return time.Unix(int64(m.Now)+10, 0) }},
+		deps: verify.Deps{Quotes: v, Chain: m, Composer: fixture.Composer{}, Signatures: fixture.Signatures{}, Now: func() time.Time { return time.Unix(int64(m.Now)+10, 0) }},
 		opts: verify.Options{ChainID: 4217, RequireOnchainRecord: true, AcceptSimulated: true},
 	}
 	m.HeadAt = func() time.Time { return e.deps.Now().Add(-2 * time.Second) }
