@@ -53,6 +53,9 @@ output "key_broker_url" {
 output "tempo_rpc_url" {
   description = "The Tempo RPC the key broker reads approvals and revocations from (TEMPO_RPC_URL)."
   value       = module.key_broker_env.env["TEMPO_RPC_URL"]
+  # The RPC can carry an API key; `terraform output -json` still returns it for
+  # the CLI, but it is redacted from the plan and the apply summary (cli-1).
+  sensitive = true
 }
 
 output "chain_id" {
@@ -60,8 +63,9 @@ output "chain_id" {
 }
 
 output "key_broker_env" {
-  description = "The key broker's configuration variables, name for name (nothing secret)."
+  description = "The key broker's configuration variables, name for name. Carries TEMPO_RPC_URL, which can embed an API key, so it is redacted from plan and apply display (cli-1)."
   value       = module.key_broker_env.env
+  sensitive   = true
 }
 
 output "key_broker_image" {
