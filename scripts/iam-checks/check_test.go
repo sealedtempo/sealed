@@ -85,6 +85,9 @@ const (
 	run      = "https://run.googleapis.com/v2/projects/" + project + "/locations/us-central1/services/sealed-key-broker"
 	kmsKey   = "https://cloudkms.googleapis.com/v1/projects/" + project + "/locations/us-central1/keyRings/sealed/cryptoKeys/sealed-kb-hmac"
 	kbURL    = "https://sealed-key-broker-xyz-uc.a.run.app"
+	gcs      = "https://storage.googleapis.com/storage/v1/b"
+	customer = "0x00000000000000000000000000000000000000c1"
+	binding  = "sealed-binding/v1 customer=" + customer + " key_broker=" + kbURL
 )
 
 func perms(p ...string) map[string]any { return map[string]any{"permissions": p} }
@@ -117,14 +120,22 @@ func compliant(w *world, mutate map[string]bool) {
 		bindings = append(bindings, map[string]any{"role": "roles/editor", "members": []string{"serviceAccount:" + deployer}})
 	}
 	w.add("POST", crm+":getIamPolicy", "operator-token", "*", 200, map[string]any{"bindings": bindings})
-	named := []string{"compute.disks.create", "compute.disks.delete", "compute.disks.get", "compute.disks.setLabels", "compute.disks.use", "compute.images.useReadOnly", "compute.instances.create", "compute.instances.delete", "compute.instances.get", "compute.instances.setLabels", "compute.instances.setMetadata", "compute.instances.setTags", "compute.instances.start", "compute.instances.stop"}
+	named := []string{"compute.disks.create", "compute.disks.delete", "compute.disks.get", "compute.disks.setLabels", "compute.disks.use", "compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.setLabels", "compute.images.useReadOnly", "compute.instances.create", "compute.instances.delete", "compute.instances.get", "compute.instances.setLabels", "compute.instances.setMetadata", "compute.instances.setTags", "compute.instances.start", "compute.instances.stop"}
 	if mutate["role-actas"] {
 		named = append(named, "compute.instances.setServiceAccount")
 	}
 	w.add("GET", iamv1+"/roles/sealedDeployer", "operator-token", "*", 200, map[string]any{"includedPermissions": named})
-	w.add("GET", iamv1+"/roles/sealedDeployerAddresses", "operator-token", "*", 200, map[string]any{"includedPermissions": []string{"compute.addresses.create", "compute.addresses.delete", "compute.addresses.get", "compute.addresses.use", "compute.regionOperations.get", "compute.zoneOperations.get"}})
-	w.add("GET", iamv1+"/roles/sealedSubnetUser", "operator-token", "*", 200, map[string]any{"includedPermissions": []string{"compute.subnetworks.use", "compute.subnetworks.useExternalIp"}})
+	w.add("GET", iamv1+"/roles/sealedDeployerAddresses", "operator-token", "*", 200, map[string]any{"includedPermissions": []string{"compute.addresses.create", "compute.addresses.delete", "compute.addresses.get", "compute.addresses.use", "compute.globalOperations.get", "compute.regionOperations.get", "compute.zoneOperations.get"}})
+	w.add("GET", iamv1+"/roles/sealedSubnetUser", "operator-token", "*", 200, map[string]any{"includedPermissions": []string{"compute.subnetworks.get", "compute.subnetworks.use", "compute.subnetworks.useExternalIp"}})
 	w.add("GET", compute+"/regions/us-central1/subnetworks/sealed-subnet/getIamPolicy?optionsRequestedPolicyVersion=3", "operator-token", "*", 200, map[string]any{"bindings": []any{map[string]any{"role": "projects/" + project + "/roles/sealedSubnetUser", "members": []string{"serviceAccount:" + deployer}}}})
+	staging := []any{
+		map[string]any{"role": "roles/storage.objectAdmin", "members": []string{"serviceAccount:" + deployer}},
+		map[string]any{"role": "roles/storage.legacyBucketOwner", "members": []string{"projectOwner:" + project}},
+	}
+	if mutate["staging-extra-role"] {
+		staging = append(staging, map[string]any{"role": "roles/storage.admin", "members": []string{"serviceAccount:" + deployer}})
+	}
+	w.add("GET", gcs+"/"+project+"-sealed-staging/iam?optionsRequestedPolicyVersion=3", "operator-token", "*", 200, map[string]any{"bindings": staging})
 	w.add("GET", kmsKey+":getIamPolicy?options.requestedPolicyVersion=3", "operator-token", "*", 200, map[string]any{"bindings": []any{map[string]any{"role": "roles/cloudkms.signer", "members": []string{"serviceAccount:" + kbSA}}}})
 	w.add("GET", run, "operator-token", "*", 200, map[string]any{"uri": kbURL, "template": map[string]any{"serviceAccount": kbSA, "containers": []any{map[string]any{"image": "us-central1-docker.pkg.dev/acme-prod-4417/sealed-ghcr/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32)}}}})
 	ingressPorts := []string{"80", "443"}
@@ -145,6 +156,25 @@ func compliant(w *world, mutate map[string]bool) {
 		w.add("POST", crm+":testIamPermissions", "deployer-token", "iam.serviceAccounts.actAs", 200, map[string]any{})
 	}
 	w.add("POST", crm+":testIamPermissions", "deployer-token", "compute.addresses.create", 200, perms("compute.addresses.create", "compute.zoneOperations.get"))
+	// The subnet as the deployer: the connection binding.
+	switch {
+	case mutate["subnet-unreadable"]:
+		w.add("GET", compute+"/regions/us-central1/subnetworks/sealed-subnet", "deployer-token", "*", 403, `{"error":{"code":403}}`)
+	case mutate["no-binding"]:
+		w.add("GET", compute+"/regions/us-central1/subnetworks/sealed-subnet", "deployer-token", "*", 200, map[string]any{"name": "sealed-subnet"})
+	case mutate["binding-other-broker"]:
+		w.add("GET", compute+"/regions/us-central1/subnetworks/sealed-subnet", "deployer-token", "*", 200, map[string]any{"name": "sealed-subnet", "description": "sealed-binding/v1 customer=" + customer + " key_broker=https://evil-broker.example"})
+	case mutate["binding-uppercase"]:
+		w.add("GET", compute+"/regions/us-central1/subnetworks/sealed-subnet", "deployer-token", "*", 200, map[string]any{"name": "sealed-subnet", "description": "sealed-binding/v1 customer=0x00000000000000000000000000000000000000C1 key_broker=" + kbURL})
+	default:
+		w.add("GET", compute+"/regions/us-central1/subnetworks/sealed-subnet", "deployer-token", "*", 200, map[string]any{"name": "sealed-subnet", "description": binding})
+	}
+	bootProbe := gcs + "/" + project + "-sealed-boot/iam/testPermissions?permissions=storage.objects.create&permissions=storage.objects.get&permissions=storage.objects.delete&permissions=storage.buckets.setIamPolicy"
+	if mutate["boot-bucket-writable"] {
+		w.add("GET", bootProbe, "deployer-token", "*", 200, perms("storage.objects.create", "storage.objects.get"))
+	} else {
+		w.add("GET", bootProbe, "deployer-token", "*", 200, map[string]any{"kind": "storage#testIamPermissionsResponse"})
+	}
 	w.add("GET", sm+"/secrets?filter=name:sealed-&pageSize=250", "operator-token", "*", 200, map[string]any{"secrets": []any{map[string]any{"name": "projects/123456789012/secrets/sealed-gate-password"}}})
 	if mutate["secret-readable"] {
 		w.add("POST", sm+"/secrets/sealed-gate-password:testIamPermissions", "deployer-token", "*", 200, perms("secretmanager.versions.access"))
@@ -249,7 +279,7 @@ func runCheck(t *testing.T, mutate map[string]bool, extra ...string) (int, strin
 
 func TestCheckScriptPassesOnACompliantProject(t *testing.T) {
 	code, out, reqs := runCheck(t, nil, "--attempt-mutations")
-	if code != 0 || strings.Contains(out, "FAIL") || strings.Contains(out, "Terminated") || !strings.Contains(out, "summary: 27 passed, 0 failed, 1 skipped") {
+	if code != 0 || strings.Contains(out, "FAIL") || strings.Contains(out, "Terminated") || !strings.Contains(out, "summary: 30 passed, 0 failed, 1 skipped, 2 warnings") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 	for _, want := range []string{
@@ -260,6 +290,12 @@ func TestCheckScriptPassesOnACompliantProject(t *testing.T) {
 		"PASS  key broker identity: secretAccessor on sealed-* secrets only, and its decision log",
 		"PASS  firewall: ingress 80/443 to sealed-vm only",
 		"PASS  subnet sealed-subnet: the deployer may attach VMs to it",
+		"PASS  staging bucket acme-prod-4417-sealed-staging: the deployer holds roles/storage.objectAdmin there and nothing else",
+		"PASS  the deployer reads the connection binding on sealed-subnet: wallet " + customer + ", key broker " + kbURL,
+		"PASS  deployer cannot read or write the boot bucket acme-prod-4417-sealed-boot",
+		"PASS  deployer cannot attach a service account to sealed-demo, log in or call getSerialPortOutput",
+		"WARN  the deployer holds compute.instances.setMetadata on sealed-* VMs, so it can set serial-port-enable and add ssh-keys at any time",
+		"WARN  the deployer's static IP rights are project-wide: it can reserve, attach and release any regional address in acme-prod-4417, not only sealed-* ones",
 		"PASS  KMS HMAC key: only the key broker may use it",
 		"PASS  positive control: the impersonated deployer holds its own project permissions",
 		"PASS  reading sealed-gate-password as the deployer is denied",
@@ -335,6 +371,12 @@ func TestCheckScriptCatchesEachMisconfiguration(t *testing.T) {
 		"kb-no-log-writer":     "FAIL  key broker project roles [roles/secretmanager.secretAccessor]",
 		"kb-releases":          "FAIL  key broker answered HTTP 200",
 		"no-impersonation":     "FAIL  impersonate the deployer",
+		"subnet-unreadable":    "FAIL  the deployer cannot read subnet sealed-subnet (HTTP 403)",
+		"no-binding":           "FAIL  subnet sealed-subnet carries no connection binding",
+		"binding-uppercase":    "FAIL  subnet sealed-subnet carries no connection binding",
+		"binding-other-broker": "FAIL  the connection binding names key broker https://evil-broker.example, but sealed-key-broker is " + kbURL,
+		"staging-extra-role":   "FAIL  staging bucket acme-prod-4417-sealed-staging: the deployer holds [roles/storage.admin roles/storage.objectAdmin]",
+		"boot-bucket-writable": "FAIL  deployer holds [storage.objects.create storage.objects.get] on the boot bucket acme-prod-4417-sealed-boot",
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, out, _ := runCheck(t, map[string]bool{name: true})
@@ -345,5 +387,36 @@ func TestCheckScriptCatchesEachMisconfiguration(t *testing.T) {
 				t.Fatal("a secret value was printed")
 			}
 		})
+	}
+}
+
+// TestCheckScriptChecksTheBindingWallet: with --customer-address the binding must name that wallet (any case on the
+// command line), so a project bootstrapped for another wallet fails.
+func TestCheckScriptChecksTheBindingWallet(t *testing.T) {
+	code, out, _ := runCheck(t, nil, "--customer-address", "0x00000000000000000000000000000000000000C1")
+	if code != 0 || !strings.Contains(out, "PASS  the deployer reads the connection binding on sealed-subnet: wallet "+customer) {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	code, out, _ = runCheck(t, nil, "--customer-address", "0x00000000000000000000000000000000000000c2")
+	if code == 0 || !strings.Contains(out, "FAIL  the connection binding names wallet "+customer+", want 0x00000000000000000000000000000000000000c2") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+}
+
+// TestCheckScriptClaimsOnlyWhatIAMEnforces: the deployer may edit sealed-* VM metadata, so the script never claims
+// it cannot reach the serial port; it says what testIamPermissions shows and warns about the rest.
+func TestCheckScriptClaimsOnlyWhatIAMEnforces(t *testing.T) {
+	_, out, _ := runCheck(t, nil)
+	for _, bad := range []string{"read its serial port", "or read the serial port"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("check.sh still claims %q:\n%s", bad, out)
+		}
+	}
+	script, err := os.ReadFile("check.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), `warn "the deployer holds compute.instances.setMetadata`) {
+		t.Error("check.sh lost the setMetadata warning")
 	}
 }

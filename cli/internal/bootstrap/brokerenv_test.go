@@ -114,7 +114,9 @@ func renderBrokerEnv(t *testing.T, inputs map[string]any) *renderedEnv {
 		v, _ := json.Marshal(inputs[k])
 		fmt.Fprintf(&b, "  %s = %s\n", k, v)
 	}
-	b.WriteString("}\n\noutput \"env\" {\n  value = module.env\n}\n")
+	// module.env carries the sensitive tempo_rpc_url (cli-1), so the wrapper output must opt in to exporting it;
+	// `terraform show -json` still returns the value for the contract check.
+	b.WriteString("}\n\noutput \"env\" {\n  value     = module.env\n  sensitive = true\n}\n")
 	os.WriteFile(filepath.Join(dir, "main.tf"), []byte(b.String()), 0o644)
 	tf := func(args ...string) []byte {
 		c := exec.Command("terraform", append([]string{"-chdir=" + dir}, args...)...)

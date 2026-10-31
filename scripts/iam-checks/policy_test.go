@@ -18,6 +18,7 @@ type rendered struct {
 	DeployerNamedCondition     string   `json:"deployer_named_condition"`
 	DeployerProjectPermissions []string `json:"deployer_project_permissions"`
 	DeployerSubnetPermissions  []string `json:"deployer_subnet_permissions"`
+	DeployerStagingRole        string   `json:"deployer_staging_role"`
 	DeployerSAPolicyJSON       string   `json:"deployer_sa_policy_json"`
 	KeyBrokerSAPolicyJSON      string   `json:"key_broker_sa_policy_json"`
 	KeyBrokerSecretRole        string   `json:"key_broker_secret_role"`
@@ -181,8 +182,26 @@ func evalConj(cond, typ, name string) (bool, error) {
 func TestRenderedDeployerPolicy(t *testing.T) {
 	r := render(t)
 	sorted := func(s []string) []string { c := append([]string(nil), s...); sort.Strings(c); return c }
-	if strings.Join(sorted(r.DeployerSubnetPermissions), " ") != "compute.subnetworks.use compute.subnetworks.useExternalIp" {
+	// subnetworks.get reads the connection binding (the subnet's description), on the sealed subnet only.
+	if strings.Join(sorted(r.DeployerSubnetPermissions), " ") != "compute.subnetworks.get compute.subnetworks.use compute.subnetworks.useExternalIp" {
 		t.Fatalf("subnet permissions %v", r.DeployerSubnetPermissions)
+	}
+	// D-074: the platform publishes shared disk images in the customer project, so the deployer creates, reads,
+	// deletes and boots sealed-* images (named role only), follows global operations, and holds objectAdmin on the
+	// staging bucket only (a bucket grant, never a custom role permission).
+	for _, want := range []string{"compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.setLabels", "compute.images.useReadOnly"} {
+		if !contains(r.DeployerNamedPermissions, want) {
+			t.Errorf("named role lacks %s (D-074)", want)
+		}
+		if contains(r.DeployerProjectPermissions, want) || contains(r.DeployerSubnetPermissions, want) {
+			t.Errorf("%s is granted without the sealed-* name condition", want)
+		}
+	}
+	if !contains(r.DeployerProjectPermissions, "compute.globalOperations.get") {
+		t.Error("the deployer cannot follow image imports (compute.globalOperations.get)")
+	}
+	if r.DeployerStagingRole != "roles/storage.objectAdmin" {
+		t.Errorf("staging bucket role %q", r.DeployerStagingRole)
 	}
 	all := append(append(append([]string{}, r.DeployerNamedPermissions...), r.DeployerProjectPermissions...), r.DeployerSubnetPermissions...)
 	for _, p := range all {
@@ -194,7 +213,9 @@ func TestRenderedDeployerPolicy(t *testing.T) {
 		switch p {
 		case "compute.instances.setServiceAccount", "compute.instances.osLogin", "compute.instances.osAdminLogin",
 			"compute.instances.getSerialPortOutput", "compute.instances.setIamPolicy", "compute.disks.setIamPolicy",
-			"compute.instances.list", "compute.disks.list", "compute.subnetworks.setIamPolicy":
+			"compute.instances.list", "compute.disks.list", "compute.subnetworks.setIamPolicy",
+			"compute.subnetworks.create", "compute.subnetworks.update", "compute.subnetworks.delete",
+			"compute.images.setIamPolicy", "compute.images.list":
 			t.Errorf("deployer permission %s is forbidden", p)
 		}
 	}
@@ -227,6 +248,9 @@ func TestRenderedDeployerPolicy(t *testing.T) {
 		{"compute.googleapis.com/Instance", "projects/acme-prod-4417/zones/us-central1-c/instances/sealed-x", true},
 		{"compute.googleapis.com/Disk", "projects/acme-prod-4417/zones/us-central1-a/disks/sealed-demo-data", true},
 		{"compute.googleapis.com/Image", "projects/acme-prod-4417/global/images/sealed-demo-shared-abc", true},
+		{"compute.googleapis.com/Image", "projects/acme-prod-4417/global/images/sealed-dstack-os-0-6-1-s1", true},
+		{"compute.googleapis.com/Image", "projects/acme-prod-4417/global/images/sealed-dstack-data-v1", true},
+		{"compute.googleapis.com/Image", "projects/acme-prod-4417/global/images/cos-125-lts", false},
 		{"compute.googleapis.com/Instance", "projects/acme-prod-4417/zones/us-central1-a/instances/prod-db", false},
 		{"compute.googleapis.com/Instance", "projects/acme-prod-4417/zones/us-central1-a/instances/notsealed-x", false},
 		{"compute.googleapis.com/Instance", "projects/acme-prod-4417/zones/europe-west4-a/instances/sealed-x", false},
@@ -343,6 +367,7 @@ func TestScriptListsMatchModule(t *testing.T) {
 		"NAMED_ALLOWED":   r.DeployerNamedPermissions,
 		"PROJECT_ALLOWED": r.DeployerProjectPermissions,
 		"SUBNET_ALLOWED":  r.DeployerSubnetPermissions,
+		"STAGING_ROLES":   {r.DeployerStagingRole},
 		"KB_ROLES":        {r.KeyBrokerSecretRole, r.KeyBrokerLoggingRole},
 		"DEBUG_ROLES":     {r.DebugLogsRole},
 		"DEBUG_SCOPES":    r.DebugVMScopes,

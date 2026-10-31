@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -364,9 +367,89 @@ func (s *Storage) Upload(ctx context.Context, bucket, object, contentType string
 	if err := s.C.DoRaw(ctx, "POST", u, contentType, data, nil); err != nil {
 		return "", err
 	}
+	return s.objectURL(bucket, object), nil
+}
+
+func (s *Storage) objectURL(bucket, object string) string {
 	objRoot := s.ObjectRoot
 	if objRoot == "" {
 		objRoot = StorageObjectRoot
 	}
-	return objRoot + "/" + bucket + "/" + object, nil
+	return objRoot + "/" + bucket + "/" + object
+}
+
+// UploadFile streams the file at path to bucket/object (simple media upload) and returns the object's https URL.
+// It is for large objects (OS image tarballs): the file is never held in memory, and only ctx bounds the upload
+// (C.HTTP, when set, is used as is). 429, 5xx and network errors are retried from the start of the file.
+func (s *Storage) UploadFile(ctx context.Context, bucket, object, contentType, path string) (string, error) {
+	root := s.UploadRoot
+	if root == "" {
+		root = StorageUploadRoot
+	}
+	u := fmt.Sprintf("%s/b/%s/o?uploadType=media&name=%s", root, url.PathEscape(bucket), url.QueryEscape(object))
+	hc := s.C.HTTP
+	if hc == nil {
+		hc = &http.Client{}
+	}
+	retries := s.C.Retries
+	if retries == 0 {
+		retries = 3
+	}
+	sleep := s.C.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			sleep(time.Duration(1<<uint(attempt-1)) * time.Second)
+		}
+		retry, err := s.uploadOnce(ctx, hc, u, contentType, path)
+		if err == nil {
+			return s.objectURL(bucket, object), nil
+		}
+		if !retry || ctx.Err() != nil {
+			return "", err
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func (s *Storage) uploadOnce(ctx context.Context, hc *http.Client, u, contentType, path string) (retry bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	tok, err := s.C.Tokens.Token(ctx)
+	if err != nil {
+		return false, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", u, f)
+	if err != nil {
+		return false, err
+	}
+	req.ContentLength = st.Size()
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", contentType)
+	if s.C.UserAgent != "" {
+		req.Header.Set("User-Agent", s.C.UserAgent)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return true, fmt.Errorf("POST %s: %w", stripQuery(u), err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return false, nil
+	}
+	apiErr := parseAPIError(resp.StatusCode, data)
+	apiErr.Method, apiErr.URL = "POST", stripQuery(u)
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500, apiErr
 }

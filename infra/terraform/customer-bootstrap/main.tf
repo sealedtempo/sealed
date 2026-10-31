@@ -4,7 +4,9 @@
 # service account, and the deployer service account the platform impersonates.
 # The platform never holds any credential for this project beyond tokens for
 # the deployer, which cannot read secrets, change the key broker, attach a
-# service account to a VM or open a shell (P4, spec 8.6).
+# service account to a VM or open a shell (P4, spec 8.6). The boot and system
+# disk images are created by `sealed bootstrap` itself, with the customer's
+# credentials, after this module is applied (D-075).
 
 data "google_project" "this" {
   project_id = var.project_id
@@ -25,6 +27,9 @@ locals {
 
   customer_address = lower(var.customer_address)
 
+  # Exactly this format; the platform api parses it.
+  connection_binding = "sealed-binding/v1 customer=${local.customer_address} key_broker=${google_cloud_run_v2_service.key_broker.uri}"
+
   # Fixed names: the deployer's IAM condition and the IAM checks rely on them.
   network_name      = "sealed-vpc"
   subnetwork_name   = "sealed-subnet"
@@ -36,6 +41,7 @@ locals {
   deployer_sa_id    = "sealed-deployer"
   debug_logs_sa_id  = "sealed-debug-logs"
   ghcr_remote_repo  = "sealed-ghcr"
+  staging_bucket    = "${var.project_id}-sealed-staging"
   secret_prefix     = "sealed-"
   key_broker_sa_fqn = "${local.key_broker_sa_id}@${var.project_id}.iam.gserviceaccount.com"
   deployer_sa_fqn   = "${local.deployer_sa_id}@${var.project_id}.iam.gserviceaccount.com"

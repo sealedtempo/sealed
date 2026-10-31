@@ -313,6 +313,8 @@ type Outputs struct {
 	TempoRPC string
 	// DebugLogSA is the log writer identity for debug VMs, empty unless enabled.
 	DebugLogSA string
+	// Binding is the connection binding on the sealed subnet (optional: older modules lack the output).
+	Binding string
 }
 
 // Run initializes and applies (or plans) the module, then reads its outputs. Outputs are nil for a plan.
@@ -375,7 +377,7 @@ func ParseOutputs(raw []byte) (*Outputs, error) {
 		}
 		*f.dst = v
 	}
-	for k, dst := range map[string]*string{"boot_bucket": &o.BootBucket, "tempo_rpc_url": &o.TempoRPC, "debug_log_service_account": &o.DebugLogSA} {
+	for k, dst := range map[string]*string{"boot_bucket": &o.BootBucket, "tempo_rpc_url": &o.TempoRPC, "debug_log_service_account": &o.DebugLogSA, "connection_binding": &o.Binding} {
 		if v, ok := doc[k]; ok {
 			_ = json.Unmarshal(v.Value, dst)
 		}

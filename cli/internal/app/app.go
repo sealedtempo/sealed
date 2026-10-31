@@ -55,6 +55,8 @@ type Env struct {
 	NewCompute     func(project string, ts gcp.TokenSource) deploy.Compute
 	NewShared      func(project, bucket string, ts gcp.TokenSource) deploy.SharedDisk
 	Terraform      bootstrap.Runner
+	// ImportOSImages, when set, replaces bootstrap.OSImages.Ensure (tests).
+	ImportOSImages func(ctx context.Context, o *bootstrap.OSImages) ([]bootstrap.OSImage, error)
 	// HTTP fetches bundles and talks to the platform api.
 	HTTP *http.Client
 	// AllowHTTPBundles lets tests serve bundles over plain HTTP.
@@ -132,6 +134,13 @@ func (e *Env) terraform() bootstrap.Runner {
 		return e.Terraform
 	}
 	return &bootstrap.ExecRunner{Stdin: e.Stdin, Stdout: e.Stdout, Stderr: e.Stderr}
+}
+
+func (e *Env) importOSImages(ctx context.Context, o *bootstrap.OSImages) ([]bootstrap.OSImage, error) {
+	if e.ImportOSImages != nil {
+		return e.ImportOSImages(ctx, o)
+	}
+	return o.Ensure(ctx)
 }
 
 func (e *Env) httpClient() *http.Client {
