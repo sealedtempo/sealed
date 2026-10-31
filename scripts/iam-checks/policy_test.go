@@ -189,7 +189,7 @@ func TestRenderedDeployerPolicy(t *testing.T) {
 	// D-074: the platform publishes shared disk images in the customer project, so the deployer creates, reads,
 	// deletes and boots sealed-* images (named role only), follows global operations, and holds objectAdmin on the
 	// staging bucket only (a bucket grant, never a custom role permission).
-	for _, want := range []string{"compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.useReadOnly"} {
+	for _, want := range []string{"compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.setLabels", "compute.images.useReadOnly"} {
 		if !contains(r.DeployerNamedPermissions, want) {
 			t.Errorf("named role lacks %s (D-074)", want)
 		}

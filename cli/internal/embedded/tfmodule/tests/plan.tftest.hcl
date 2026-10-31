@@ -253,11 +253,11 @@ run "deployer" {
 
   assert {
     condition = (
-      length(setintersection(google_project_iam_custom_role.deployer_named.permissions, toset(["compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.useReadOnly"]))) == 4 &&
+      length(setintersection(google_project_iam_custom_role.deployer_named.permissions, toset(["compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.setLabels", "compute.images.useReadOnly"]))) == 5 &&
       contains(google_project_iam_custom_role.deployer_project.permissions, "compute.globalOperations.get") &&
       !anytrue([for p in setunion(google_project_iam_custom_role.deployer_project.permissions, google_project_iam_custom_role.subnet_user.permissions) : startswith(p, "compute.images.")])
     )
-    error_message = "the deployer creates, reads, deletes and boots images only under the sealed-* name condition, and follows their global operations (D-074)"
+    error_message = "the deployer creates, reads, tags, deletes and boots images only under the sealed-* name condition, and follows their global operations (D-074)"
   }
 
   assert {

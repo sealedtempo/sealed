@@ -64,10 +64,13 @@ locals {
   # VM at any time (a known limit; check.sh warns about it).
   #
   # The image permissions let the platform publish a deployment's
-  # sealed-<name>-shared image in this project (D-074). They also let it
-  # delete or replace the sealed-* boot and system disk images bootstrap
-  # creates; a replaced boot image measures differently, so the key broker
-  # refuses it.
+  # sealed-<name>-shared image in this project (D-074). The platform tags that
+  # image with labels on images.insert, and Compute Engine requires the
+  # matching setLabels permission to create a resource with labels (as it does
+  # for instances and disks, below), so compute.images.setLabels is here too.
+  # They also let the platform delete or replace the sealed-* boot and system
+  # disk images bootstrap creates; a replaced boot image measures differently,
+  # so the key broker refuses it.
   deployer_named_permissions = sort([
     "compute.disks.create",
     "compute.disks.delete",
@@ -77,6 +80,7 @@ locals {
     "compute.images.create",
     "compute.images.delete",
     "compute.images.get",
+    "compute.images.setLabels",
     "compute.images.useReadOnly",
     "compute.instances.create",
     "compute.instances.delete",

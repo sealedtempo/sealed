@@ -30,7 +30,7 @@ DEPLOYER="" KEY_BROKER_NAME="sealed-key-broker" SUBNET="sealed-subnet" NETWORK="
 
 # Permissions the deployer may hold, by grant. Keep in sync with infra/terraform/customer-bootstrap/modules/iam
 # (scripts/iam-checks/policy_test.go checks it).
-NAMED_ALLOWED="compute.disks.create compute.disks.delete compute.disks.get compute.disks.setLabels compute.disks.use compute.images.create compute.images.delete compute.images.get compute.images.useReadOnly compute.instances.create compute.instances.delete compute.instances.get compute.instances.setLabels compute.instances.setMetadata compute.instances.setTags compute.instances.start compute.instances.stop"
+NAMED_ALLOWED="compute.disks.create compute.disks.delete compute.disks.get compute.disks.setLabels compute.disks.use compute.images.create compute.images.delete compute.images.get compute.images.setLabels compute.images.useReadOnly compute.instances.create compute.instances.delete compute.instances.get compute.instances.setLabels compute.instances.setMetadata compute.instances.setTags compute.instances.start compute.instances.stop"
 PROJECT_ALLOWED="compute.addresses.create compute.addresses.delete compute.addresses.get compute.addresses.use compute.globalOperations.get compute.regionOperations.get compute.zoneOperations.get"
 SUBNET_ALLOWED="compute.subnetworks.get compute.subnetworks.use compute.subnetworks.useExternalIp"
 # The deployer's only Cloud Storage role, on the staging bucket only (D-074).

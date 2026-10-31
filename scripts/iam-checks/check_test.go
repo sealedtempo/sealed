@@ -120,7 +120,7 @@ func compliant(w *world, mutate map[string]bool) {
 		bindings = append(bindings, map[string]any{"role": "roles/editor", "members": []string{"serviceAccount:" + deployer}})
 	}
 	w.add("POST", crm+":getIamPolicy", "operator-token", "*", 200, map[string]any{"bindings": bindings})
-	named := []string{"compute.disks.create", "compute.disks.delete", "compute.disks.get", "compute.disks.setLabels", "compute.disks.use", "compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.useReadOnly", "compute.instances.create", "compute.instances.delete", "compute.instances.get", "compute.instances.setLabels", "compute.instances.setMetadata", "compute.instances.setTags", "compute.instances.start", "compute.instances.stop"}
+	named := []string{"compute.disks.create", "compute.disks.delete", "compute.disks.get", "compute.disks.setLabels", "compute.disks.use", "compute.images.create", "compute.images.delete", "compute.images.get", "compute.images.setLabels", "compute.images.useReadOnly", "compute.instances.create", "compute.instances.delete", "compute.instances.get", "compute.instances.setLabels", "compute.instances.setMetadata", "compute.instances.setTags", "compute.instances.start", "compute.instances.stop"}
 	if mutate["role-actas"] {
 		named = append(named, "compute.instances.setServiceAccount")
 	}
