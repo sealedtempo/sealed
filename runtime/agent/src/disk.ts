@@ -43,9 +43,9 @@ export const spawnRunner: CommandRunner = {
       // the args. The dir is removed in the finally below, so the key only lives for the tool's run.
       dir = await mkdtemp(join(tmpdir(), "sealed-fd-"));
       const paths: string[] = [];
-      for (let i = 0; i < extra.length; i++) {
+      for (const [i, data] of extra.entries()) {
         const path = join(dir, `fd${3 + i}`);
-        await writeFile(path, Buffer.from(extra[i]), { mode: 0o600 });
+        await writeFile(path, Buffer.from(data), { mode: 0o600 });
         paths.push(path);
       }
       finalArgs = args.map((a) => paths.reduce((s, path, i) => s.split(`/dev/fd/${3 + i}`).join(path), a));
