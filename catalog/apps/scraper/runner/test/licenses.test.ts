@@ -129,8 +129,8 @@ describe('upstream license texts (LICENSES/)', () => {
   it('ships the texts the license audit lists, for the pinned versions', () => {
     expect(Object.fromEntries(texts.map((t) => [t.file, `${t.repo} ${t.ref} ${t.path}`]))).toEqual({
       'crawlee-v3.18.2-LICENSE.md': 'apify/crawlee v3.18.2 LICENSE.md',
-      'playwright-v1.62.1-LICENSE': 'microsoft/playwright v1.62.1 LICENSE',
-      'playwright-v1.62.1-NOTICE': 'microsoft/playwright v1.62.1 NOTICE',
+      'playwright-v1.64.1-LICENSE': 'microsoft/playwright v1.64.1 LICENSE',
+      'playwright-v1.64.1-NOTICE': 'microsoft/playwright v1.64.1 NOTICE',
       'firefox-MPL-2.0.txt': 'mozilla/bedrock a15178c3c7c976c67b3641af77cae0b66093a175 media/MPL/2.0/index.txt',
       'postgresql-17.11-COPYRIGHT': 'postgres/postgres REL_17_11 COPYRIGHT',
       'sapphire-async-queue-1.5.5-LICENSE.md': 'sapphiredev/utilities @sapphire/async-queue@1.5.5 LICENSE.md',

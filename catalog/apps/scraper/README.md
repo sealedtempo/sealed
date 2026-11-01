@@ -151,7 +151,7 @@ registrable domain, so other sites reached with `same_domain: false` wait the sa
 
 | image | Dockerfile | contents |
 |---|---|---|
-| `scraper-runner-playwright` (shipped) | `images/scraper-runner-playwright/Dockerfile` | `mcr.microsoft.com/playwright:v1.62.1-noble` by digest, flattened with only Firefox kept (Chromium, WebKit and ffmpeg removed), tini, user `pwuser` |
+| `scraper-runner-playwright` (shipped) | `images/scraper-runner-playwright/Dockerfile` | `mcr.microsoft.com/playwright:v1.64.1-noble` by digest, flattened with only Firefox kept (Chromium, WebKit and ffmpeg removed), tini, user `pwuser` |
 | `scraper-runner` (Cheerio only) | `images/scraper-runner/Dockerfile` | `node:24.22.1-bookworm-slim` by digest, no Playwright packages, tini, user `node` |
 
 Both build from the repository root, for example

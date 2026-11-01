@@ -4,8 +4,8 @@
 #   docker build -f catalog/apps/scraper/images/scraper-runner-playwright/Dockerfile -t scraper-runner-playwright .
 # Dockerfile.dockerignore next to this file limits the context to the runner sources.
 #
-# Base: mcr.microsoft.com/playwright:v1.62.1-noble (Ubuntu 24.04, Node 24), index digest below.
-#   linux/amd64 child: sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac
+# Base: mcr.microsoft.com/playwright:v1.64.1-noble (Ubuntu 24.04, Node 24), index digest below.
+#   linux/amd64 child: sha256:969a9e3655576186a7f3b3d85502f8c4041f4afce571df7aadba6384d93ee61f
 # The image tag must match the playwright npm version in runner/package.json (1.64.1), or
 # Playwright cannot find /ms-playwright/firefox-<revision>.
 #

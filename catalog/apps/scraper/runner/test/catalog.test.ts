@@ -227,13 +227,13 @@ describe('Dockerfiles', () => {
       'node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c',
     );
     expect(froms(variants.playwright)).toContain(
-      'mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e',
+      'mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea',
     );
   });
 
   it('matches the Playwright image tag to the pinned npm package', () => {
-    expect(runnerPkg.optionalDependencies.playwright).toBe('1.62.1');
-    expect(variants.playwright).toContain('playwright:v1.62.1-noble');
+    expect(runnerPkg.optionalDependencies.playwright).toBe('1.64.1');
+    expect(variants.playwright).toContain('playwright:v1.64.1-noble');
   });
 
   it('runs as a non-root user with the fragment entrypoint and memory-only Crawlee storage', () => {
