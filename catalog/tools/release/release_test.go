@@ -431,14 +431,14 @@ func TestScanMatrix(t *testing.T) {
 	if len(m) != 2 || m[0].App != "crm" || m[1].App != "llm-gateway" || m[1].Waivers != "catalog/apps/llm-gateway/waivers.yaml" {
 		t.Fatalf("matrix %+v", m)
 	}
-	if es := m[0].Images[0]; es.Name != "espocrm" || !es.Unbuilt || es.Ref != "" || es.Blocked != "" {
-		t.Fatalf("crm's espocrm image is built by the image workflow and not pinned yet (D-028): %+v", es)
+	if es := m[0].Images[0]; es.Name != "espocrm" || es.Unbuilt || !strings.HasPrefix(es.Ref, "ghcr.io/sealedtempo/espocrm@sha256:") || es.Blocked != "" {
+		t.Fatalf("crm's espocrm image is built by the image workflow and pinned (D-028): %+v", es)
 	}
 	for _, img := range m[1].Images {
 		switch img.Name {
 		case "litellm", "local-model":
-			if !img.Unbuilt || img.Ref != "" {
-				t.Errorf("%s is unbuilt: %+v", img.Name, img)
+			if img.Unbuilt || !strings.HasPrefix(img.Ref, "ghcr.io/sealedtempo/"+img.Name+"@sha256:") {
+				t.Errorf("%s is built and pinned: %+v", img.Name, img)
 			}
 		case "postgres":
 			if img.Ref != "docker.io/library/postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c" {
@@ -601,8 +601,12 @@ func TestLintGateWithComposerLint(t *testing.T) {
 			t.Fatal("unbuilt images never block a PR")
 		}
 	}
-	if err := run([]string{"lint-gate", "--root", root, "--findings", f, "--mode", GateModeRelease}, &so, &se); err == nil {
-		t.Fatal("the release gate fails while images are unbuilt")
+	// The release gate blocks on unbuilt images and on whatever else the composer reports; its exit matches its
+	// blocking findings whether or not anything is unbuilt.
+	errRel := run([]string{"lint-gate", "--root", root, "--findings", f, "--mode", GateModeRelease}, &so, &se)
+	gRel, _ := LintGate(list, GateModeRelease, unbuiltOf(t, root))
+	if (errRel != nil) != (len(gRel.Blocking) > 0) {
+		t.Fatalf("release lint-gate exit %v with %d blocking findings", errRel, len(gRel.Blocking))
 	}
 }
 

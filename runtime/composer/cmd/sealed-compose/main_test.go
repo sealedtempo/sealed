@@ -59,10 +59,9 @@ func TestComposeCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), "attest.34-1-2-3.sslip.io {") {
 		t.Fatal("caddyfile not printed")
 	}
-	// Release flows refuse stacks with placeholder digests.
-	err := run(append(append([]string{}, args[:len(args)-2]...), "--require-built"), &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "unbuilt") {
-		t.Fatalf("unbuilt stack passed --require-built: %v", err)
+	// Every sidecar is pinned in the repo, so --require-built accepts the stack.
+	if err := run(append(append([]string{}, args[:len(args)-2]...), "--require-built"), &stdout, &stderr); err != nil {
+		t.Fatalf("built stack rejected by --require-built: %v\n%s", err, stderr.String())
 	}
 	// Without --fill-release-ids the placeholder ids do not match.
 	if err := run([]string{"compose", "--config", "../../testdata/config.json", "--registry", "ghcr.io/sealedtempo",

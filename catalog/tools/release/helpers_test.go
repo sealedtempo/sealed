@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -131,6 +132,12 @@ func fixtureRepo(t testing.TB) string {
 			t.Fatal(err)
 		}
 	}
+	// A fixture repo is a pre-release checkout: its built sidecars (and the key broker) are still placeholders, so
+	// the pin and scan tests have zero digests to reason about even after the real files are pinned. The transform
+	// restores the committed placeholder form (zero digest plus an "unbuilt": true line), which both the loose
+	// runtime-images parser and the strict extra-images parser accept.
+	makeSidecarsUnbuilt(t, filepath.Join(root, RuntimeImagesFile))
+	makeSidecarsUnbuilt(t, filepath.Join(root, ExtraImagesFile))
 	writeFile(t, filepath.Join(root, BuildsFile), fixtureImagesYAML)
 	for _, app := range []string{"notes", "llm-gateway"} {
 		copyTree(t, filepath.Join(real, "runtime/composer/testdata/apps", app), filepath.Join(root, CatalogDir, app))
@@ -141,6 +148,28 @@ func fixtureRepo(t testing.TB) string {
 		writeFile(t, filepath.Join(root, d, "Dockerfile"), "FROM scratch\n")
 	}
 	return root
+}
+
+// buildSidecarRe matches a build-sourced sidecar block in runtime-images.json: the digest line, its
+// "source": "build:" line and its "license_spdx" line, capturing everything after the digest value so the
+// value is zeroed and an "unbuilt": true line is appended (the committed placeholder form).
+var buildSidecarRe = regexp.MustCompile(`("digest": ")sha256:[0-9a-f]{64}(",\n\s*"source": "build:[^"]*",\n\s*"license_spdx": "[^"]*")`)
+
+// makeSidecarsUnbuilt resets every build-sourced sidecar in runtime-images.json to the all-zero placeholder and
+// marks it unbuilt, leaving mirrored images (caddy) and all formatting untouched.
+func makeSidecarsUnbuilt(t testing.TB, path string) {
+	t.Helper()
+	writeFile(t, path, buildSidecarRe.ReplaceAllString(readFile(t, path), "${1}"+zeroDigest+"${2},\n      \"unbuilt\": true"))
+}
+
+// yamlBuildDigestRe matches a manifest build image's pinned digest: a "source: build:" line followed by its
+// "digest:" line, capturing everything up to the digest value so only the value is rewritten.
+var yamlBuildDigestRe = regexp.MustCompile(`(source: build:\S*\n\s*digest: )sha256:[0-9a-f]{64}`)
+
+// unbuiltManifest resets every build-sourced image digest in a manifest to the all-zero placeholder, so a test
+// sees the pre-release manifest even after the real one is pinned.
+func unbuiltManifest(src string) string {
+	return yamlBuildDigestRe.ReplaceAllString(src, "${1}"+zeroDigest)
 }
 
 func mustContain(t testing.TB, s, sub string) {

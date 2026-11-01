@@ -57,6 +57,9 @@ type Deployer struct {
 	// AllowUnbuilt composes stacks whose sidecar or app images still carry the all-zero placeholder digest.
 	// Such a stack cannot boot; the CLI allows it only in dev mode (SEALED_DEV_SIM=1).
 	AllowUnbuilt bool
+	// RuntimeImages overrides the embedded sidecar image set. Nil uses the pins compiled into the composer
+	// library (composer.Compose); a non-nil set composes with composer.ComposeWith instead.
+	RuntimeImages *composer.RuntimeImages
 	// Replace lets Apply delete a VM of the same name that runs another deployment (an upgrade) and create the
 	// new one; the data disk is kept and checked against the salt first (D-058).
 	Replace bool
@@ -211,7 +214,12 @@ func (d *Deployer) Prepare(ctx context.Context, s *StackFile, reserveIP bool) (*
 	if p.ConfigJSON, err = cfg.CanonicalJSON(); err != nil {
 		return nil, err
 	}
-	if p.Result, err = composer.Compose(cfg, p.Bundles); err != nil {
+	if d.RuntimeImages != nil {
+		p.Result, err = composer.ComposeWith(cfg, p.Bundles, d.RuntimeImages)
+	} else {
+		p.Result, err = composer.Compose(cfg, p.Bundles)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("compose: %w", err)
 	}
 	if err := p.Result.RequireBuilt(); err != nil && !d.AllowUnbuilt {

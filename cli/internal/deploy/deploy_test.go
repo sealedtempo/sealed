@@ -386,10 +386,27 @@ func TestDeployRefusesDebugImageAndRevokedRelease(t *testing.T) {
 func TestDeployRefusesUnbuiltImages(t *testing.T) {
 	r := newRig(t)
 	r.d.AllowUnbuilt = false
+	// A released repo pins every sidecar, so compose one sidecar back to the placeholder to make the stack unbuilt.
+	r.d.RuntimeImages = unbuiltRuntimeImages(t)
 	s, _ := ParseStackFile([]byte(stackYAML(t, "")))
 	if _, err := r.d.Prepare(context.Background(), s, true); err == nil || !strings.Contains(err.Error(), "unbuilt") {
 		t.Fatalf("unbuilt images accepted: %v", err)
 	}
+}
+
+// unbuiltRuntimeImages returns the embedded sidecar set with sealed-agent reset to the placeholder digest.
+func unbuiltRuntimeImages(t *testing.T) *composer.RuntimeImages {
+	t.Helper()
+	ri, err := composer.LoadRuntimeImages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const zero = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	a := ri.Images["sealed-agent"]
+	a.Digest = zero
+	a.Unbuilt = true
+	a.Ref = ri.Registry + "/sealed-agent@" + zero
+	return ri
 }
 
 func TestPlanWithoutReservedIP(t *testing.T) {

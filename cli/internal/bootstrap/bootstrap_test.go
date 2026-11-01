@@ -43,7 +43,7 @@ func TestValidate(t *testing.T) {
 		"platform sa":   func(p *Params) { p.PlatformSA = "someone@gmail.com" },
 		"own sa":        func(p *Params) { p.PlatformSA = "sealed-platform@acme-prod-4417.iam.gserviceaccount.com" },
 		"tag image":     func(p *Params) { p.KeyBrokerImage = "ghcr.io/sealedtempo/sealed-key-broker:latest" },
-		"placeholder":   func(p *Params) { p.KeyBrokerImage = DefaultKeyBrokerImage },
+		"placeholder":   func(p *Params) { p.KeyBrokerImage = "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("0", 64) },
 		"http rpc":      func(p *Params) { p.TempoRPC = "http://rpc.tempo.xyz" },
 		"no registries": func(p *Params) { p.Registries = chain.Addresses{} },
 	} {

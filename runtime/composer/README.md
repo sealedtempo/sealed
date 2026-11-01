@@ -1,6 +1,6 @@
 # runtime/composer
 
-The deterministic stack composer, version `1.5.0`. Given a public deployment config and the release bundles it names, it produces `app-compose.json` for dstack, whose sha256 is the `stackHash` that the customer's wallet approves, the key broker recomputes and `sealed verify` checks. One Go implementation is shared by the key broker, the CLI and sealed-verifierd (D-006).
+The deterministic stack composer, version `1.6.0`. Given a public deployment config and the release bundles it names, it produces `app-compose.json` for dstack, whose sha256 is the `stackHash` that the customer's wallet approves, the key broker recomputes and `sealed verify` checks. One Go implementation is shared by the key broker, the CLI and sealed-verifierd (D-006).
 
 This file is the authoritative contract for app fragments and for the composed stack: what a catalog package may declare, what the composer adds, and what the sidecars (sealed-agent, sealed-egress, Caddy, sealed-mpp-payer) can rely on. `docs/INTERFACES.md` sections 1, 2, 5, 6, 7, 12, 14 and 15 describe the same contract at a higher level; where they differ, this file, the integration brief (D-040 to D-050) and the hardening brief (D-058 to D-069) win, and the differences are listed at the end for the owner of INTERFACES.
 
@@ -189,7 +189,7 @@ Docker volumes (sidecar plumbing only): `sealed-bin` (envexec), and tmpfs volume
 CJSON, measured, mounted at `/etc/sealed/stack.json` and read by the agent from the booted app-compose:
 
 ```
-{ "schema": "sealed-stack/v1", "composerVersion": "1.5.0",
+{ "schema": "sealed-stack/v1", "composerVersion": "1.6.0",
   "apps": [ {
       "id", "appId", "releaseId", "version", "primaryService",
       "network": { "name": "app-<id>", "subnet": "172.30.<n>.0/24", "egress": "172.30.<n>.2", "agent": "172.30.<n>.3" },
@@ -269,7 +269,7 @@ Exactly `allowed_envs`, `docker_compose_file`, `gateway_enabled`, `key_provider`
 
 ## Determinism and versioning
 
-Every output is built from sorted inputs and serialized as CJSON or rendered from fixed templates; map iteration order never reaches the output. `composer.Version` (`1.5.0`) must equal `config.composerVersion`. Any change to composed bytes (this code, `runtime-images.json`, the Caddy template, the host rules) needs a new version, because approved stacks pin the old bytes. `testdata/golden/` pins the fixture stack's outputs (stackHash `0xfcb620df...524d` for composer 1.5.0): when it fails on purpose, bump `Version`, then `go test ./runtime/composer -run Golden -update`; `-update` refuses to rewrite changed files while `summary.json` still records the current `Version`. The golden files double as cross-implementation vectors; consumers that copy them (`runtime/agent/test/fixtures/composer-golden`) copy them again. A bump also changes every fixture that names the version (`testdata/config.json`, `scripts/docker-checks/fixtures/config.json`, `docs/INTERFACES.md`). A Go fuzz seed that still names the old version is refused at the version check before the code it was added for, and nothing else fails, so `TestFuzzSeedsNameThisComposer` reads every `testdata/fuzz/Fuzz*/` corpus in the repository and names each such seed.
+Every output is built from sorted inputs and serialized as CJSON or rendered from fixed templates; map iteration order never reaches the output. `composer.Version` (`1.6.0`) must equal `config.composerVersion`. Any change to composed bytes (this code, `runtime-images.json`, the Caddy template, the host rules) needs a new version, because approved stacks pin the old bytes. `testdata/golden/` pins the fixture stack's outputs (stackHash `0x56b09be8...9023` for composer 1.6.0): when it fails on purpose, bump `Version`, then `go test ./runtime/composer -run Golden -update`; `-update` refuses to rewrite changed files while `summary.json` still records the current `Version`. The golden files double as cross-implementation vectors; consumers that copy them (`runtime/agent/test/fixtures/composer-golden`) copy them again. A bump also changes every fixture that names the version (`testdata/config.json`, `scripts/docker-checks/fixtures/config.json`, `docs/INTERFACES.md`). A Go fuzz seed that still names the old version is refused at the version check before the code it was added for, and nothing else fails, so `TestFuzzSeedsNameThisComposer` reads every `testdata/fuzz/Fuzz*/` corpus in the repository and names each such seed.
 
 ## Lint
 

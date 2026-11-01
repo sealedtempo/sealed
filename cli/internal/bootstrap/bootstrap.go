@@ -26,9 +26,9 @@ import (
 
 // DefaultKeyBrokerImage is the key broker image bootstrap deploys: the sealed-key-broker entry of
 // catalog/tools/release/extra-images.json, which the runtime image workflow pins (TestDefaultKeyBrokerImagePin keeps
-// the two equal). The digest stays all zeros until the release workflow publishes the image; bootstrap refuses it
-// (pass --key-broker-image).
-const DefaultKeyBrokerImage = "ghcr.io/sealedtempo/sealed-key-broker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+// the two equal). Before the image is published the digest is all zeros and bootstrap refuses it (pass
+// --key-broker-image); once pinned, bootstrap deploys it without a flag.
+const DefaultKeyBrokerImage = "ghcr.io/sealedtempo/sealed-key-broker@sha256:f1b1e8e85949471e83f3656f1072aaac97f982c409ebb34c0bc86123177d3084"
 
 // Params are the module variables.
 type Params struct {

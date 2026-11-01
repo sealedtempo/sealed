@@ -732,10 +732,8 @@ relayOwner: "0x00000000000000000000000000000000000000b1"
 	if in := h.compute.instances["sealed-demo"]; deploy.DeploymentIDOf(in) != sum["deploymentId"] || len(h.compute.disks) != 1 {
 		t.Fatalf("after the upgrade: %v disks %d", deploy.DeploymentIDOf(in), len(h.compute.disks))
 	}
-	// Production mode refuses unbuilt images, and the dev flag needs SEALED_DEV_SIM.
-	if code, _, errs := h.run("deploy", "--config", stack, "--skip-secrets-check"); code != ExitFailed || !strings.Contains(errs, "unbuilt") {
-		t.Fatalf("unbuilt: %d %s", code, errs)
-	}
+	// The dev flag needs SEALED_DEV_SIM. (A pinned repo composes only built stacks, so production mode's
+	// refusal of unbuilt images is covered by deploy.TestDeployRefusesUnbuiltImages and composer.TestRequireBuilt.)
 	delete(h.env, "SEALED_DEV_SIM")
 	if code, _, _ := h.run("deploy", "--config", stack, "--dev-allow-unbuilt"); code != ExitUsage {
 		t.Fatal("dev flag without SEALED_DEV_SIM")
@@ -799,8 +797,8 @@ func TestBootstrapPrintsConnectionToken(t *testing.T) {
 	args := []string{"--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1",
 		"--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com",
 		"--key-broker-image", "ghcr.io/sealedtempo/sealed-key-broker@sha256:" + strings.Repeat("ab", 32), "--work-dir", work}
-	// The default key broker image is a placeholder until it is published.
-	if code, _, errs := h.run("bootstrap", "--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1", "--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com"); code != ExitUsage || !strings.Contains(errs, "not published yet") {
+	// An unpublished (all-zero digest) key broker image is refused.
+	if code, _, errs := h.run("bootstrap", "--project", "acme-prod-4417", "--customer-address", "0x00000000000000000000000000000000000000c1", "--platform-sa", "sealed-platform@sealed-platform-1234.iam.gserviceaccount.com", "--key-broker-image", "ghcr.io/sealedtempo/sealed-key-broker@sha256:"+strings.Repeat("0", 64)); code != ExitUsage || !strings.Contains(errs, "not published yet") {
 		t.Fatalf("placeholder: %d %s", code, errs)
 	}
 	// Not a terminal and no --yes.

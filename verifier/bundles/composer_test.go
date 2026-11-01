@@ -69,8 +69,8 @@ func TestComposerMatchesRuntimeComposer(t *testing.T) {
 	if !bytes.Equal(out.AppCompose, want.AppCompose) || out.StackHash != want.StackHash || out.ConfigHash != want.ConfigHash || out.DeploymentID != want.DeploymentID {
 		t.Fatal("bundles.Composer differs from runtime/composer")
 	}
-	if strings.Join(out.Unbuilt, ",") != strings.Join(want.Unbuilt, ",") || len(out.Unbuilt) == 0 {
-		t.Fatalf("unbuilt %v, want %v (the fixture sidecars have zero digests)", out.Unbuilt, want.Unbuilt)
+	if strings.Join(out.Unbuilt, ",") != strings.Join(want.Unbuilt, ",") {
+		t.Fatalf("unbuilt %v, want %v", out.Unbuilt, want.Unbuilt)
 	}
 	// A second composition is served from the cache.
 	hits := s.srv.TotalHits()

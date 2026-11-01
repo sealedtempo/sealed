@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -496,11 +495,34 @@ func TestComposeRejectsForeignRegistry(t *testing.T) {
 	}
 }
 
+// unbuiltRuntimeImages returns the embedded set with one sidecar reset to the
+// placeholder digest. A released repo pins every sidecar (TestRuntimeImages),
+// so tests that still need an unbuilt image build one explicitly.
+func unbuiltRuntimeImages(t *testing.T) *RuntimeImages {
+	t.Helper()
+	ri, err := LoadRuntimeImages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := ri.Images[imgAgent]
+	agent.Digest = zeroDigest
+	agent.Unbuilt = true
+	agent.Ref = ri.Registry + "/" + imgAgent + "@" + zeroDigest
+	return ri
+}
+
 func TestRequireBuilt(t *testing.T) {
 	cfg, bundles := fixtureStack(t)
-	r := mustCompose(t, cfg, bundles...)
-	err := r.RequireBuilt()
-	if err == nil || !strings.Contains(err.Error(), "runtime/sealed-agent") {
+	// Every sidecar is pinned in the repo, so the real stack is fully built.
+	if err := mustCompose(t, cfg, bundles...).RequireBuilt(); err != nil {
+		t.Fatalf("built stack rejected: %v", err)
+	}
+	// With an unbuilt sidecar, release flows must still refuse the stack.
+	u, err := ComposeWith(cfg, bundles, unbuiltRuntimeImages(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := u.RequireBuilt(); err == nil || !strings.Contains(err.Error(), "runtime/sealed-agent") {
 		t.Fatalf("unbuilt stack passed: %v", err)
 	}
 	if err := (&Result{}).RequireBuilt(); err != nil {
@@ -1040,12 +1062,12 @@ func TestRuntimeImages(t *testing.T) {
 	if got := ri.Images["caddy"].Ref; got != "ghcr.io/sealedtempo/caddy@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f" {
 		t.Errorf("caddy ref %s", got)
 	}
-	unbuilt := ri.Unbuilt()
-	sort.Strings(unbuilt)
-	if strings.Join(unbuilt, ",") != "sealed-agent,sealed-egress,sealed-init,sealed-mpp-payer,sealed-verifierd" {
-		t.Errorf("unbuilt %v", unbuilt)
+	// A released repo pins every sidecar; none stays at the placeholder.
+	if unbuilt := ri.Unbuilt(); len(unbuilt) != 0 {
+		t.Errorf("unbuilt sidecars in a pinned repo: %v", unbuilt)
 	}
-	bad := bytes.Replace(runtimeImagesJSON, []byte(`"unbuilt": true`), []byte(`"unbuilt": false`), 1)
+	// zero digest iff the unbuilt flag: a zero digest without the flag is refused.
+	bad := bytes.Replace(runtimeImagesJSON, []byte(ri.Images[imgAgent].Digest), []byte(zeroDigest), 1)
 	if _, err := parseRuntimeImages(bad); err == nil {
 		t.Error("zero digest without unbuilt accepted")
 	}

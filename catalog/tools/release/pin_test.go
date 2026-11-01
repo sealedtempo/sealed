@@ -44,7 +44,8 @@ func TestOrderedJSONRoundTrip(t *testing.T) {
 }
 
 func TestPinManifestKeepsEverythingElse(t *testing.T) {
-	src := readFile(t, filepath.Join(repoRoot(t), CatalogDir, "llm-gateway/manifest.yaml"))
+	// The real manifest ships pinned once released; reset its build digests so this exercises the unbuilt-to-pinned edit.
+	src := unbuiltManifest(readFile(t, filepath.Join(repoRoot(t), CatalogDir, "llm-gateway/manifest.yaml")))
 	digest := "sha256:" + strings.Repeat("ab", 32)
 	out, old, err := pinManifest([]byte(src), "local-model", digest)
 	if err != nil {

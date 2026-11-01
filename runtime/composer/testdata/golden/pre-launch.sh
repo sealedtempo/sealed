@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sealed host rules v3 (composer 1.5.0). Measured into stackHash.
+# Sealed host rules v3 (composer 1.6.0). Measured into stackHash.
 # FORWARD: traffic forwarded from the edge network (source subnet or edge
 # bridge) to anything outside it is dropped unless it comes from
 # sealed-egress; replies to inbound connections to Caddy are allowed.

@@ -90,7 +90,7 @@ Never contains secrets. Measured: it is an input to the composer, so it is cover
   "customer": "0x…",
   "salt": "0x…32 bytes",
   "imageId": "0x…",
-  "composerVersion": "1.5.0",
+  "composerVersion": "1.6.0",
   "apps": [ { "id": "llm-gateway", "releaseId": "0x…" } ],
   "hostnames": { "scheme": "sslip", "ip": "34.1.2.3" },
   "egressAdditions": { "scraper": ["example.com:443"] },
@@ -110,7 +110,7 @@ Never contains secrets. Measured: it is an input to the composer, so it is cover
 }
 ```
 
-- `composerVersion` must equal the composer's `Version` (`1.5.0`, `sealed-compose version` prints it); a composer refuses configs of any other version, so the key broker, verifierd and the CLI recompute only stacks of their own composer version.
+- `composerVersion` must equal the composer's `Version` (`1.6.0`, `sealed-compose version` prints it); a composer refuses configs of any other version, so the key broker, verifierd and the CLI recompute only stacks of their own composer version.
 - Parsing is strict: unknown fields, keys in another case, duplicate keys, floats and mixed-case hex are refused. Bounds: at most 128 KiB of JSON, 16 apps, 64 egress additions per app and 256 in total, 32 VPC ranges.
 - `apps` sorted by `id`, unique. `egressAdditions` entries are `host:port`, host may start with `*.` for one-label wildcards (never over an ICANN public suffix such as `co.uk`, and no all-digit last label: every entry must pass sealed-egress's own entry rules, section 12); only for apps in the stack whose egress policy has `customer_additions_allowed: true`. IPv4 literals must be public unicast; RFC 1918 literals are accepted only inside `allowedVpcRanges`.
 - `allowedVpcRanges` lie wholly in RFC 1918 space and overlap neither of the VM ranges (`composer.VMRanges`): `172.30.0.0/16`, which holds `apps`, the app networks 172.30.1.0/24 to 172.30.16.0/24 and the `verifier` network 172.30.250.0/24, and `172.31.0.0/24` (`edge`). They do not open those ranges to every app: sealed-egress dials a VPC address only for an RFC 1918 literal in the calling app's own entries, and never for a hostname (section 12).
@@ -146,7 +146,7 @@ Inputs: public config, release bundles (by releaseId, fetched by the release ass
   `{"allowed_envs":[],"docker_compose_file":"<CJSON compose>","gateway_enabled":false,"key_provider":"tpm","key_provider_id":"","kms_enabled":false,"local_key_provider_enabled":false,"manifest_version":2,"name":"sealed-<first 8 hex of configHash>","no_instance_id":false,"pre_launch_script":"<host rules, section 15>","public_logs":false,"public_sysinfo":false,"public_tcbinfo":true,"runner":"docker-compose","secure_time":false,"storage_fs":"ext4"}`.
   No `init_script` or `features`. Unmeasured host inputs (`.sys-config.json`, `.instance_info`, `app_id`) never drive any decision. `secure_time` stays false (D-073): the bootstrap firewall allows egress on 443 and 53 only, so NTS cannot work; attestedAt is bound in report_data and checked against the oracle's clock and the block time instead.
 - RTMR3 (event log v1): each event digest is `sha384(le32(0x08000001) || ":" || name || ":" || payload)`; `RTMR3 = sha384(RTMR3 || digest)` from 48 zero bytes. Verifiers require exactly this sequence and reject unknown events: `system-preparing`, `app-id`(20 bytes), `compose-hash`(32, equals stackHash), `gpu-policy-hash`(32, `44136fa3...aff8a` for no policy), `instance-id`(20), `boot-mr-done`, `key-provider`(`{"name":"tpm","id":""}`), `storage-fs`(`ext4`), `storage-encrypted`(`1`), `system-ready`. Golden vectors: `runtime/composer/testdata/dstack/`.
-- Determinism: any change to composed bytes (composer code, `runtime-images.json`, the Caddy template, the host rules) needs a new composer version, because approved stacks pin the old bytes. `runtime/composer/testdata/golden/` pins the fixture stack (composer 1.5.0: stackHash `0xfcb620df245051acd1f9b13b7e4cf8a585ecb683920671d56748d5d45497524d`); consumers that copy the goldens (`runtime/agent/test/fixtures/composer-golden`) copy them again, and an agent test fails when the copy differs by one byte.
+- Determinism: any change to composed bytes (composer code, `runtime-images.json`, the Caddy template, the host rules) needs a new composer version, because approved stacks pin the old bytes. `runtime/composer/testdata/golden/` pins the fixture stack (composer 1.6.0: stackHash `0x56b09be84028f99d35c18617033e85d7e82235b911a3fc334869844c8e0c9023`); consumers that copy the goldens (`runtime/agent/test/fixtures/composer-golden`) copy them again, and an agent test fails when the copy differs by one byte.
 
 ## 7. Release bundle and release assets
 
@@ -478,7 +478,7 @@ Measured inline configs: `sealed-config` (the normalized config, `/etc/sealed/co
 `sealed-stack/v1` (CJSON, measured, read by the agent from the booted app-compose):
 
 ```
-{ "schema": "sealed-stack/v1", "composerVersion": "1.5.0",
+{ "schema": "sealed-stack/v1", "composerVersion": "1.6.0",
   "apps": [ { "id", "appId", "releaseId", "version", "primaryService",
       "network": { "name": "app-<id>", "subnet": "172.30.<n>.0/24", "egress": "172.30.<n>.2", "agent": "172.30.<n>.3" },
       "services": [ { "name", "ip" /* app-network address */, "ips" /* every address, sorted */,

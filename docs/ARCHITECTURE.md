@@ -6,7 +6,7 @@ Your data stays in your cloud account. Apps run in confidential VMs, we have no 
 
 Limits: confidential VMs do not stop physical attacks on the server, bugs inside apps, or a cloud provider with physical access.
 
-This document describes the system as built on `ws/integration` after merge C and the release-candidate round (composer 1.5.0), including the hardening decisions D-058 to D-069 and D-073. Byte-level formats are in [INTERFACES.md](INTERFACES.md); the fragment and composed-stack contract is [runtime/composer/README.md](../runtime/composer/README.md), which wins where the two differ. Decisions are cited as D-0xx.
+This document describes the system as built on `ws/integration` after merge C and the release-candidate round (composer 1.6.0), including the hardening decisions D-058 to D-069 and D-073. Byte-level formats are in [INTERFACES.md](INTERFACES.md); the fragment and composed-stack contract is [runtime/composer/README.md](../runtime/composer/README.md), which wins where the two differ. Decisions are cited as D-0xx.
 
 ## Actors
 
