@@ -23,14 +23,14 @@ images:
   # Built from runtime/relay (mppx front and provider sidecars). Digest pinned after the image workflow builds it.
   - name: relay
     source: build:images/relay
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:717e744350f3bfc12b7a707d073ce64ccbaedaf421ab636c766cd62ce9823e2d
     platform: linux/amd64
     license_spdx: Apache-2.0
   # Derived from ghcr.io/berriai/litellm-database:v1.106.5@sha256:0d10536ce596ef74bf5bbd3244310bb11c2cadd8f92d2f22d587cc0b9fc16e01
   # with enterprise/ and litellm_enterprise removed, flattened, plus the relay model config.
   - name: litellm-relay
     source: build:images/litellm-relay
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:6433d98b9f4d2ece2d818efde8e649e3dcb5965aac5344e9756ba9df1167164b
     platform: linux/amd64
     license_spdx: MIT
   - name: postgres
