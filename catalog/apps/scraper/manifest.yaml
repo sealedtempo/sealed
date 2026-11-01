@@ -24,7 +24,7 @@ images:
   # Playwright Firefox). The digest is pinned by a follow-up PR once the image is built (D-028).
   - name: scraper-runner-playwright
     source: build:images/scraper-runner-playwright
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:a0193672f5b7560cd02b8b38bb9625e6036897f8a8e198d5c945dd401837484e
     platform: linux/amd64
     license_spdx: Apache-2.0 AND MPL-2.0
   # postgres:17.11-alpine index; linux/amd64 child
