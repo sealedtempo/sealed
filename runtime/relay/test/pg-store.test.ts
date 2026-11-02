@@ -39,6 +39,10 @@ describe.skipIf(!postgresAvailable())('PgStore (throwaway PostgreSQL 17 cluster)
   beforeAll(async () => {
     cluster = await startCluster()
     pool = new pg.Pool({ connectionString: cluster.url, max: 8 })
+    // A pooled client can receive 57P01 (admin shutdown) when the throwaway cluster is torn down with
+    // pg_ctl fast stop right after pool.end(); swallow it so the benign teardown race is not an unhandled
+    // error that fails the run (production attaches the same handler in main.ts).
+    pool.on('error', () => {})
     db = new PgStore(pool)
     await db.migrate()
     await db.migrate() // idempotent
@@ -112,6 +116,7 @@ describe.skipIf(!postgresAvailable())('PgStore (throwaway PostgreSQL 17 cluster)
 
     // "restart": a fresh pool and store over the same database
     const pool2 = new pg.Pool({ connectionString: cluster.url })
+    pool2.on('error', () => {})
     const db2 = new PgStore(pool2)
     const state = (await db2.get(CHANNEL)) as { spent: bigint; highestVoucher: { cumulativeAmount: bigint } }
     expect(state.spent).toBe(100_000n)
