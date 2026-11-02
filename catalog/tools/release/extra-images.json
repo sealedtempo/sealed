@@ -3,7 +3,7 @@
   "registry": "ghcr.io/sealedtempo",
   "images": {
     "sealed-key-broker": {
-      "digest": "sha256:f1b1e8e85949471e83f3656f1072aaac97f982c409ebb34c0bc86123177d3084",
+      "digest": "sha256:4654747b5a85673501ac1fe002d3e8b3848f6a055404ba0e49ed61ca3e649f9e",
       "source": "build:key-broker",
       "license_spdx": "Apache-2.0"
     }
