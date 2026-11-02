@@ -30,7 +30,7 @@ on:
     paths:
       - catalog/apps/*/manifest.yaml
       - catalog/apps/*/*/manifest.yaml
-      - runtime/composer/runtime-images.json
+      - runtime/composer/rimembed/runtime-images.json
       - catalog/tools/release/images.yaml
 permissions: {}
 concurrency:

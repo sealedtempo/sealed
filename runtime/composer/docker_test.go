@@ -693,7 +693,7 @@ func composeDockerChecksFixture(t *testing.T) *Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Compose(cfg, bundles)
+	res, err := composeEmbedded(cfg, bundles)
 	if err != nil {
 		t.Fatal(err)
 	}

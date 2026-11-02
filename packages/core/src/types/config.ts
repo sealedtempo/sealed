@@ -38,6 +38,14 @@ const ADDRESS = /^0x[0-9a-f]{40}$/;
 const DECIMAL = /^(0|[1-9][0-9]{0,77})$/;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 
+/** config.runtimeImages: the runtime sidecar image set (runtime-images.json), part of configHash (D-097). */
+export const RUNTIME_IMAGES_SCHEMA = "sealed-runtime-images/v1";
+/** The sidecar images every runtime image set must name (composer runtimeimages.go). */
+export const RUNTIME_IMAGE_NAMES = ["caddy", "sealed-agent", "sealed-egress", "sealed-init", "sealed-mpp-payer", "sealed-verifierd"] as const;
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const DIGEST_REF = /^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(\/[a-z0-9][a-z0-9._-]*)+@sha256:[0-9a-f]{64}$/;
+const ZERO_DIGEST = `sha256:${"0".repeat(64)}`;
+
 // --- decoding: the shapes encoding/json accepts into composer.Config, with the composer's exact key names ----------
 
 const gStr = z.string().nullish();
@@ -87,6 +95,13 @@ const decodeSchema = z.strictObject({
   settlement: z.strictObject({ mode: gStr, intervalMinutes: gInt, gracePeriodMinutes: gInt, spendLimitPerDay: gStr }).nullish(),
   relayOwner: gStr,
   debug: gBool,
+  runtimeImages: z
+    .strictObject({
+      schema: gStr,
+      registry: gStr,
+      images: gMap(z.strictObject({ digest: gStr, source: gStr, license_spdx: gStr, unbuilt: gBool, notes: gStr }).nullish()),
+    })
+    .nullish(),
 });
 
 type Decoded = z.output<typeof decodeSchema>;
@@ -109,6 +124,11 @@ interface GoConfig {
   settlement: { mode: string; intervalMinutes: number; gracePeriodMinutes: number; spendLimitPerDay: string };
   relayOwner: string;
   debug: boolean;
+  runtimeImages: {
+    schema: string;
+    registry: string;
+    images: Record<string, { digest: string; source: string; license_spdx: string; unbuilt: boolean; notes: string }>;
+  };
 }
 
 const s = (v: string | null | undefined) => v ?? "";
@@ -138,6 +158,17 @@ function toGo(d: Decoded): GoConfig {
     settlement: { mode: s(st?.mode), intervalMinutes: st?.intervalMinutes ?? 0, gracePeriodMinutes: st?.gracePeriodMinutes ?? 0, spendLimitPerDay: s(st?.spendLimitPerDay) },
     relayOwner: s(d.relayOwner),
     debug: d.debug ?? false,
+    runtimeImages: {
+      schema: s(d.runtimeImages?.schema),
+      registry: s(d.runtimeImages?.registry),
+      images: strMap(d.runtimeImages?.images, (img) => ({
+        digest: s(img?.digest),
+        source: s(img?.source),
+        license_spdx: s(img?.license_spdx),
+        unbuilt: img?.unbuilt ?? false,
+        notes: s(img?.notes),
+      })),
+    },
   };
 }
 
@@ -156,6 +187,8 @@ function validate(c: GoConfig, devSim: boolean): Problem | undefined {
   if (c.schema !== CONFIG_SCHEMA) return p(["schema"], `must be ${JSON.stringify(CONFIG_SCHEMA)}`);
   if (c.chainId <= 0) return p(["chainId"], "must be positive");
   if (c.composerVersion === "") return p(["composerVersion"], "must name the composer version");
+  const ri = validateRuntimeImages(c);
+  if (ri) return ri;
   const addresses: [(string | number)[], string][] = [
     [["customer"], c.customer],
     [["feeToken"], c.feeToken],
@@ -226,6 +259,27 @@ function validate(c: GoConfig, devSim: boolean): Problem | undefined {
   if (st.intervalMinutes <= 0 || st.gracePeriodMinutes < 0) return p(["settlement"], "intervalMinutes must be positive and gracePeriodMinutes non-negative");
   if (!DECIMAL.test(st.spendLimitPerDay)) return p(["settlement", "spendLimitPerDay"], "must be a decimal string of base units");
   return validateComposable(c);
+}
+
+/** composer RuntimeImagesFromConfig + finalizeRuntimeImages: config.runtimeImages names every sidecar by a valid digest (D-097). */
+function validateRuntimeImages(c: GoConfig): Problem | undefined {
+  const ri = c.runtimeImages;
+  // Optional across composer versions (like composerVersion, the schema cannot know which version this is):
+  // pre-D-097 stacks carry no runtime image set. The Go composer, which knows it is 1.7+, requires it; here it is
+  // validated only when present. An absent set normalizes away (normalize), so an old config's configHash is unchanged.
+  if (ri.schema === "" && ri.registry === "" && Object.keys(ri.images).length === 0) return undefined;
+  if (ri.schema !== RUNTIME_IMAGES_SCHEMA) return { path: ["runtimeImages"], message: `unknown schema ${JSON.stringify(ri.schema)}` };
+  for (const name of RUNTIME_IMAGE_NAMES) {
+    const img = ri.images[name];
+    if (!img) return { path: ["runtimeImages"], message: `missing ${name}` };
+    if (!DIGEST.test(img.digest)) return { path: ["runtimeImages"], message: `${name}: invalid digest` };
+    if ((img.digest === ZERO_DIGEST) !== img.unbuilt) return { path: ["runtimeImages"], message: `${name}: unbuilt must be true exactly when the digest is all zeros` };
+  }
+  for (const name of Object.keys(ri.images)) {
+    const ref = `${ri.registry}/${name}@${(ri.images[name] as { digest: string }).digest}`;
+    if (!DIGEST_REF.test(ref)) return { path: ["runtimeImages"], message: `${name}: invalid reference ${JSON.stringify(ref)}` };
+  }
+  return undefined;
 }
 
 /** config.go validateHostnames. */
@@ -305,6 +359,12 @@ export type SealedConfig = {
   relayOwner?: string;
   /** Container logs on (`local` driver) when true; part of configHash, so it is always present (composer 1.2). */
   debug: boolean;
+  /** The runtime sidecar image set the composer pins; part of configHash (composer 1.7+, D-097). Absent on older stacks. */
+  runtimeImages?: {
+    schema: string;
+    registry: string;
+    images: Record<string, { digest: string; source: string; license_spdx: string; unbuilt?: boolean; notes?: string }>;
+  };
 };
 
 function normalize(c: GoConfig): SealedConfig {
@@ -330,6 +390,24 @@ function normalize(c: GoConfig): SealedConfig {
     settlement: c.settlement as SealedConfig["settlement"],
     ...(c.relayOwner !== "" ? { relayOwner: c.relayOwner } : {}),
     debug: c.debug,
+    // Present only on composer 1.7+ stacks (D-097); omitted otherwise so an older config's configHash is unchanged.
+    ...(Object.keys(c.runtimeImages.images).length > 0 || c.runtimeImages.schema !== ""
+      ? {
+          runtimeImages: {
+            schema: c.runtimeImages.schema,
+            registry: c.runtimeImages.registry,
+            images: Object.fromEntries(
+              Object.keys(c.runtimeImages.images).map((name) => {
+                const img = c.runtimeImages.images[name] as { digest: string; source: string; license_spdx: string; unbuilt: boolean; notes: string };
+                return [
+                  name,
+                  { digest: img.digest, source: img.source, license_spdx: img.license_spdx, ...(img.unbuilt ? { unbuilt: true } : {}), ...(img.notes !== "" ? { notes: img.notes } : {}) },
+                ];
+              }),
+            ),
+          },
+        }
+      : {}),
   };
 }
 

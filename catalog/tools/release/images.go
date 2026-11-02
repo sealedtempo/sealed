@@ -16,7 +16,7 @@ import (
 
 const (
 	// RuntimeImagesFile is the composer's sidecar image list.
-	RuntimeImagesFile = "runtime/composer/runtime-images.json"
+	RuntimeImagesFile = "runtime/composer/rimembed/runtime-images.json"
 	// BuildsFile holds the build context of every image the catalog builds and the mirror policy.
 	BuildsFile = "catalog/tools/release/images.yaml"
 	// ExtraImagesFile pins built images that nothing else references (the key broker).

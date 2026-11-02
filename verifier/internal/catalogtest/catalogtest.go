@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	"github.com/sealedtempo/sealed/verifier/bundles"
 	"github.com/sealedtempo/sealed/verifier/chain"
 )
@@ -251,6 +252,11 @@ func Config(t testing.TB, p ConfigParams, bs []*composer.Bundle) []byte {
 		Settlement: composer.Settlement{Mode: "access-key", IntervalMinutes: 60, GracePeriodMinutes: 1440, SpendLimitPerDay: "2000000"},
 		RelayOwner: "0x00000000000000000000000000000000000000b1",
 	}
+	ri, err := rimembed.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.RuntimeImages = ri
 	for _, b := range bs {
 		c.Apps = append(c.Apps, composer.ConfigApp{ID: b.Manifest.ID, ReleaseID: b.ReleaseID.Hex()})
 	}

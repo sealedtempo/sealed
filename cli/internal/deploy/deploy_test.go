@@ -21,6 +21,7 @@ import (
 	"github.com/sealedtempo/sealed/cli/internal/testkit"
 	"github.com/sealedtempo/sealed/cli/internal/token"
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	"github.com/sealedtempo/sealed/verifier/chain"
 )
 
@@ -397,7 +398,7 @@ func TestDeployRefusesUnbuiltImages(t *testing.T) {
 // unbuiltRuntimeImages returns the embedded sidecar set with sealed-agent reset to the placeholder digest.
 func unbuiltRuntimeImages(t *testing.T) *composer.RuntimeImages {
 	t.Helper()
-	ri, err := composer.LoadRuntimeImages()
+	ri, err := rimembed.Load()
 	if err != nil {
 		t.Fatal(err)
 	}

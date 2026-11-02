@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 )
 
 func repoRootDir(t testing.TB) string {
@@ -34,7 +35,7 @@ func repoRootDir(t testing.TB) string {
 
 func notesBundle(t testing.TB) *composer.Bundle {
 	t.Helper()
-	ri, err := composer.LoadRuntimeImages()
+	ri, err := rimembed.Load()
 	if err != nil {
 		t.Fatal(err)
 	}

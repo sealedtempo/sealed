@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/bundles"
 	"github.com/sealedtempo/sealed/verifier/chain"
@@ -62,7 +63,7 @@ func TestComposerMatchesRuntimeComposer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := composer.Compose(cfg, s.bundles)
+	want, err := rimembed.Compose(cfg, s.bundles)
 	if err != nil {
 		t.Fatal(err)
 	}

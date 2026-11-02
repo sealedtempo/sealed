@@ -18,7 +18,7 @@ func TestComposedAllowEntriesLoadInEgress(t *testing.T) {
 	for _, entry := range append(slices.Clone(refused), accepted...) {
 		cfg, bundles := fixtureStack(t)
 		cfg.EgressAdditions = map[string][]string{"notes": {entry}}
-		r, err := Compose(cfg, bundles)
+		r, err := composeEmbedded(cfg, bundles)
 		if slices.Contains(refused, entry) {
 			if err == nil {
 				t.Errorf("%s: composed (stackHash %x), but sealed-egress refuses it", entry, r.StackHash[:4])

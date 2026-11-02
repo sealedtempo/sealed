@@ -308,12 +308,12 @@ func TestSameAs(t *testing.T) {
 		t.Errorf("sameAs not in stack info: %+v", si.Apps[1].Secrets)
 	}
 	// The referenced app must be in the stack.
-	if _, err := Compose(testConfig(ok), []*Bundle{ok}); err == nil || !strings.Contains(err.Error(), "not in this stack") {
+	if _, err := composeEmbedded(testConfig(ok), []*Bundle{ok}); err == nil || !strings.Contains(err.Error(), "not in this stack") {
 		t.Errorf("missing referenced app: %v", err)
 	}
 	// ...and declare the secret.
 	bad := notesWith("  - name: LLM_KEY\n    description: Gateway key\n    generate: none\n    same_as: llm-gateway/NOPE\n")
-	if _, err := Compose(testConfig(bad, gw), []*Bundle{bad, gw}); err == nil || !strings.Contains(err.Error(), "declares no secret") {
+	if _, err := composeEmbedded(testConfig(bad, gw), []*Bundle{bad, gw}); err == nil || !strings.Contains(err.Error(), "declares no secret") {
 		t.Errorf("undeclared referenced secret: %v", err)
 	}
 	// A required secret cannot point at an optional one.
@@ -327,7 +327,7 @@ func TestSameAs(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := notesWith("  - name: LLM_KEY\n    description: Relay key\n    generate: none\n    same_as: inference-relay/MPP_SECRET_KEY\n")
-	if _, err := Compose(testConfig(req, optRelay), []*Bundle{req, optRelay}); err == nil || !strings.Contains(err.Error(), "optional") {
+	if _, err := composeEmbedded(testConfig(req, optRelay), []*Bundle{req, optRelay}); err == nil || !strings.Contains(err.Error(), "optional") {
 		t.Errorf("required secret referencing an optional one: %v", err)
 	}
 	mustCompose(t, testConfig(req, relay), req, relay)
@@ -351,7 +351,7 @@ func TestSameAs(t *testing.T) {
 	}
 	chain := notesWith("  - name: LLM_KEY\n    description: x\n    generate: none\n    same_as: llm-gateway/RELAY_KEY\n")
 	cfg := testConfig(chain, gwChain, relay)
-	if _, err := Compose(cfg, []*Bundle{chain, gwChain, relay}); err == nil || !strings.Contains(err.Error(), "itself a reference") {
+	if _, err := composeEmbedded(cfg, []*Bundle{chain, gwChain, relay}); err == nil || !strings.Contains(err.Error(), "itself a reference") {
 		t.Errorf("chain: %v", err)
 	}
 }
@@ -395,7 +395,7 @@ func TestSameAsNeedsShareWith(t *testing.T) {
 		"two other apps too": "    share_with: [coding-agent, scraper]\n",
 	} {
 		g := gwWith(t, line)
-		_, err := Compose(testConfig(notes, g), []*Bundle{notes, g})
+		_, err := composeEmbedded(testConfig(notes, g), []*Bundle{notes, g})
 		if err == nil || !strings.Contains(err.Error(), "does not share MASTER_KEY with notes") {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -535,7 +535,7 @@ func TestRelayOnAttestHost(t *testing.T) {
 	cfg.Hostnames = Hostnames{Scheme: SchemeCustom, Domains: map[string]string{"attest": "attest.relay.example.com"}}
 	mustCompose(t, cfg, relay)
 	cfg.Hostnames.Domains["relay"] = "relay.example.com"
-	if _, err := Compose(cfg, []*Bundle{relay}); err == nil || !strings.Contains(err.Error(), "attest host") {
+	if _, err := composeEmbedded(cfg, []*Bundle{relay}); err == nil || !strings.Contains(err.Error(), "attest host") {
 		t.Errorf("relay domain accepted: %v", err)
 	}
 	// Manifest rules.
@@ -560,7 +560,7 @@ func TestRelayEndpointIsAttestOrigin(t *testing.T) {
 	for _, bad := range []string{"https://relay.sealed.example", "https://attest.relay.sealed.example/", "https://attest.relay.sealed.example/v1", "http://attest.relay.sealed.example"} {
 		c := *cfg
 		c.Endpoints.Relay = bad
-		if _, err := Compose(&c, bundles); err == nil || !strings.Contains(err.Error(), "endpoints.relay") {
+		if _, err := composeEmbedded(&c, bundles); err == nil || !strings.Contains(err.Error(), "endpoints.relay") {
 			t.Errorf("relay %q accepted: %v", bad, err)
 		}
 	}

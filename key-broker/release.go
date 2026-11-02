@@ -533,7 +533,14 @@ func (s *session) checkRecompute(ctx context.Context) *stop {
 	for i, b := range bundles {
 		s.bundles[refs[i].App] = b
 	}
-	res, err := composer.Compose(cfg, bundles)
+	// The runtime image set travels in the customer-approved config
+	// (config.runtimeImages, part of configHash); recompute against it so the key
+	// broker checks exactly the stack the customer approved (D-097).
+	ri, err := composer.RuntimeImagesFromConfig(cfg)
+	if err != nil {
+		return s.deny(CheckStackRecompute, ReasonComposeMismatch, "composer: "+err.Error(), data)
+	}
+	res, err := composer.ComposeWith(cfg, bundles, ri)
 	if err != nil {
 		return s.deny(CheckStackRecompute, ReasonComposeMismatch, "composer: "+err.Error(), data)
 	}

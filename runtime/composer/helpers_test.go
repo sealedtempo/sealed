@@ -70,9 +70,10 @@ func testConfig(bundles ...*Bundle) *Config {
 			DeploymentRegistry: "0x00000000000000000000000000000000000000e3",
 			FeeSplitter:        "0x00000000000000000000000000000000000000e4",
 		},
-		FeeToken:   "0x20c0000000000000000000000000000000000000",
-		Settlement: Settlement{Mode: "access-key", IntervalMinutes: 60, GracePeriodMinutes: 1440, SpendLimitPerDay: "2000000"},
-		RelayOwner: "0x00000000000000000000000000000000000000b1",
+		FeeToken:      "0x20c0000000000000000000000000000000000000",
+		Settlement:    Settlement{Mode: "access-key", IntervalMinutes: 60, GracePeriodMinutes: 1440, SpendLimitPerDay: "2000000"},
+		RelayOwner:    "0x00000000000000000000000000000000000000b1",
+		RuntimeImages: mustTestRuntimeImages(),
 	}
 	for _, b := range bundles {
 		c.Apps = append(c.Apps, ConfigApp{ID: b.Manifest.ID, ReleaseID: b.ReleaseID.Hex()})
@@ -83,7 +84,7 @@ func testConfig(bundles ...*Bundle) *Config {
 
 func mustCompose(t *testing.T, cfg *Config, bundles ...*Bundle) *Result {
 	t.Helper()
-	r, err := Compose(cfg, bundles)
+	r, err := composeEmbedded(cfg, bundles)
 	if err != nil {
 		t.Fatalf("compose: %v", err)
 	}

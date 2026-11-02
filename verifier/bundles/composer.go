@@ -89,7 +89,15 @@ func (c *Composer) Compose(ctx context.Context, in verify.ComposeInput) (*verify
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	res, err := composer.Compose(cfg, loaded)
+	// sealed-verifierd does not embed the runtime image set (it names verifierd's own image digest, D-097); the
+	// set travels in the customer-approved config (config.runtimeImages, part of configHash) and the composer
+	// recomputes against it. A tampered set recomputes a different app-compose.json, which fails the onchain
+	// stackHash check in the verify session (or the caller's own comparison for POST /v1/compose).
+	ri, err := composer.RuntimeImagesFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	res, err := composer.ComposeWith(cfg, loaded, ri)
 	if err != nil {
 		return nil, err
 	}

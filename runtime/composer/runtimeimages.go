@@ -1,7 +1,6 @@
 package composer
 
 import (
-	_ "embed"
 	"fmt"
 	"sort"
 
@@ -11,10 +10,14 @@ import (
 // Version is the composer version. It must equal config.composerVersion.
 // Any change to composed output (this code, runtime-images.json, the Caddy
 // templates or the host rules) requires a new version.
-const Version = "1.6.0"
+const Version = "1.7.0"
 
-//go:embed runtime-images.json
-var runtimeImagesJSON []byte
+// The runtime image set (runtime-images.json) is NOT embedded in this package.
+// It names sealed-verifierd's own image digest, and sealed-verifierd links this
+// package to recompute app-compose.json; embedding it here would make the
+// verifierd image digest depend on itself (an unreachable fixpoint, D-097).
+// Authoring tools load it from the rimembed subpackage; recompute consumers
+// receive it as an explicit argument to ComposeWith (D-097).
 
 // RuntimeImage is one sidecar image from runtime-images.json.
 type RuntimeImage struct {
@@ -44,39 +47,76 @@ const (
 	imgVerifierd = "sealed-verifierd"
 )
 
-// LoadRuntimeImages returns the embedded runtime image set.
-func LoadRuntimeImages() (*RuntimeImages, error) {
-	return parseRuntimeImages(runtimeImagesJSON)
-}
-
-func parseRuntimeImages(raw []byte) (*RuntimeImages, error) {
+// ParseRuntimeImages parses and validates a runtime-images.json document. It is
+// the one entry point for the runtime sidecar set: rimembed.Load decodes the
+// embedded file with it (authoring), and the recompute paths decode the set
+// they are handed with it before calling ComposeWith (D-097).
+func ParseRuntimeImages(raw []byte) (*RuntimeImages, error) {
 	var ri RuntimeImages
 	if err := strictDecodeJSON(raw, &ri); err != nil {
 		return nil, fmt.Errorf("runtime-images.json: %v", err)
 	}
+	if err := finalizeRuntimeImages(&ri); err != nil {
+		return nil, err
+	}
+	return &ri, nil
+}
+
+// finalizeRuntimeImages validates a decoded runtime image set and fills each
+// image's derived Name and Ref. It is shared by ParseRuntimeImages (which
+// decodes runtime-images.json) and RuntimeImagesFromConfig (which takes the set
+// already decoded from config.runtimeImages).
+func finalizeRuntimeImages(ri *RuntimeImages) error {
 	if ri.Schema != "sealed-runtime-images/v1" {
-		return nil, fmt.Errorf("runtime-images.json: unknown schema %q", ri.Schema)
+		return fmt.Errorf("runtime-images.json: unknown schema %q", ri.Schema)
 	}
 	for _, name := range []string{imgCaddy, imgAgent, imgEgress, imgInit, imgPayer, imgVerifierd} {
 		img, ok := ri.Images[name]
 		if !ok {
-			return nil, fmt.Errorf("runtime-images.json: missing %s", name)
+			return fmt.Errorf("runtime-images.json: missing %s", name)
 		}
 		if !digestRe.MatchString(img.Digest) {
-			return nil, fmt.Errorf("runtime-images.json: %s: invalid digest", name)
+			return fmt.Errorf("runtime-images.json: %s: invalid digest", name)
 		}
 		if (img.Digest == zeroDigest) != img.Unbuilt {
-			return nil, fmt.Errorf("runtime-images.json: %s: unbuilt must be true exactly when the digest is all zeros", name)
+			return fmt.Errorf("runtime-images.json: %s: unbuilt must be true exactly when the digest is all zeros", name)
 		}
 	}
 	for name, img := range ri.Images {
 		img.Name = name
 		img.Ref = ri.Registry + "/" + name + "@" + img.Digest
 		if !digestRefRe.MatchString(img.Ref) {
-			return nil, fmt.Errorf("runtime-images.json: %s: invalid reference %q", name, img.Ref)
+			return fmt.Errorf("runtime-images.json: %s: invalid reference %q", name, img.Ref)
 		}
 	}
-	return &ri, nil
+	return nil
+}
+
+// RuntimeImagesFromConfig validates config.runtimeImages and returns it as the
+// composer's runtime image set. The set travels in the customer-approved config
+// (part of configHash), so sealed-verifierd and the key broker recompute against
+// exactly the sidecars the customer approved without embedding the set that
+// names verifierd's own image digest (D-097). The authoring tools populate the
+// field from the rimembed embed before the stack is composed and approved.
+func RuntimeImagesFromConfig(cfg *Config) (*RuntimeImages, error) {
+	if cfg.RuntimeImages == nil || len(cfg.RuntimeImages.Images) == 0 {
+		return nil, fmt.Errorf("config: runtimeImages is required")
+	}
+	ri := cfg.RuntimeImages.clone()
+	if err := finalizeRuntimeImages(ri); err != nil {
+		return nil, fmt.Errorf("config: runtimeImages: %w", err)
+	}
+	return ri, nil
+}
+
+// clone returns a deep copy so finalize's derived fields never mutate the config.
+func (ri *RuntimeImages) clone() *RuntimeImages {
+	out := &RuntimeImages{Schema: ri.Schema, Registry: ri.Registry, Images: make(map[string]*RuntimeImage, len(ri.Images))}
+	for name, img := range ri.Images {
+		cp := *img
+		out.Images[name] = &cp
+	}
+	return out
 }
 
 // Unbuilt lists sidecar images whose digest is still the zero placeholder.

@@ -90,7 +90,7 @@ Never contains secrets. Measured: it is an input to the composer, so it is cover
   "customer": "0x…",
   "salt": "0x…32 bytes",
   "imageId": "0x…",
-  "composerVersion": "1.6.0",
+  "composerVersion": "1.7.0",
   "apps": [ { "id": "llm-gateway", "releaseId": "0x…" } ],
   "hostnames": { "scheme": "sslip", "ip": "34.1.2.3" },
   "egressAdditions": { "scraper": ["example.com:443"] },
@@ -106,11 +106,13 @@ Never contains secrets. Measured: it is an input to the composer, so it is cover
   "contracts": { "platformRegistry": "0x…", "appRegistry": "0x…", "deploymentRegistry": "0x…", "feeSplitter": "0x…" },
   "feeToken": "0x20c000000000000000000000b9537d11c60e8b50",
   "settlement": { "mode": "access-key", "intervalMinutes": 60, "gracePeriodMinutes": 1440, "spendLimitPerDay": "2000000" },
-  "relayOwner": "0x…"
+  "relayOwner": "0x…",
+  "runtimeImages": { "schema": "sealed-runtime-images/v1", "registry": "ghcr.io/sealedtempo", "images": { "caddy": { "digest": "sha256:…", "source": "…", "license_spdx": "…" }, "…": {} } }
 }
 ```
 
-- `composerVersion` must equal the composer's `Version` (`1.6.0`, `sealed-compose version` prints it); a composer refuses configs of any other version, so the key broker, verifierd and the CLI recompute only stacks of their own composer version.
+- `composerVersion` must equal the composer's `Version` (`1.7.0`, `sealed-compose version` prints it); a composer refuses configs of any other version, so the key broker, verifierd and the CLI recompute only stacks of their own composer version.
+- `runtimeImages` (composer 1.7.0+, D-097) is the runtime sidecar image set the composer pins into `app-compose.json` (the content of `rimembed/runtime-images.json`): `schema`, `registry` and `images` (each of `caddy`, `sealed-agent`, `sealed-egress`, `sealed-init`, `sealed-mpp-payer`, `sealed-verifierd` by `digest`/`source`/`license_spdx`). It is part of configHash, so the customer approves exactly these digests, and the key broker, verifierd and the CLI recompute against it rather than an embedded copy, so `sealed-verifierd`'s own image digest never has to appear inside the image that recomputes it. The authoring tools fill it from the embed; the TS twin, which can serve several composer versions, accepts a config without it (pre-1.7 stacks) and requires it only when present.
 - Parsing is strict: unknown fields, keys in another case, duplicate keys, floats and mixed-case hex are refused. Bounds: at most 128 KiB of JSON, 16 apps, 64 egress additions per app and 256 in total, 32 VPC ranges.
 - `apps` sorted by `id`, unique. `egressAdditions` entries are `host:port`, host may start with `*.` for one-label wildcards (never over an ICANN public suffix such as `co.uk`, and no all-digit last label: every entry must pass sealed-egress's own entry rules, section 12); only for apps in the stack whose egress policy has `customer_additions_allowed: true`. IPv4 literals must be public unicast; RFC 1918 literals are accepted only inside `allowedVpcRanges`.
 - `allowedVpcRanges` lie wholly in RFC 1918 space and overlap neither of the VM ranges (`composer.VMRanges`): `172.30.0.0/16`, which holds `apps`, the app networks 172.30.1.0/24 to 172.30.16.0/24 and the `verifier` network 172.30.250.0/24, and `172.31.0.0/24` (`edge`). They do not open those ranges to every app: sealed-egress dials a VPC address only for an RFC 1918 literal in the calling app's own entries, and never for a hostname (section 12).
@@ -126,7 +128,7 @@ Never contains secrets. Measured: it is an input to the composer, so it is cover
 Inputs: public config, release bundles (by releaseId, fetched by the release asset URL rule and checked against the onchain bundleHash, section 7), composer version. Output: `app-compose.json` (dstack) whose sha256 is stackHash.
 
 - `docker_compose_file` is the composed compose document serialized as CJSON (compose accepts JSON); project name `sealed`. Every `$` in measured text is written as `$$`, so compose interpolation never reads host environment.
-- All images by digest, exactly `<registry>/<name>@sha256:…` with the registry of `runtime/composer/runtime-images.json` (`ghcr.io/sealedtempo`, equal to `config/defaults.yaml` `catalog.registry`). Tags are rejected. Zero digests (images not built yet) compose but are listed in the result's `unbuilt`; release lint refuses them.
+- All images by digest, exactly `<registry>/<name>@sha256:…` with the registry of `runtime/composer/rimembed/runtime-images.json` (`ghcr.io/sealedtempo`, equal to `config/defaults.yaml` `catalog.registry`). Tags are rejected. Zero digests (images not built yet) compose but are listed in the result's `unbuilt`; release lint refuses them.
 - Secrets never appear. Apps read them from `/run/sealed/secrets/<appId>/<NAME>` (section 14) and wait for `/run/sealed/ready/ok`.
 - The composer writes the public config, the stack info, the egress config and the Caddyfiles into the compose as inline `configs` content, so they are measured.
 - Networks (D-041), all bridges with IPv6 off:
@@ -146,7 +148,7 @@ Inputs: public config, release bundles (by releaseId, fetched by the release ass
   `{"allowed_envs":[],"docker_compose_file":"<CJSON compose>","gateway_enabled":false,"key_provider":"tpm","key_provider_id":"","kms_enabled":false,"local_key_provider_enabled":false,"manifest_version":2,"name":"sealed-<first 8 hex of configHash>","no_instance_id":false,"pre_launch_script":"<host rules, section 15>","public_logs":false,"public_sysinfo":false,"public_tcbinfo":true,"runner":"docker-compose","secure_time":false,"storage_fs":"ext4"}`.
   No `init_script` or `features`. Unmeasured host inputs (`.sys-config.json`, `.instance_info`, `app_id`) never drive any decision. `secure_time` stays false (D-073): the bootstrap firewall allows egress on 443 and 53 only, so NTS cannot work; attestedAt is bound in report_data and checked against the oracle's clock and the block time instead.
 - RTMR3 (event log v1): each event digest is `sha384(le32(0x08000001) || ":" || name || ":" || payload)`; `RTMR3 = sha384(RTMR3 || digest)` from 48 zero bytes. Verifiers require exactly this sequence and reject unknown events: `system-preparing`, `app-id`(20 bytes), `compose-hash`(32, equals stackHash), `gpu-policy-hash`(32, `44136fa3...aff8a` for no policy), `instance-id`(20), `boot-mr-done`, `key-provider`(`{"name":"tpm","id":""}`), `storage-fs`(`ext4`), `storage-encrypted`(`1`), `system-ready`. Golden vectors: `runtime/composer/testdata/dstack/`.
-- Determinism: any change to composed bytes (composer code, `runtime-images.json`, the Caddy template, the host rules) needs a new composer version, because approved stacks pin the old bytes. `runtime/composer/testdata/golden/` pins the fixture stack (composer 1.6.0: stackHash `0x56b09be84028f99d35c18617033e85d7e82235b911a3fc334869844c8e0c9023`); consumers that copy the goldens (`runtime/agent/test/fixtures/composer-golden`) copy them again, and an agent test fails when the copy differs by one byte.
+- Determinism: any change to composed bytes (composer code, `runtime-images.json`, the Caddy template, the host rules) needs a new composer version, because approved stacks pin the old bytes. `runtime/composer/testdata/golden/` pins the fixture stack (composer 1.7.0: stackHash `0x35aac45a1eb9f339bf0fc8aafbefe08368f8a8bb28617e0f6d8ea0daffb7c0db`); consumers that copy the goldens (`runtime/agent/test/fixtures/composer-golden`) copy them again, and an agent test fails when the copy differs by one byte.
 
 ## 7. Release bundle and release assets
 
@@ -462,7 +464,7 @@ Added by the composer to every app service of app `n`:
 - `security_opt: [no-new-privileges:true]`, `cap_drop: [AUDIT_WRITE, MKNOD, NET_RAW, SETFCAP]` (the `NET_RAW` drop is load-bearing: sealed-egress identifies callers by source address), `sysctls: {net.ipv4.ip_forward: "0"}` for a primary (it is on two networks), `restart: unless-stopped` (`on-failure` for the bootstrap service), `logging: {driver: none}` (`local` with `debug`), and `depends_on` on sealed-agent (healthy) and sealed-init (completed);
 - for the manifest healthcheck service without its own healthcheck: `envexec probe http://127.0.0.1:<port><path>`.
 
-Sidecars (image digests from `runtime/composer/runtime-images.json`, part of the composer version):
+Sidecars (image digests from `runtime/composer/rimembed/runtime-images.json`, part of the composer version):
 
 | service | addresses | notes |
 |---|---|---|
@@ -478,7 +480,7 @@ Measured inline configs: `sealed-config` (the normalized config, `/etc/sealed/co
 `sealed-stack/v1` (CJSON, measured, read by the agent from the booted app-compose):
 
 ```
-{ "schema": "sealed-stack/v1", "composerVersion": "1.6.0",
+{ "schema": "sealed-stack/v1", "composerVersion": "1.7.0",
   "apps": [ { "id", "appId", "releaseId", "version", "primaryService",
       "network": { "name": "app-<id>", "subnet": "172.30.<n>.0/24", "egress": "172.30.<n>.2", "agent": "172.30.<n>.3" },
       "services": [ { "name", "ip" /* app-network address */, "ips" /* every address, sorted */,

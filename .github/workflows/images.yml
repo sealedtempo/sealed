@@ -3,7 +3,7 @@
 # for linux/amd64, push it to the catalog registry, check that a no-cache rebuild gives the same digest,
 # sign the digest, scan it (Syft, Grype, waivers), and open the PRs that pin the new digests:
 #   - catalog PR: catalog/apps/*/manifest.yaml (each pinned app then needs a new release_version);
-#   - runtime PR: runtime/composer/runtime-images.json and catalog/tools/release/extra-images.json (a
+#   - runtime PR: runtime/composer/rimembed/runtime-images.json and catalog/tools/release/extra-images.json (a
 #     composer version bump has to join it, see the PR text).
 # Image settings (build contexts, reproducibility exceptions) are in catalog/tools/release/images.yaml.
 # A push plans the images changed since the head commit of the last successful push run (plus every

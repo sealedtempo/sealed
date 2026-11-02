@@ -122,7 +122,7 @@ func TestOneByteChangesStackHash(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				r, err := Compose(testConfig(b, bundles[1]), []*Bundle{b, bundles[1]})
+				r, err := composeEmbedded(testConfig(b, bundles[1]), []*Bundle{b, bundles[1]})
 				if err != nil {
 					continue
 				}
@@ -159,7 +159,7 @@ func TestOneByteChangesStackHash(t *testing.T) {
 			if err != nil {
 				continue
 			}
-			r, err := Compose(c, bundles)
+			r, err := composeEmbedded(c, bundles)
 			if err != nil {
 				continue
 			}
@@ -487,7 +487,7 @@ func TestComposeRejectsForeignRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = Compose(testConfig(b, gw), []*Bundle{b, gw})
+		_, err = composeEmbedded(testConfig(b, gw), []*Bundle{b, gw})
 		var me *ManifestError
 		if !errors.As(err, &me) || !strings.HasPrefix(me.Field, "images[") || !strings.Contains(err.Error(), "catalog registry") {
 			t.Errorf("registry %s accepted or wrong error: %v", reg, err)
@@ -500,10 +500,7 @@ func TestComposeRejectsForeignRegistry(t *testing.T) {
 // so tests that still need an unbuilt image build one explicitly.
 func unbuiltRuntimeImages(t *testing.T) *RuntimeImages {
 	t.Helper()
-	ri, err := LoadRuntimeImages()
-	if err != nil {
-		t.Fatal(err)
-	}
+	ri := loadTestRuntimeImages(t)
 	agent := ri.Images[imgAgent]
 	agent.Digest = zeroDigest
 	agent.Unbuilt = true
@@ -585,7 +582,7 @@ func TestConfigAndComposeSizeBounds(t *testing.T) {
 		many[i] = fmt.Sprintf("h%d.example.com:443", i)
 	}
 	cfg.EgressAdditions = map[string][]string{"notes": many}
-	if _, err := Compose(cfg, bundles); err == nil || !strings.Contains(err.Error(), "at most") {
+	if _, err := composeEmbedded(cfg, bundles); err == nil || !strings.Contains(err.Error(), "at most") {
 		t.Fatalf("too many additions accepted: %v", err)
 	}
 	cfg.EgressAdditions = map[string][]string{"notes": many[:MaxEgressAdditionsPerApp]}
@@ -624,7 +621,7 @@ func TestComposeWithoutGatewayHasNoPayer(t *testing.T) {
 	gw := buildFixture(t, "llm-gateway")
 	cfg2 := testConfig(gw)
 	cfg2.RelayOwner = ""
-	if _, err := Compose(cfg2, []*Bundle{gw}); err == nil {
+	if _, err := composeEmbedded(cfg2, []*Bundle{gw}); err == nil {
 		t.Error("gateway stack without relay settings accepted")
 	}
 }
@@ -690,7 +687,7 @@ func TestEgressConfigCallers(t *testing.T) {
 
 	// The gateway fixture does not allow customer additions.
 	cfg.EgressAdditions = map[string][]string{"llm-gateway": {"api.openai.com:443"}}
-	if _, err := Compose(cfg, bundles); err == nil || !strings.Contains(err.Error(), "does not allow") {
+	if _, err := composeEmbedded(cfg, bundles); err == nil || !strings.Contains(err.Error(), "does not allow") {
 		t.Fatalf("additions for a closed app accepted: %v", err)
 	}
 }
@@ -700,25 +697,25 @@ func TestComposeRejectsMismatchedInputs(t *testing.T) {
 	bad := *cfg
 	bad.Apps = append([]ConfigApp(nil), cfg.Apps...)
 	bad.Apps[1].ReleaseID = "0x" + strings.Repeat("00", 32)
-	if _, err := Compose(&bad, bundles); err == nil || !strings.Contains(err.Error(), "releaseId") {
+	if _, err := composeEmbedded(&bad, bundles); err == nil || !strings.Contains(err.Error(), "releaseId") {
 		t.Fatalf("wrong releaseId accepted: %v", err)
 	}
-	if _, err := Compose(cfg, bundles[:1]); err == nil {
+	if _, err := composeEmbedded(cfg, bundles[:1]); err == nil {
 		t.Fatal("missing bundle accepted")
 	}
-	if _, err := Compose(testConfig(bundles[0]), bundles); err == nil {
+	if _, err := composeEmbedded(testConfig(bundles[0]), bundles); err == nil {
 		t.Fatal("extra bundle accepted")
 	}
-	if _, err := Compose(cfg, []*Bundle{bundles[0], bundles[0], bundles[1]}); err == nil {
+	if _, err := composeEmbedded(cfg, []*Bundle{bundles[0], bundles[0], bundles[1]}); err == nil {
 		t.Fatal("duplicate bundle accepted")
 	}
 	custom := *cfg
 	custom.Hostnames = Hostnames{Scheme: SchemeCustom, Domains: map[string]string{"gateway": "llm.example.com", "tools": "notes.example.com"}}
-	if _, err := Compose(&custom, bundles); err == nil || !strings.Contains(err.Error(), "attest") {
+	if _, err := composeEmbedded(&custom, bundles); err == nil || !strings.Contains(err.Error(), "attest") {
 		t.Fatalf("custom domains without attest accepted: %v", err)
 	}
 	custom.Hostnames.Domains["attest"] = "attest.example.com"
-	r, err := Compose(&custom, bundles)
+	r, err := composeEmbedded(&custom, bundles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +723,7 @@ func TestComposeRejectsMismatchedInputs(t *testing.T) {
 		t.Fatalf("custom hosts missing:\n%s", r.Caddyfile)
 	}
 	custom.Hostnames.Domains["crm"] = "crm.example.com"
-	if _, err := Compose(&custom, bundles); err == nil {
+	if _, err := composeEmbedded(&custom, bundles); err == nil {
 		t.Fatal("domain for a route not in the stack accepted")
 	}
 }
@@ -771,7 +768,7 @@ func TestComposeRoutesAndCaddyfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Compose(testConfig(clash, bundles[1]), []*Bundle{clash, bundles[1]}); err == nil || !strings.Contains(err.Error(), "claimed by both") {
+	if _, err := composeEmbedded(testConfig(clash, bundles[1]), []*Bundle{clash, bundles[1]}); err == nil || !strings.Contains(err.Error(), "claimed by both") {
 		t.Fatalf("route clash accepted: %v", err)
 	}
 }
@@ -1045,20 +1042,14 @@ func TestNetworkMatchesDefaults(t *testing.T) {
 	}
 	// Compose accepts only bundles built for the runtime images' registry,
 	// so catalog.registry must name the same one.
-	ri, err := LoadRuntimeImages()
-	if err != nil {
-		t.Fatal(err)
-	}
+	ri := loadTestRuntimeImages(t)
 	if d.Catalog.Registry != ri.Registry {
 		t.Errorf("catalog.registry %s differs from runtime-images.json registry %s", d.Catalog.Registry, ri.Registry)
 	}
 }
 
 func TestRuntimeImages(t *testing.T) {
-	ri, err := LoadRuntimeImages()
-	if err != nil {
-		t.Fatal(err)
-	}
+	ri := loadTestRuntimeImages(t)
 	if got := ri.Images["caddy"].Ref; got != "ghcr.io/sealedtempo/caddy@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f" {
 		t.Errorf("caddy ref %s", got)
 	}
@@ -1067,8 +1058,8 @@ func TestRuntimeImages(t *testing.T) {
 		t.Errorf("unbuilt sidecars in a pinned repo: %v", unbuilt)
 	}
 	// zero digest iff the unbuilt flag: a zero digest without the flag is refused.
-	bad := bytes.Replace(runtimeImagesJSON, []byte(ri.Images[imgAgent].Digest), []byte(zeroDigest), 1)
-	if _, err := parseRuntimeImages(bad); err == nil {
+	bad := bytes.Replace(testRuntimeImagesJSON, []byte(ri.Images[imgAgent].Digest), []byte(zeroDigest), 1)
+	if _, err := ParseRuntimeImages(bad); err == nil {
 		t.Error("zero digest without unbuilt accepted")
 	}
 }

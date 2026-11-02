@@ -16,6 +16,7 @@ import (
 	keybroker "github.com/sealedtempo/sealed/key-broker"
 	"github.com/sealedtempo/sealed/key-broker/internal/anvil"
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/chain"
@@ -53,7 +54,7 @@ func FixtureApp(t testing.TB, name string) string {
 // Registry is the catalog registry every bundle image ref must use.
 func Registry(t testing.TB) string {
 	t.Helper()
-	ri, err := composer.LoadRuntimeImages()
+	ri, err := rimembed.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func (w *World) Compose(t testing.TB, o StackOptions) *Stack {
 	if o.Edit != nil {
 		o.Edit(cfg)
 	}
-	res, err := composer.Compose(cfg, bundles)
+	res, err := rimembed.Compose(cfg, bundles)
 	if err != nil {
 		t.Fatalf("compose: %v", err)
 	}

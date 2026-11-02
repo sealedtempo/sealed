@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 )
 
 // ComposeTemplate is the composer's own fixture config. Its owner keeps it valid for the current composer
@@ -173,5 +174,5 @@ func composeStack(root string, d Defaults, apps []App, st ComposeStack, tmpl []b
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	return composer.Compose(parsed, list)
+	return rimembed.Compose(parsed, list)
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/chain"
@@ -134,7 +135,7 @@ func (c *localComposer) Compose(_ context.Context, in verify.ComposeInput) (*ver
 		}
 		bundles = append(bundles, b)
 	}
-	res, err := composer.Compose(cfg, bundles)
+	res, err := rimembed.Compose(cfg, bundles)
 	if err != nil {
 		return nil, err
 	}

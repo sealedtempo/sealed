@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -145,7 +146,7 @@ func (o Options) withDefaults() Options {
 		o.EnterprisePatterns = DefaultEnterprisePatterns
 	}
 	if o.Registry == "" {
-		if ri, err := composer.LoadRuntimeImages(); err == nil {
+		if ri, err := rimembed.Load(); err == nil {
 			o.Registry = ri.Registry
 		}
 	}

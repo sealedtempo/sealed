@@ -19,6 +19,7 @@ import (
 
 	"github.com/sealedtempo/sealed/internal/sigstoretest"
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/attest"
 	"github.com/sealedtempo/sealed/verifier/chain"
@@ -176,7 +177,7 @@ func TestComposedStackEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct, err := composer.Compose(cfg, w.bundles)
+	direct, err := rimembed.Compose(cfg, w.bundles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +396,7 @@ func TestComposedStackEndToEnd(t *testing.T) {
 			t.Fatalf("/v1/compose of the new release: HTTP %d %s", status, raw)
 		}
 		parsed, _ := composer.ParseConfig(cfgNext)
-		res, err := composer.Compose(parsed, stack)
+		res, err := rimembed.Compose(parsed, stack)
 		if err != nil || got.AppCompose != string(res.AppCompose) {
 			t.Fatalf("new stack differs from runtime/composer: %v", err)
 		}

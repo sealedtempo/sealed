@@ -22,6 +22,7 @@ import (
 
 	"github.com/sealedtempo/sealed/cli/internal/bundles"
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 	verify "github.com/sealedtempo/sealed/verifier"
 	"github.com/sealedtempo/sealed/verifier/attest"
@@ -162,10 +163,20 @@ func ConfigDocOn(chainID uint64, addrs chain.Addresses, customer common.Address,
 			"platformRegistry": lowerAddr(addrs.PlatformRegistry), "appRegistry": lowerAddr(addrs.AppRegistry),
 			"deploymentRegistry": lowerAddr(addrs.DeploymentRegistry), "feeSplitter": "0x00000000000000000000000000000000000000e4",
 		},
-		"feeToken":   "0x20c000000000000000000000b9537d11c60e8b50",
-		"settlement": map[string]any{"mode": "access-key", "intervalMinutes": 60, "gracePeriodMinutes": 1440, "spendLimitPerDay": "2000000"},
-		"relayOwner": "0x00000000000000000000000000000000000000b1",
+		"feeToken":      "0x20c000000000000000000000b9537d11c60e8b50",
+		"settlement":    map[string]any{"mode": "access-key", "intervalMinutes": 60, "gracePeriodMinutes": 1440, "spendLimitPerDay": "2000000"},
+		"relayOwner":    "0x00000000000000000000000000000000000000b1",
+		"runtimeImages": runtimeImagesDoc(),
 	}
+}
+
+// runtimeImagesDoc is the embedded runtime image set as a config.runtimeImages document (D-097).
+func runtimeImagesDoc() map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal(rimembed.Raw(), &m); err != nil {
+		panic(err)
+	}
+	return m
 }
 
 func lowerAddr(a common.Address) string { return "0x" + hex.EncodeToString(a[:]) }
@@ -220,7 +231,7 @@ func NewWorldOn(t testing.TB, chainID uint64, addrs chain.Addresses, customer co
 	if w.Config, err = cfg.CanonicalJSON(); err != nil {
 		t.Fatal(err)
 	}
-	if w.Result, err = composer.Compose(cfg, w.Bundles); err != nil {
+	if w.Result, err = rimembed.Compose(cfg, w.Bundles); err != nil {
 		t.Fatal(err)
 	}
 	return w

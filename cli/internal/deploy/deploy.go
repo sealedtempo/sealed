@@ -21,6 +21,7 @@ import (
 	"github.com/sealedtempo/sealed/cli/internal/secrets"
 	"github.com/sealedtempo/sealed/cli/internal/settings"
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	"github.com/sealedtempo/sealed/runtime/composer/cjson"
 	"github.com/sealedtempo/sealed/verifier/chain"
 )
@@ -57,8 +58,8 @@ type Deployer struct {
 	// AllowUnbuilt composes stacks whose sidecar or app images still carry the all-zero placeholder digest.
 	// Such a stack cannot boot; the CLI allows it only in dev mode (SEALED_DEV_SIM=1).
 	AllowUnbuilt bool
-	// RuntimeImages overrides the embedded sidecar image set. Nil uses the pins compiled into the composer
-	// library (composer.Compose); a non-nil set composes with composer.ComposeWith instead.
+	// RuntimeImages overrides the sidecar image set. Nil uses the pins embedded in the rimembed package
+	// (rimembed.Compose); a non-nil set composes with composer.ComposeWith instead.
 	RuntimeImages *composer.RuntimeImages
 	// Replace lets Apply delete a VM of the same name that runs another deployment (an upgrade) and create the
 	// new one; the data disk is kept and checked against the salt first (D-058).
@@ -217,7 +218,7 @@ func (d *Deployer) Prepare(ctx context.Context, s *StackFile, reserveIP bool) (*
 	if d.RuntimeImages != nil {
 		p.Result, err = composer.ComposeWith(cfg, p.Bundles, d.RuntimeImages)
 	} else {
-		p.Result, err = composer.Compose(cfg, p.Bundles)
+		p.Result, err = rimembed.Compose(cfg, p.Bundles)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("compose: %w", err)
@@ -304,6 +305,16 @@ func (d *Deployer) buildConfig(s *StackFile, p *Plan) (*composer.Config, error) 
 	}
 	for _, r := range p.Releases {
 		cfg.Apps = append(cfg.Apps, composer.ConfigApp{ID: r.App, ReleaseID: "0x" + hex.EncodeToString(r.ReleaseID[:])})
+	}
+	// The sidecar image set is part of configHash (D-097): the customer approves exactly these digests, and the
+	// verifier recomputes against them. Use the override when set (dev), else the pins embedded in rimembed.
+	cfg.RuntimeImages = d.RuntimeImages
+	if cfg.RuntimeImages == nil {
+		ri, err := rimembed.Load()
+		if err != nil {
+			return nil, err
+		}
+		cfg.RuntimeImages = ri
 	}
 	// Round trip through the strict parser: it normalizes and validates exactly as the key broker will.
 	raw, err := json.Marshal(cfg)

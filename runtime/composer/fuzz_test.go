@@ -67,8 +67,8 @@ func loadFuzzBases(f *testing.F) []fuzzBase {
 // error of the first run.
 func composeTwice(t *testing.T, cfg *Config, bundles []*Bundle) error {
 	t.Helper()
-	r1, err1 := Compose(cfg, bundles)
-	r2, err2 := Compose(cfg, bundles)
+	r1, err1 := composeEmbedded(cfg, bundles)
+	r2, err2 := composeEmbedded(cfg, bundles)
 	if (err1 == nil) != (err2 == nil) || (err1 != nil && err1.Error() != err2.Error()) {
 		t.Fatalf("compose is not deterministic: %v / %v", err1, err2)
 	}

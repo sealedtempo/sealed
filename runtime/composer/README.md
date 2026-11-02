@@ -1,6 +1,6 @@
 # runtime/composer
 
-The deterministic stack composer, version `1.6.0`. Given a public deployment config and the release bundles it names, it produces `app-compose.json` for dstack, whose sha256 is the `stackHash` that the customer's wallet approves, the key broker recomputes and `sealed verify` checks. One Go implementation is shared by the key broker, the CLI and sealed-verifierd (D-006).
+The deterministic stack composer, version `1.7.0`. Given a public deployment config and the release bundles it names, it produces `app-compose.json` for dstack, whose sha256 is the `stackHash` that the customer's wallet approves, the key broker recomputes and `sealed verify` checks. One Go implementation is shared by the key broker, the CLI and sealed-verifierd (D-006).
 
 This file is the authoritative contract for app fragments and for the composed stack: what a catalog package may declare, what the composer adds, and what the sidecars (sealed-agent, sealed-egress, Caddy, sealed-mpp-payer) can rely on. `docs/INTERFACES.md` sections 1, 2, 5, 6, 7, 12, 14 and 15 describe the same contract at a higher level; where they differ, this file, the integration brief (D-040 to D-050) and the hardening brief (D-058 to D-069) win, and the differences are listed at the end for the owner of INTERFACES.
 
@@ -71,7 +71,7 @@ Layout, exactly: `manifest.yaml`, `compose.fragment.yaml`, `egress.yaml`, `LICEN
 
 The tar is written by our own ustar encoder (not `archive/tar`) so its bytes cannot change with a Go release: entries sorted by path, explicit parent directory entries, mtime 0, uid/gid 0, empty uname/gname, mode 0644 files and 0755 directories, octal fields NUL-terminated, checksum `%06o\0 `, two zero blocks at the end and no record padding. Text files (valid UTF-8 without NUL) are LF-normalized. `LoadBundle` accepts only this canonical form (re-encoding the parsed files must give the input bytes), so one `bundleHash` names exactly one content. Bundles are at most 64 MiB.
 
-At build time every `images[].ref` in the bundled `manifest.yaml` is set to `<catalog.registry>/<name>@<digest>` (edited on the YAML node tree, so comments survive). `Compose` requires each ref to be exactly `<registry>/<name>@<digest>` with the registry of `runtime-images.json` (image pulls do not go through sealed-egress, so VMs pull only from the catalog registry); `config/defaults.yaml` `catalog.registry` must name the same registry, which a test checks. The composer never reads `config/defaults.yaml`, so a stack depends only on the config, the bundles and the composer version.
+At build time every `images[].ref` in the bundled `manifest.yaml` is set to `<catalog.registry>/<name>@<digest>` (edited on the YAML node tree, so comments survive). `Compose` requires each ref to be exactly `<registry>/<name>@<digest>` with the registry of `rimembed/runtime-images.json` (image pulls do not go through sealed-egress, so VMs pull only from the catalog registry); `config/defaults.yaml` `catalog.registry` must name the same registry, which a test checks. The composer never reads `config/defaults.yaml`, so a stack depends only on the config, the bundles and the composer version.
 
 | hash | formula |
 |---|---|
@@ -161,7 +161,7 @@ Every app service of app `n` gets:
 - app volumes as binds of `/mnt/sealed-data/<appId>/<volume>` with `create_host_path: false`;
 - `restart: unless-stopped` (`on-failure` for the bootstrap service), `logging: {driver: none}` (`local` with `debug`), and `depends_on` on `sealed-agent` (healthy) and `sealed-init` (completed).
 
-The manifest healthcheck service gets `envexec probe http://127.0.0.1:<port><path>` unless the fragment defines its own healthcheck. Sidecar images come from `runtime-images.json` (`<registry>/<name>@<digest>`; zero digests carry `"unbuilt": true` and show up in `Result.Unbuilt`).
+The manifest healthcheck service gets `envexec probe http://127.0.0.1:<port><path>` unless the fragment defines its own healthcheck. Sidecar images come from `rimembed/runtime-images.json` (`<registry>/<name>@<digest>`; zero digests carry `"unbuilt": true` and show up in `Result.Unbuilt`).
 
 ### Secrets (D-042)
 
@@ -189,7 +189,7 @@ Docker volumes (sidecar plumbing only): `sealed-bin` (envexec), and tmpfs volume
 CJSON, measured, mounted at `/etc/sealed/stack.json` and read by the agent from the booted app-compose:
 
 ```
-{ "schema": "sealed-stack/v1", "composerVersion": "1.6.0",
+{ "schema": "sealed-stack/v1", "composerVersion": "1.7.0",
   "apps": [ {
       "id", "appId", "releaseId", "version", "primaryService",
       "network": { "name": "app-<id>", "subnet": "172.30.<n>.0/24", "egress": "172.30.<n>.2", "agent": "172.30.<n>.3" },
@@ -269,7 +269,7 @@ Exactly `allowed_envs`, `docker_compose_file`, `gateway_enabled`, `key_provider`
 
 ## Determinism and versioning
 
-Every output is built from sorted inputs and serialized as CJSON or rendered from fixed templates; map iteration order never reaches the output. `composer.Version` (`1.6.0`) must equal `config.composerVersion`. Any change to composed bytes (this code, `runtime-images.json`, the Caddy template, the host rules) needs a new version, because approved stacks pin the old bytes. `testdata/golden/` pins the fixture stack's outputs (stackHash `0x56b09be8...9023` for composer 1.6.0): when it fails on purpose, bump `Version`, then `go test ./runtime/composer -run Golden -update`; `-update` refuses to rewrite changed files while `summary.json` still records the current `Version`. The golden files double as cross-implementation vectors; consumers that copy them (`runtime/agent/test/fixtures/composer-golden`) copy them again. A bump also changes every fixture that names the version (`testdata/config.json`, `scripts/docker-checks/fixtures/config.json`, `docs/INTERFACES.md`). A Go fuzz seed that still names the old version is refused at the version check before the code it was added for, and nothing else fails, so `TestFuzzSeedsNameThisComposer` reads every `testdata/fuzz/Fuzz*/` corpus in the repository and names each such seed.
+Every output is built from sorted inputs and serialized as CJSON or rendered from fixed templates; map iteration order never reaches the output. `composer.Version` (`1.7.0`) must equal `config.composerVersion`. Any change to composed bytes (this code, `rimembed/runtime-images.json`, the Caddy template, the host rules) needs a new version, because approved stacks pin the old bytes. `testdata/golden/` pins the fixture stack's outputs (stackHash `0x35aac45a...c0db` for composer 1.7.0): when it fails on purpose, bump `Version`, then `go test ./runtime/composer -run Golden -update`; `-update` refuses to rewrite changed files while `summary.json` still records the current `Version`. The golden files double as cross-implementation vectors; consumers that copy them (`runtime/agent/test/fixtures/composer-golden`) copy them again. A bump also changes every fixture that names the version (`testdata/config.json`, `scripts/docker-checks/fixtures/config.json`, `docs/INTERFACES.md`). A Go fuzz seed that still names the old version is refused at the version check before the code it was added for, and nothing else fails, so `TestFuzzSeedsNameThisComposer` reads every `testdata/fuzz/Fuzz*/` corpus in the repository and names each such seed.
 
 ## Lint
 

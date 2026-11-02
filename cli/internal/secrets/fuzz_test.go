@@ -14,6 +14,7 @@ import (
 
 	keybroker "github.com/sealedtempo/sealed/key-broker"
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 )
 
 // FuzzParseManifest: ParseManifest never panics on any manifest.yaml. For a
@@ -219,7 +220,7 @@ func FuzzSecretSharing(f *testing.F) {
 		}
 		sort.Slice(cfg.Apps, func(i, j int) bool { return cfg.Apps[i].ID < cfg.Apps[j].ID })
 		cfg.EgressAdditions = map[string][]string{}
-		_, cerr := composer.Compose(&cfg, list)
+		_, cerr := rimembed.Compose(&cfg, list)
 		var me *composer.ManifestError
 		sharingErr := errors.As(cerr, &me) && strings.HasSuffix(me.Field, ".same_as")
 		if cerr != nil && !sharingErr {

@@ -41,6 +41,13 @@ type Config struct {
 	// none (integration brief item 13). It is part of configHash, so the
 	// customer approves it, and it is always present in the canonical form.
 	Debug bool `json:"debug"`
+	// RuntimeImages is the runtime sidecar image set the composer pins into
+	// app-compose.json (the content of runtime-images.json for this composer
+	// version). It is part of configHash, so the customer approves exactly these
+	// sidecar digests, and sealed-verifierd recomputes against it rather than an
+	// embedded copy of its own image digest (D-097). The authoring tools fill it
+	// from the rimembed embed before the stack is composed.
+	RuntimeImages *RuntimeImages `json:"runtimeImages"`
 }
 
 type ConfigApp struct {
@@ -172,6 +179,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ComposerVersion != Version {
 		return fail("composerVersion", "%q does not match this composer (%s); recompute with composer %s", c.ComposerVersion, Version, c.ComposerVersion)
+	}
+	if _, err := RuntimeImagesFromConfig(c); err != nil {
+		return err
 	}
 	for field, val := range map[string]string{
 		"customer": c.Customer, "feeToken": c.FeeToken,

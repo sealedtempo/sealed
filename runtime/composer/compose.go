@@ -108,15 +108,11 @@ var intelPCSHosts = []string{"api.trustedservices.intel.com:443", "certificates.
 // keep them in step with config/defaults.yaml.
 var releaseAssetHosts = []string{"github.com:443", "objects.githubusercontent.com:443", "release-assets.githubusercontent.com:443"}
 
-// Compose builds the stack for a config and its release bundles using the
-// embedded runtime images.
-func Compose(cfg *Config, bundles []*Bundle) (*Result, error) {
-	ri, err := LoadRuntimeImages()
-	if err != nil {
-		return nil, err
-	}
-	return ComposeWith(cfg, bundles, ri)
-}
+// ComposeWith (below) is the single compose entry point: callers supply the
+// runtime image set explicitly. Authoring loads it from rimembed; the recompute
+// paths receive it from their request (sealed-verifierd) or from rimembed
+// embedded in their own, self-reference-free image (the key broker). There is
+// deliberately no embed-backed Compose here (D-097).
 
 type plannedApp struct {
 	id        string

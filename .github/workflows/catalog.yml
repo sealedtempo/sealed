@@ -97,7 +97,7 @@ jobs:
               APPS="$(sed -n 's#^catalog/apps/\([^/]*\)/.*#\1#p' "$CHANGED" | sort -u | paste -sd, -)"
               # A sidecar pin change scans the runtime images (supply-5). extra-images.json and
               # runtime-waivers.yaml are under catalog/tools/release/, which scans everything.
-              if grep -qx 'runtime/composer/runtime-images.json' "$CHANGED"; then APPS="${APPS:+$APPS,}sealed-runtime"; fi
+              if grep -qx 'runtime/composer/rimembed/runtime-images.json' "$CHANGED"; then APPS="${APPS:+$APPS,}sealed-runtime"; fi
               [ -n "$APPS" ] || APPS=none
             fi
           fi
@@ -122,7 +122,7 @@ jobs:
       # of skipping when SEALED_REQUIRE_CADDY=1 (runtime-3).
       - name: Pinned Caddy binary
         run: |
-          pin=runtime/composer/runtime-images.json
+          pin=runtime/composer/rimembed/runtime-images.json
           ref="$(jq -r '.images.caddy | (.source | sub(":[^:/]*$"; "")) + "@" + .digest' "$pin")"
           version="$(jq -r '.images.caddy.source | sub("^.*:"; "") | sub("-.*$"; "")' "$pin")"
           mkdir -p "$RUNNER_TEMP/caddy"

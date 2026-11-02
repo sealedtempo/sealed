@@ -181,7 +181,13 @@ func (c *Composer) Compose(ctx context.Context, in verify.ComposeInput) (*verify
 		}
 		bs = append(bs, b)
 	}
-	res, err := composer.Compose(cfg, bs)
+	// Recompute against the sidecar set the customer approved in the config
+	// (config.runtimeImages, part of configHash), not an embedded copy (D-097).
+	ri, err := composer.RuntimeImagesFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	res, err := composer.ComposeWith(cfg, bs, ri)
 	if err != nil {
 		return nil, err
 	}

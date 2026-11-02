@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/sealedtempo/sealed/runtime/composer"
+	"github.com/sealedtempo/sealed/runtime/composer/rimembed"
 	"github.com/sealedtempo/sealed/runtime/composer/lint"
 )
 
@@ -170,11 +171,14 @@ func runCompose(args []string, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintln(stderr, "sealed-compose: warning: releaseIds replaced from local bundles")
 	}
+	if raw, err = ensureRuntimeImages(raw); err != nil {
+		return err
+	}
 	cfg, err := composer.ParseConfig(raw)
 	if err != nil {
 		return err
 	}
-	res, err := composer.Compose(cfg, bundles)
+	res, err := rimembed.Compose(cfg, bundles)
 	if err != nil {
 		return err
 	}
@@ -254,6 +258,25 @@ func fillReleaseIDs(raw []byte, bundles []*composer.Bundle) ([]byte, error) {
 				m["releaseId"] = ids[id]
 			}
 		}
+	}
+	return json.Marshal(doc)
+}
+
+// ensureRuntimeImages injects the embedded runtime image set into the config when it is absent, so the authoring
+// input need not carry runtime-images.json. The set is part of configHash; the customer approves it (D-097).
+func ensureRuntimeImages(raw []byte) ([]byte, error) {
+	var doc map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if _, ok := doc["runtimeImages"]; !ok {
+		var ri map[string]any
+		if err := json.Unmarshal(rimembed.Raw(), &ri); err != nil {
+			return nil, err
+		}
+		doc["runtimeImages"] = ri
 	}
 	return json.Marshal(doc)
 }
