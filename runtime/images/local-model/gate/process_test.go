@@ -116,7 +116,10 @@ func TestGateRunsOllamaAndForwardsSIGTERM(t *testing.T) {
 	defer ollama.Close()
 	upstream := strings.TrimPrefix(ollama.URL, "http://")
 	envFile := filepath.Join(t.TempDir(), "env")
-	child := `env > "$ENV_FILE"; trap 'exit 7' TERM; while :; do sleep 0.05; done`
+	// Install the TERM trap before writing ENV_FILE, which the test waits on as the readiness marker: otherwise a
+	// SIGTERM arriving in the window after env is written but before the trap is set kills the child with the default
+	// disposition (143) instead of the trap's exit 7 (flake).
+	child := `trap 'exit 7' TERM; env > "$ENV_FILE"; while :; do sleep 0.05; done`
 	env := []string{"PATH=" + os.Getenv("PATH"), "ENV_FILE=" + envFile, "OLLAMA_HOST=0.0.0.0:11434",
 		"GATE_KEY=k-0123456789abcdef", "HTTP_PROXY=http://127.0.0.1:9", "http_proxy=http://127.0.0.1:9"}
 	p := startGate(t, env, "-listen", "127.0.0.1:0", "-upstream", upstream, "-allow-peer", "llm-gateway-litellm",
