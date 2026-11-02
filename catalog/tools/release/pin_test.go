@@ -166,7 +166,7 @@ func TestPinScopes(t *testing.T) {
 
 	summary := PinSummary(ScopeRuntime, "https://example.invalid/run/1", "abc123", results,
 		[]PinChange{{File: RuntimeImagesFile, Image: "sealed-agent", Old: zeroDigest, New: d2}})
-	mustContain(t, summary, "bumps `composer.Version`")
+	mustContain(t, summary, "needs no composer version bump")
 	mustContain(t, summary, "| sealed-agent | `"+d2+"` | not checked | not scanned | "+RuntimeImagesFile+" |")
 	if strings.Contains(summary, "—") {
 		t.Fatal("no em-dashes in PR text")

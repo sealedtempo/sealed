@@ -177,7 +177,7 @@ func TestOpenPinPRScript(t *testing.T) {
 	if files != RuntimeImagesFile {
 		t.Fatalf("runtime PR files: %q", files)
 	}
-	mustContain(t, f.calls(t), "(needs a composer version bump)")
+	mustContain(t, f.calls(t), "runtime: pin sidecar image digests built from")
 
 	// Nothing to pin, no PR; a dirty tree is refused.
 	gitRun(t, root, "switch", "-q", "main")

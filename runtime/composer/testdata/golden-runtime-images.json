@@ -1,0 +1,37 @@
+{
+  "schema": "sealed-runtime-images/v1",
+  "registry": "ghcr.io/sealedtempo",
+  "images": {
+    "caddy": {
+      "digest": "sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f",
+      "source": "docker.io/library/caddy:2.11.7-alpine",
+      "license_spdx": "Apache-2.0",
+      "notes": "Index digest; linux/amd64 child sha256:04913b1da43339a40ad1ea87827d70a576ac5aa6cf674c6e24fdca675887533a. Mirrored with crane copy so the digest is unchanged."
+    },
+    "sealed-agent": {
+      "digest": "sha256:34c9490339e439b60432fb8fd6b51bc118a564a2b826eb71867ed0dfabdc371a",
+      "source": "build:runtime/agent",
+      "license_spdx": "Apache-2.0"
+    },
+    "sealed-egress": {
+      "digest": "sha256:85cc0b26e8356988f4cab6494408a3baf00a0fae05929c36936e6091079e827c",
+      "source": "build:runtime/egress",
+      "license_spdx": "Apache-2.0"
+    },
+    "sealed-init": {
+      "digest": "sha256:38a169ef487b0ff77b809d24447b5c66b8173e47247b103cfd63d8a57e5fe776",
+      "source": "build:runtime/envexec",
+      "license_spdx": "Apache-2.0"
+    },
+    "sealed-mpp-payer": {
+      "digest": "sha256:0a336aad5446fd172acf693202a6d5013617d7f0e99098065d5fa284fd335d66",
+      "source": "build:runtime/mpp-payer",
+      "license_spdx": "Apache-2.0"
+    },
+    "sealed-verifierd": {
+      "digest": "sha256:a3abf4bc41fad13e25d2b63fdfd2ff35699d8d9119bf8228da11b3ee00c0a736",
+      "source": "build:verifier",
+      "license_spdx": "Apache-2.0"
+    }
+  }
+}

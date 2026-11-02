@@ -36,7 +36,8 @@ type PinChange struct {
 }
 
 // Pin scopes: the catalog PR changes manifests; the runtime PR changes runtime-images.json and
-// extra-images.json, which needs a composer version bump (composed bytes change).
+// extra-images.json. Post-D-097 those digests are config data (config.runtimeImages), not composer
+// code, and the golden fixture is frozen (D-098), so a runtime pin needs no composer version bump.
 const (
 	ScopeCatalog = "catalog"
 	ScopeRuntime = "runtime"
@@ -291,10 +292,8 @@ func PinSummary(scope, runURL, commit string, results []BuildResult, changes []P
 	var b strings.Builder
 	if scope == ScopeRuntime {
 		b.WriteString("Pins the sidecar image digests built by the runtime image workflow.\n\n")
-		b.WriteString("These digests are part of the composer version, because every composed stack names them. ")
-		b.WriteString("Before this PR can merge, the composer owner bumps `composer.Version`, regenerates the goldens with ")
-		b.WriteString("`go test ./runtime/composer -run Golden -update` and refreshes the copies of the goldens (see runtime/composer/README.md). ")
-		b.WriteString("The composer golden test fails until then, by design.\n\n")
+		b.WriteString("These digests are config data (config.runtimeImages, D-097), not composer code, and the golden fixture is frozen (D-098), ")
+		b.WriteString("so this PR needs no composer version bump and leaves the goldens unchanged. It merges once CI is green.\n\n")
 	} else {
 		b.WriteString("Pins the catalog image digests built by the runtime image workflow (D-028). ")
 		b.WriteString("Each pinned image changes its app's bundle, so the app needs a new `release_version` before its next release.\n\n")

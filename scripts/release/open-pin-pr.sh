@@ -4,7 +4,7 @@
 #   open-pin-pr.sh --scope catalog|runtime --results <dir> [--base main] [--run-url <url>] [--commit <sha>]
 #
 # Runs catalog/tools/release pin for the scope (catalog: manifest digests; runtime: runtime-images.json and
-# extra-images.json, which also needs a composer version bump, see the PR text), and when anything changed
+# extra-images.json, which are config data and need no composer version bump post-D-097/D-098), and when anything changed
 # commits it on the branch release/pin-<scope>-<short commit> and opens a PR against --base with gh. An open PR
 # from the same branch is updated instead. No change, no PR. Prints the PR URL.
 # DRY_RUN=1 pins and prints the PR body, then restores the files; nothing is committed or pushed.
@@ -56,7 +56,7 @@ short="${COMMIT:0:12}"
 [ -n "$short" ] || short="$(git rev-parse --short=12 HEAD)"
 branch="release/pin-$SCOPE-$short"
 title="$SCOPE: pin image digests built from $short"
-[ "$SCOPE" = runtime ] && title="runtime: pin sidecar image digests built from $short (needs a composer version bump)"
+[ "$SCOPE" = runtime ] && title="runtime: pin sidecar image digests built from $short"
 git switch -c "$branch" >&2
 git add -- "${files[@]}"
 git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
