@@ -214,13 +214,13 @@ cleanup() {
     exit "$status"
   fi
   for i in "${created_instances[@]:-}"; do
-    [[ -n $i ]] && gc compute instances delete "$i" --project "$project" --zone "$zone" --quiet >/dev/null 2>&1 || true
+    if [[ -n $i ]]; then gc compute instances delete "$i" --project "$project" --zone "$zone" --quiet >/dev/null 2>&1 || true; fi
   done
   for i in "${created_images[@]:-}"; do
-    [[ -n $i ]] && gc compute images delete "$i" --project "$project" --quiet >/dev/null 2>&1 || true
+    if [[ -n $i ]]; then gc compute images delete "$i" --project "$project" --quiet >/dev/null 2>&1 || true; fi
   done
   for i in "${created_objects[@]:-}"; do
-    [[ -n $i ]] && gc storage rm "$i" --project "$project" >/dev/null 2>&1 || true
+    if [[ -n $i ]]; then gc storage rm "$i" --project "$project" >/dev/null 2>&1 || true; fi
   done
   exit "$status"
 }
