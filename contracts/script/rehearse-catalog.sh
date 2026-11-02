@@ -47,7 +47,7 @@ call() { cast call --rpc-url "$RPC" "$@"; }
 usd() { echo "scale=6; $1 * $2 / 10^18" | bc | sed 's/^\./0./'; }
 register() { # register <profile> <log> [forge flags...]: RegisterCatalog.s.sol in the mainnet command shape
   local profile="$1" log="$2"; shift 2
-  env -u MAINTAINER_DEFAULT_ADDRESS OWNER_PRIVATE_KEY=$K_OWNER CATALOG_FILE="$CATALOG" \
+  env -u MAINTAINER_DEFAULT_ADDRESS -u OWNER_ADDRESS OWNER_PRIVATE_KEY=$K_OWNER CATALOG_FILE="$CATALOG" \
     DEPLOYMENTS_FILE=$DEPLOYMENTS_FILE FOUNDRY_PROFILE="$profile" \
     forge script script/RegisterCatalog.s.sol:RegisterCatalog --rpc-url "$RPC" "$@" > "$log" 2>&1 \
     || { cat "$log"; fail "RegisterCatalog.s.sol $*"; }
