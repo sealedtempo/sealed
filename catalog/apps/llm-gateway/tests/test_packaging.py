@@ -295,12 +295,20 @@ class ComposerTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_lint_only_blocks_on_the_unbuilt_images(self):
+        # The released manifest is fully pinned, so lint is clean: no unbuilt-image findings.
         findings = self.composer.lint([APP_DIR])
         self.assertEqual(sealed_compose.unexpected(findings), [])
-        unbuilt = sorted(f["field"] for f in findings if f["code"] == "unbuilt-image")
-        names = sealed_compose.unbuilt_images(self.app["manifest"])
-        self.assertEqual(len(unbuilt), len(names), unbuilt)
-        self.assertEqual(sorted(names), ["litellm", "local-model"])
+        self.assertEqual([f["field"] for f in findings if f["code"] == "unbuilt-image"], [])
+        self.assertEqual(sealed_compose.unbuilt_images(self.app["manifest"]), [])
+        # Before the release cut the build images carry placeholder digests; lint must block on exactly those.
+        with tempfile.TemporaryDirectory() as scratch:
+            copy = sealed_compose.unbuilt_copy(APP_DIR, scratch)
+            findings = self.composer.lint([copy])
+            self.assertEqual(sealed_compose.unexpected(findings), [])
+            unbuilt = sorted(f["field"] for f in findings if f["code"] == "unbuilt-image")
+            names = sealed_compose.unbuilt_images(sealed_compose.load_app(copy)["manifest"])
+            self.assertEqual(len(unbuilt), len(names), unbuilt)
+            self.assertEqual(sorted(names), ["litellm", "local-model"])
 
     def test_license_exclusions_are_matched_by_the_lint(self):
         """License audit F6: each exclusion catches what it names, in an SBOM, and nothing it should not."""

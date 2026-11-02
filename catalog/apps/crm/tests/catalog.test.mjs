@@ -44,9 +44,11 @@ describe("manifest (D-049a: EspoCRM)", () => {
     assert.deepEqual(validateManifestSchema(app.manifest, schemaPath), []);
   });
 
-  test("EspoCRM is built from images/espocrm and waits for its digest (D-028); postgres is pinned", () => {
+  test("EspoCRM is built from images/espocrm and pinned by digest (D-028); postgres is pinned", () => {
     const [espo, postgres] = app.manifest.images;
-    assert.deepEqual([espo.name, espo.source, espo.digest, espo.license_spdx], ["espocrm", "build:images/espocrm", ZERO, "AGPL-3.0-or-later"]);
+    assert.deepEqual([espo.name, espo.source, espo.license_spdx], ["espocrm", "build:images/espocrm", "AGPL-3.0-or-later"]);
+    assert.match(espo.digest, /^sha256:[0-9a-f]{64}$/);
+    assert.notEqual(espo.digest, ZERO);
     assert.ok(existsSync(join(appDir, "images/espocrm/Dockerfile")));
     assert.equal(postgres.source, "docker.io/library/postgres:16.15");
     assert.match(postgres.digest, /^sha256:[0-9a-f]{64}$/);

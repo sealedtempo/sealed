@@ -72,9 +72,9 @@ describe('catalog/apps/inference-relay', () => {
       for (const dep of Object.keys(service.depends_on ?? {})) expect(dep in fragment.services).toBe(true)
       for (const value of Object.values(service.environment ?? {})) expect(String(value)).not.toMatch(/sk-[0-9a-f]{8}|PRIVATE KEY|BEGIN /)
     }
+    // The released manifest is fully pinned: every image, build-sourced or mirrored, carries a real digest.
     for (const image of manifest.images) {
-      if (String(image.source).startsWith('build:')) expect(image.digest).toBe(`sha256:${'0'.repeat(64)}`)
-      else expect(image.digest).not.toBe(`sha256:${'0'.repeat(64)}`)
+      expect(image.digest, `${image.name} digest`).not.toBe(`sha256:${'0'.repeat(64)}`)
     }
     expect(Object.keys(fragment.volumes)).toEqual(['inference-relay-pgdata'])
     expect(manifest.primary_service in fragment.services).toBe(true)

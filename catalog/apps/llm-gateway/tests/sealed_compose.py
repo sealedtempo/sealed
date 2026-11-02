@@ -272,6 +272,22 @@ def unbuilt_images(manifest: dict[str, Any]) -> list[str]:
     return [i["name"] for i in manifest["images"] if i["digest"] == ZERO_DIGEST]
 
 
+def unbuilt_copy(app_dir: str, dest_root: str) -> str:
+    """A copy of the app with every build-sourced image digest reset to the all-zero placeholder.
+
+    After the release cut pins the real manifest, this restores the pre-release (unbuilt) state so a
+    test can still prove the lint blocks on exactly the build images it is meant to."""
+    dest = brief_compatible_copy(app_dir, dest_root, brief=False, share_with=False)
+    manifest_path = os.path.join(dest, "manifest.yaml")
+    manifest = load_yaml(manifest_path)
+    for image in manifest.get("images") or []:
+        if str(image.get("source", "")).startswith("build:"):
+            image["digest"] = ZERO_DIGEST
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(manifest, handle, sort_keys=False, allow_unicode=True)
+    return dest
+
+
 def sample_config(app_ids: list[str], version: str, brief: bool = True) -> dict[str, Any]:
     """A sealed-config/v1 document for a test stack (sslip hostnames on 34.1.2.3)."""
     def word(byte: str, count: int) -> str:
