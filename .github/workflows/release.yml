@@ -146,7 +146,9 @@ jobs:
           SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
         run: |
           # download-syft/download-grype only expose a cmd path (they do not add it to PATH); scan-image.sh needs both.
-          export PATH="$(dirname '${{ steps.grype.outputs.cmd }}'):$(dirname '${{ steps.syft.outputs.cmd }}'):$PATH"
+          grype_dir="$(dirname '${{ steps.grype.outputs.cmd }}')"
+          syft_dir="$(dirname '${{ steps.syft.outputs.cmd }}')"
+          export PATH="$grype_dir:$syft_dir:$PATH"
           while IFS=$'\t' read -r name ref; do
             scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "catalog/apps/$APP/waivers.yaml" --out "$RUNNER_TEMP/scan"
           done < <(jq -r '.[] | [.name, .ref] | @tsv' <<<"$REFS")

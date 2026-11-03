@@ -5,6 +5,9 @@
 # Valkey instead) with its modules in /usr/lib/redis/modules (RediSearch, RedisJSON, RedisBloom,
 # RedisTimeSeries), and Oracle Instant Client 11.2 and 21.10 (Oracle license, not on the rule 9
 # list). ToolJet's Oracle data source keeps working in thin mode, which needs no client library.
+# Upstream also bundles @sap/hana-client (the SAP HANA client, under a proprietary SAP developer
+# license, not on the rule 9 list; D-021): remove it. It is only used by ToolJet's optional SAP HANA
+# data source, so dropping it disables that one connector and nothing else.
 #
 # ToolJet's enterprise edition is the private git submodules server/ee and frontend/ee. The CE
 # image (docker/ce-production.Dockerfile at the tag) copies only build output (server/dist,
@@ -26,6 +29,7 @@ RUN set -eux; \
     rm -rf /etc/apt/sources.list.d/redis.list /usr/share/keyrings/redis-archive-keyring.gpg \
            /var/lib/redis /var/log/redis /etc/redis /usr/lib/redis /app/redis.conf; \
     rm -rf /opt/oracle /etc/ld.so.conf.d/oracle-instantclient.conf; \
+    rm -rf /app/plugins/node_modules/@sap/hana-client; \
     ldconfig; \
     rm -f /app/server/entrypoint.sh; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /root/.npm; \
@@ -34,7 +38,8 @@ RUN set -eux; \
     rm -f /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache; \
     if find / -xdev \( -name 'redis-server' -o -name 'redis-check-*' -o -name 'redis-benchmark' \
          -o -path '/usr/lib/redis*' -o -path '/etc/redis*' -o \( -name '*.so' -path '*redis*' \) \
-         -o -name 'libclntsh*' -o -name 'libnnz*' -o -name 'libociei*' -o -name 'libociicus*' -o -name 'libocci*' \) -print | grep -q .; then \
+         -o -name 'libclntsh*' -o -name 'libnnz*' -o -name 'libociei*' -o -name 'libociicus*' -o -name 'libocci*' \
+         -o -path '*/node_modules/@sap/hana-client*' \) -print | grep -q .; then \
       echo "forbidden binaries left in the image" >&2; exit 1; \
     fi; \
     if find /app -xdev -path '*/node_modules' -prune -o -name ee -print | grep -q .; then \

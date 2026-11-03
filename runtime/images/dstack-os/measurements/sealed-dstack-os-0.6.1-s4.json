@@ -1,0 +1,31 @@
+{
+  "images": [
+    {
+      "name": "sealed-dstack-os",
+      "version": "0.6.1-s4+c3-standard-8",
+      "mrtd": "0xf21e6b48743fe14c2d090078ca1197f09ae4c99438677f2c79901ef80e2aeefe2f9a7eb6e3eb3b5047c4f1511731e5d3",
+      "rtmr0": "0x16685195f54935e0bf41a41190d8a53470b06c276dd120c6c1863ac41aa7387b5cd437dfae7533bda91c6f56e86fe9f7",
+      "rtmr1": "0x379b44c67502c07cd94986aad3b1faa60b03d9c211e7c418de1c9ffe2432f729381c90a678f5c812b9e69f24938daadb",
+      "rtmr2": "0xdfa153189fca4c99f63a26d223aa01eaccd26d668c6bee1835bb3f3bf7da5a3a1e24758098506aa42d6eaf25fffcfead",
+      "isDebug": false,
+      "sourceURI": "https://github.com/sealedtempo/sealed/releases/download/os-image-v0.6.1-s4/sealed-dstack-os-0.6.1-s4-gce.tar.gz#sha256=5cdcbd33b7994b36da4af9a4023b55e9e295863c5a5e75b64214873876116dda",
+      "imageId": "0xb694d09be5491d38891ac5df3c560131e652c17ac57bdd6663cb926e0722ebf6",
+      "measurementsHash": "0xc30d8befa54f55acb8abdc7c2347fbba6bb2fc9cff2971cb547704a65d889b36",
+      "machineTypes": [
+        "c3-standard-8"
+      ],
+      "boots": 2,
+      "osImageHash": "1b6e66f311b609863e4a8aae3904e082f290b2bb9bd9c4220241bf0e369ba1f7",
+      "gceTarballSha256": "5cdcbd33b7994b36da4af9a4023b55e9e295863c5a5e75b64214873876116dda",
+      "trust": "tofu",
+      "measuredAt": "2026-11-02T23:24:56Z"
+    }
+  ],
+  "sealed": {
+    "schema": "sealed-os-image-catalog/v1",
+    "variant": "prod",
+    "sealedOsVersion": "0.6.1-s4",
+    "sourceCommit": "8e6783f00d660d1f367cb15b659b46a0c210cc90",
+    "note": "Trust on first use: MRTD and RTMR0-2 were recorded from first boots of this image on Google Cloud TDX, one entry per distinct set of measurements. Use as CATALOG_FILE for contracts/script/RegisterCatalog.s.sol."
+  }
+}
