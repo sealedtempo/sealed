@@ -32,7 +32,7 @@ RUN set -eux; \
     rm -rf /app/plugins/node_modules/@sap/hana-client; \
     ldconfig; \
     rm -f /app/server/entrypoint.sh; \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /root/.npm; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /root/.npm /home/appuser/.npm; \
     # apt, dpkg and ldconfig record the build time (or inode times) in these files, which gave every
     # build a new digest, so the workflow's no-cache rebuild check failed (images-preflight).
     rm -f /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache; \
