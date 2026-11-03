@@ -150,6 +150,14 @@ jobs:
           while IFS=$'\t' read -r name ref; do
             scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "catalog/apps/$APP/waivers.yaml" --out "$RUNNER_TEMP/scan"
           done < <(jq -r '.[] | [.name, .ref] | @tsv' <<<"$REFS")
+      - name: Upload SBOMs (diagnostic, for license-override authoring)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ matrix.app }}
+          path: ${{ runner.temp }}/scan/sbom
+          if-no-files-found: warn
+          retention-days: 7
       - name: Bundle (sealed release build, cross-check, release lint)
         env:
           APP: ${{ matrix.app }}
