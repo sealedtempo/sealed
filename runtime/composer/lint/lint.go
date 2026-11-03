@@ -662,7 +662,11 @@ func lintWaivers(c *collector, raw, manifest []byte, now time.Time) {
 	}
 }
 
-var vulnIDRe = regexp.MustCompile(`^(CVE-[0-9]{4}-[0-9]{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3})$`)
+// vulnIDRe accepts the advisory id of a Grype finding: a CVE, a GHSA, or a Go vulnerability database
+// id (GO-YYYY-NNNN). Grype reports Go stdlib findings under the GO- namespace, and the release gate
+// matches those waivers directly, so the lint must accept them too (it did not, which rejected valid
+// GO- waivers that the gate had matched; it still rejects free-form ids such as BUG-1).
+var vulnIDRe = regexp.MustCompile(`^(CVE-[0-9]{4}-[0-9]{4,}|GHSA(-[23456789cfghjmpqrvwx]{4}){3}|GO-[0-9]{4}-[0-9]+)$`)
 
 var (
 	imageSourceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9][a-z0-9._-]*)+(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})(@sha256:[0-9a-f]{64})?$`)

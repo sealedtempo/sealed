@@ -339,6 +339,7 @@ func TestWaivers(t *testing.T) {
 		"# comments only\n",
 		"version: 1\nwaivers:\n  - id: CVE-2026-12345\n    image: postgres\n    package: libx\n    reason: not reachable from the app\n    expires: 2026-10-28\n",
 		"- {id: GHSA-2345-6789-cfgh, image: notes-web, package: liby, reason: fixed upstream next release, expires: \"2027-01-01\"}\n",
+		"- {id: GO-2026-4337, image: postgres, package: stdlib, reason: Go stdlib in a mirrored image we cannot rebuild, expires: \"2027-01-01\"}\n",
 	} {
 		writeFile(t, filepath.Join(dir, "waivers.yaml"), ok)
 		if fs := LintApp(dir, Options{RequireSBOM: true, Now: now}); codes(fs, Error)[CodeWaivers] != 0 {
