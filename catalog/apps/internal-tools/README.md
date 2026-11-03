@@ -56,7 +56,7 @@ database setup without it.
 
 | image | source | digest | license |
 |---|---|---|---|
-| tooljet | `build:images/tooljet-ce` from `docker.io/tooljet/tooljet-ce:v3.20.251-lts` `sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47` | `sha256:f92695779ce2f05f6dce270e907d6f44d238c96c9a9462a69b6d4727220530d0` | AGPL-3.0-only |
+| tooljet | `build:images/tooljet-ce` from `docker.io/tooljet/tooljet-ce:v3.20.251-lts` `sha256:46d1c621efe69c490884cf17d60fbf5c58a9ec3dc57e37432cfd426a11593f47` | `sha256:5cde54c12a46db3bce0682bce44cf440509ef5608764fb336c9e358526e72c62` | AGPL-3.0-only |
 | postgrest | `docker.io/postgrest/postgrest:v12.2.12` | `sha256:5f4ce744539bbba786b4e24dbbd95bdb2a956dcf568c5374995a0ff4a68f5bd2` | MIT |
 | postgres | `docker.io/library/postgres:16.15` | `sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c` | PostgreSQL |
 | valkey | `docker.io/valkey/valkey:9.0.7` | `sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d` | BSD-3-Clause |
