@@ -5,4 +5,60 @@
 #     package: <package name>
 #     reason: why it does not apply or why it cannot be fixed yet
 #     expires: YYYY-MM-DD         # required; the waiver stops applying after this date
-[]
+version: 1
+waivers:
+  - id: CVE-2026-10536
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-11856
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-18924
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-19931
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-86414
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-8926
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-9079
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-92388
+    image: openhands-agent-server
+    package: "libcurl3t64-gnutls"
+    reason: "no upstream fix available (grype reports no fixed version; deb13u7 is the latest) in the pinned third-party openhands image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: CVE-2026-19445
+    image: openhands-agent-server
+    package: "python"
+    reason: "fix exists upstream (python 3.13.16) but the interpreter is inside a pinned third-party openhands image we mirror and cannot rebuild; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: CVE-2026-115557
+    image: openhands-agent-server
+    package: "python"
+    reason: "fix exists upstream (python 3.13.18) but the interpreter is inside a pinned third-party openhands image we mirror and cannot rebuild; drop when that upstream image is bumped"
+    expires: 2026-12-31
+  - id: CVE-2026-111497
+    image: openhands-agent-server
+    package: "libbrotli1"
+    reason: "fix exists upstream (1.1.0-2+deb13u1) but the package is inside a pinned third-party openhands image we mirror and cannot rebuild; drop when that upstream image is bumped"
+    expires: 2026-12-31

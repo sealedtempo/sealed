@@ -17,3 +17,23 @@ waivers:
     package: "python-3.13-base"
     reason: "fix exists upstream but the affected package is inside a pinned third-party image we flatten; drop when that upstream image is bumped"
     expires: 2026-12-31
+  - id: CVE-2026-6653
+    image: postgres
+    package: "libxml2"
+    reason: "no upstream fix available (grype reports no fixed version) in the pinned third-party postgres image we mirror; drop when the distro or the upstream image publishes a patch"
+    expires: 2026-12-31
+  - id: GO-2026-4337
+    image: postgres
+    package: "stdlib"
+    reason: "Go stdlib finding in a pinned third-party postgres image we mirror and cannot rebuild; fix ships in a newer Go toolchain upstream must adopt; drop when the upstream image is bumped"
+    expires: 2026-12-31
+  - id: GO-2026-6604
+    image: postgres
+    package: "stdlib"
+    reason: "Go stdlib finding in a pinned third-party postgres image we mirror and cannot rebuild; fix ships in a newer Go toolchain upstream must adopt; drop when the upstream image is bumped"
+    expires: 2026-12-31
+  - id: GO-2026-6612
+    image: postgres
+    package: "stdlib"
+    reason: "Go stdlib finding in a pinned third-party postgres image we mirror and cannot rebuild; fix ships in a newer Go toolchain upstream must adopt; drop when the upstream image is bumped"
+    expires: 2026-12-31

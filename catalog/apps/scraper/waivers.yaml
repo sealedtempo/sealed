@@ -67,3 +67,18 @@ waivers:
     package: "firefox"
     reason: "Playwright 1.64.1 bundles Firefox 157.0; these are fixed in a newer Firefox that a later Playwright release will carry (moving target). Re-review at expiry."
     expires: 2026-12-31
+  - id: GO-2026-4337
+    image: postgres
+    package: "stdlib"
+    reason: "Go stdlib finding in a pinned third-party postgres image we mirror and cannot rebuild; fix ships in a newer Go toolchain upstream must adopt; drop when the upstream image is bumped"
+    expires: 2026-12-31
+  - id: GO-2026-6604
+    image: postgres
+    package: "stdlib"
+    reason: "Go stdlib finding in a pinned third-party postgres image we mirror and cannot rebuild; fix ships in a newer Go toolchain upstream must adopt; drop when the upstream image is bumped"
+    expires: 2026-12-31
+  - id: GO-2026-6612
+    image: postgres
+    package: "stdlib"
+    reason: "Go stdlib finding in a pinned third-party postgres image we mirror and cannot rebuild; fix ships in a newer Go toolchain upstream must adopt; drop when the upstream image is bumped"
+    expires: 2026-12-31
