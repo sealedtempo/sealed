@@ -9,7 +9,7 @@
       "notes": "Index digest; linux/amd64 child sha256:04913b1da43339a40ad1ea87827d70a576ac5aa6cf674c6e24fdca675887533a. Mirrored with crane copy so the digest is unchanged."
     },
     "sealed-agent": {
-      "digest": "sha256:300e1476847be1d49f2910d71de0f42c3a09da670ef3ec43741593535474a225",
+      "digest": "sha256:508020b644e866ed65a76c1a4e2465c29b702b242a2da7d7f1bfd778d260ffb8",
       "source": "build:runtime/agent",
       "license_spdx": "Apache-2.0"
     },
