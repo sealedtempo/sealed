@@ -25,7 +25,7 @@ images:
   # images/tooljet-ce/Dockerfile. The digest is pinned after the runtime image workflow builds it.
   - name: tooljet
     source: build:images/tooljet-ce
-    digest: sha256:f92695779ce2f05f6dce270e907d6f44d238c96c9a9462a69b6d4727220530d0
+    digest: sha256:a15ccf577939d8502a078777fecac36dfde5981ced34f8e868a30a66d41483d8
     platform: linux/amd64
     license_spdx: AGPL-3.0-only
   # Index digests (multi-arch). linux/amd64 manifests: postgrest
