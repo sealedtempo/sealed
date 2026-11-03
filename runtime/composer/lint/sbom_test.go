@@ -296,6 +296,21 @@ func TestOSPackagesAndDefaultPatterns(t *testing.T) {
 	}
 }
 
+func TestUnownedSystemLocaleNotEnterprise(t *testing.T) {
+	// A locale catalog under /usr/share/locale that no SBOM package owns is a system component, not an
+	// ee/ open-core directory, so the default enterprise patterns must not flag it. syft lists such
+	// files in some base images (e.g. scraper's Playwright image) without a CONTAINS owner, which used
+	// to fail the release lint. An unowned ee/ path outside the system content dirs is still reported.
+	sbom := `{"spdxVersion":"SPDX-2.3","packages":[],
+	 "files":[
+	 {"SPDXID":"SPDXRef-F1","fileName":"usr/share/locale/ee/LC_MESSAGES/coreutils.mo"},
+	 {"SPDXID":"SPDXRef-F2","fileName":"opt/app/server/ee/secret.js"}]}`
+	fs := runSBOM(t, []byte(sbom), compileAll(t, nil, DefaultEnterprisePatterns), nil, true)
+	if got := fieldsOf(fs, CodeExcludedPath, Error); !reflect.DeepEqual(got, []string{"/opt/app/server/ee/"}) {
+		t.Fatalf("got %q: %v", got, fs)
+	}
+}
+
 func TestOverrideNeverHidesABannedLicense(t *testing.T) {
 	sbom := `{"spdxVersion":"SPDX-2.3","packages":[{"SPDXID":"SPDXRef-a","name":"map-stream","versionInfo":"0.1.0","licenseDeclared":"SSPL-1.0",
 	 "externalRefs":[{"referenceType":"purl","referenceLocator":"pkg:npm/map-stream@0.1.0"}]}]}`

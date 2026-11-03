@@ -935,8 +935,15 @@ func lintSBOM(c *collector, image string, raw []byte, patterns []*pathPattern, e
 		for _, o := range owners[f.SPDXID] {
 			osOwned = osOwned && osPkgs[o]
 		}
+		// A file is a system component, exempt from the D-021 policy (enterprise) patterns, when an OS
+		// package owns it, or when no package in the SBOM owns it and it sits under a base-image content
+		// directory such as /usr/share/locale (for example the Ewe locale /usr/share/locale/ee, which
+		// the open-core "ee/" pattern would otherwise match). Shipped app code, open-core enterprise
+		// trees included, is always owned by an app package and installs outside these paths, so this
+		// does not weaken the hard-fail. Manifest license_exclusions (non-policy) still apply here.
+		systemComponent := osOwned || (len(owners[f.SPDXID]) == 0 && isSystemContentPath(name))
 		for i, pat := range patterns {
-			if pat.note || (pat.policy && osOwned) {
+			if pat.note || (pat.policy && systemComponent) {
 				continue
 			}
 			root := matchers[i].match(name)
@@ -973,6 +980,22 @@ func lintSBOM(c *collector, image string, raw []byte, patterns []*pathPattern, e
 			c.add(Error, file, "/"+root+"/", CodeExcludedPath, "%d files under this directory match %s (for example /%s)", len(g.files), what, g.example)
 		}
 	}
+}
+
+// systemContentDirs are base-image directories that hold distribution content (locale catalogs,
+// manpages, docs, timezone data) installed by OS packages. A path here that no SBOM package claims is
+// still a system component, not shipped app code, so the D-021 policy (enterprise) patterns do not
+// apply to it. Paths are cleaned and relative (no leading slash), matching cleanPath output.
+var systemContentDirs = []string{"usr/share/locale/", "usr/share/man/", "usr/share/doc/", "usr/share/zoneinfo/", "usr/lib/locale/"}
+
+// isSystemContentPath reports whether name is under a base-image content directory.
+func isSystemContentPath(name string) bool {
+	for _, d := range systemContentDirs {
+		if strings.HasPrefix(name, d) {
+			return true
+		}
+	}
+	return false
 }
 
 // isDataOnlyPackage reports whether a package is on the reviewed data-only list.

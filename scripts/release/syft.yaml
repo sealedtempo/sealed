@@ -9,6 +9,13 @@
 # decides an SBOM's contents to syft's defaults.
 check-for-app-update: false
 scope: squashed
-exclude: []
+# pip vendors distlib, whose Windows launcher stubs (t32/t64/w32/w64[-arm].exe under
+# pip/_vendor/distlib) syft's binary classifier reports as a package "Simple Launcher" with no purl
+# and no license. They are inert PE files on the Linux images (never executed) and cannot be given a
+# reviewed license override (no purl to key on), so exclude them from the SBOM. The "**/" prefix
+# matches the in-image path with or without a leading slash.
+exclude:
+  - "**/pip/_vendor/distlib/*.exe"
+  - "**/distlib/*.exe"
 select-catalogers: []
 enrich: []
