@@ -17,5 +17,38 @@ scope: squashed
 exclude:
   - "**/pip/_vendor/distlib/*.exe"
   - "**/distlib/*.exe"
+  # ToolJet (internal-tools) node_modules: syft catalogs per-export-subpath and build/metadata
+  # package.json files, test/benchmark/example fixtures, npm security-hold placeholder stubs, and
+  # schematic EJS templates as if each were a separate dependency. None are shipped packages (the real
+  # package is cataloged from its own top-level node_modules/<pkg>/package.json, which these globs never
+  # match: each requires a path segment after the package dir, except the three deliberate placeholder
+  # drops). Keeping them would mean fabricating license overrides for non-packages.
+  - "**/node_modules/rxjs/*/package.json"
+  - "**/node_modules/libphonenumber-js/*/**/package.json"
+  - "**/node_modules/@angular-devkit/schematics/*/package.json"
+  - "**/node_modules/@angular-devkit/schematics-cli/**/package.json"
+  - "**/node_modules/@casl/ability/*/package.json"
+  - "**/node_modules/@socket.io/component-emitter/lib/*/package.json"
+  - "**/node_modules/engine.io-client/build/*/package.json"
+  - "**/node_modules/engine.io-parser/build/*/package.json"
+  - "**/node_modules/@nestjs/schematics/dist/**/package.json"
+  - "**/node_modules/web-streams-polyfill/*/**/package.json"
+  - "**/node_modules/*/test/**/package.json"
+  - "**/node_modules/*/tests/**/package.json"
+  - "**/node_modules/*/benchmark/**/package.json"
+  - "**/node_modules/*/benchmarks/**/package.json"
+  - "**/node_modules/*/example/**/package.json"
+  - "**/node_modules/*/examples/**/package.json"
+  - "**/node_modules/*/fixtures/**/package.json"
+  - "**/node_modules/package/**/package.json"
+  - "**/node_modules/package.json/package.json"
+  - "**/node_modules/save-dev/package.json"
+  # supervisord is apt-installed (the deb package is an OS component, a warning); syft also catalogs its
+  # Python egg-info as a pypi package whose repoze "BSD-derived" license has no SPDX id. Drop the pypi
+  # duplicate; the deb entry remains.
+  - "**/dist-packages/supervisor-*.egg-info/**"
+  # ssh2 bundles a Windows PuTTY pageant helper (ssh2/util/pagent.exe): an inert PE on the Linux image,
+  # no purl and no license, like the distlib launcher stubs above.
+  - "**/node_modules/ssh2/util/*.exe"
 select-catalogers: []
 enrich: []
