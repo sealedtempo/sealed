@@ -31,7 +31,7 @@ interface ITIP403RegistryLike {
 ///         approve + payFees (transferFrom into the contract) + withdraw (transfer out of the contract).
 /// @dev RPC: TEMPO_RPC_URL, falling back to https://rpc.tempo.xyz. Every test is skipped when the RPC is not
 ///      reachable or SKIP_FORK_TESTS=true. Needs Foundry 1.8.6+ with foundry.toml `hardfork` at mainnet's
-///      hardfork (tempo:t12; tempo:t13 from 2026-11-03 15:00 UTC): older rules read the token policy ids as 0
+///      hardfork (tempo:t13, active since 2026-11-03 15:00 UTC): older rules read the token policy ids as 0
 ///      and every transfer reverts PolicyForbids. Nothing is patched; see README "Fork tests".
 contract TempoMainnetForkTest is Test {
     ITIP20Like internal constant PATH_USD = ITIP20Like(0x20C0000000000000000000000000000000000000);

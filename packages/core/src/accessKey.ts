@@ -8,7 +8,7 @@
 // - FeeSplitter payFees and topUpFees.
 // - FEE_TOKEN transferWithMemo(recipient = the FeeSplitter's treasury): MPP charges to the relay.
 // - The TIP-1034 escrow precompile open, topUp, requestClose and withdraw: MPP sessions with the relay. The
-//   keychain refuses recipient rules on these selectors (InvalidCallScope, checked on a T12 node), so the
+//   keychain refuses recipient rules on these selectors (InvalidCallScope, checked on a T13 node), so the
 //   chain does not bind the channel payee. The payer's firewall enforces the attested treasury payee, and
 //   every deposit counts against the key's limit (the precompile pulls from the customer).
 //
