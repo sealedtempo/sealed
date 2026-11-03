@@ -9,14 +9,14 @@
 #
 # Uses only anvil's well-known default dev keys. Nothing here touches a public network.
 # Environment: CATALOG_FILE (default catalog/catalog.mainnet.json), REHEARSE_PORT (default 8547), REHEARSE_HARDFORK
-# (default T12, mainnet's hardfork; T13 from 2026-11-03), CATALOG_MANIFESTS (manifest dir for the preflight,
+# (default T13, mainnet's active hardfork), CATALOG_MANIFESTS (manifest dir for the preflight,
 # default ../catalog/apps), REHEARSE_KEEP=1 to leave anvil running afterwards.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CATALOG="${CATALOG_FILE:-catalog/catalog.mainnet.json}"
 PORT="${REHEARSE_PORT:-8547}"
-HARDFORK="${REHEARSE_HARDFORK:-T12}"
+HARDFORK="${REHEARSE_HARDFORK:-T13}"
 RPC="http://127.0.0.1:${PORT}"
 WORK=".e2e/rehearse"
 mkdir -p "$WORK" deployments

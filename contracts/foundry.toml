@@ -16,9 +16,9 @@ bytecode_hash = "ipfs"
 # Tempo network features in forge/cast/anvil (TIP-20 precompiles, Tempo gas schedule, Tempo transactions).
 network = "tempo"
 # Execute tests, scripts and forks with mainnet's Tempo hardfork (gas schedule, TIP-403 registry binding, precompiles).
-# Mainnet runs T12 until T13 activates on 2026-11-03 15:00 UTC: change this to "tempo:t13" then. Foundry 1.8.6 knows
+# Mainnet activated T13 on 2026-11-03 15:00 UTC (D-053). Foundry 1.8.6 knows
 # T0..T14; forks follow this setting, not the fork block, so a stale value brings back the pre-T9 policy reads.
-hardfork = "tempo:t12"
+hardfork = "tempo:t13"
 auto_detect_remappings = false
 fs_permissions = [
     { access = "read-write", path = "./deployments" },

@@ -23,7 +23,7 @@ indexer needs to rebuild state from events alone. Onchain deployment data is has
 | Optimizer | on, 200 runs, legacy codegen (no via-IR), `bytecode_hash = "ipfs"` | must match for verification |
 | OpenZeppelin Contracts | `5.7.0` (Soldeer `@openzeppelin-contracts`) | latest stable 5.x |
 | forge-std | `1.17.0` (Soldeer) | latest |
-| Foundry | `1.8.6` (`make foundry-check`, D-053) | `network = "tempo"`, `hardfork = "tempo:t12"` (mainnet's; `tempo:t13` from 2026-11-03 15:00 UTC, see Tempo notes) |
+| Foundry | `1.8.6` (`make foundry-check`, D-053) | `network = "tempo"`, `hardfork = "tempo:t13"` (mainnet's active hardfork since 2026-11-03 15:00 UTC) |
 
 Dependencies are Soldeer packages pinned with checksums in `soldeer.lock`; `dependencies/` is gitignored and
 restored with `make deps` (`forge soldeer install`). No git submodules. In a non-interactive shell Soldeer 0.10's
@@ -266,7 +266,7 @@ make gas-report
 make abi           # abi/*.json
 ```
 
-Tests run in `network = "tempo"` mode with `hardfork = "tempo:t12"`, so the TIP-20 precompiles exist and storage
+Tests run in `network = "tempo"` mode with `hardfork = "tempo:t13"`, so the TIP-20 precompiles exist and storage
 writes cost the Tempo mainnet 250,000 gas per new slot. Invariants use `fail_on_revert = true` (handlers never
 revert). Suites:
 
@@ -314,7 +314,7 @@ fails loudly otherwise; nothing is patched.
 
 ### Local Tempo node run
 
-`script/local-e2e.sh` (or `make local-e2e`) starts `anvil --network tempo --hardfork T12 --gas-limit 500000000`
+`script/local-e2e.sh` (or `make local-e2e`) starts `anvil --network tempo --hardfork T13 --gas-limit 500000000`
 (`E2E_HARDFORK` to change it), deploys with `Deploy.s.sol` (`--broadcast`), records the deployment, registers two
 apps and an image with `cast` and the fixture catalog (`test/fixtures/catalog.example.json`) with
 `RegisterCatalog.s.sol`, publishes releases as ops, approves a stack as the
@@ -445,8 +445,8 @@ published by the release CI with the ops key (`publishRelease`), not by this scr
   FeeSplitter lands in the guard (`0xB10C…`) and is recovered under that account's recovery-authority rules.
 - Blocks are ~0.5 s and consecutive blocks can share `block.timestamp`; nothing here uses it for uniqueness.
 - Foundry 1.8.6 knows Tempo hardforks T0 to T14 and does not follow the activation schedule: forks, tests and
-  anvil run whatever `hardfork` says (anvil's default is T12). Mainnet activates T13 on 2026-11-03 15:00 UTC; then
-  change `hardfork` to `"tempo:t13"` and the `E2E_HARDFORK` / `REHEARSE_HARDFORK` defaults to T13. Older Foundry
+  anvil run whatever `hardfork` says (anvil's default is T12). Mainnet activated T13 on 2026-11-03 15:00 UTC, so
+  `hardfork` is `"tempo:t13"` and the `E2E_HARDFORK` / `REHEARSE_HARDFORK` defaults are T13. Older Foundry
   releases run T4 rules (policy ids read as 0, CREATE gas ~2.3x mainnet), which `make foundry-check` rejects.
 - `forge-std` `deal()` still fails for TIP-20 tokens on 1.8.6; unit tests use mock tokens and the fork tests fund
   by impersonation.

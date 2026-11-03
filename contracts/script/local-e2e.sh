@@ -9,13 +9,13 @@
 #   script/local-e2e.sh            # from the contracts directory, or: make local-e2e
 #
 # Uses only anvil's well-known default dev keys. Nothing here touches a public network.
-# Environment: E2E_PORT (default 8546), E2E_HARDFORK (default T12, mainnet's hardfork; T13 from 2026-11-03),
+# Environment: E2E_PORT (default 8546), E2E_HARDFORK (default T13, mainnet's active hardfork),
 # E2E_KEEP=1 to leave anvil running afterwards.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 PORT="${E2E_PORT:-8546}"
-HARDFORK="${E2E_HARDFORK:-T12}"
+HARDFORK="${E2E_HARDFORK:-T13}"
 RPC="http://127.0.0.1:${PORT}"
 WORK=".e2e"
 mkdir -p "$WORK" deployments
