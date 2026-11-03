@@ -111,8 +111,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version: "${{ env.GO_VERSION }}" }
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        id: syft
         with: { syft-version: "${{ env.SYFT_VERSION }}" }
       - uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        id: grype
         with: { grype-version: "${{ env.GRYPE_VERSION }}" }
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with: { cosign-release: "${{ env.COSIGN_VERSION }}" }
@@ -143,6 +145,8 @@ jobs:
           REFS: ${{ toJSON(matrix.imageRefs) }}
           SEALED_RELEASE_BIN: ${{ runner.temp }}/bin/sealed-release
         run: |
+          # download-syft/download-grype only expose a cmd path (they do not add it to PATH); scan-image.sh needs both.
+          export PATH="$(dirname '${{ steps.grype.outputs.cmd }}'):$(dirname '${{ steps.syft.outputs.cmd }}'):$PATH"
           while IFS=$'\t' read -r name ref; do
             scripts/release/scan-image.sh --image "$name" --ref "$ref" --waivers "catalog/apps/$APP/waivers.yaml" --out "$RUNNER_TEMP/scan"
           done < <(jq -r '.[] | [.name, .ref] | @tsv' <<<"$REFS")
